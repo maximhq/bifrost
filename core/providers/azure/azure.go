@@ -1140,6 +1140,9 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	if useSpeechEndpoints(ctx, key) {
+		if request.Model == azureSpeechShortAudioModel {
+			return provider.speechShortAudioTranscription(ctx, key, request)
+		}
 		return provider.speechTranscription(ctx, key, request)
 	}
 

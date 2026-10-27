@@ -1,7 +1,9 @@
 package azure
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"mime"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -25,6 +28,9 @@ const (
 	azureSpeechFastResponse     = `{"durationMilliseconds":4262,"combinedPhrases":[{"text":"Hello from Bifrost. testing Azure Speech."}],"phrases":[{"offsetMilliseconds":110,"durationMilliseconds":1280,"text":"Hello from Bifrost.","words":[{"text":"Hello","offsetMilliseconds":110,"durationMilliseconds":400},{"text":"from","offsetMilliseconds":510,"durationMilliseconds":240},{"text":"Bifrost.","offsetMilliseconds":750,"durationMilliseconds":640}],"locale":"en-US","confidence":0.69548494},{"offsetMilliseconds":2190,"durationMilliseconds":1280,"text":"testing Azure Speech.","words":[{"text":"testing","offsetMilliseconds":2190,"durationMilliseconds":480},{"text":"Azure","offsetMilliseconds":2670,"durationMilliseconds":320},{"text":"Speech.","offsetMilliseconds":2990,"durationMilliseconds":480}],"locale":"en-US","confidence":0.69548494}]}`
 	azureSpeechDiarizedResponse = `{"durationMilliseconds":4262,"combinedPhrases":[{"text":"Hello from Bifrost. testing Azure Speech."}],"phrases":[{"speaker":1,"offsetMilliseconds":110,"durationMilliseconds":1280,"text":"Hello from Bifrost.","words":[{"text":"Hello","offsetMilliseconds":110,"durationMilliseconds":400}],"locale":"en-US","confidence":0.6563118},{"speaker":2,"offsetMilliseconds":2190,"durationMilliseconds":1280,"text":"testing Azure Speech.","words":[{"text":"testing","offsetMilliseconds":2190,"durationMilliseconds":480}],"locale":"en-US","confidence":0.6563118}]}`
 )
+
+// azureSpeechShortAudioResponse is a live detailed short audio result from the same resource.
+const azureSpeechShortAudioResponse = `{"RecognitionStatus":"Success","Offset":700000,"Duration":47200000,"DisplayText":"Hello from Bifrost, this is a Python speech SDK test.","NBest":[{"Confidence":0.70007783,"Lexical":"hello from bifrost this is a python speech SDK test","ITN":"hello from bifrost this is a python speech SDK test","MaskedITN":"hello from bifrost this is a python speech sdk test","Display":"Hello from Bifrost, this is a Python speech SDK test."}]}`
 
 func TestToAzureSpeechSSML(t *testing.T) {
 	t.Parallel()
@@ -378,6 +384,9 @@ func newAzureSpeechUpstream(t *testing.T) *azureSpeechUpstream {
 		case azureSpeechTranscriptionPath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(azureSpeechFastResponse))
+		case "/stt/speech/recognition/interactive/cognitiveservices/v1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(azureSpeechShortAudioResponse))
 		case "/openai/v1/audio/speech":
 			w.Header().Set("Content-Type", "audio/mpeg")
 			_, _ = w.Write([]byte("openai-audio"))
@@ -627,6 +636,210 @@ func TestAzureSpeechTranscriptionDiarizedNoSpeech(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"segments":[]`) {
 		t.Errorf("diarized_json without speech = %s, want \"segments\":[]", body)
+	}
+}
+
+// TestAzureSpeechSynthesisRequestToBifrost pins the /azure text to speech conversion: the SSML goes
+// through unchanged, the model is the first voice's suffix, so the price follows the voice, and the
+// provider is left for routing to resolve.
+func TestAzureSpeechSynthesisRequestToBifrost(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, ssml, wantModel, wantVoice, wantLanguage string
+	}{
+		{"standard voice", `<speak version="1.0" xml:lang="en-US"><voice name="en-US-AvaMultilingualNeural">Hi &amp; bye.</voice></speak>`, "neural", "en-US-AvaMultilingualNeural", "en-US"},
+		{"first voice decides", `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="de-DE"><voice name="de-DE-Seraphina:DragonHDLatestNeural">Hallo.</voice><voice name="en-US-Harper:MAI-Voice-2.1-Flash">Hi.</voice></speak>`, "DragonHDLatestNeural", "de-DE-Seraphina:DragonHDLatestNeural", "de-DE"},
+		{"no voice", `<speak version="1.0">Hi.</speak>`, "neural", "", ""},
+		{"not XML", `plain text`, "neural", "", ""},
+	}
+	for _, tc := range cases {
+		request := (&AzureSpeechSynthesisRequest{SSML: tc.ssml, OutputFormat: "riff-24khz-16bit-mono-pcm"}).ToBifrostSpeechRequest()
+		voice, language := "", ""
+		if request.Params.VoiceConfig != nil && request.Params.VoiceConfig.Voice != nil {
+			voice = *request.Params.VoiceConfig.Voice
+		}
+		if request.Params.LanguageCode != nil {
+			language = *request.Params.LanguageCode
+		}
+		if request.Provider != "" || request.Model != tc.wantModel || voice != tc.wantVoice || language != tc.wantLanguage {
+			t.Errorf("%s: provider %q model %q voice %q language %q, want no provider and %q %q %q", tc.name, request.Provider, request.Model, voice, language, tc.wantModel, tc.wantVoice, tc.wantLanguage)
+		}
+		if request.Input.Input != tc.ssml || request.Params.ResponseFormat != "riff-24khz-16bit-mono-pcm" {
+			t.Errorf("%s: input %q format %q, want the SSML and format unchanged", tc.name, request.Input.Input, request.Params.ResponseFormat)
+		}
+	}
+	request := (&AzureSpeechSynthesisRequest{SSML: cases[1].ssml}).ToBifrostSpeechRequest()
+	if ssml, err := ToAzureSpeechSSML(request.Model, request); err != nil || ssml != cases[1].ssml {
+		t.Errorf("SSML sent = %q, %v; want the request's SSML", ssml, err)
+	}
+}
+
+// TestAzureSpeechContentType pins the Content-Type per output format family, as Azure sent them live.
+func TestAzureSpeechContentType(t *testing.T) {
+	t.Parallel()
+	for format, want := range map[string]string{
+		"":                                   "audio/mpeg",
+		"audio-24khz-48kbitrate-mono-mp3":    "audio/mpeg",
+		"wav":                                "audio/x-wav",
+		"riff-8khz-8bit-mono-alaw":           "audio/x-wav",
+		"ogg-24khz-16bit-mono-opus":          "audio/ogg",
+		"webm-24khz-16bit-mono-opus":         "audio/webm",
+		"raw-8khz-8bit-mono-mulaw":           "audio/basic",
+		"audio-24khz-16bit-24kbps-mono-opus": "audio/opus",
+		"amr-wb-16000hz":                     "audio/x-amr-wb-sh",
+		"g722-16khz-64kbps":                  "audio/g722",
+		"something-new":                      "application/octet-stream",
+	} {
+		if got := AzureSpeechContentType(format); got != want {
+			t.Errorf("AzureSpeechContentType(%q) = %q, want %q", format, got, want)
+		}
+	}
+}
+
+// TestAzureSpeechFastTranscriptionRequestRoundTrip pins that a fast transcription definition sent to
+// /azure reaches Azure as sent, that the model follows enhancedMode, and that routing picks the provider.
+func TestAzureSpeechFastTranscriptionRequestRoundTrip(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		definition, wantModel string
+	}{
+		{`{"locales":["en-US","de-DE"],"channels":[0,1],"diarization":{"enabled":true,"maxSpeakers":3},"profanityFilterMode":"Masked","phraseList":{"phrases":["Bifrost","Contoso"]}}`, "fast-transcription"},
+		{`{"locales":["en-US"],"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2","modelOptions":{"timestamps":"word","transcribeStyle":"verbatim"}}}`, "MAI-Transcribe-2"},
+		{`{"locales":["en-US"],"enhancedMode":{"enabled":true,"task":"translate","targetLanguage":"de","prompt":["Use a formal register."]}}`, "llm-speech"},
+	}
+	for _, tc := range cases {
+		var definition AzureSpeechTranscriptionDefinition
+		if err := sonic.Unmarshal([]byte(tc.definition), &definition); err != nil {
+			t.Fatalf("definition: %v", err)
+		}
+		request := (&AzureSpeechFastTranscriptionRequest{Audio: []byte("RIFF"), Filename: "call.wav", Definition: definition}).ToBifrostTranscriptionRequest()
+		if request.Provider != "" || request.Model != tc.wantModel || request.Input.Filename != "call.wav" {
+			t.Errorf("provider %q model %q filename %q, want no provider, %q and call.wav", request.Provider, request.Model, request.Input.Filename, tc.wantModel)
+		}
+		got, _ := sonic.Marshal(ToAzureSpeechTranscriptionDefinition(request.Model, request.Params))
+		want, _ := sonic.Marshal(definition)
+		if string(got) != string(want) {
+			t.Errorf("definition sent = %s\nwant %s", got, want)
+		}
+	}
+}
+
+// TestAzureSpeechShortAudioWire pins the short-audio model on the wire: the mode is the path, the
+// options are the query and headers, and usage is the WAV length rounded up to the second.
+func TestAzureSpeechShortAudioWire(t *testing.T) {
+	t.Parallel()
+	upstream := newAzureSpeechUpstream(t)
+	provider := newAzureSpeechTestProvider(t)
+	key := newAzureSpeechTestKey(upstream.URL)
+	wav, err := providerUtils.ConvertPCMToWAV(make([]byte, 48000), providerUtils.PCMConfig{SampleRate: 16000, NumChannels: 1, BitsPerSample: 16})
+	if err != nil {
+		t.Fatalf("wav: %v", err)
+	}
+	request := (&AzureSpeechShortAudioRequest{Audio: wav, Mode: "interactive", Language: "de-DE", Format: "detailed", Profanity: "raw", EndpointID: "cid-1", PronunciationAssessment: "eyJSZWZlcmVuY2VUZXh0IjoiSGkifQ=="}).ToBifrostTranscriptionRequest()
+	if request.Provider != "" || request.Model != "short-audio" {
+		t.Fatalf("provider %q model %q, want no provider and short-audio", request.Provider, request.Model)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	resp, bifrostErr := provider.Transcription(ctx, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("Transcription: %+v", bifrostErr.Error)
+	}
+
+	path, query, headers, body := upstream.last()
+	if path != "/stt/speech/recognition/interactive/cognitiveservices/v1" || query != "cid=cid-1&format=detailed&language=de-DE&profanity=raw" {
+		t.Errorf("url = %s?%s", path, query)
+	}
+	if headers.Get("Ocp-Apim-Subscription-Key") != "speech-key" || headers.Get("Pronunciation-Assessment") != "eyJSZWZlcmVuY2VUZXh0IjoiSGkifQ==" || headers.Get("Content-Type") != "audio/wav; codecs=audio/pcm" {
+		t.Errorf("headers = %v", headers)
+	}
+	if string(body) != string(wav) {
+		t.Errorf("body is not the audio")
+	}
+	if resp.Text != "Hello from Bifrost, this is a Python speech SDK test." || resp.Usage == nil || *resp.Usage.Seconds != 2 || *resp.Duration != 1.5 || *resp.Language != "de-DE" {
+		t.Errorf("response text %q usage %+v duration %v", resp.Text, resp.Usage, resp.Duration)
+	}
+	if len(resp.Segments) != 1 || resp.Segments[0].Start != 0.07 || resp.Segments[0].End != 4.79 {
+		t.Errorf("segments = %+v", resp.Segments)
+	}
+	if raw, ok := resp.ExtraFields.RawResponse.(map[string]interface{}); !ok || raw["NBest"] == nil {
+		t.Errorf("raw response = %v, want Azure's JSON", resp.ExtraFields.RawResponse)
+	}
+
+	// A mode outside the three endpoints never reaches the URL path.
+	request.Params.ExtraParams["recognition_mode"] = "../../tts"
+	_, bifrostErr = provider.Transcription(ctx, key, request)
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("unknown mode error = %+v, want 400", bifrostErr)
+	}
+	if path, _, _, _ := upstream.last(); path != "/stt/speech/recognition/interactive/cognitiveservices/v1" {
+		t.Errorf("unknown mode reached %s", path)
+	}
+}
+
+func TestAzureSpeechAudioSeconds(t *testing.T) {
+	t.Parallel()
+	wav, _ := providerUtils.ConvertPCMToWAV(make([]byte, 48000), providerUtils.PCMConfig{SampleRate: 16000, NumChannels: 1, BitsPerSample: 16})
+	streamed := bytes.Clone(wav)
+	binary.LittleEndian.PutUint32(streamed[40:44], 0xFFFFFFFF)
+	// A LIST chunk with an odd size and its pad byte before the data chunk.
+	listed := append(bytes.Clone(wav[:36]), append([]byte("LIST\x03\x00\x00\x00abc\x00"), wav[36:]...)...)
+	ogg := []byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00opus-head-pages")
+	ogg = append(ogg, []byte("OggS\x00\x04")...)
+	ogg = binary.LittleEndian.AppendUint64(ogg, 96000)
+	ogg = append(ogg, make([]byte, 13)...)
+	for name, tc := range map[string]struct {
+		audio []byte
+		want  float64
+		ok    bool
+	}{
+		"wav":           {wav, 1.5, true},
+		"streamed wav":  {streamed, 1.5, true},
+		"wav with list": {listed, 1.5, true},
+		"ogg opus":      {ogg, 2, true},
+		"mp3":           {[]byte("ID3\x04\x00frames"), 0, false},
+	} {
+		if got, ok := azureSpeechAudioSeconds(tc.audio); got != tc.want || ok != tc.ok {
+			t.Errorf("%s: %v %v, want %v %v", name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// TestToAzureSpeechResponsesFromBifrost pins the Azure shapes rendered for results Azure AI Speech
+// did not produce, such as an alias that sends the request to Whisper.
+func TestToAzureSpeechResponsesFromBifrost(t *testing.T) {
+	t.Parallel()
+	response := &schemas.BifrostTranscriptionResponse{
+		Text:     "Hello there. General Kenobi.",
+		Duration: new(4.2),
+		Language: new("en"),
+		Segments: []schemas.TranscriptionSegment{{Start: 0.1, End: 1.4, Text: "Hello there."}, {Start: 2.0, End: 3.5, Text: "General Kenobi."}},
+		Words:    []schemas.TranscriptionWord{{Word: "Hello", Start: 0.1, End: 0.6}, {Word: "there.", Start: 0.6, End: 1.4}, {Word: "General", Start: 2.0, End: 2.7}},
+	}
+	got, _ := sonic.Marshal(ToAzureSpeechTranscriptionResponse(response))
+	want := `{"durationMilliseconds":4200,"combinedPhrases":[{"text":"Hello there. General Kenobi."}],"phrases":[{"offsetMilliseconds":100,"durationMilliseconds":1300,"text":"Hello there.","words":[{"text":"Hello","offsetMilliseconds":100,"durationMilliseconds":500},{"text":"there.","offsetMilliseconds":600,"durationMilliseconds":800}],"locale":"en"},{"offsetMilliseconds":2000,"durationMilliseconds":1500,"text":"General Kenobi.","words":[{"text":"General","offsetMilliseconds":2000,"durationMilliseconds":700}],"locale":"en"}]}`
+	if string(got) != want {
+		t.Errorf("fast transcription shape = %s\nwant %s", got, want)
+	}
+
+	diarized := &schemas.BifrostTranscriptionResponse{Text: "Hi.", DiarizedSegments: []schemas.TranscriptionDiarizedSegment{{Start: 0, End: 1, Text: "Hi.", Speaker: "2"}, {Start: 1, End: 2, Text: "Yo.", Speaker: "A"}}}
+	phrases := ToAzureSpeechTranscriptionResponse(diarized).Phrases
+	if len(phrases) != 2 || phrases[0].Speaker == nil || *phrases[0].Speaker != 2 || phrases[1].Speaker != nil {
+		t.Errorf("diarized phrases = %+v, want speaker 2 then none", phrases)
+	}
+
+	got, _ = sonic.Marshal(ToAzureSpeechShortAudioResponse(response))
+	want = `{"RecognitionStatus":"Success","Offset":1000000,"Duration":34000000,"DisplayText":"Hello there. General Kenobi.","NBest":[{"Display":"Hello there. General Kenobi."}]}`
+	if string(got) != want {
+		t.Errorf("short audio shape = %s\nwant %s", got, want)
+	}
+}
+
+func TestToAzureSpeechError(t *testing.T) {
+	t.Parallel()
+	got, _ := sonic.Marshal(ToAzureSpeechError(&schemas.BifrostError{Error: &schemas.ErrorField{Message: "budget exceeded", Type: new("budget_exceeded")}}))
+	if string(got) != `{"code":"budget_exceeded","message":"budget exceeded"}` {
+		t.Errorf("error = %s", got)
 	}
 }
 

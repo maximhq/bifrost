@@ -176,6 +176,14 @@
           "    } else if (typeof j.text === 'string' && !j.choices && !j.candidates && !j.output) {",
           "        shape = 'audio-transcription';",
           "        hasContent = j.text.length > 0;",
+          "    } else if (Array.isArray(j.combinedPhrases)) {",
+          "        shape = 'azure-fast-transcription';",
+          "        // Azure AI Speech fast transcription (/azure/speechtotext/...) carries its text in combinedPhrases, not text.",
+          "        hasContent = j.combinedPhrases.some(function (phrase) { return phrase && typeof phrase.text === 'string' && phrase.text.length > 0; });",
+          "    } else if (typeof j.RecognitionStatus === 'string') {",
+          "        shape = 'azure-short-audio';",
+          "        // Azure AI Speech short audio recognition (/azure/.../speech/recognition/...) carries its text in DisplayText.",
+          "        hasContent = typeof j.DisplayText === 'string' && j.DisplayText.length > 0;",
           "    } else if (__u.indexOf('/api/session/is-auth-enabled') !== -1 && typeof j.inference_auth_enforced === 'boolean') {",
           "        shape = 'session-auth-status';",
           "        hasContent = typeof j.is_auth_enabled === 'boolean';",
@@ -284426,7 +284434,7 @@
     },
     {
       "name": "270. Azure AI Speech: SSML text to speech and fast transcription through use_speech_endpoints aliases (azure speech)",
-      "description": "Pins F-19: Azure AI Speech behind the azure provider. An alias with use_speech_endpoints leaves the Azure OpenAI audio routes; the shared Azure key carries speech-neural, speech-mai-voice and speech-fast-transcription. Text to speech is sent as SSML to {endpoint}/tts/cognitiveservices/v1 with Ocp-Apim-Subscription-Key, X-Microsoft-OutputFormat and a User-Agent. The voice suffix comes from the model ID (MAI-Voice-2.1-Flash + en-US-Harper is en-US-Harper:MAI-Voice-2.1-Flash) and speed becomes <prosody rate>. Speech to text is sent to fast transcription (/speechtotext/transcriptions:transcribe) as an audio part plus a JSON definition, and usage is the duration rounded up to the second, which is what Azure meters. Without the flag every case reaches /openai/v1/audio/speech or /openai/deployments/<model>/... and fails. The cases cover native /v1 and the OpenAI drop-in routes, the SSE stream with its billable characters on the done event, the empty-body 400 that Azure answers to an unknown voice, and diarization requested through a multipart extra field.",
+      "description": "Pins F-19: Azure AI Speech behind the azure provider. An alias with use_speech_endpoints leaves the Azure OpenAI audio routes; the shared Azure key carries speech-neural, speech-mai-voice and speech-fast-transcription. Text to speech is sent as SSML to {endpoint}/tts/cognitiveservices/v1 with Ocp-Apim-Subscription-Key, X-Microsoft-OutputFormat and a User-Agent. The voice suffix comes from the model ID (MAI-Voice-2.1-Flash + en-US-Harper is en-US-Harper:MAI-Voice-2.1-Flash) and speed becomes <prosody rate>. Speech to text is sent to fast transcription (/speechtotext/transcriptions:transcribe) as an audio part plus a JSON definition, and usage is the duration rounded up to the second, which is what Azure meters. Without the flag every case reaches /openai/v1/audio/speech or /openai/deployments/<model>/... and fails. The cases cover native /v1 and the OpenAI drop-in routes, the SSE stream with its billable characters on the done event, the empty-body 400 that Azure answers to an unknown voice, and diarization requested through a multipart extra field. The /azure cases (270.11 to 270.17) pin the Azure-shaped REST routes: SSML text to speech on the regional and resource paths with the Content-Type of the requested format and the model taken from the voice suffix, the virtual key read from Ocp-Apim-Subscription-Key, fast transcription and short audio returning Azure's own JSON (the profile aliases neural, DragonHDLatestNeural, fast-transcription and short-audio carry use_speech_endpoints), Azure's short audio 400 reason, and an Azure OpenAI deployment served on the same /azure base URL.",
       "item": [
         {
           "name": "270.1 azure speech-neural alias native /v1/audio/speech returns SSML-synthesized audio (azure speech)",
@@ -284985,6 +284993,441 @@
               }
             }
           ]
+        },
+        {
+          "name": "270.11 azure /azure/cognitiveservices/v1 SSML text to speech with the virtual key in Ocp-Apim-Subscription-Key returns mp3 (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/ssml+xml"
+              },
+              {
+                "key": "X-Microsoft-OutputFormat",
+                "value": "audio-24khz-48kbitrate-mono-mp3"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"en-US\"><voice name=\"en-US-AvaMultilingualNeural\">Harness Azure route probe.</voice></speak>"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/cognitiveservices/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "cognitiveservices",
+                "v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SSML on the Azure regional path returns mp3 under the neural model', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.equal('audio/mpeg');",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model taken from the voice').to.equal('neural');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.12 azure /azure/tts/cognitiveservices/v1 HD voice returns riff wav and the model follows the voice suffix (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/ssml+xml"
+              },
+              {
+                "key": "X-Microsoft-OutputFormat",
+                "value": "riff-24khz-16bit-mono-pcm"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"en-US\"><voice name=\"en-US-Ava:DragonHDLatestNeural\">Harness Azure HD voice probe.</voice></speak>"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/tts/cognitiveservices/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "tts",
+                "cognitiveservices",
+                "v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the HD voice is synthesized as wav and billed to DragonHDLatestNeural', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.equal('audio/x-wav');",
+                  "  pm.expect(pm.response.stream.slice(0, 4).toString(), 'not a RIFF body').to.equal('RIFF');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model taken from the voice suffix').to.equal('DragonHDLatestNeural');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] 270.13 azure /azure/cognitiveservices/v1 unknown virtual key in Ocp-Apim-Subscription-Key is rejected (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/ssml+xml"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-harness-unknown-azure-vk"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"en-US\"><voice name=\"en-US-AvaMultilingualNeural\">Never synthesized.</voice></speak>"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/cognitiveservices/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "cognitiveservices",
+                "v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the header is read as a virtual key and the unknown one is refused', function () {",
+                  "  pm.expect(pm.response.code, 'want 401, got: ' + pm.response.text().slice(0, 300)).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.14 azure /azure/speechtotext/transcriptions:transcribe fast transcription keeps the Azure result shape with two locales and diarization (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "definition",
+                  "value": "{\"locales\":[\"en-US\",\"de-DE\"],\"diarization\":{\"enabled\":true,\"maxSpeakers\":2}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/speechtotext/transcriptions:transcribe?api-version=2024-11-15",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "speechtotext",
+                "transcriptions:transcribe"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2024-11-15"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('fast transcription on /azure answers in the Azure shape with diarized phrases', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.durationMilliseconds, 'durationMilliseconds: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.combinedPhrases && j.combinedPhrases[0] && j.combinedPhrases[0].text, 'combinedPhrases: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.phrases, 'phrases: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.phrases[0].speaker, 'diarization from the definition reached Azure: ' + body.slice(0, 300)).to.be.a('number');",
+                  "  pm.expect(j.text, 'Bifrost-shaped body instead of the Azure one').to.be.undefined;",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model from the definition').to.equal('fast-transcription');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.15 azure /azure/stt/speech/recognition/conversation/cognitiveservices/v1 short audio detailed returns the NBest result (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "audio/wav; codecs=audio/pcm; samplerate=16000"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/sample.wav"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/stt/speech/recognition/conversation/cognitiveservices/v1?language=en-US&format=detailed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "stt",
+                "speech",
+                "recognition",
+                "conversation",
+                "cognitiveservices",
+                "v1"
+              ],
+              "query": [
+                {
+                  "key": "language",
+                  "value": "en-US"
+                },
+                {
+                  "key": "format",
+                  "value": "detailed"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('short audio on /azure returns the detailed result under the short-audio model', function () {",
+                  "  pm.expect(pm.response.code, 'recognition failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.RecognitionStatus, 'status: ' + body.slice(0, 300)).to.equal('Success');",
+                  "  pm.expect(j.DisplayText, 'text: ' + body.slice(0, 300)).to.match(/quick brown fox/i);",
+                  "  pm.expect(j.NBest && j.NBest[0] && j.NBest[0].Lexical, 'detailed format: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model for the route').to.equal('short-audio');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 270.16 azure /azure/speech/recognition/dictation/cognitiveservices/v1 unknown language surfaces the Azure 400 reason (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "audio/wav; codecs=audio/pcm; samplerate=16000"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/sample.wav"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/speech/recognition/dictation/cognitiveservices/v1?language=xx-YY",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "speech",
+                "recognition",
+                "dictation",
+                "cognitiveservices",
+                "v1"
+              ],
+              "query": [
+                {
+                  "key": "language",
+                  "value": "xx-YY"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure rejects the language and the gateway keeps its reason', function () {",
+                  "  pm.expect(pm.response.code, 'want 400, got: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.json().message, 'message: ' + body.slice(0, 300)).to.include(\"Invalid 'language'\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.17 azure /azure/openai/deployments/gpt-4o-mini-tts/audio/speech serves Azure OpenAI on the resource base URL (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Harness Azure resource probe.\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/openai/deployments/gpt-4o-mini-tts/audio/speech?api-version=2025-04-01-preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "openai",
+                "deployments",
+                "gpt-4o-mini-tts",
+                "audio",
+                "speech"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2025-04-01-preview"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the Azure OpenAI deployment answers on the /azure base URL', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'provider').to.equal('azure');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.18 azure /azure/openai/files with no provider lists Azure files on the resource base URL (azure speech)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/azure/openai/files?api-version=2025-04-01-preview&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "openai",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2025-04-01-preview"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The /azure URL names an Azure resource, so a files call that names no provider and does",
+                  "// not come from the AzureOpenAI SDK still goes to Azure, not OpenAI.",
+                  "pm.test('the /azure base URL lists Azure files when no provider is named', function () {",
+                  "  pm.expect(pm.response.code, 'file list failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'provider').to.equal('azure');",
+                  "  pm.expect(pm.response.json().data, pm.response.text().slice(0, 300)).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -285102,6 +285545,148 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "[EXPECT-400] 271.3 azure /azure/voice-live/realtime plain GET reaches the Voice Live WebSocket handler with the api-key header (azure voice live)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/azure/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "voice-live",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2026-07-15"
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-realtime-vl"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the Azure Voice Live path is served by the realtime handler', function () {",
+                  "  pm.expect(pm.response.code, 'want the WebSocket handler 400, got: ' + body.slice(0, 200)).to.equal(400);",
+                  "  pm.expect(body, 'the dashboard page answered, so the path is not routed').to.not.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 271.4 azure /voice-live/realtime root path for the JavaScript Voice Live SDK with api-key in the query (azure voice live)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=sk-bf-test-key",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "voice-live",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2026-07-15"
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-realtime-vl"
+                },
+                {
+                  "key": "api-key",
+                  "value": "sk-bf-test-key"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the root Voice Live path the JavaScript SDK connects to is served', function () {",
+                  "  pm.expect(pm.response.code, 'want the WebSocket handler 400, got: ' + body.slice(0, 200)).to.equal(400);",
+                  "  pm.expect(body, 'the dashboard page answered, so the path is not routed').to.not.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 271.5 azure /azure/openai/realtime deployment path for the Azure OpenAI SDK (azure voice live)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/azure/openai/realtime?api-version=2025-04-01-preview&deployment=gpt-realtime",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "openai",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2025-04-01-preview"
+                },
+                {
+                  "key": "deployment",
+                  "value": "gpt-realtime"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the Azure OpenAI realtime path is served by the realtime handler', function () {",
+                  "  pm.expect(pm.response.code, 'want the WebSocket handler 400, got: ' + body.slice(0, 200)).to.equal(400);",
+                  "  pm.expect(body, 'the dashboard page answered, so the path is not routed').to.not.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
