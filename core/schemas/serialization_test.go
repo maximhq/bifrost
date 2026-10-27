@@ -2175,3 +2175,40 @@ func TestDeepCopyChatMessageHandlesNilAndEmptyCacheFields(t *testing.T) {
 		})
 	}
 }
+
+// NetworkConfig has custom MarshalJSON/UnmarshalJSON that go through alias structs. A field added
+// to the struct but not to both aliases is dropped without any error, which is how residency
+// would silently stop being read. Round-tripping proves both halves.
+func TestNetworkModelResidencySurvivesCustomMarshaling(t *testing.T) {
+	nc := NetworkConfig{
+		BaseURL: "http://192.0.2.10:8090",
+		ModelResidency: &ModelResidencyConfig{
+			Adapter:    ResidencyAdapterCustom,
+			Path:       "/internal/serving",
+			TimeoutMS:  1500,
+			CacheTTLMS: 250,
+			Fields:     &ResidencyFieldMap{Items: "data.models", ID: "name"},
+		},
+	}
+
+	data, err := json.Marshal(&nc)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "model_residency")
+
+	var back NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &back))
+	require.NotNil(t, back.ModelResidency, "model_residency did not survive the marshal round trip")
+	assert.Equal(t, ResidencyAdapterCustom, back.ModelResidency.Adapter)
+	assert.Equal(t, "/internal/serving", back.ModelResidency.Path)
+	assert.Equal(t, 1500, back.ModelResidency.TimeoutMS)
+	require.NotNil(t, back.ModelResidency.Fields)
+	assert.Equal(t, "data.models", back.ModelResidency.Fields.Items)
+}
+
+// Providers that do not use virtual models must serialize exactly as before, or every provider's
+// config hash changes on upgrade and the first boot re-syncs the whole file.
+func TestNetworkConfigOmitsUnsetModelResidency(t *testing.T) {
+	data, err := json.Marshal(&NetworkConfig{BaseURL: "http://192.0.2.10:8090"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "model_residency")
+}
