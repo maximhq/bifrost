@@ -3166,9 +3166,11 @@ export function LogDetailView({
 								</div>
 								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
 									{displayErrorMessage ??
-										(statusCode
-											? `The provider returned an error (HTTP ${statusCode}) without a message.`
-											: "The provider returned an error without a message.")}
+										(log.content_hidden
+											? `The error message was not stored because content logging is disabled for this request${statusCode ? ` (HTTP ${statusCode})` : ""}.`
+											: statusCode
+												? `The provider returned an error (HTTP ${statusCode}) without a message.`
+												: "The provider returned an error without a message.")}
 								</div>
 								{log.error_details?.error.error != null ? (
 									<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
