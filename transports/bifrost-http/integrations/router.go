@@ -559,6 +559,7 @@ type PassthroughConfig struct {
 	AllowedRoutes []PassthroughRoute
 	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
 	ModelFreePath func(method, path string) bool // optional: requests that run no model, so model allowlists are skipped
+	Ungoverned    func() bool                    // optional: when true, a signed-in user needs no permit and no allowlist, limit or charge applies
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -3726,6 +3727,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
 	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	}
+	if cfg.Ungoverned != nil && cfg.Ungoverned() {
+		markPassthroughUngoverned(bifrostCtx)
 	}
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 

@@ -108,6 +108,16 @@ func checkPassthroughPathRules(p string) error {
 	return nil
 }
 
+// markPassthroughUngoverned admits a signed-in user who holds no permit and skips allowlists, limits
+// and charging for every caller. A virtual key that resolves to nothing and a user whose every access
+// profile has lapsed are still refused.
+func markPassthroughUngoverned(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeyAdmitUngrantedUser, true)
+	ctx.SetValue(schemas.BifrostContextKeySkipProviderCheck, true)
+	ctx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+}
+
 // NewPassthroughRouter creates a passthrough-only router for any prefix/provider combo.
 func NewPassthroughRouter(
 	client *bifrost.Bifrost,
@@ -163,6 +173,10 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		// The model list names and runs no model; each responses turn is still checked against the model allowlist.
 		ModelFreePath: func(method, path string) bool {
 			return method == fasthttp.MethodGet && path == "/backend-api/codex/models"
+		},
+		// The caller's ChatGPT plan pays and enforces its own usage limits, so governance stays out unless client.govern_chatgpt_sign_in is on.
+		Ungoverned: func() bool {
+			return !handlerStore.ShouldGovernChatGPTSignIn()
 		},
 		StripPrefix: []string{
 			"/chatgpt_passthrough",
