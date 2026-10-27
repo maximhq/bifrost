@@ -2867,7 +2867,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
 		SendJSON(ctx, map[string]any{
 			"status":          "pending_oauth",
-			"message":         "Test OAuth configuration: please authorize to verify the setup. This login is only used to verify connectivity and discover available tools — it will not be saved.",
+			"message":         "Test OAuth configuration: please authorize to verify the setup. This login verifies connectivity and discovers the available tools, and is then kept as the client's admin credential for periodic tool discovery; it is never used for a user's tool calls.",
 			"oauth_config_id": flowInitiation.OauthConfigID,
 			"authorize_url":   flowInitiation.AuthorizeURL,
 			"expires_at":      flowInitiation.ExpiresAt,

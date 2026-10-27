@@ -4473,7 +4473,7 @@ const NO_FLOW = "OAuth flow not found";
 const AUTH27 = folder("AUTH-27 per_user_oauth create with admin verification", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth27")}, created and verified by consenting as admin.`, [
   ...puConfig("AUTH-27", false),
   ...asServer("AUTH-27", "auth27"),
-  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration"), A.skip(A.custom("the message does not say the login \"will not be saved\"", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.not.include('will not be saved');"]))]),
+  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration"), A.custom("the message does not say the login \"will not be saved\"", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.not.include('will not be saved');"]), A.custom("the message says the login is kept as the admin credential for periodic tool discovery and never used for a user's tool calls", ["var msg = pm.response.json().message;", "pm.expect(msg, 'body: ' + pm.response.text()).to.include(\"kept as the client's admin credential for periodic tool discovery\");", "pm.expect(msg, 'body: ' + pm.response.text()).to.include(\"never used for a user's tool calls\");"])]),
   consentAs("AUTH-27", "consent as admin", "auth27", "admin"),
   followCallback("AUTH-27", "follow the callback", "auth27", callbackSuccess()),
   completeOAuth("AUTH-27", "complete", "auth27", [A.status(200), messageStarts("OAuth configuration verified successfully. 2 tools discovered")]),
