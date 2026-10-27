@@ -63,6 +63,8 @@ describe("genericUsagePreviewSampleSchema path", () => {
 			expect(result.success, path).toBe(false);
 			expect(JSON.stringify(result.error?.issues), path).toContain(message);
 		}
+	});
+});
 
 describe("isGenericProvider", () => {
 	it("is true only for a custom provider whose base format is generic", () => {
