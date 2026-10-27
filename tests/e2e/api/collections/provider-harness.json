@@ -284425,11 +284425,11 @@
       ]
     },
     {
-      "name": "270. Azure AI Speech: SSML text to speech and fast transcription on speech/ models (azure speech)",
-      "description": "Pins F-19: Azure AI Speech behind the azure provider. A model named speech/<model> leaves the Azure OpenAI audio routes. Text to speech is sent as SSML to {endpoint}/tts/cognitiveservices/v1 with Ocp-Apim-Subscription-Key, X-Microsoft-OutputFormat and a User-Agent. The voice suffix comes from the model (speech/MAI-Voice-2.1-Flash + en-US-Harper is en-US-Harper:MAI-Voice-2.1-Flash) and speed becomes <prosody rate>. Speech to text is sent to fast transcription (/speechtotext/transcriptions:transcribe) as an audio part plus a JSON definition, and usage is the duration rounded up to the second, which is what Azure meters. Before the change every case reached /openai/v1/audio/speech or /openai/deployments/speech/... and failed. The cases cover native /v1 and the OpenAI drop-in routes, the SSE stream with its billable characters on the done event, the empty-body 400 that Azure answers to an unknown voice, and diarization requested through a multipart extra field.",
+      "name": "270. Azure AI Speech: SSML text to speech and fast transcription through use_speech_endpoints aliases (azure speech)",
+      "description": "Pins F-19: Azure AI Speech behind the azure provider. An alias with use_speech_endpoints leaves the Azure OpenAI audio routes; the shared Azure key carries speech-neural, speech-mai-voice and speech-fast-transcription. Text to speech is sent as SSML to {endpoint}/tts/cognitiveservices/v1 with Ocp-Apim-Subscription-Key, X-Microsoft-OutputFormat and a User-Agent. The voice suffix comes from the model ID (MAI-Voice-2.1-Flash + en-US-Harper is en-US-Harper:MAI-Voice-2.1-Flash) and speed becomes <prosody rate>. Speech to text is sent to fast transcription (/speechtotext/transcriptions:transcribe) as an audio part plus a JSON definition, and usage is the duration rounded up to the second, which is what Azure meters. Without the flag every case reaches /openai/v1/audio/speech or /openai/deployments/<model>/... and fails. The cases cover native /v1 and the OpenAI drop-in routes, the SSE stream with its billable characters on the done event, the empty-body 400 that Azure answers to an unknown voice, and diarization requested through a multipart extra field.",
       "item": [
         {
-          "name": "270.1 azure speech/neural native /v1/audio/speech returns SSML-synthesized audio (azure speech)",
+          "name": "270.1 azure speech-neural alias native /v1/audio/speech returns SSML-synthesized audio (azure speech)",
           "request": {
             "method": "POST",
             "header": [
@@ -284440,7 +284440,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"Harness Azure Speech probe.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"response_format\": \"mp3\"\n}"
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"Harness Azure Speech probe.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"response_format\": \"mp3\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/audio/speech",
@@ -284472,7 +284472,7 @@
           ]
         },
         {
-          "name": "270.2 azure speech/MAI-Voice-2.1-Flash takes the voice suffix from the model and speed as prosody (azure speech)",
+          "name": "270.2 azure speech-mai-voice alias takes the voice suffix from the model and speed as prosody (azure speech)",
           "request": {
             "method": "POST",
             "header": [
@@ -284483,7 +284483,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/speech/MAI-Voice-2.1-Flash\",\n  \"input\": \"Harness MAI voice probe.\",\n  \"voice\": \"en-US-Harper\",\n  \"speed\": 1.2,\n  \"response_format\": \"opus\"\n}"
+              "raw": "{\n  \"model\": \"azure/speech-mai-voice\",\n  \"input\": \"Harness MAI voice probe.\",\n  \"voice\": \"en-US-Harper\",\n  \"speed\": 1.2,\n  \"response_format\": \"opus\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/audio/speech",
@@ -284515,7 +284515,7 @@
           ]
         },
         {
-          "name": "270.3 azure speech/neural OpenAI drop-in /openai/v1/audio/speech returns audio (azure speech)",
+          "name": "270.3 azure speech-neural alias OpenAI drop-in /openai/v1/audio/speech returns audio (azure speech)",
           "request": {
             "method": "POST",
             "header": [
@@ -284526,7 +284526,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"Harness drop-in probe.\",\n  \"voice\": \"en-US-GuyNeural\"\n}"
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"Harness drop-in probe.\",\n  \"voice\": \"en-US-GuyNeural\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/openai/v1/audio/speech",
@@ -284559,7 +284559,7 @@
           ]
         },
         {
-          "name": "270.4 azure speech/neural stream_format sse streams audio deltas and a done event with billable characters (azure speech)",
+          "name": "270.4 azure speech-neural alias stream_format sse streams audio deltas and a done event with billable characters (azure speech)",
           "request": {
             "method": "POST",
             "header": [
@@ -284570,7 +284570,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"Harness streaming probe for Azure Speech.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"stream_format\": \"sse\"\n}"
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"Harness streaming probe for Azure Speech.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"stream_format\": \"sse\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/audio/speech",
@@ -284605,7 +284605,7 @@
           ]
         },
         {
-          "name": "[EXPECT-400] 270.5 azure speech/neural unknown voice surfaces Azure's empty-body 400 with a hint (azure speech)",
+          "name": "[EXPECT-400] 270.5 azure speech-neural alias unknown voice surfaces Azure's empty-body 400 with a hint (azure speech)",
           "request": {
             "method": "POST",
             "header": [
@@ -284616,7 +284616,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"x\",\n  \"voice\": \"en-US-NoSuchVoiceNeural\"\n}"
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"x\",\n  \"voice\": \"en-US-NoSuchVoiceNeural\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/audio/speech",
@@ -284647,7 +284647,7 @@
           ]
         },
         {
-          "name": "270.6 azure speech/fast-transcription native /v1/audio/transcriptions returns text and duration usage (azure speech)",
+          "name": "270.6 azure speech-fast-transcription alias native /v1/audio/transcriptions returns text and duration usage (azure speech)",
           "request": {
             "method": "POST",
             "body": {
@@ -284655,7 +284655,7 @@
               "formdata": [
                 {
                   "key": "model",
-                  "value": "azure/speech/fast-transcription",
+                  "value": "azure/speech-fast-transcription",
                   "type": "text"
                 },
                 {
@@ -284707,7 +284707,7 @@
           ]
         },
         {
-          "name": "270.7 azure speech/fast-transcription diarization extra form field returns speaker-labelled segments (azure speech)",
+          "name": "270.7 azure speech-fast-transcription alias diarization extra form field returns speaker-labelled segments (azure speech)",
           "request": {
             "method": "POST",
             "body": {
@@ -284715,7 +284715,7 @@
               "formdata": [
                 {
                   "key": "model",
-                  "value": "azure/speech/fast-transcription",
+                  "value": "azure/speech-fast-transcription",
                   "type": "text"
                 },
                 {
@@ -284771,7 +284771,7 @@
           ]
         },
         {
-          "name": "270.8 azure speech/fast-transcription OpenAI drop-in /openai/v1/audio/transcriptions returns text (azure speech)",
+          "name": "270.8 azure speech-fast-transcription alias OpenAI drop-in /openai/v1/audio/transcriptions returns text (azure speech)",
           "request": {
             "method": "POST",
             "body": {
@@ -284779,7 +284779,7 @@
               "formdata": [
                 {
                   "key": "model",
-                  "value": "azure/speech/fast-transcription",
+                  "value": "azure/speech-fast-transcription",
                   "type": "text"
                 },
                 {

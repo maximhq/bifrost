@@ -476,6 +476,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `client_secret` | No       | -                                                  | Entra ID client secret (Service Principal auth) |
 | `tenant_id`     | No       | -                                                  | Entra ID tenant ID (Service Principal auth)     |
 | `scopes`        | No       | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests                 |
+| `use_speech_endpoints` | No | `false` | Send speech and transcription requests to [Azure AI Speech](#11-azure-ai-speech) |
 
 **Key-level fields:**
 
@@ -627,6 +628,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 - `client_secret` - Azure Entra ID client secret (optional, for Service Principal auth)
 - `tenant_id` - Azure Entra ID tenant ID (optional, for Service Principal auth)
 - `scopes` - OAuth scopes for token requests (default: `["https://cognitiveservices.azure.com/.default"]`)
+- `use_speech_endpoints` - Send speech and transcription requests to Azure AI Speech (optional, default `false`; an alias can override it)
 - `aliases` - Map of model names to Azure deployment IDs (optional, set at key level)
 - `allowed_models` - List of allowed models to use from this key (optional)
 
@@ -1071,18 +1073,35 @@ A decision is priced from the model catalog: at the model's decision rates where
 
 # 11. Azure AI Speech
 
-Models named `speech/<model>` are served by [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) instead of an Azure OpenAI deployment, on the same key and endpoint. The endpoint must be a Foundry (AI Services) resource or a Speech resource with a custom domain. Both `*.openai.azure.com` and `*.cognitiveservices.azure.com` work.
+`use_speech_endpoints` sends speech and transcription requests to [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) instead of an Azure OpenAI deployment, on the same key and endpoint. Set it in `azure_key_config` to route every audio request on the key, or on an alias to route one model. An alias value wins over the key's in both directions. Other requests on the key, such as chat, still go to Azure OpenAI.
 
-An API key is sent as `Ocp-Apim-Subscription-Key`. Entra ID and managed identity send a bearer token, as for every other Azure call. A key with an explicit `models` list must list the `speech/` models it serves.
+The endpoint must be a Foundry (AI Services) resource or a Speech resource with a custom domain. Both `*.openai.azure.com` and `*.cognitiveservices.azure.com` work.
+
+An API key is sent as `Ocp-Apim-Subscription-Key`. Entra ID and managed identity send a bearer token, as for every other Azure call. A key with an explicit `models` list must list the alias names it serves.
+
+```json
+{
+  "name": "azure-key",
+  "value": "env.AZURE_API_KEY",
+  "models": ["*"],
+  "azure_key_config": { "endpoint": "env.AZURE_ENDPOINT" },
+  "aliases": {
+    "mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
+    "fast-stt": { "model_id": "fast-transcription", "use_speech_endpoints": true }
+  }
+}
+```
+
+The model ID, which is the alias `model_id` or the requested model on a key with `use_speech_endpoints`, picks the voice or transcription mode.
 
 ## Text to speech
 
 **Endpoint**: `POST /v1/audio/speech`, sent to `{endpoint}/tts/cognitiveservices/v1` as SSML
 
-| Model | Voice sent to Azure |
+| Model ID | Voice sent to Azure |
 | --- | --- |
-| `speech/neural` | `voice` as is, such as `en-US-JennyNeural` |
-| `speech/<suffix>`, such as `speech/DragonHDLatestNeural` or `speech/MAI-Voice-2.1-Flash` | `{voice}:{suffix}`, such as `en-US-Harper:MAI-Voice-2.1-Flash` |
+| `neural` | `voice` as is, such as `en-US-JennyNeural` |
+| A voice suffix, such as `DragonHDLatestNeural` or `MAI-Voice-2.1-Flash` | `{voice}:{suffix}`, such as `en-US-Harper:MAI-Voice-2.1-Flash` |
 
 A voice that already contains `:` is sent as is. OpenAI voice names such as `alloy` are not Azure voices and get a `400`.
 
@@ -1101,7 +1120,7 @@ A voice that already contains `:` is sent as is. OpenAI voice names such as `all
 curl http://localhost:8080/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "azure/speech/MAI-Voice-2.1-Flash",
+    "model": "azure/mai-voice",
     "voice": "en-US-Harper",
     "input": "Your order shipped.",
     "speed": 1.2
@@ -1112,19 +1131,19 @@ curl http://localhost:8080/v1/audio/speech \
 
 **Endpoint**: `POST /v1/audio/transcriptions`, sent to `{endpoint}/speechtotext/transcriptions:transcribe?api-version=2025-10-15` as an `audio` part and a JSON `definition`
 
-| Model | Azure mode |
+| Model ID | Azure mode |
 | --- | --- |
-| `speech/fast-transcription` | Fast transcription |
-| `speech/llm-speech` | LLM Speech (`enhancedMode.task`) |
-| Any other `speech/<model>`, such as `speech/MAI-Transcribe-2` | `enhancedMode.model` set to `<model>` |
+| `fast-transcription` | Fast transcription |
+| `llm-speech` | LLM Speech (`enhancedMode.task`) |
+| Any other, such as `MAI-Transcribe-2` | `enhancedMode.model` set to the model ID |
 
 LLM Speech and MAI-Transcribe are available only in [some regions](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/regions?tabs=llmspeech); other regions answer `400` with `Enhanced mode is currently not supported yet.`
 
 | Field | Azure definition |
 | --- | --- |
-| `language` | `locales`. `speech/fast-transcription` needs a full locale such as `en-US`; a bare code such as `en` is dropped and Azure detects the language. |
-| `prompt` | `enhancedMode.prompt` on `speech/llm-speech`; dropped otherwise |
-| `target_language` | `speech/llm-speech` translates into it |
+| `language` | `locales`. `fast-transcription` needs a full locale such as `en-US`; a bare code such as `en` is dropped and Azure detects the language. |
+| `prompt` | `enhancedMode.prompt` on `llm-speech`; dropped otherwise |
+| `target_language` | `llm-speech` translates into it |
 | `response_format: "verbose_json"` | `modelOptions.timestamps: "word"` on MAI-Transcribe |
 | `response_format: "diarized_json"`, `diarization`, `max_speakers` | `diarization` |
 | `channels`, `phrases` | `channels`, `phraseList.phrases`. Pass a comma-separated value in a multipart form. |
@@ -1134,13 +1153,13 @@ The response carries `text`, `duration`, `language`, `segments` (speaker-labelle
 
 ```bash
 curl http://localhost:8080/v1/audio/transcriptions \
-  -F model=azure/speech/fast-transcription \
+  -F model=azure/fast-stt \
   -F file=@call.wav \
   -F language=en-US \
   -F diarization=true
 ```
 
-Until the model catalog lists rates for the `speech/` models, Bifrost reports their cost as $0 while Azure still bills the usage; add a [pricing override](/providers/custom-pricing) to track it.
+Until the model catalog lists rates for these model IDs, Bifrost reports their cost as $0 while Azure still bills the usage; add a [pricing override](/providers/custom-pricing) to track it.
 
 ---
 

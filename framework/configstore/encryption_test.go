@@ -879,9 +879,10 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	// save it to DB, and verify the original config structs are not mutated by BeforeSave
 	// (encryption uses value-copies so shared pointers are never corrupted).
 	azureCfg := &schemas.AzureKeyConfig{
-		Endpoint: *schemas.NewSecretVar("https://myresource.openai.azure.com"),
-		ClientID: schemas.NewSecretVar("my-azure-client-id"),
-		TenantID: schemas.NewSecretVar("my-azure-tenant-id"),
+		Endpoint:           *schemas.NewSecretVar("https://myresource.openai.azure.com"),
+		ClientID:           schemas.NewSecretVar("my-azure-client-id"),
+		TenantID:           schemas.NewSecretVar("my-azure-tenant-id"),
+		UseSpeechEndpoints: true,
 	}
 	azureCfg.ClientSecret = schemas.NewSecretVar("azure-client-secret")
 
@@ -962,6 +963,8 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	assert.Equal(t, "azure-client-secret", found.AzureKeyConfig.ClientSecret.GetValue())
 	assert.Equal(t, "my-azure-client-id", found.AzureKeyConfig.ClientID.GetValue())
 	assert.Equal(t, "my-azure-tenant-id", found.AzureKeyConfig.TenantID.GetValue())
+	assert.True(t, found.AzureKeyConfig.UseSpeechEndpoints,
+		"UseSpeechEndpoints must survive the save/reload round-trip")
 	require.NotNil(t, found.VertexKeyConfig)
 	assert.Equal(t, "vertex-creds", found.VertexKeyConfig.AuthCredentials.GetValue())
 	assert.Equal(t, "my-project", found.VertexKeyConfig.ProjectID.GetValue())

@@ -295,20 +295,35 @@ func TestParseAzureSpeechError(t *testing.T) {
 	}
 }
 
-// TestAzureSpeechModelFamily pins the routing gate: only "speech/" models leave the Azure OpenAI
-// audio routes, and an alias whose model name is a speech model routes the same way.
-func TestAzureSpeechModelFamily(t *testing.T) {
+// TestAzureUseSpeechEndpoints pins the routing gate: use_speech_endpoints on the key sends audio to
+// Azure Speech, and a per-alias value wins over the key's in both directions.
+func TestAzureUseSpeechEndpoints(t *testing.T) {
 	t.Parallel()
-	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-	for model, want := range map[string]bool{"speech/neural": true, "speech/fast-transcription": true, "gpt-4o-mini-tts": false, "whisper": false, "my-speech/x": false} {
-		if got := schemas.IsAzureSpeechModelFamily(ctx, model); got != want {
-			t.Errorf("IsAzureSpeechModelFamily(%q) = %v, want %v", model, got, want)
-		}
+	keyOn := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{UseSpeechEndpoints: true}}
+	keyOff := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{}}
+	aliasCtx := func(alias *schemas.AliasConfig) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "tts", Config: alias})
+		return ctx
 	}
-	aliasCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
-	aliasCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "tts", Config: &schemas.AliasConfig{ModelID: "speech/neural", ModelName: new("speech/neural")}})
-	if !schemas.IsAzureSpeechModelFamily(aliasCtx, "tts") {
-		t.Error("an alias whose model name is a speech model must route to Azure Speech")
+	cases := []struct {
+		name string
+		ctx  *schemas.BifrostContext
+		key  schemas.Key
+		want bool
+	}{
+		{"key on", nil, keyOn, true},
+		{"key off", nil, keyOff, false},
+		{"no azure key config", nil, schemas.Key{}, false},
+		{"alias on over key off", aliasCtx(&schemas.AliasConfig{ModelID: "neural", AzureAliasCfg: &schemas.AzureAliasCfg{UseSpeechEndpoints: new(true)}}), keyOff, true},
+		{"alias off over key on", aliasCtx(&schemas.AliasConfig{ModelID: "gpt-4o-mini-tts", AzureAliasCfg: &schemas.AzureAliasCfg{UseSpeechEndpoints: new(false)}}), keyOn, false},
+		{"alias without the field keeps key on", aliasCtx(&schemas.AliasConfig{ModelID: "neural", AzureAliasCfg: &schemas.AzureAliasCfg{APIVersion: new("v1")}}), keyOn, true},
+		{"alias without azure config keeps key off", aliasCtx(&schemas.AliasConfig{ModelID: "neural"}), keyOff, false},
+	}
+	for _, tc := range cases {
+		if got := useSpeechEndpoints(tc.ctx, tc.key); got != tc.want {
+			t.Errorf("%s: useSpeechEndpoints = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -393,7 +408,7 @@ func newAzureSpeechTestKey(endpoint string) schemas.Key {
 	return schemas.Key{
 		Value:          *schemas.NewSecretVar("speech-key"),
 		Models:         []string{"*"},
-		AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(endpoint)},
+		AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(endpoint), UseSpeechEndpoints: true},
 	}
 }
 
@@ -401,7 +416,7 @@ func TestAzureSpeechSynthesisWire(t *testing.T) {
 	t.Parallel()
 	request := &schemas.BifrostSpeechRequest{
 		Provider: schemas.Azure,
-		Model:    "speech/MAI-Voice-2.1-Flash",
+		Model:    "MAI-Voice-2.1-Flash",
 		Input:    &schemas.SpeechInput{Input: "Your order shipped."},
 		Params: &schemas.SpeechParameters{
 			VoiceConfig:    &schemas.SpeechVoiceInput{Voice: new("en-US-Harper")},
@@ -505,7 +520,23 @@ func TestAzureSpeechSynthesisWire(t *testing.T) {
 		}
 	})
 
-	t.Run("NonSpeechModelKeepsOpenAIRoute", func(t *testing.T) {
+	t.Run("AliasOverrideRoutesToSpeech", func(t *testing.T) {
+		t.Parallel()
+		upstream := newAzureSpeechUpstream(t)
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "mai-voice", Config: &schemas.AliasConfig{
+			ModelID:       "MAI-Voice-2.1-Flash",
+			AzureAliasCfg: &schemas.AzureAliasCfg{UseSpeechEndpoints: new(true)},
+		}})
+		key := newAzureSpeechTestKey(upstream.URL)
+		key.AzureKeyConfig.UseSpeechEndpoints = false
+		if _, bifrostErr := newAzureSpeechTestProvider(t).Speech(ctx, key, request); bifrostErr != nil {
+			t.Fatalf("Speech: %+v", bifrostErr.Error)
+		}
+		assertWire(t, upstream)
+	})
+
+	t.Run("KeyWithoutSpeechEndpointsKeepsOpenAIRoute", func(t *testing.T) {
 		t.Parallel()
 		upstream := newAzureSpeechUpstream(t)
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
@@ -515,7 +546,9 @@ func TestAzureSpeechSynthesisWire(t *testing.T) {
 			Input:    &schemas.SpeechInput{Input: "Hi"},
 			Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: new("alloy")}},
 		}
-		if _, bifrostErr := newAzureSpeechTestProvider(t).Speech(ctx, newAzureSpeechTestKey(upstream.URL), openAIRequest); bifrostErr != nil {
+		key := newAzureSpeechTestKey(upstream.URL)
+		key.AzureKeyConfig.UseSpeechEndpoints = false
+		if _, bifrostErr := newAzureSpeechTestProvider(t).Speech(ctx, key, openAIRequest); bifrostErr != nil {
 			t.Fatalf("Speech: %+v", bifrostErr.Error)
 		}
 		if path, _, headers, _ := upstream.last(); path != "/openai/v1/audio/speech" || headers.Get("api-key") != "speech-key" {
@@ -530,7 +563,7 @@ func TestAzureSpeechTranscriptionWire(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	request := &schemas.BifrostTranscriptionRequest{
 		Provider: schemas.Azure,
-		Model:    "speech/fast-transcription",
+		Model:    "fast-transcription",
 		Input:    &schemas.TranscriptionInput{File: []byte("RIFF-audio"), Filename: "call.wav"},
 		Params: &schemas.TranscriptionParameters{
 			Language:    new("en-US"),
@@ -598,12 +631,13 @@ func TestAzureSpeechTranscriptionDiarizedNoSpeech(t *testing.T) {
 }
 
 // BenchmarkAzureSpeechModelGate is the only cost the feature adds to Azure audio requests that
-// are not Azure Speech: one alias lookup and a prefix check.
+// are not Azure Speech: one alias lookup and a key flag read.
 func BenchmarkAzureSpeechModelGate(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	key := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{}}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = schemas.IsAzureSpeechModelFamily(ctx, "gpt-4o-mini-tts")
+		_ = useSpeechEndpoints(ctx, key)
 	}
 }
 

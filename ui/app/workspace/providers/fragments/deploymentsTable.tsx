@@ -204,6 +204,14 @@ function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 					disabled={disabled}
 				/>
 			</FieldRow>
+			<TriStateOverrideRow
+				label="Use Azure Speech endpoints"
+				hint="Send this deployment's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
+				value={config.use_speech_endpoints}
+				onChange={(next) => onChange({ use_speech_endpoints: next })}
+				disabled={disabled}
+				testId="deployment-azure-use-speech-endpoints"
+			/>
 		</div>
 	);
 }

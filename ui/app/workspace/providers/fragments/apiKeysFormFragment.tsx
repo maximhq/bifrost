@@ -652,6 +652,27 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							/>
 						</>
 					)}
+					<FormField
+						control={control}
+						name="key.azure_key_config.use_speech_endpoints"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Use Azure Speech endpoints</FormLabel>
+									<FormDescription>
+										Send speech and transcription requests to Azure AI Speech instead of Azure OpenAI. A deployment can override this.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch
+										data-testid="apikey-azure-use-speech-endpoints-switch"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
