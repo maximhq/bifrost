@@ -196,11 +196,13 @@ func installFakePricing() error {
 	if err := removeFakePricing(); err != nil {
 		return err
 	}
-	overrides := []map[string]any{
-		{"name": "live-e2e voice", "scope_kind": "global", "match_type": "exact", "pattern": voiceModel,
-			"request_types": []string{"live"}, "patch": map[string]any{"input_cost_per_second": fakeVoiceCostPerSecond}},
+	// Overrides match the wire model, so the azure deployments are priced by their own names.
+	overrides := []map[string]any{}
+	for _, model := range []string{voiceModel, azureVoiceDeployment} {
+		overrides = append(overrides, map[string]any{"name": "live-e2e voice " + model, "scope_kind": "global", "match_type": "exact", "pattern": model,
+			"request_types": []string{"live"}, "patch": map[string]any{"input_cost_per_second": fakeVoiceCostPerSecond}})
 	}
-	for _, model := range []string{backendModel, backendModel2} {
+	for _, model := range []string{backendModel, backendModel2, azureBackendDeployment} {
 		overrides = append(overrides, map[string]any{"name": "live-e2e backend " + model, "scope_kind": "global", "match_type": "exact", "pattern": model,
 			"request_types": []string{"responses"}, "patch": map[string]any{"input_cost_per_token": fakeInputCostPerToken, "output_cost_per_token": fakeOutputCostPerToken}})
 	}
