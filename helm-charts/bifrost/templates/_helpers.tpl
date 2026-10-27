@@ -319,6 +319,40 @@ false
 {{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
 {{- $_ := set $config "proxy_config" $proxy }}
 {{- end }}
+{{- /* Warp: numbers render whenever set, since an explicit 0 means the default (or a reset) */ -}}
+{{- with .Values.bifrost.warp }}
+{{- $warp := dict }}
+{{- if hasKey . "enabled" }}{{- $_ := set $warp "enabled" .enabled }}{{- end }}
+{{- if .provider }}{{- $_ := set $warp "provider" .provider }}{{- end }}
+{{- if .model }}{{- $_ := set $warp "model" .model }}{{- end }}
+{{- if .apiKeyId }}{{- $_ := set $warp "api_key_id" .apiKeyId }}{{- end }}
+{{- if hasKey . "additionalModels" }}
+{{- $models := list }}
+{{- range .additionalModels }}
+{{- $m := dict "provider" .provider "model" .model }}
+{{- if .apiKeyId }}{{- $_ := set $m "api_key_id" .apiKeyId }}{{- end }}
+{{- $models = append $models $m }}
+{{- end }}
+{{- $_ := set $warp "additional_models" $models }}
+{{- end }}
+{{- if hasKey . "maxIterations" }}{{- $_ := set $warp "max_iterations" (.maxIterations | int) }}{{- end }}
+{{- if hasKey . "requestTimeoutSeconds" }}{{- $_ := set $warp "request_timeout_seconds" (.requestTimeoutSeconds | int) }}{{- end }}
+{{- if hasKey . "historyRetentionDays" }}{{- $_ := set $warp "history_retention_days" (.historyRetentionDays | int) }}{{- end }}
+{{- if .systemPromptSuffix }}{{- $_ := set $warp "system_prompt_suffix" .systemPromptSuffix }}{{- end }}
+{{- if hasKey . "temperature" }}{{- $_ := set $warp "temperature" (.temperature | float64) }}{{- end }}
+{{- if .reasoningEffort }}{{- $_ := set $warp "reasoning_effort" .reasoningEffort }}{{- end }}
+{{- /* hasKey: "" must clear the stored embedding provider, model or key, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "embeddingProvider" }}{{- $_ := set $warp "embedding_provider" .embeddingProvider }}{{- end }}
+{{- if hasKey . "embeddingModel" }}{{- $_ := set $warp "embedding_model" .embeddingModel }}{{- end }}
+{{- if hasKey . "embeddingApiKeyId" }}{{- $_ := set $warp "embedding_api_key_id" .embeddingApiKeyId }}{{- end }}
+{{- if hasKey . "embeddingDimension" }}{{- $_ := set $warp "embedding_dimension" (.embeddingDimension | int) }}{{- end }}
+{{- /* hasKey: "" must reset to the default namespace, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "logVectorStoreNamespace" }}{{- $_ := set $warp "log_vector_store_namespace" .logVectorStoreNamespace }}{{- end }}
+{{- if hasKey . "semanticSearchThreshold" }}{{- $_ := set $warp "semantic_search_threshold" (.semanticSearchThreshold | float64) }}{{- end }}
+{{- if hasKey . "semanticSearchLimit" }}{{- $_ := set $warp "semantic_search_limit" (.semanticSearchLimit | int) }}{{- end }}
+{{- if hasKey . "topicDiscoveryMinRequests" }}{{- $_ := set $warp "topic_discovery_min_requests" (.topicDiscoveryMinRequests | int) }}{{- end }}
+{{- if $warp }}{{- $_ := set $config "warp" $warp }}{{- end }}
+{{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
 {{- if hasKey .Values.bifrost.client "dropExcessRequests" }}
