@@ -168,6 +168,7 @@ Tests for key Enabled and UseForBatchAPI field handling.
 |--------------------------------------------------|----------------------------------------------|
 | TestGenerateKeyHash_EnabledField                 | Enabled field affects hash (true/false/nil)  |
 | TestSQLite_Key_EnabledChange_Detected            | Enabled change detected during sync          |
+| TestSQLite_Key_EnabledUIToggleSurvivesUpgrade    | UI toggle kept after upgrade, file unchanged |
 | TestGenerateKeyHash_UseForBatchAPIField          | UseForBatchAPI field affects hash            |
 | TestSQLite_Key_UseForBatchAPIChange_Detected     | UseForBatchAPI change detected during sync   |
 
@@ -18447,12 +18448,89 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.Close(context.Background())
 
 	// Verify Enabled changed to false in the in-memory config
 	openaiConfig2 := config2.Providers[schemas.OpenAI]
 	if openaiConfig2.Keys[0].Enabled == nil || *openaiConfig2.Keys[0].Enabled {
 		t.Error("Expected Enabled=false after second load, but got true or nil")
+	}
+	config2.Close(context.Background())
+
+	// Third load with the file unchanged: the stored row is used, so it must hold false too
+	config3, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("Third LoadConfig failed: %v", err)
+	}
+	defer config3.Close(context.Background())
+	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
+	}
+}
+
+// TestSQLite_Key_EnabledUIToggleSurvivesUpgrade verifies that a key set to enabled=false in
+// config.json and then turned back on in the UI stays on after a restart on a newer build.
+// Older builds stored the hash of enabled=false as the hash of the key without enabled, so a
+// key hash that tells the two apart makes the unchanged file look edited and re-applies false.
+func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	enabledTrue := true
+	enabledFalse := false
+	keyID := uuid.NewString()
+	makeKey := func(enabled *bool) schemas.Key {
+		return schemas.Key{
+			ID:      keyID,
+			Name:    "test-key",
+			Value:   *schemas.NewSecretVar("sk-test-123"),
+			Weight:  1,
+			Enabled: enabled,
+		}
+	}
+	writeConfig := func(enabled *bool) {
+		createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+			"openai": {Keys: []schemas.Key{makeKey(enabled)}},
+		}, tempDir))
+	}
+
+	// First load with Enabled=true, then the file changes to Enabled=false
+	writeConfig(&enabledTrue)
+	config1, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+	config1.Close(context.Background())
+
+	writeConfig(&enabledFalse)
+	config2, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed: %v", err)
+	}
+
+	// Turn the key back on the way the UI does (ConfigHash is left as is), and store the hash an
+	// older build wrote for this file
+	key := config2.Providers[schemas.OpenAI].Keys[0]
+	key.Enabled = &enabledTrue
+	if err := config2.ConfigStore.UpdateProviderKey(context.Background(), schemas.OpenAI, key.ID, key); err != nil {
+		t.Fatalf("UpdateProviderKey failed: %v", err)
+	}
+	legacyHash, err := configstore.GenerateKeyHash(makeKey(nil))
+	if err != nil {
+		t.Fatalf("GenerateKeyHash failed: %v", err)
+	}
+	if err := config2.ConfigStore.DB().Model(&tables.TableKey{}).Where("key_id = ?", key.ID).Update("config_hash", legacyHash).Error; err != nil {
+		t.Fatalf("Failed to set stored config hash: %v", err)
+	}
+	config2.Close(context.Background())
+
+	// Restart with the file unchanged: the UI value must win
+	config3, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("Third LoadConfig failed: %v", err)
+	}
+	defer config3.Close(context.Background())
+	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || !*enabled {
+		t.Error("Expected Enabled=true from the UI to survive a restart with config.json unchanged, but got false")
 	}
 }
 
@@ -24051,6 +24129,40 @@ func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
 	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }
 
+// disable_onboarding is a deployment flag read from config.json or BIFROST_DISABLE_ONBOARDING, never
+// from the store, so a stateless node keeps the setup checklist hidden across restarts. The file wins
+// over the env var when both are set.
+func TestLoadConfig_DisableOnboarding(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		file *bool
+		env  string
+		want bool
+	}{
+		{name: "unset", want: false},
+		{name: "file true", file: schemas.Ptr(true), want: true},
+		{name: "env true", env: "true", want: true},
+		{name: "env invalid", env: "yes-please", want: false},
+		{name: "file false overrides env true", file: schemas.Ptr(false), env: "true", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BIFROST_DISABLE_ONBOARDING", tc.env)
+			tempDir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{}, tempDir)
+			configData.DisableOnboarding = tc.file
+			createConfigFile(t, tempDir, configData)
+
+			config, err := LoadConfig(ctx, tempDir)
+			require.NoError(t, err)
+			defer config.Close(ctx)
+			assert.Equal(t, tc.want, config.DisableOnboarding)
+		})
+	}
+}
+
 // TestValidateCustomProvider_BaseProviderTypes pins which base_provider_type
 // values config.json and the store accept for a custom provider: typesafe is a
 // supported base (keyed or keyless), vertex is not.
@@ -24163,6 +24275,53 @@ func TestValidateInjectedToolsBody_AcceptsSchemaValidShapes(t *testing.T) {
 	} {
 		if err := ValidateInjectedToolsBody([]byte(body)); err != nil {
 			t.Errorf("%s: unexpected rejection: %v", body, err)
+		}
+	}
+}
+
+// TestValidatePassthroughBody_AcceptsSchemaValidShapes is the positive control for the
+// handler rejections in TestProviderWrites_RejectMalformedPassthrough.
+func TestValidatePassthroughBody_AcceptsSchemaValidShapes(t *testing.T) {
+	for _, body := range []string{
+		`{"passthrough": {"allowed_routes": [{"methods": ["POST"], "path": "/v1/chat/completions"}, {"methods": ["GET"], "path": "/v1/files/*"}]}}`,
+		`{"passthrough": {"allowed_routes": []}}`,
+		`{"passthrough": null}`,
+		`{"keys": []}`,
+		// The handler keeps the last of repeated keys, so only the last block is what gets stored.
+		`{"passthrough": {}, "passthrough": {"allowed_routes": [{"path": "/**"}]}}`,
+	} {
+		if err := ValidatePassthroughBody([]byte(body)); err != nil {
+			t.Errorf("%s: unexpected rejection: %v", body, err)
+		}
+	}
+}
+
+// TestGetCustomProviderPassthrough pins what the passthrough router learns about the provider
+// an x-model-provider header names: only a custom provider reports its base, and only a
+// policy, even an empty one, counts as opting in.
+func TestGetCustomProviderPassthrough(t *testing.T) {
+	store := &Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Passthrough: &schemas.PassthroughPolicy{}},
+		"sidecar": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			Passthrough:          &schemas.PassthroughPolicy{},
+		},
+		"sidecar-off": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}},
+	}}
+	for _, tc := range []struct {
+		provider    schemas.ModelProvider
+		wantBase    schemas.ModelProvider
+		wantEnabled bool
+		wantOK      bool
+	}{
+		{"sidecar", schemas.OpenAI, true, true},
+		{"sidecar-off", schemas.Anthropic, false, true},
+		{schemas.OpenAI, "", false, false},
+		{"unknown", "", false, false},
+	} {
+		base, enabled, ok := store.GetCustomProviderPassthrough(tc.provider)
+		if base != tc.wantBase || enabled != tc.wantEnabled || ok != tc.wantOK {
+			t.Errorf("%s: got (%q, %v, %v), want (%q, %v, %v)", tc.provider, base, enabled, ok, tc.wantBase, tc.wantEnabled, tc.wantOK)
 		}
 	}
 }
@@ -25682,4 +25841,56 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	empty, err := (&configstore.ClientConfig{A2APrivateAllowlist: []string{}}).GenerateClientConfigHash()
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
+}
+
+// reauthRecordingStore records which MCP clients' admin exchange credentials
+// were marked needs_reauth; every other ConfigStore method is unused here.
+type reauthRecordingStore struct {
+	configstore.ConfigStore
+	marked []string
+}
+
+// MarkAdminExchangeTokenNeedsReauthByMCPClientID records the client.
+func (s *reauthRecordingStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(_ context.Context, mcpClientID, _ string) error {
+	s.marked = append(s.marked, mcpClientID)
+	return nil
+}
+
+// TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields checks a config.json
+// edit to an id_jag field re-verifies the retained admin credential, while an
+// unchanged block, direct profile (an existing deployment's) or id_jag, marks
+// nothing.
+func TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields(t *testing.T) {
+	SetLogger(&testLogger{})
+	endpoint := "https://as.example.com/token"
+	idjag := func() *schemas.MCPTokenExchangeConfig {
+		return &schemas.MCPTokenExchangeConfig{
+			Profile: schemas.TokenExchangeProfileIDJAG, Audience: "https://as.example.com", Scopes: []string{"read"},
+			Resource: "https://mcp.example.com", ResourceTokenEndpoint: &endpoint,
+			ResourceClientID: schemas.NewSecretVar("bifrost-at-upstream"), ResourceClientSecret: schemas.NewSecretVar("s3cret"),
+		}
+	}
+	direct := func() *schemas.MCPTokenExchangeConfig {
+		return &schemas.MCPTokenExchangeConfig{Audience: "api://mcp", ClientID: schemas.NewSecretVar("exchange-app"), Scopes: []string{"mcp"}}
+	}
+	moved := "https://other.example.com/token"
+	for name, tc := range map[string]struct {
+		existing, file *schemas.MCPTokenExchangeConfig
+		reauth         bool
+	}{
+		"unchanged direct block":       {existing: direct(), file: direct()},
+		"unchanged id_jag block":       {existing: idjag(), file: idjag()},
+		"direct switched to id_jag":    {existing: direct(), file: idjag(), reauth: true},
+		"resource changed":             {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.Resource = "https://x.example.com"; return c }(), reauth: true},
+		"resource token endpoint moved": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceTokenEndpoint = &moved; return c }(), reauth: true},
+		"resource client ID changed":    {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientID = schemas.NewSecretVar("other"); return c }(), reauth: true},
+		"resource secret rotated":       {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientSecret = schemas.NewSecretVar("rotated"); return c }(), reauth: true},
+		"secret switched to a key":      {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientSecret = nil; c.ResourcePrivateKey = schemas.NewSecretVar("pem"); return c }(), reauth: true},
+	} {
+		store := &reauthRecordingStore{}
+		rotateMCPTokenExchangeConfigFromFile(context.Background(), store, "client-1", "linear", tc.file, tc.existing)
+		if got := len(store.marked) == 1; got != tc.reauth {
+			t.Errorf("%s: marked needs_reauth = %v, want %v", name, got, tc.reauth)
+		}
+	}
 }

@@ -162,6 +162,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: News Feeds
+    description: RSS and Atom news sources shown in the News tab of the dashboard notification tray
   - name: Background Jobs
     description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
@@ -940,6 +942,10 @@ paths:
   /api/governance/rate-limits:
     $ref: "./paths/management/governance.yaml#/rate-limits"
 
+  # Governance - Budget Increase Requests (Enterprise)
+  /api/governance/budget-requests/{request_id}/approve:
+    $ref: "./paths/management/governanceextensions.yaml#/budget-request-approve"
+
   # Governance - Model Configs
   /api/governance/model-configs:
     $ref: "./paths/management/governance.yaml#/model-configs"
@@ -1349,6 +1355,16 @@ paths:
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
 
+  # News feeds
+  /api/rss/feeds:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-feeds"
+  /api/rss/feeds/{id}:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-feed-by-id"
+  /api/rss/items:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-items"
+  /api/rss/settings:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-settings"
+
   # Background jobs
   /api/sidekiq/jobs:
     $ref: "./paths/management/sidekiq.yaml#/sidekiq-jobs"
@@ -1364,6 +1380,12 @@ paths:
     $ref: "./paths/management/warp.yaml#/warp-backfill-status"
   /api/warp/log-index/backfill/cancel:
     $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/log-index/topics:
+    $ref: "./paths/management/warp.yaml#/warp-topics"
+  /api/warp/log-index/topics/status:
+    $ref: "./paths/management/warp.yaml#/warp-topics-status"
+  /api/warp/log-index/topics/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-topics-cancel"
   /api/warp/chat:
     $ref: "./paths/management/warp.yaml#/warp-session"
   /api/warp/log-index/status:
@@ -1796,6 +1818,12 @@ components:
       $ref: "./schemas/inference/common.yaml#/BifrostResponseExtraFields"
     BifrostCacheDebug:
       $ref: "./schemas/inference/common.yaml#/BifrostCacheDebug"
+    BifrostGuardrailMetadata:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailMetadata"
+    BifrostGuardrailDetection:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailDetection"
+    BifrostGuardrailJudgeCall:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailJudgeCall"
     CacheControl:
       $ref: "./schemas/inference/common.yaml#/CacheControl"
 
@@ -2209,6 +2237,12 @@ components:
       $ref: "./schemas/management/governance.yaml#/BudgetOverrideRequest"
     BudgetOverrideResponse:
       $ref: "./schemas/management/governance.yaml#/BudgetOverrideResponse"
+    ApproveBudgetRequestRequest:
+      $ref: "./schemas/management/governance.yaml#/ApproveBudgetRequestRequest"
+    BudgetRequest:
+      $ref: "./schemas/management/governance.yaml#/BudgetRequest"
+    BudgetRequestBudgetSnapshot:
+      $ref: "./schemas/management/governance.yaml#/BudgetRequestBudgetSnapshot"
     CreateRateLimitRequest:
       $ref: "./schemas/management/governance.yaml#/CreateRateLimitRequest"
     UpdateRateLimitRequest:
@@ -2353,6 +2387,14 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+    AuditSeverity:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditSeverity"
+    AuditAuthMethod:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAuthMethod"
+    AuditFieldChange:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFieldChange"
+    AuditChangeSet:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditChangeSet"
 
     # API Keys
     APIKey:
@@ -2407,6 +2449,23 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # News feeds
+    RSSFeed:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeed"
+    RSSFeedList:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedList"
+    RSSFeedCreateRequest:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedCreateRequest"
+    RSSFeedUpdateRequest:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedUpdateRequest"
+    RSSItem:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSItem"
+    RSSFeedError:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedError"
+    RSSItemList:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSItemList"
+    RSSSettings:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSSettings"
     # Background jobs
     SidekiqJobStatus:
       $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobStatus"
@@ -2429,6 +2488,12 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
     WarpBackfillStatus:
       $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
+    WarpTopicsRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicsRequest"
+    WarpTopicsStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicsStatus"
+    WarpTopicSummary:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicSummary"
     WarpUnavailable:
       $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
     WarpSessionRequest:

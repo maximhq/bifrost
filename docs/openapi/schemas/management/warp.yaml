@@ -145,6 +145,14 @@ WarpConfig:
       minimum: 1
       maximum: 25
       default: 10
+    topic_discovery_min_requests:
+      type: integer
+      minimum: 10
+      maximum: 20000
+      default: 100
+      description: |
+        How many requests that matched no topic have to be waiting before an
+        hourly pass clusters them into new topics.
     vector_store_connected:
       type: boolean
       readOnly: true
@@ -163,6 +171,7 @@ WarpConfig:
     - log_vector_store_namespace
     - semantic_search_threshold
     - semantic_search_limit
+    - topic_discovery_min_requests
     - vector_store_connected
 
 WarpConfigInput:
@@ -302,6 +311,17 @@ WarpConfigInput:
       maximum: 25
       default: 10
       description: Zero means "use the default", resolved before validation.
+    topic_discovery_min_requests:
+      type: integer
+      oneOf:
+        - const: 0
+        - minimum: 10
+          maximum: 20000
+      description: |
+        How many requests that matched no topic have to be waiting before an
+        hourly pass clusters them into new topics, from 10 to 20000. Omitted
+        keeps the stored value; zero means "use the default", resolved before
+        validation. 1 to 9 are refused.
 
 WarpUnavailable:
   type: object
@@ -372,6 +392,124 @@ WarpBackfillStatus:
     started_at: { type: string, format: date-time }
     completed_at: { type: string, format: date-time }
   required: [status, total, scanned, indexed, skipped, failed]
+
+WarpTopicsRequest:
+  type: object
+  properties:
+    start_time:
+      type: string
+      format: date-time
+    end_time:
+      type: string
+      format: date-time
+  required: [start_time, end_time]
+
+WarpTopicsStatus:
+  type: object
+  description: |
+    A topic clustering job. It shares the backfill's counters, which mean
+    something different here: see each field.
+  properties:
+    id: { type: string }
+    status:
+      type: string
+      enum: [idle, pending, running, cancelling, completed, failed, cancelled]
+    start_time: { type: string, format: date-time }
+    end_time: { type: string, format: date-time }
+    total:
+      type: integer
+      format: int64
+      description: Requests read from the window so far. Equal to `scanned`.
+    scanned:
+      type: integer
+      format: int64
+      description: Requests read from the window. Every model call is one request.
+    indexed:
+      type: integer
+      format: int64
+      description: Topics written.
+    skipped:
+      type: integer
+      format: int64
+      description: |
+        Requests that were indexed but are no longer in the log store, so they
+        were clustered but could not be filed under a topic.
+    failed:
+      type: integer
+      format: int64
+      description: |
+        Topics whose name fell back to their most common words because the
+        model could not be reached.
+    clustered:
+      type: integer
+      format: int64
+      description: Requests that were clustered.
+    assigned:
+      type: integer
+      format: int64
+      description: |
+        Requests given to the nearest topic after clustering stopped. Omitted
+        when a run clustered everything it read.
+    unassigned:
+      type: integer
+      format: int64
+      description: Requests that ended in no topic.
+    capped:
+      type: boolean
+      description: |
+        Set when a run stopped at a read limit before the end of the window.
+        Runs read the whole window, so this is not set.
+    merged:
+      type: integer
+      format: int64
+      description: Clusters folded into another for being near-duplicates.
+    merged_by_name:
+      type: integer
+      format: int64
+      description: Clusters joined after naming because they were given the same name.
+    themes:
+      type: integer
+      format: int64
+      description: |
+        How many themes the active topics were grouped into once the run had
+        written its topics. Omitted when there were too few topics to group,
+        or the grouping could not run (see last_error).
+    merge_threshold:
+      type: number
+      format: double
+      description: |
+        The similarity at or above which two clusters were merged, derived
+        from the run's own clusters. Omitted when the run had nothing to
+        derive one from.
+    topics:
+      type: array
+      description: The topics the run wrote, in the order they were written.
+      items:
+        $ref: '#/WarpTopicSummary'
+    last_error: { type: string }
+    message: { type: string }
+    created_at: { type: string, format: date-time }
+    started_at: { type: string, format: date-time }
+    completed_at: { type: string, format: date-time }
+  required: [status, total, scanned, indexed, skipped, failed]
+
+WarpTopicSummary:
+  type: object
+  properties:
+    label:
+      type: string
+      description: The topic's name.
+    size:
+      type: integer
+      format: int64
+      description: Requests in the topic.
+    cohesion:
+      type: number
+      format: double
+      description: |
+        How alike the topic's requests are, from 0 to 1: their average
+        similarity to the topic's centre.
+  required: [label, size, cohesion]
 
 WarpSessionRequest:
   type: object
@@ -519,7 +657,52 @@ WarpLogIndexStatus:
       allOf:
         - $ref: '#/WarpBackfillStatus'
       description: The in-flight or latest backfill for the current namespace, when one exists.
+    topics:
+      allOf:
+        - $ref: '#/WarpTopicHealth'
+      description: |
+        How live topic filing is doing, when the index is usable and the log
+        store keeps topics. The counts are deployment-wide, so a caller whose
+        reads are narrowed gets no topics at all.
+    has_indexed_requests:
+      type: boolean
+      description: |
+        Whether the configured namespace holds any indexed request to seed
+        topics from. Reported only when `topics` is present and shows no
+        active topics, so it is also absent when topic health is unavailable
+        (for example to a caller with narrowed reads), not only when the
+        vector store cannot say.
   required: [state, vector_store_connected, embedding_configured]
+
+WarpTopicHealth:
+  type: object
+  description: |
+    The state of live topic filing for the embedding model in use, across
+    the whole deployment. Callers whose reads are narrowed are not given it.
+    A rising unmatched share is the sign the topics no longer fit the
+    traffic and a discovery or a new build is due.
+  properties:
+    active_topics:
+      type: integer
+    themes:
+      type: integer
+    pooled:
+      type: integer
+      format: int64
+      description: Requests waiting in the pool for a topic to be discovered.
+    requests_24h:
+      type: integer
+      format: int64
+      description: Requests filed in the last 24 hours.
+    unmatched_24h:
+      type: integer
+      format: int64
+      description: Of those, the requests that matched no topic.
+    unmatched_share_24h:
+      type: number
+      format: double
+      description: unmatched_24h over requests_24h, or 0 when nothing was filed.
+  required: [active_topics, themes, pooled, requests_24h, unmatched_24h, unmatched_share_24h]
 
 WarpConversation:
   type: object

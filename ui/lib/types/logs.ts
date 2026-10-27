@@ -616,9 +616,34 @@ export interface GuardrailJudgeCall {
 	total_tokens?: number;
 }
 
+// GuardrailMatch is one rule match recorded in guardrail_debug: a detect-only
+// flag (detections) or a block (interventions). Assessments are sanitized
+// policy categories, never matched text.
+export interface GuardrailMatch {
+	phase?: string;
+	rule_id?: number;
+	rule_name?: string;
+	guardrail_name?: string;
+	guardrail_provider?: string;
+	reason?: string;
+	assessments?: string[];
+	// Detections only: what the guardrail did (detect, block, redact,
+	// transform), and enforced=false when an output-monitor rule recorded the
+	// match without acting on it.
+	action?: GuardrailDetectionAction;
+	enforced?: boolean;
+}
+
+export type GuardrailDetectionAction = "detect" | "block" | "redact" | "transform";
+
 export interface GuardrailMetadata {
 	judge_calls?: GuardrailJudgeCall[];
+	detections?: GuardrailMatch[];
+	interventions?: GuardrailMatch[];
 }
+
+// GuardrailOutcome values accepted by the logs API's guardrail_outcomes filter.
+export type GuardrailOutcome = "blocked" | "detected";
 
 export interface RoutingCall {
 	request_type?: string;
@@ -891,6 +916,7 @@ export interface LogFilters {
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
+	guardrail_outcomes?: GuardrailOutcome[]; // Requests a guardrail blocked and/or flagged (detect-only)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
@@ -899,7 +925,7 @@ export interface LogFilters {
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
-	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
+	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	min_cost?: number;
@@ -915,6 +941,7 @@ export interface LogFilters {
 	customer_ids?: string[];
 	business_unit_ids?: string[];
 	project_ids?: string[];
+	topic_ids?: string[]; // Warp topics the request was filed under
 	apps?: string[]; // Backend-detected client apps
 	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
@@ -1507,7 +1534,7 @@ export interface MCPToolLogFilters {
 	agent_correlation_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
-	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
+	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	content_search?: string;

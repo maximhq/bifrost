@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -50,16 +51,20 @@ type ResponsesFeatureSupport struct {
 	// WebSearchContentTypes reports whether the backend accepts search_content_types
 	// on web_search tools.
 	WebSearchContentTypes bool
+	// ConfigurationUpdateItem reports whether the backend accepts
+	// `configuration_update` input items; when false they are dropped.
+	ConfigurationUpdateItem bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true, ConfigurationUpdateItem: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
-	// context_management outright as an unknown parameter.
+	// context_management outright as an unknown parameter, and configuration_update
+	// items with "The 'configuration_update' item type is not supported with this model."
 	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false},
 	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
 }
@@ -137,6 +142,17 @@ func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
 		return true
 	}
 	return features.AdditionalToolsItem
+}
+
+// supportsConfigurationUpdateItem reports whether provider accepts OpenAI's
+// `configuration_update` input item. The base provider is consulted so a custom
+// provider wrapping Bedrock drops the item too; unlisted providers keep it.
+func supportsConfigurationUpdateItem(ctx *schemas.BifrostContext, provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[schemas.ResolveBaseProvider(ctx, provider)]
+	if !ok {
+		return true
+	}
+	return features.ConfigurationUpdateItem
 }
 
 // supportsWebSearchContentTypes reports whether a model accepts
@@ -545,7 +561,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -559,7 +575,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// additional_tools items are lifted to the top level so the tools inside them get
 	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
@@ -568,6 +586,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
 			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
+			continue
+		}
+		if !keepConfigurationUpdate && message.Type != nil &&
+			*message.Type == schemas.ResponsesMessageTypeConfigurationUpdate {
 			continue
 		}
 		// Anthropic's per-message effort override (a system item with empty content and
@@ -579,6 +601,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				continue
 			}
 			message.OutputConfig = nil
+		}
+		// Role is swapped for a new pointer, so the caller's message keeps "developer".
+		if developerAsSystem && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) &&
+			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleDeveloper {
+			message.Role = new(schemas.ResponsesInputMessageRoleSystem)
 		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
@@ -904,6 +931,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
+	if !caps.SupportsMidConversationSystem(true) {
+		messages = inlineResponsesMidConversationSystem(messages)
+	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated
 	// out of cache_control, which their serializer would otherwise strip.
 	// Match on the BASE provider, not the key the request arrived under. A custom
@@ -1142,6 +1172,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		req.Store = new(false)
+		if _, ok := req.ExtraParams["store"]; ok {
+			req.ExtraParams = maps.Clone(req.ExtraParams)
+			req.ExtraParams["store"] = false
+		}
 	}
 
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {

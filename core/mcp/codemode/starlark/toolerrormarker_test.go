@@ -56,6 +56,9 @@ func TestHandleExecuteToolCodeBudgetResults(t *testing.T) {
 		{"result = []\nresult.append(result)", "nesting limit", true},
 		{"result = 1 << 128\nfor i in range(6):\n    result *= result", "integer exceeds size limit", true},
 		{"result = 42", "Return value: 42", false},
+		// Print output carries the same label whether the run succeeds or fails.
+		{"print(\"before\")\nresult = 1", "Print output:\nbefore", false},
+		{"print(\"before\")\nfail(\"stop\")", "Print output:\nbefore", true},
 	} {
 		args, err := schemas.MarshalSorted(map[string]string{"code": tc.code})
 		if err != nil {

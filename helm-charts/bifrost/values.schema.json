@@ -258,6 +258,42 @@
         }
       }
     },
+    "podDisruptionBudget": {
+      "type": "object",
+      "description": "PodDisruptionBudget for the Bifrost pods. Off by default; when enabled it is rendered only when bifrost.cluster.enabled is true.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the PodDisruptionBudget (default false). Takes effect only when cluster mode is enabled."
+        },
+        "minAvailable": {
+          "description": "Minimum pods that must stay available during a voluntary disruption, as an integer or a percentage string such as \"50%\". Ignored when maxUnavailable is set.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^([0-9]|[1-9][0-9]|100)%$"
+            }
+          ]
+        },
+        "maxUnavailable": {
+          "description": "Maximum pods that may be unavailable during a voluntary disruption, as an integer or a percentage string such as \"50%\". When set, replaces minAvailable.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^([0-9]|[1-9][0-9]|100)%$"
+            }
+          ]
+        }
+      }
+    },
     "volumes": {
       "type": "array"
     },
@@ -355,6 +391,10 @@
           "type": "string",
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
+        },
+        "disableOnboarding": {
+          "type": "boolean",
+          "description": "Hides the management UI setup checklist for every user. Read from config.json on every start and never written to the config store, so it holds on stateless deployments. Written into config.json as disable_onboarding; overrides the BIFROST_DISABLE_ONBOARDING env var."
         },
         "setupToken": {
           "type": "string",
@@ -689,6 +729,16 @@
             "deleteExpiredVirtualKeys": {
               "type": "boolean",
               "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless. Maps to client.delete_expired_virtual_keys.",
+              "default": false
+            },
+            "skipAccessProfileUserVirtualKeyCreation": {
+              "type": "boolean",
+              "description": "Enterprise only. When true, a user's first access profile never creates a virtual key for them. Maps to client.skip_access_profile_user_virtual_key_creation.",
+              "default": false
+            },
+            "skipAccessProfileUserVirtualKeyDeletion": {
+              "type": "boolean",
+              "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
             },
             "mcpDisableAutoToolInject": {
@@ -1479,6 +1529,17 @@
                     "enable_llm_obs": {
                       "type": "boolean",
                       "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "otel_llmobs_conversion": {
+                      "type": "string",
+                      "enum": ["disabled", "inherit", "enabled"],
+                      "description": "Whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. 'disabled' opts the trace out so Datadog does not duplicate the spans Bifrost already sends; 'inherit' leaves the decision to upstream services on the same trace; 'enabled' opts in (default: disabled)",
+                      "default": "disabled"
+                    },
+                    "llmobs_gateway_mode": {
+                      "type": "boolean",
+                      "description": "Follow Datadog's proxy-service pattern for LLM Observability: open a workflow span per request at the gateway entrypoint so all gateway traffic is queryable as top-level spans, and export MCP tool and task spans. Changes the shape of exported LLM Observability data, so existing dashboards and breakdowns may need updating (default: false)",
+                      "default": false
                     },
                     "group_traces_by_session": {
                       "type": "boolean",
@@ -2328,6 +2389,24 @@
                   "disable_content_logging": {
                     "type": "boolean",
                     "description": "Per-key override of client.disableContentLogging for requests made with this virtual key. Omit to inherit the client setting."
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "description": "Custom key/value metadata for this virtual key (e.g. cost_center, project, owner). Copied onto every log entry the key produces, so logs and spend can be filtered by it, and it overrides request-supplied log metadata on a key collision. Keys may contain letters, digits, '.', '_' and '-' (max 256 characters) and may not be system-reserved; values are strings of at most 512 characters; at most 50 entries.",
+                    "maxProperties": 50,
+                    "propertyNames": {
+                      "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+                      "not": {
+                        "anyOf": [
+                          { "const": "isAsyncRequest" },
+                          { "pattern": "^bifrost_alb_" }
+                        ]
+                      }
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 512
+                    }
                   },
                   "team_id": {
                     "type": "string"
@@ -3383,6 +3462,11 @@
                         "type": "string",
                         "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
                       },
+                      "syncAllUsers": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Which Okta users directory sync (apiToken) keeps. True (the default when unset) syncs every app-assigned user except those SUSPENDED or DEPROVISIONED (deactivated); false syncs ACTIVE users only. Maps to scim_config.config.syncAllUsers."
+                      },
                       "audience": {
                         "type": "string",
                         "description": "JWT audience for validation (optional)"
@@ -4121,6 +4205,12 @@
                     "maximum": 1000,
                     "default": 0,
                     "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
+                  },
+                  "output_mode": {
+                    "type": "string",
+                    "enum": ["enforce", "monitor"],
+                    "default": "enforce",
+                    "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
                   },
                   "provider_config_ids": {
                     "type": "array",
@@ -5196,16 +5286,19 @@
             },
             "objectStorage": {
               "type": "object",
-              "description": "Optional object storage for archiving audit events to S3/GCS. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
+              "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"],
+                  "enum": ["s3", "gcs", "azure"],
                   "description": "Object storage backend type"
                 },
                 "bucket": {
-                  "type": "string",
-                  "description": "Bucket name"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string",
@@ -5222,8 +5315,15 @@
                   "description": "AWS region (S3 only)"
                 },
                 "endpoint": {
-                  "type": "string",
-                  "description": "Custom S3-compatible endpoint for MinIO/R2 (S3 only)"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint. Supports env var and structured secret references"
                 },
                 "accessKeyId": {
                   "type": "string",
@@ -5255,7 +5355,37 @@
                   "description": "GCP service account credentials JSON or file path; omit for Application Default Credentials (GCS only)"
                 }
               },
-              "required": ["type", "bucket"]
+              "required": ["type", "bucket"],
+              "allOf": [
+                {
+                  "if": { "properties": { "type": { "const": "azure" } }, "required": ["type"] },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "required": ["connectionString"] } },
+                      { "required": ["connectionString"], "not": { "required": ["endpoint"] } }
+                    ]
+                  },
+                  "else": {
+                    "properties": {
+                      "bucket": { "type": "string" },
+                      "endpoint": { "type": "string" },
+                      "connectionString": false
+                    }
+                  }
+                }
+              ]
             }
           }
         },
@@ -5765,6 +5895,11 @@
               "description": "Maximum time for a single materialized view refresh pass (min 30s, max 30m). Unset derives 5x the refresh interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "matviewRefreshTempFileLimit": {
+              "type": "string",
+              "description": "Caps the temp files each Postgres process running a materialized view statement may write (Postgres temp_file_limit, e.g. '10GB'; parallel workers each get the cap). Unset leaves the server setting alone. Needs superuser or GRANT SET ON PARAMETER temp_file_limit; otherwise skipped with a warning.",
+              "pattern": "^(-1|[0-9]+ ?(kB|MB|GB|TB)?)$"
+            },
             "migrationMatviewCancelAfter": {
               "type": "string",
               "description": "How long schema migrations wait for an in-flight materialized view refresh (from any replica, including older releases mid-rollout) before cancelling its REFRESH statements. Unset uses 60s; 'off' never cancels and only waits.",
@@ -5869,10 +6004,14 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"]
+                  "enum": ["s3", "gcs", "azure"]
                 },
                 "bucket": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string"
@@ -5880,11 +6019,35 @@
                 "compress": {
                   "type": "boolean"
                 },
+                "format": {
+                  "type": "string",
+                  "enum": ["json", "parquet"],
+                  "default": "json",
+                  "description": "Encoding of offloaded log payload objects; parquet is supported on s3 and azure"
+                },
+                "compression": {
+                  "type": "string",
+                  "enum": ["none", "gzip", "snappy", "zstd"],
+                  "description": "JSON whole-object compression (none/gzip), or Parquet page codec (none/gzip/snappy/zstd); defaults to none for JSON (gzip when compress is true), snappy for Parquet"
+                },
                 "region": {
                   "type": "string"
                 },
                 "endpoint": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint and existingSecret"
+                },
+                "connectionStringKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Kubernetes Secret key containing the Azure Storage connection string (default: connection-string)"
                 },
                 "accessKeyId": {
                   "type": "string"
@@ -5926,6 +6089,53 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": { "type": { "const": "azure" }, "enabled": { "const": true } },
+                    "required": ["type", "enabled"]
+                  },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" },
+                      "existingSecret": { "type": "string", "minLength": 1 }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "anyOf": [{ "required": ["connectionString"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["connectionString"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["existingSecret"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["connectionString"] }] } }
+                    ]
+                  }
+                },
+                {
+                  "if": { "properties": { "type": { "enum": ["s3", "gcs"] } }, "required": ["type"] },
+                  "then": {
+                    "properties": { "bucket": { "type": "string" }, "endpoint": { "type": "string" }, "connectionString": false, "connectionStringKey": false }
+                  }
+                },
+                {
+                  "if": {
+                    "anyOf": [
+                      { "not": { "required": ["format"] } },
+                      { "properties": { "format": { "const": "json" } }, "required": ["format"] }
+                    ]
+                  },
+                  "then": { "properties": { "compression": { "enum": ["none", "gzip"] } } }
+                },
+                {
+                  "if": { "properties": { "type": { "const": "gcs" } }, "required": ["type"] },
+                  "then": { "properties": { "format": { "const": "json" } } }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {
@@ -6546,6 +6756,38 @@
     }
   },
   "$defs": {
+    "azureStorageSecret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "otelEndpoint": {
       "type": "string",
       "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
@@ -7010,6 +7252,26 @@
             "additionalProperties": false
           }
         },
+        "passthrough": {
+          "type": "object",
+          "description": "Routes the HTTP passthrough endpoints forward to this provider. Omit for the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing",
+          "properties": {
+            "allowed_routes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "methods": { "type": "array", "items": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] }, "description": "Omit to allow any method" },
+                  "path": { "type": "string", "pattern": "^/", "description": "Path after the route prefix; * matches within one segment, a final /** matches the path and everything below it" }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["allowed_routes"],
+          "additionalProperties": false
+        },
         "custom_provider_config": {
           "type": "object",
           "description": "Custom provider configuration",
@@ -7085,6 +7347,11 @@
           "default": 1,
           "description": "Routing weight for this key. Optional; defaults to 1 when omitted."
         },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. Optional; new keys default to true, and omitting it on an existing key keeps the stored value."
+        },
         "use_for_batch_api": {
           "type": "boolean"
         },
@@ -7159,6 +7426,11 @@
             "force_single_region": {
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+              "default": false
+            },
+            "use_session_routing": {
+              "type": "boolean",
+              "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
               "default": false
             },
             "aws_workload_identity": {
@@ -7413,38 +7685,6 @@
             "client_id": ["client_secret"],
             "client_secret": ["client_id"]
           },
-          "additionalProperties": false
-        },
-        "github_copilot_key_config": {
-          "type": "object",
-          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
-          "properties": {
-            "app_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-            },
-            "installation_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-            },
-            "repository_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-            },
-            "private_key": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-            },
-            "github_domain": {
-              "type": "string",
-              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-            }
-          },
-          "required": ["app_id", "installation_id", "repository_id", "private_key"],
           "additionalProperties": false
         },
         "cloudflare_key_config": {
@@ -8036,11 +8276,11 @@
             },
             "useIdpCredentials": {
               "type": "boolean",
-              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Renders into use_idp_credentials."
+              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Always on for profile id_jag. Renders into use_idp_credentials."
             },
             "clientId": {
               "type": "string",
-              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true. Can use env./vault. prefix. Renders into client_id."
+              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true or profile is id_jag. Can use env./vault. prefix. Renders into client_id."
             },
             "clientSecret": {
               "type": "string",
@@ -8048,7 +8288,7 @@
             },
             "authorizationServerUrl": {
               "type": "string",
-              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). Renders into authorization_server_url."
+              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). An issuer URL, from which the token endpoint is derived, or a full token endpoint URL ending in /token, which is used as is. Renders into authorization_server_url."
             },
             "scopes": {
               "type": "array",
@@ -8056,9 +8296,96 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where supported so exchanges issue refresh tokens."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty (default): the identity provider issues the upstream token directly. 'id_jag' (Enterprise): Cross App Access (Okta XAA), where the identity provider issues an ID-JAG for audience from the user's SSO session and the upstream authorization server redeems it with the jwt-bearer grant. Renders into profile."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider; set only when the IdP connection defines one. Renders into resource."
+            },
+            "resourceTokenEndpoint": {
+              "type": "string",
+              "description": "id_jag only: the upstream authorization server's token endpoint; when empty, discovered from the audience's own metadata, whose issuer must equal the audience. Renders into resource_token_endpoint."
+            },
+            "resourceClientId": {
+              "type": "string",
+              "description": "id_jag only, required: Bifrost's client ID at the upstream authorization server. Can use env./vault. prefix. Renders into resource_client_id."
+            },
+            "resourceClientSecret": {
+              "type": "string",
+              "description": "id_jag only: secret for resourceClientId; omit for a public client or with resourcePrivateKey. Can use env./vault. prefix. Renders into resource_client_secret."
+            },
+            "resourcePrivateKey": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC key for private_key_jwt at the upstream authorization server, instead of a secret. Can use env./vault. prefix. Renders into resource_private_key."
+            },
+            "resourceKeyId": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion. Requires resourcePrivateKey. Renders into resource_key_id."
+            },
+            "resourceSigningAlgorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion algorithm; empty (default) means RS256. Requires resourcePrivateKey. Renders into resource_signing_algorithm."
+            },
+            "resourceAssertionAudience": {
+              "type": "string",
+              "description": "id_jag only: aud of the client assertion; default the upstream token endpoint. Requires resourcePrivateKey. Renders into resource_assertion_audience."
+            },
+            "resourceClientAuthMethod": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resourceClientSecret is sent; empty follows discovery, else HTTP Basic. Renders into resource_client_auth_method."
             }
           },
           "required": ["audience"],
+          "allOf": [
+            {
+              "$comment": "A client secret or a private key, not both; a blank value counts as unset, as at runtime.",
+              "not": {
+                "properties": {
+                  "resourceClientSecret": { "pattern": "\\S" },
+                  "resourcePrivateKey": { "pattern": "\\S" }
+                },
+                "required": ["resourceClientSecret", "resourcePrivateKey"]
+              }
+            },
+            {
+              "if": { "properties": { "profile": { "const": "id_jag" } }, "required": ["profile"] },
+              "then": {
+                "properties": { "resourceClientId": { "pattern": "\\S" } },
+                "required": ["resourceClientId"]
+              }
+            },
+            {
+              "$comment": "resourceKeyId, resourceSigningAlgorithm and resourceAssertionAudience configure the private key's client assertion.",
+              "if": {
+                "anyOf": [
+                  { "properties": { "resourceKeyId": { "pattern": "\\S" } }, "required": ["resourceKeyId"] },
+                  { "properties": { "resourceSigningAlgorithm": { "minLength": 1 } }, "required": ["resourceSigningAlgorithm"] },
+                  { "properties": { "resourceAssertionAudience": { "pattern": "\\S" } }, "required": ["resourceAssertionAudience"] }
+                ]
+              },
+              "then": {
+                "properties": { "resourcePrivateKey": { "pattern": "\\S" } },
+                "required": ["resourcePrivateKey"]
+              }
+            },
+            {
+              "$comment": "resourceClientAuthMethod says how resourceClientSecret is sent.",
+              "if": {
+                "properties": { "resourceClientAuthMethod": { "minLength": 1 } },
+                "required": ["resourceClientAuthMethod"]
+              },
+              "then": {
+                "properties": { "resourceClientSecret": { "pattern": "\\S" } },
+                "required": ["resourceClientSecret"]
+              }
+            }
+          ],
           "additionalProperties": false
         },
         "oauthConfigId": {
@@ -8605,6 +8932,11 @@
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
                     "default": false
                   },
+                  "use_session_routing": {
+                    "type": "boolean",
+                    "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
+                    "default": false
+                  },
                   "aws_workload_identity": {
                     "type": "object",
                     "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials; the two must not be combined.",
@@ -8987,6 +9319,10 @@
           "type": "boolean",
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
+        },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Per-project override of content logging for requests scoped to this project. Omit to inherit what the request's virtual key decides, or client.disableContentLogging when the key has no setting. The project's value overrides the virtual key's in both directions."
         },
         "budgets": {
           "type": "array",

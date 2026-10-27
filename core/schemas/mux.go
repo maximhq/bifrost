@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -819,6 +820,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	}
 
 	for _, rm := range rms {
+		// Chat Completions has no mid-conversation effort item; emitting it would produce a
+		// roleless, contentless chat message.
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
+			continue
+		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
 			// Buffer reasoning so it attaches to the next assistant message.
 			if rm.Content != nil {
@@ -1143,6 +1149,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(cu.Iterations)
 
 	return usage
 }
@@ -1183,6 +1190,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(ru.Iterations) // advisor passes are priced from these, so they survive the round trip
 
 	return usage
 }
@@ -2088,7 +2096,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
-	if hasContent {
+	// Content that arrives after a tool call closed the text item is dropped: that item
+	// already sent output_item.done, so another delta on it is a malformed stream.
+	if hasContent && !state.TextItemClosed {
 		closeReasoningItem()
 
 		if !state.TextItemAdded {

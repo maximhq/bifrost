@@ -237,7 +237,7 @@ Each row corresponds to one completed trace, including LLM requests and Agent Ga
 
 </Accordion>
 
-<Accordion title="Governance attribution (16 columns)">
+<Accordion title="Governance attribution (19 columns)">
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -249,6 +249,7 @@ Each row corresponds to one completed trace, including LLM requests and Agent Ga
 | `business_unit_id` / `business_unit_name` | `STRING` | Business unit. |
 | `user_id` / `user_name` | `STRING` | User. |
 | `project_id` / `project_name` | `STRING` | Project the request was scoped to. Not to be confused with the `project_id` in this plugin's own config, which is the GCP project holding the dataset. |
+| `prompt_id` / `prompt_name` / `prompt_version` | `STRING` | Stored prompt the request ran. Empty when the request named no prompt. |
 
 </Accordion>
 
@@ -498,7 +499,7 @@ A2A traces use the same table and writer as LLM traces. Each completed trace bec
 
 Existing columns hold `trace_id`, `request_id`, `session_id`, status, errors, latency, and governance attribution. `stream` identifies streaming and subscription operations. Structured request content goes into `input_history`; response content, including returned tasks, artifacts, and accumulated streaming output, goes into `output_message`. A streaming operation produces a completed row rather than one row per stream event.
 
-`disable_content_logging` and virtual-key content suppression omit message content. `excluded_attributes` can exclude columns from the row. Raw HTTP payloads require Agent Gateway raw capture plus `export_raw_payloads`; gRPC has structured content but no raw HTTP capture.
+`disable_content_logging` and virtual-key or project content suppression omit message content. `excluded_attributes` can exclude columns from the row. Raw HTTP payloads require Agent Gateway raw capture plus `export_raw_payloads`; gRPC has structured content but no raw HTTP capture.
 
 With `create_table_if_not_exists` enabled, startup appends missing columns to an existing table while preserving its rows. For manually managed tables, add these four nullable columns before enabling the updated connector. The UI's **View table schema** dialog provides the full current schema.
 

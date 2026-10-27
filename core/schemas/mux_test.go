@@ -2339,3 +2339,39 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		t.Errorf("system content = %+v, want only the text sibling", blocks)
 	}
 }
+
+// TestToChatMessages_DropsConfigurationUpdateItem pins #8616 on the Responses->Chat fallback:
+// Chat Completions has no mid-conversation effort item, so a configuration_update must be
+// dropped rather than emitted as a roleless, contentless chat message.
+func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"Say hi."}]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 1 {
+		t.Fatalf("expected only the user message, got %d messages: %+v", len(got), got)
+	}
+	if got[0].Role != ChatMessageRoleUser {
+		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
+	}
+}
+
+func TestUsageConvertersKeepIterations(t *testing.T) {
+	pass := ResponsesResponseUsage{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900}
+	responses := &ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: []ResponsesResponseUsage{pass}}
+
+	llm := responses.ToBifrostLLMUsage()
+	if len(llm.Iterations) != 1 || llm.Iterations[0].InputTokens != 2000 {
+		t.Fatalf("ToBifrostLLMUsage Iterations = %+v, want the advisor pass", llm.Iterations)
+	}
+	back := llm.ToResponsesResponseUsage()
+	if len(back.Iterations) != 1 || back.Iterations[0].Model == nil || *back.Iterations[0].Model != "claude-opus-4-8" {
+		t.Fatalf("ToResponsesResponseUsage Iterations = %+v, want the advisor pass", back.Iterations)
+	}
+	back.Iterations[0].InputTokens = 999
+	if responses.Iterations[0].InputTokens != 2000 || llm.Iterations[0].InputTokens != 2000 {
+		t.Fatal("converted Iterations alias the source")
+	}
+}

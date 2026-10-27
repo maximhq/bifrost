@@ -169,6 +169,13 @@ export function createWarpLib(pm) {
     (e.toolsAll || []).forEach(function (t) {
       if (names.indexOf(t) < 0) failures.push("did not call " + t + " (called: " + (names.join(", ") || "nothing") + ")");
     });
+    if (e.toolsOnly) {
+      // Every attempt, failed ones included: a forbidden tool the model reached
+      // for is the behaviour this rules out, whether or not the call worked.
+      var attempted = (body.tool_calls || []).map(function (t) { return t.name; });
+      var others = attempted.filter(function (n) { return e.toolsOnly.indexOf(n) < 0; });
+      if (others.length) failures.push("called " + others.join(", ") + ", which this question has no use for (allowed: " + e.toolsOnly.join(", ") + ")");
+    }
     if (e.noDataTools) {
       var data = names.filter(function (n) { return DISCOVERY_TOOLS.indexOf(n) < 0; });
       if (data.length) failures.push("queried data for an out-of-scope question: " + data.join(", "));

@@ -79,6 +79,15 @@ When a user receives a profile:
 
 When a user loses their last profile, their virtual keys are removed.
 
+To manage user keys yourself, two settings under **Settings > Security** take each half of that lifecycle away from access profiles, separately:
+
+- **Don't Create User Virtual Keys for Access Profiles** (`client.skip_access_profile_user_virtual_key_creation` in `config.json`): a user's first profile never issues a key.
+- **Don't Delete User Virtual Keys When Access Profiles Are Removed** (`client.skip_access_profile_user_virtual_key_deletion`): losing the last profile never removes the user's keys. They become ordinary keys with none of the profile's providers, MCP access or agent access.
+
+Keys the user already owns, or that you add for them, are still governed and locked by their profiles while they hold one. Deleting the user still deletes their keys.
+
+A user with a profile but no key is still governed by the profile: requests they make through sign-in (SSO, the desktop agent, user-mode MCP) are checked against it and count toward its budgets and rate limits. The virtual key lookup for credential helpers returns only the user's own keys, and none at all for such a user; a profile holder is never handed a team's key. Turning **Don't Create User Virtual Keys for Access Profiles** off later doesn't issue keys to users who already hold a profile, so add those keys yourself.
+
 ---
 
 ## Profiles on teams, business units, and customers
@@ -178,7 +187,7 @@ A key whose owner holds no profile (for example, a team key on a team that has n
 | **A user joins a team, business unit, or customer** | They are covered by its profile, and charged against it, from their next request. Their own keys and profiles are untouched. |
 | **A user leaves** | They stop being covered and charged immediately. |
 | **A user's role changes** | Profiles from the old role are removed and profiles from the new role are added. Manual and IdP-granted profiles stay. |
-| **A user loses their last profile** | Their virtual keys are removed. |
+| **A user loses their last profile** | Their virtual keys are removed, unless `skip_access_profile_user_virtual_key_deletion` is on: then they are kept as ordinary keys. |
 | **A profile is detached from a team, business unit, or customer** | You choose: **Delete virtual keys** removes the entity's keys, or **Preserve virtual keys** keeps them stripped of the profile's access, so they only reach what a customer above still allows. Either way, the entity's profile budgets and their usage are removed, and its old legacy limits are not restored. |
 | **The team, business unit, or customer is deleted** | Its profile copy is deleted with it. Its keys are kept but no longer owned by it. |
 | **A profile is edited and propagated** | Every user and every entity holding it is updated. Usage is preserved unless you choose to reset it, and budget overrides are always kept. |

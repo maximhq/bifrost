@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -733,6 +734,10 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 				usage.Iterations[i] = *converted
 			}
 		}
+		// Mirrored so a stream cut before its final chunk still bills the advisor passes.
+		if billedUsage != nil {
+			billedUsage.Iterations = slices.Clone(usage.Iterations)
+		}
 	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)
 	// Web search request count → billed as search queries (server tool use). The
@@ -1256,6 +1261,9 @@ func HandleAnthropicChatCompletionStreaming(
 					if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
 						// Convert tool use delta to content delta
 						content := *event.Delta.PartialJSON
+						// Keep the content length in step so citation spans on
+						// later text blocks stay aligned with the content string.
+						streamState.contentLen += len(content)
 						response := &schemas.BifrostChatResponse{
 							ID:     messageID,
 							Object: "chat.completion.chunk",

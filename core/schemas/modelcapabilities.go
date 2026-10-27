@@ -77,6 +77,7 @@ type ModelCapabilities struct {
 	// is the scope sub-feature.
 	SupportsAssistantPrefill         *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsSystemMessages           *bool `json:"supports_system_messages,omitempty"`
+	SupportsDeveloperRole            *bool `json:"supports_developer_role,omitempty"` // false ⇒ developer messages are sent as system
 	SupportsFunctionCalling          *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling  *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice               *bool `json:"supports_tool_choice,omitempty"`
@@ -197,6 +198,10 @@ type ModelCapabilities struct {
 
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
+
+	// Model accepts thinking.display:"updates" (beta thinking-display-updates). Per model, not per surface:
+	// Bedrock rejects it on Opus 4.6 and the 4.5 generation.
+	SupportsThinkingDisplayUpdates *bool `json:"supports_thinking_display_updates,omitempty"`
 
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`

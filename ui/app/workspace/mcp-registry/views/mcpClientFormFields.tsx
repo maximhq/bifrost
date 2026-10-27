@@ -20,8 +20,17 @@ import {
 	MCPTLSConfig,
 	SecretVar,
 } from "@/lib/types/mcp";
-import { mcpOpenAPIConfigSchema } from "@/lib/types/schemas";
+import {
+	hasPrivateKeySettingsWithoutKey,
+	hasSendMethodWithoutSecret,
+	isHTTPSOrLoopbackURL,
+	isSecretVarSet,
+	mcpOpenAPIConfigSchema,
+	PRIVATE_KEY_REQUIRED_MESSAGE,
+	SECRET_REQUIRED_FOR_METHOD_MESSAGE,
+} from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Info } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
@@ -43,7 +52,7 @@ import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreview
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
-import { TokenExchangeFields } from "./tokenExchangeFields";
+import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePayload } from "./tokenExchangeFields";
 
 /**
  * Shared configuration body for creating an MCP client. Rendered identically by
@@ -354,10 +363,44 @@ export function validateMCPClientForm({
 			setError("token_exchange.audience", { message: "Audience is required for token exchange" });
 			hasErrors = true;
 		}
-		if (!data.token_exchange?.use_idp_credentials) {
+		if (!data.token_exchange?.use_idp_credentials && data.token_exchange?.profile !== "id_jag") {
 			const exchangeClientId = data.token_exchange?.client_id;
 			if (!exchangeClientId?.value && !exchangeClientId?.ref) {
 				setError("token_exchange.client_id", { message: "Exchange client ID is required for token exchange" });
+				hasErrors = true;
+			}
+		}
+		if (data.token_exchange?.profile === "id_jag") {
+			if (!isSecretVarSet(data.token_exchange?.resource_client_id)) {
+				setError("token_exchange.resource_client_id", { message: "Client ID at the upstream server is required for Cross App Access" });
+				hasErrors = true;
+			}
+			if (isSecretVarSet(data.token_exchange?.resource_client_secret) && isSecretVarSet(data.token_exchange?.resource_private_key)) {
+				setError("token_exchange.resource_private_key", {
+					message: "Use either a client secret or a private key at the upstream server, not both",
+				});
+				hasErrors = true;
+			}
+			if (hasPrivateKeySettingsWithoutKey(data.token_exchange)) {
+				setError("token_exchange.resource_private_key", { message: PRIVATE_KEY_REQUIRED_MESSAGE });
+				hasErrors = true;
+			}
+			if (hasSendMethodWithoutSecret(data.token_exchange)) {
+				setError("token_exchange.resource_client_secret", { message: SECRET_REQUIRED_FOR_METHOD_MESSAGE });
+				hasErrors = true;
+			}
+			const endpoint = data.token_exchange?.resource_token_endpoint?.trim();
+			if (endpoint && !isHTTPSOrLoopbackURL(endpoint)) {
+				setError("token_exchange.resource_token_endpoint", {
+					message: "Token endpoint must be an https URL (http is allowed only for localhost)",
+				});
+				hasErrors = true;
+			}
+			const assertionAudience = data.token_exchange?.resource_assertion_audience?.trim();
+			if (assertionAudience && !isHTTPSOrLoopbackURL(assertionAudience)) {
+				setError("token_exchange.resource_assertion_audience", {
+					message: "Assertion audience must be an https URL (http is allowed only for localhost)",
+				});
 				hasErrors = true;
 			}
 		}
@@ -496,9 +539,9 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 			authType === "token_exchange"
 				? {
 						audience: data.token_exchange?.audience?.trim() || "",
-						use_idp_credentials: data.token_exchange?.use_idp_credentials || undefined,
-						client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
-						client_secret: data.token_exchange?.use_idp_credentials
+						use_idp_credentials: exchangesAsSSOApplication(data.token_exchange) || undefined,
+						client_id: exchangesAsSSOApplication(data.token_exchange) ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
+						client_secret: exchangesAsSSOApplication(data.token_exchange)
 							? undefined
 							: data.token_exchange?.client_secret?.value ||
 								  data.token_exchange?.client_secret?.type === "env" ||
@@ -507,6 +550,7 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 								: undefined,
 						scopes: satellites.tokenExchangeScopesText.trim() ? parseArrayFromText(satellites.tokenExchangeScopesText) : undefined,
 						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+						...tokenExchangeProfilePayload(data.token_exchange),
 					}
 				: undefined,
 		// Network transports expose every tool the server reports; an openapi
@@ -520,8 +564,8 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 }
 
 /**
- * Warns that STDIO servers shell out to the host, which only carries the usual
- * runtimes on the official image. Shown wherever a STDIO server is configured.
+ * Warns that STDIO servers shell out to the host, and the official image ships
+ * no runtimes (npx, python) for them. Shown wherever a STDIO server is configured.
  */
 export function StdioRuntimeNotice() {
 	return (
@@ -531,7 +575,7 @@ export function StdioRuntimeNotice() {
 				<div className="flex-1">
 					<p className="text-xs font-medium text-amber-900">Docker Notice</p>
 					<p className="mt-0.5 text-xs text-amber-800">
-						If not using the official Bifrost Docker image, STDIO connections may not work if required commands (npx, python, etc.)
+						If using the official Bifrost Docker image, STDIO connections may not work because common commands like npx, python, etc.
 						aren&apos;t installed. You can safely ignore this if running locally or using a custom image with the necessary dependencies.
 					</p>
 				</div>
@@ -565,8 +609,10 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 	// Token exchange is backed by the deployment's identity-provider
 	// integration, so the option only renders when one is enabled. The exact
 	// exchange-client requirement is enforced server-side at create; a missing
-	// tokenExchangeClient section surfaces as the create error.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
+	// tokenExchangeClient section surfaces as the create error. Reading the
+	// providers needs UserProvisioning:View; without it the option stays hidden.
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !hasUserProvisioningAccess });
 	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
 	const idpConfigured = !!enabledScimProvider;
 	// Entra's on-behalf-of grant requires use_idp_credentials — see the
@@ -1239,7 +1285,8 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 											<>
 												Only needed when the audience above is registered on a different authorization server than the one your SSO login
 												uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank to use your SSO login&apos;s
-												issuer, which is correct for most providers.
+												issuer, which is correct for most providers. Enter an issuer, or a full token endpoint ending in /token to use it as
+												is.
 											</>
 										}
 										authServerUrlTestId="token-exchange-authorization-server-url-input"

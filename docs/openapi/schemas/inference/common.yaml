@@ -37,6 +37,8 @@ ModelProvider:
     - databricks
     - cloudflare
     - typesafe
+    - minimax
+    - byteplus
 
 Fallback:
   type: object
@@ -220,6 +222,12 @@ BifrostErrorExtraFields:
           type: string
         session_id:
           type: string
+        subject_token_missing:
+          type: boolean
+          description: token_exchange only. True when there was nothing to exchange, including when the caller's Bifrost sign-in has expired; message says which
+        exchange_error:
+          type: string
+          description: token_exchange only. The identity provider's error code and description when it refused the exchange
     billed_usage:
       $ref: './usage.yaml#/BifrostLLMUsage'
       description: Usage the provider reported and billed even though the request failed
@@ -287,9 +295,7 @@ BifrostResponseExtraFields:
               count_toward_budgets:
                 type: boolean
     guardrail_debug:
-      type: object
-      description: Guardrail judge calls and detect-only matches
-      additionalProperties: true
+      $ref: '#/BifrostGuardrailMetadata'
     parse_errors:
       type: array
       description: Errors hit while parsing JSONL batch results
@@ -315,6 +321,88 @@ BifrostResponseExtraFields:
     passthrough_path:
       type: string
       description: Provider path of a passthrough request
+
+BifrostGuardrailMetadata:
+  type: object
+  description: Guardrail judge calls and matches recorded for a request.
+  properties:
+    judge_calls:
+      type: array
+      description: Billable guardrail judge invocations (LLM-backed guardrail providers)
+      items:
+        $ref: '#/BifrostGuardrailJudgeCall'
+    detections:
+      type: array
+      description: Guardrail matches. Enforced rules record detect-only matches; output-monitor rules record every match they see, with the action enforcement would have taken.
+      items:
+        $ref: '#/BifrostGuardrailDetection'
+
+BifrostGuardrailDetection:
+  type: object
+  properties:
+    phase:
+      type: string
+      description: Phase the match was found in (input, output, or mcp-<source>)
+    rule_id:
+      type: integer
+    rule_name:
+      type: string
+    guardrail_name:
+      type: string
+      description: Guardrail profile that matched
+    guardrail_provider:
+      type: string
+      description: Guardrail provider type of the profile (for example regex or bedrock)
+    reason:
+      type: string
+    assessments:
+      type: array
+      description: Sanitized policy categories; never the matched text
+      items:
+        type: string
+    action:
+      type: string
+      enum: [detect, block, redact, transform]
+      description: What the guardrail did, or would have done when the rule only monitors
+    enforced:
+      type: boolean
+      description: False when an output-monitor rule recorded the match without acting on it
+
+BifrostGuardrailJudgeCall:
+  type: object
+  properties:
+    phase:
+      type: string
+    rule_id:
+      type: integer
+    rule_name:
+      type: string
+    guardrail_name:
+      type: string
+    guardrail_provider:
+      type: string
+    action:
+      type: string
+    reason:
+      type: string
+    judge_provider:
+      type: string
+    judge_model:
+      type: string
+    judge_request_type:
+      type: string
+    prompt_tokens:
+      type: integer
+    prompt_tokens_details:
+      type: object
+      additionalProperties: true
+    completion_tokens:
+      type: integer
+    completion_tokens_details:
+      type: object
+      additionalProperties: true
+    total_tokens:
+      type: integer
 
 BifrostCacheDebug:
   type: object

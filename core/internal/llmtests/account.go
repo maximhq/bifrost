@@ -203,6 +203,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Fireworks,
 		schemas.Sarvam,
 		schemas.Wafer,
+		schemas.MiniMax,
+		schemas.BytePlus,
 		schemas.Databricks,
 		schemas.Cloudflare,
 		schemas.GithubCopilot,
@@ -285,7 +287,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "amazon.nova-2-sonic-v1:0"}, // Nova Sonic needs a key without an ARN: realtime streams to the ARN when one is set
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -517,6 +519,25 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.MiniMax:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.MINIMAX_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.BytePlus:
+		// Ark has no Bearer /models endpoint, so the configured models are the catalog ListModels returns.
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.BYTEPLUS_API_KEY"),
+				Models:         []string{"deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "dreamina-seedance-2-5-260628"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true), // lets the Batch/File unsupported checks reach the provider
+			},
+		}, nil
 	case schemas.Databricks:
 		return []schemas.Key{
 			{
@@ -545,19 +566,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 		}, nil
 	case schemas.GithubCopilot:
-		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
-		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
 				Models: []string{"*"},
 				Weight: 1.0,
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
-					InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
-					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
-					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
-				},
 			},
 		}, nil
 	case schemas.Gemini:
@@ -682,6 +695,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
 			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
 			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+			{"VLLM_DECISION_BASE_URL", "VLLM_DECISION_MODEL"},
 		}
 		for _, instance := range secondaryVLLMInstances {
 			url := strings.TrimSpace(os.Getenv(instance.urlEnv))
@@ -960,6 +974,32 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.MiniMax:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.BytePlus:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.Databricks:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -989,6 +1029,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.GithubCopilot:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
+				// Only needed when GITHUB_COPILOT_API_KEY is a raw Copilot API token; a PAT or
+				// GitHub token has its host looked up.
+				BaseURL:                        os.Getenv("GITHUB_COPILOT_API_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,

@@ -1518,11 +1518,13 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level and credential-bearing headers are excluded, except
-// content-type, which the passthrough response must retain.
+// content-type, which the passthrough response must retain. A content-type the upstream did
+// not send stays absent: fasthttp otherwise reports text/plain for it, which mislabels streams.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
+	resp.Header.SetNoDefaultContentType(true)
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
@@ -4198,6 +4200,7 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 		costCopy := *usage.Cost
 		usageCopy.Cost = &costCopy
 	}
+	usageCopy.Iterations = slices.Clone(usage.Iterations)
 	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
@@ -5632,6 +5635,41 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 		}
 	}
 	return schemas.DecisionInput{Messages: messages}, items, nil
+}
+
+// SplitDecisionImages removes the input's image parts and returns them, in order, for a
+// provider whose request carries one top-level images array shared by every question
+// (vLLM, SGLang). URLs are sent as given, so the server decides whether the model reads
+// them. A message left with no parts is dropped. Text and structured inputs are returned
+// unchanged. The input is not modified.
+func SplitDecisionImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, error) {
+	if !hasDecisionImage(input.Messages) {
+		return input, nil, nil
+	}
+	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
+	var images []string
+	for _, message := range input.Messages {
+		if message.Content.Parts == nil {
+			messages = append(messages, message)
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			if part.Type != schemas.DecisionInputPartTypeImage {
+				parts = append(parts, part)
+				continue
+			}
+			if part.ImageURL == nil || *part.ImageURL == "" {
+				return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
+			}
+			images = append(images, *part.ImageURL)
+		}
+		if len(parts) > 0 {
+			message.Content.Parts = parts
+			messages = append(messages, message)
+		}
+	}
+	return schemas.DecisionInput{Messages: messages}, images, nil
 }
 
 // hasDecisionImage reports whether any message carries an input_image part.

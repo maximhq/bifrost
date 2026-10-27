@@ -310,6 +310,28 @@ func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing
 	}
 }
 
+// WithDefaults shapes the wire copy. Governance prices the same response in a goroutine, so the
+// advisor passes and the rest of the caller's usage must survive it.
+func TestBifrostResponsesResponseWithDefaultsLeavesUsageUntouched(t *testing.T) {
+	usage := &ResponsesResponseUsage{
+		Type:         Ptr("message"),
+		InputTokens:  10,
+		OutputTokens: 1,
+		Iterations:   []ResponsesResponseUsage{{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000}},
+	}
+	got := (&BifrostResponsesResponse{Usage: usage}).WithDefaults()
+
+	if got.Usage.Iterations != nil || got.Usage.Type != nil || got.Usage.InputTokensDetails == nil || got.Usage.OutputTokensDetails == nil {
+		t.Fatalf("wire usage = %+v, want iterations and type cleared and token details defaulted", got.Usage)
+	}
+	if got.Usage.InputTokens != 10 || got.Usage.OutputTokens != 1 {
+		t.Fatalf("wire usage tokens = %d/%d, want 10/1", got.Usage.InputTokens, got.Usage.OutputTokens)
+	}
+	if len(usage.Iterations) != 1 || usage.Type == nil || usage.InputTokensDetails != nil || usage.OutputTokensDetails != nil {
+		t.Fatalf("WithDefaults changed the caller's usage: %+v", usage)
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.
@@ -1309,6 +1331,29 @@ func TestResponsesMessagePreservesAdditionalTools(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "additional_tools") {
 		t.Fatalf("expected reused receiver to drop preserved bytes, got %s", encoded)
+	}
+}
+
+// TestResponsesMessagePreservesConfigurationUpdate pins #8616: OpenAI's configuration_update
+// item carries its effort under `reasoning`, which the typed decode has no field for, so the
+// item must round-trip verbatim or OpenAI rejects it with "Missing required parameter:
+// 'input[0].reasoning'".
+func TestResponsesMessagePreservesConfigurationUpdate(t *testing.T) {
+	raw := `{"reasoning":{"effort":"high"},"type":"configuration_update"}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal configuration_update item: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageType("configuration_update") {
+		t.Fatalf("expected configuration_update item, got %#v", msg.Type)
+	}
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal configuration_update item: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("expected item to round-trip verbatim\nwant: %s\ngot:  %s", raw, encoded)
 	}
 }
 
@@ -2519,4 +2564,23 @@ func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
 	out, err := Marshal(msg)
 	require.NoError(t, err)
 	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
+}
+
+// TestResponsesStreamEventOmitsEmptyNestedExtraFields pins that a lifecycle event's wrapped
+// response, whose ExtraFields nothing fills, serializes no extra_fields, while a filled one
+// (a unary response) still does.
+func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
+	event := BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeCreated,
+		Response:    &BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o"},
+		ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesStreamRequest, Provider: OpenAI},
+	}
+	encoded, err := MarshalSorted(event)
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(encoded, "response.extra_fields").Exists(), "nested extra_fields leaked: %s", encoded)
+	assert.Equal(t, "openai", gjson.GetBytes(encoded, "extra_fields.provider").String(), "top-level extra_fields must stay: %s", encoded)
+
+	unary, err := MarshalSorted(BifrostResponsesResponse{ID: new("resp_1"), ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesRequest}})
+	require.NoError(t, err)
+	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
 }

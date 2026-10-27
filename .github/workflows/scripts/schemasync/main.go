@@ -130,6 +130,7 @@ var ignoreGoFields = map[string]string{
 	// injected_tools is read from providers.<name>, so the schema must not advertise it here
 	// (TestValidateConfigSchema_InjectedTools pins that).
 	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
+	"/properties/governance/properties/providers/items|passthrough":    "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.passthrough",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",

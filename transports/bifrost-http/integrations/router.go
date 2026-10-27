@@ -1079,7 +1079,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
-		g.markDeprecatedListModelsResponse(listModelsResponse)
+		g.modelCatalog().EnrichListModelsResponse(listModelsResponse)
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 		bifrostExtraFields = listModelsResponse.ExtraFields
@@ -1101,6 +1101,8 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
+
+		g.modelCatalog().EnrichModelRetrieveResponse(modelRetrieveResponse)
 
 		response, err = config.ModelRetrieveResponseConverter(bifrostCtx, modelRetrieveResponse)
 		bifrostExtraFields = modelRetrieveResponse.ExtraFields
@@ -1989,30 +1991,16 @@ func (g *GenericRouter) handleAsyncJobResponse(ctx *fasthttp.RequestCtx, bifrost
 	}
 }
 
-// markDeprecatedListModelsResponse annotates deprecated models with the
-// IsDeprecated flag using catalog pricing data, without removing them from the
-// response. Clients decide how to surface deprecated entries (e.g. the UI keeps
-// them visible but non-selectable).
-func (g *GenericRouter) markDeprecatedListModelsResponse(resp *schemas.BifrostListModelsResponse) {
-	if resp == nil || len(resp.Data) == 0 {
-		return
+// modelCatalog returns the server's model catalog, or nil when the handler store
+// has none. The catalog's enrich methods are nil-safe, so callers need no check.
+// Drop-in models routes enrich through it exactly as the native /v1/models
+// route does, so an SDK listing reports the same limits, pricing and
+// deprecation as the native one.
+func (g *GenericRouter) modelCatalog() *modelcatalog.ModelCatalog {
+	if provider, ok := g.handlerStore.(modelCatalogProvider); ok {
+		return provider.GetModelCatalog()
 	}
-	catalogProvider, ok := g.handlerStore.(modelCatalogProvider)
-	if !ok || catalogProvider.GetModelCatalog() == nil {
-		return
-	}
-	catalog := catalogProvider.GetModelCatalog()
-	for i := range resp.Data {
-		model := resp.Data[i]
-		provider, modelName := schemas.ParseModelString(model.ID, "")
-		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
-		if pricingEntry == nil && model.Alias != nil {
-			pricingEntry = catalog.GetPricingEntryForModel(*model.Alias, provider)
-		}
-		if pricingEntry != nil && pricingEntry.IsDeprecated {
-			resp.Data[i].IsDeprecated = true
-		}
-	}
+	return nil
 }
 
 // handleBatchRequest handles batch API requests (create, list, retrieve, cancel, results)
@@ -3701,12 +3689,6 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Route policy disabled: a hardcoded allowlist blocks new provider endpoints until Bifrost is upgraded.
-	// if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
-	// 	g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
-	// 	return
-	// }
-
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
 	contentType := string(ctx.Request.Header.ContentType())
@@ -3720,9 +3702,14 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
-	provider, err = getPassthroughProvider(ctx, provider)
+	// Host-backed routes have a fixed upstream and route list, so only their own provider serves them.
+	provider, err = getPassthroughProvider(ctx, g.handlerStore, provider, cfg.UpstreamURL == "")
 	if err != nil {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		status := fasthttp.StatusBadRequest
+		if errors.Is(err, errPassthroughNotEnabled) {
+			status = fasthttp.StatusForbidden
+		}
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), status))
 		return
 	}
 
@@ -3800,6 +3787,184 @@ func passthroughHeartbeatEligible(provider schemas.ModelProvider, contentType st
 	}
 	mediaType, _, _ := strings.Cut(contentType, ";")
 	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+}
+
+// passthroughEndsWithResponsesFailed reports whether a passthrough stream speaks OpenAI's Responses
+// SSE protocol, where a stream that fails ends with a response.failed event. Every other stream is
+// raw bytes in a protocol the relay does not own, so it keeps ending without a frame of ours.
+func passthroughEndsWithResponsesFailed(ctx *schemas.BifrostContext, provider schemas.ModelProvider, path, contentType string) bool {
+	switch schemas.ResolveBaseProvider(ctx, provider) {
+	case schemas.OpenAI, schemas.Azure:
+	default:
+		return false
+	}
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	if !strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream") {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimRight(path, "/"), "/responses")
+}
+
+// passthroughResponsesFailedFrame renders a mid-stream failure as the response.failed event OpenAI
+// ends a failed Responses stream with (developers.openai.com/api/reference/resources/responses/streaming-events),
+// with the error under response.error where clients read it. responseID is the id the upstream's
+// response.created carried, omitted when none was seen, and seq continues the upstream sequence.
+func passthroughResponsesFailedFrame(bifrostErr *schemas.BifrostError, responseID string, seq int) []byte {
+	code, message := "server_error", "upstream stream failed"
+	if bifrostErr == nil {
+		message = "upstream closed the stream before response.completed"
+	}
+	// A gateway-side failure ("Error reading stream: read tcp 10.0.0.5:...") stays in the
+	// server log; only an upstream's own error text reaches the client.
+	if bifrostErr != nil && !bifrostErr.IsBifrostError {
+		if sanitized := lib.SanitizeBifrostErrorForClient(bifrostErr); sanitized != nil && sanitized.Error != nil {
+			if sanitized.Error.Code != nil && *sanitized.Error.Code != "" {
+				code = *sanitized.Error.Code
+			}
+			if sanitized.Error.Message != "" {
+				message = sanitized.Error.Message
+			}
+		}
+	}
+	response := map[string]any{
+		"object": "response",
+		"status": "failed",
+		"error":  map[string]any{"code": code, "message": message},
+	}
+	if responseID != "" {
+		response["id"] = responseID
+	}
+	data, err := schemas.MarshalSorted(map[string]any{
+		"type":            "response.failed",
+		"sequence_number": seq,
+		"response":        response,
+	})
+	if err != nil {
+		return nil
+	}
+	frame := make([]byte, 0, len(data)+40)
+	frame = append(frame, "event: response.failed\ndata: "...)
+	frame = append(frame, data...)
+	return append(frame, "\n\n"...)
+}
+
+// responsesFrameRelayMaxPending bounds one unterminated frame at the per-event ceiling core's native
+// SSE reader uses (sseMaxBufSize), so passthrough accepts exactly what the native path does.
+const responsesFrameRelayMaxPending = 10 << 20
+
+// responsesFrameRelay forwards a Responses SSE stream one whole frame at a time and notes whether a
+// terminal event went by. SSE cannot cancel a half-sent line, so a failure frame written after one
+// would be glued onto it; holding the unterminated tail costs clients nothing, since the SSE spec
+// has them discard an unterminated frame at end of stream anyway.
+type responsesFrameRelay struct {
+	pending     []byte // bytes after the last complete frame
+	sawTerminal bool   // a response.completed/incomplete/failed or error event was forwarded
+	overflowed  bool   // an unterminated frame passed the cap; its tail was discarded
+	responseID  string // id from the forwarded response.created, "" until one went by
+	lastSeq     int    // sequence_number of the last forwarded event
+	sawSeq      bool   // lastSeq was read from a forwarded event
+}
+
+// failedFrame renders the response.failed that ends this stream, naming the response the client
+// already received and continuing its sequence.
+func (r *responsesFrameRelay) failedFrame(bifrostErr *schemas.BifrostError) []byte {
+	seq := 0
+	if r.sawSeq {
+		seq = r.lastSeq + 1
+	}
+	return passthroughResponsesFailedFrame(bifrostErr, r.responseID, seq)
+}
+
+// complete appends body and returns the complete frames now available, keeping the remainder.
+func (r *responsesFrameRelay) complete(body []byte) []byte {
+	// Upstreams flush whole events, so a chunk that ends on a frame boundary goes out as is.
+	if len(r.pending) == 0 && lastSSEFrameEnd(body) == len(body) {
+		r.observe(body)
+		return body
+	}
+	// pending holds no blank line, so only the new bytes (plus a 3-byte overlap for a split
+	// "\r\n\r\n") can complete a frame; rescanning the whole tail is quadratic on large events.
+	from := max(0, len(r.pending)-3)
+	r.pending = append(r.pending, body...)
+	end := lastSSEFrameEnd(r.pending[from:])
+	if end < 0 {
+		if len(r.pending) > responsesFrameRelayMaxPending {
+			r.pending, r.overflowed = nil, true
+		}
+		return nil
+	}
+	end += from
+	frames := r.pending[:end]
+	r.observe(frames)
+	r.pending = append([]byte(nil), r.pending[end:]...)
+	return frames
+}
+
+// lastSSEFrameEnd returns the offset just past the last blank line (LF or CRLF) in data, or -1.
+func lastSSEFrameEnd(data []byte) int {
+	lf := bytes.LastIndex(data, []byte("\n\n"))
+	crlf := bytes.LastIndex(data, []byte("\r\n\r\n"))
+	switch {
+	case crlf >= 0 && crlf+4 > lf+2:
+		return crlf + 4
+	case lf >= 0:
+		return lf + 2
+	}
+	return -1
+}
+
+// observe records what the client has now been sent: whether a terminal event went by, the id from
+// response.created, and the last sequence number. Nothing is recorded once a terminal event has
+// passed, since no synthetic failure can follow it.
+func (r *responsesFrameRelay) observe(frames []byte) {
+	for len(frames) > 0 && !r.sawTerminal {
+		line := frames
+		if i := bytes.IndexByte(frames, '\n'); i >= 0 {
+			line, frames = frames[:i], frames[i+1:]
+		} else {
+			frames = nil
+		}
+		payload, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data:"))
+		if !ok {
+			continue
+		}
+		if seq, ok := sseSequenceNumber(payload); ok {
+			r.lastSeq, r.sawSeq = seq, true
+		}
+		if r.responseID == "" && bytes.Contains(payload, []byte("response.created")) {
+			r.responseID = gjson.GetBytes(payload, "response.id").Str
+		}
+		// Only a payload naming a terminal type is parsed; a delta frame skips the parse.
+		if !(bytes.Contains(payload, []byte("response.completed")) || bytes.Contains(payload, []byte("response.incomplete")) ||
+			bytes.Contains(payload, []byte("response.failed")) || bytes.Contains(payload, []byte(`"error"`))) {
+			continue
+		}
+		switch gjson.GetBytes(bytes.TrimSpace(payload), "type").Str {
+		case "response.completed", "response.incomplete", "response.failed", "error":
+			r.sawTerminal = true
+		}
+	}
+}
+
+// sseSequenceNumber reads the first "sequence_number" value in an event payload without parsing
+// the event; every Responses streaming event carries it at the top level.
+func sseSequenceNumber(payload []byte) (int, bool) {
+	i := bytes.Index(payload, []byte(`"sequence_number"`))
+	if i < 0 {
+		return 0, false
+	}
+	rest := bytes.TrimLeft(payload[i+len(`"sequence_number"`):], " \t")
+	rest, ok := bytes.CutPrefix(rest, []byte(":"))
+	if !ok {
+		return 0, false
+	}
+	rest = bytes.TrimLeft(rest, " \t")
+	n, digits := 0, 0
+	for digits < len(rest) && digits < 18 && rest[digits] >= '0' && rest[digits] <= '9' {
+		n = n*10 + int(rest[digits]-'0')
+		digits++
+	}
+	return n, digits > 0
 }
 
 func (g *GenericRouter) handlePassthroughStream(
@@ -3908,6 +4073,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	// unrecognized Bedrock EventStream event-type, there is no protocol guarantee that extra
 	// bytes here are safely ignorable. So the heartbeat only runs when the resolved
 	// content-type is actually SSE.
+	endsWithResponsesFailed := passthroughEndsWithResponsesFailed(bifrostCtx, provider, req.Path, contentType)
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
 	if passthroughHeartbeatEligible(provider, contentType) {
@@ -3928,26 +4094,57 @@ func (g *GenericRouter) handlePassthroughStream(
 			cancel()
 		}()
 
+		var frames *responsesFrameRelay
+		if endsWithResponsesFailed {
+			frames = &responsesFrameRelay{}
+		}
+		send := func(body []byte) bool {
+			if frames != nil {
+				body = frames.complete(body)
+			}
+			return len(body) == 0 || reader.Send(body)
+		}
+
 		// Write the first chunk's data.
 		if len(passthroughResp.Body) > 0 {
-			if !reader.Send(passthroughResp.Body) {
+			if !send(passthroughResp.Body) {
 				cancel()
 				return
 			}
 		}
 
+		var streamErr *schemas.BifrostError
 		for chunk := range stream {
 			if chunk == nil {
 				continue
 			}
 			if chunk.BifrostError != nil {
+				streamErr = chunk.BifrostError
 				break
 			}
 			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) > 0 {
-				if !reader.Send(chunk.BifrostPassthroughResponse.Body) {
+				if !send(chunk.BifrostPassthroughResponse.Body) {
 					cancel()
 					return
 				}
+			}
+			// An unterminated frame passed the cap: stop forwarding rather than leak a partial frame.
+			if frames != nil && frames.overflowed {
+				streamErr = &schemas.BifrostError{Error: &schemas.ErrorField{Code: schemas.Ptr("server_error"), Message: "upstream event exceeded the 10 MB frame limit"}}
+				break
+			}
+		}
+
+		// Headers and earlier events are already on the wire, so a Responses stream that ended,
+		// by an error or by a clean close, without a terminal event can only be reported in the
+		// stream. Without one the client sees a bare close and retries blind.
+		if frames != nil {
+			if frames.sawTerminal {
+				if len(frames.pending) > 0 && !frames.overflowed {
+					reader.Send(frames.pending)
+				}
+			} else if frame := frames.failedFrame(streamErr); frame != nil {
+				reader.Send(frame)
 			}
 		}
 	}()

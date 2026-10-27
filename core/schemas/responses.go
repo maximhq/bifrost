@@ -274,7 +274,7 @@ type BifrostResponsesResponse struct {
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
 	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
-	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields,omitzero"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields
@@ -495,9 +495,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 		}
 	}
 
-	// Usage - ensure token details exist
-	result.Usage = resp.Usage
-	if result.Usage != nil {
+	// Usage - ensure token details exist. Shaped on a copy: governance prices the caller's
+	// response concurrently, and its iterations carry the advisor passes.
+	if resp.Usage != nil {
+		usage := *resp.Usage
+		result.Usage = &usage
 		result.Usage.Iterations = nil
 		result.Usage.Type = nil
 		if result.Usage.InputTokensDetails == nil {
@@ -1497,7 +1499,8 @@ const (
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
 	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
-	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call"         // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeConfigurationUpdate  ResponsesMessageType = "configuration_update" // OpenAI mid-conversation reasoning effort change
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1561,6 +1564,8 @@ type ResponsesMessage struct {
 	// decode promotes them into the embedded mcp_list_tools fields and strips
 	// required fields. Rather than fail to deserialize the whole input array
 	// or drop/mangle these items, we round-trip the original bytes unchanged.
+	// OpenAI's `configuration_update` item is preserved the same way: its
+	// `reasoning` object has no typed field and OpenAI requires it.
 	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
 	rawPreserved []byte
 }
@@ -1570,7 +1575,8 @@ type ResponsesMessage struct {
 func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
 		t == string(ResponsesMessageTypeToolSearchOutput) ||
-		t == string(ResponsesMessageTypeAdditionalTools)
+		t == string(ResponsesMessageTypeAdditionalTools) ||
+		t == string(ResponsesMessageTypeConfigurationUpdate)
 }
 
 // UnmarshalJSON preserves codex tool_search/additional_tools items verbatim
