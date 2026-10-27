@@ -1733,7 +1733,7 @@ func TestDatabricksDecisionSystemOneSendsImagesByReference(t *testing.T) {
 		Model:    "system.ai.typesafeai-jev-1-14-0",
 		Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
 			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("The photo is img1.")},
-			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img1"), Data: []byte("\x89PNG\r\n\x1a\nIMG")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img1"), Data: schemas.DecisionData{File: []byte("\x89PNG\r\n\x1a\nIMG")}},
 		}}}}},
 		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("red"), Instructions: schemas.NewDecisionText("Is img1 mostly red?")}},
 	}

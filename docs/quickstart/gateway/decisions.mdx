@@ -98,8 +98,23 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 - `image_url` is a base64 data URL or an `https` URL. Ollama reads base64 only.
 - `detail` is optional: `low`, `high`, `auto`, or `original`.
-- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (Azure, Databricks' `ai_decide`, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request. TypeSafe and Databricks' System One models read images by reference only, as below, and reject an inline image the same way. vLLM and SGLang v0.5.22 or later forward images to the model, which answers or returns its own `400`. SGLang v0.5.21 ignores images, so it can answer without them instead of returning a `400`.
+- Parts are `input_text`, `input_image`, and `input_json` (`{ "type": "input_json", "data": { ... } }`, an object or an array) in user messages, and `output_text` and `refusal` in assistant messages. A provider that reads text only (Azure, Databricks' `ai_decide`, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request. TypeSafe and Databricks' System One models read images by reference only, as below, and reject an inline image the same way. vLLM and SGLang v0.5.22 or later forward images to the model, which answers or returns its own `400`. SGLang v0.5.21 ignores images, so it can answer without them instead of returning a `400`.
 - An `input_text` part's `text` is a string, or structured data (object or array) that System One models read as is and OpenAI receives as JSON text.
+
+### Conversation History
+
+To judge a conversation, send its messages together with the function calls, custom tool calls, and their outputs, in order. Each output names the call it answers by `call_id`:
+
+```json
+"input": [
+  { "role": "user", "content": "What's the weather in Paris?" },
+  { "type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" },
+  { "type": "function_call_output", "call_id": "call_1", "output": "18C and sunny" },
+  { "role": "assistant", "content": [{ "type": "output_text", "text": "It's 18C and sunny in Paris." }] }
+]
+```
+
+A tool output is a string, or a list of `input_text` and `input_image` parts. OpenAI's decision models read every item as sent. Other models read the conversation as JSON text, so an image in a tool output is rejected by a provider that reads text only, as an image in a message is.
 
 ### Images by Reference
 

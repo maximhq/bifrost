@@ -600,7 +600,7 @@ func TestAzureDecisionForwardsAssets(t *testing.T) {
 		Role: "user",
 		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
 			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Is r-a a red square?")},
-			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: schemas.DecisionData{File: []byte("\x89PNG\r\n\x1a\n")}},
 		}},
 	}}})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
