@@ -3679,6 +3679,106 @@ func TestApplyToolSchemaPolicy_LookaroundIsCopyOnWrite(t *testing.T) {
 	}
 }
 
+// A model that rejects tool-schema patterns loses the keyword wherever a schema can
+// carry one, and nothing else: sibling constraints, a property that is merely named
+// "pattern" and instance data stay, the caller's schema is never written through,
+// and an untouched subtree is shared rather than copied.
+func TestApplyToolSchemaPolicy_DropPatternRemovesEveryKeyword(t *testing.T) {
+	raw := `{
+		"type": "object",
+		"properties": {
+			"collection": {"type": "string", "minLength": 1, "pattern": "^[a-z]{1,200}(?:\\/[a-z]{1,200}){0,14}$"},
+			"pattern": {"type": "string", "pattern": "^x$", "default": {"pattern": "kept"}},
+			"rows": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string", "pattern": "^[a-z]+$"}}}},
+			"either": {"anyOf": [{"type": "string", "pattern": "^a$"}, {"type": "null"}]},
+			"plain": {"type": "string", "enum": ["a", "b"]}
+		},
+		"additionalProperties": {"type": "string", "pattern": "^extra$"},
+		"$defs": {"Id": {"type": "string", "pattern": "^id$"}}
+	}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	policy := ToolSchemaPolicy{DropPattern: true}
+	if policy.IsZero() {
+		t.Fatal("a policy that drops patterns must not be the zero policy")
+	}
+
+	updated, changed := ApplyToolSchemaPolicy(&params, policy)
+	if !changed || updated == &params {
+		t.Fatal("expected a rewritten copy")
+	}
+	out, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	props := got["properties"].(map[string]any)
+	collection := props["collection"].(map[string]any)
+	if _, ok := collection["pattern"]; ok || collection["minLength"] != float64(1) {
+		t.Fatalf("collection should lose only its pattern: %v", collection)
+	}
+	named := props["pattern"].(map[string]any)
+	if kept, _ := named["default"].(map[string]any); named["type"] != "string" || kept["pattern"] != "kept" || len(named) != 2 {
+		t.Fatalf("a property named pattern keeps itself and its default, loses its keyword: %v", named)
+	}
+	name := props["rows"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["name"].(map[string]any)
+	either := props["either"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)
+	extra := got["additionalProperties"].(map[string]any)
+	id := got["$defs"].(map[string]any)["Id"].(map[string]any)
+	for label, node := range map[string]map[string]any{"items": name, "anyOf": either, "additionalProperties": extra, "$defs": id} {
+		if _, ok := node["pattern"]; ok {
+			t.Fatalf("%s kept its pattern: %s", label, out)
+		}
+	}
+
+	if before, _ := json.Marshal(&params); !strings.Contains(string(before), `(?:`) || !strings.Contains(string(before), `^extra$`) {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+	origPlain, _ := params.Properties.Get("plain")
+	newPlain, _ := updated.Properties.Get("plain")
+	if origPlain != newPlain {
+		t.Fatal("an unchanged nested schema was copied")
+	}
+
+	clean := schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMap()}
+	if out, changed := ApplyToolSchemaPolicy(&clean, policy); changed || out != &clean {
+		t.Fatal("a schema with no pattern must be returned as-is")
+	}
+	top := schemas.ToolFunctionParameters{Type: "string", Pattern: new("^[a-z]+$")}
+	if out, changed := ApplyToolSchemaPolicy(&top, policy); !changed || out.Pattern != nil || top.Pattern == nil {
+		t.Fatal("a root-level pattern must be dropped from the copy only")
+	}
+}
+
+// Only models whose row drops patterns pay for the walk: a schema with no pattern must
+// stay allocation-free, and one with patterns copies just the spine that changed.
+func BenchmarkApplyToolSchemaPolicy_DropPattern(b *testing.B) {
+	policy := ToolSchemaPolicy{DropPattern: true}
+	for name, raw := range map[string]string{
+		"no_pattern": `{"type":"object","properties":{"collection":{"type":"string","minLength":1},"doc_id":{"type":"string"}}}`,
+		"patterns": `{"type":"object","properties":{` +
+			`"collection":{"type":"string","pattern":"^[a-z]{1,200}(?:\\/[a-z]{1,200}){0,14}$"},` +
+			`"doc_id":{"type":"string","pattern":"^[a-z]{1,200}$"},` +
+			`"writes":{"type":"array","items":{"type":"object","properties":{"collection":{"type":"string","pattern":"^[a-z]+$"}}}}}}`,
+	} {
+		var params schemas.ToolFunctionParameters
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ApplyToolSchemaPolicy(&params, policy)
+			}
+		})
+	}
+}
+
 // additionalProperties may itself be a schema (JSON Schema: "the value of the
 // additionalProperties keyword is a schema"), so a pattern under it is reachable
 // by the model and must be rewritten like any other. The boolean form has no
