@@ -1,3 +1,4 @@
+- feat: Kimchi provider for chat, Responses and embeddings [@arnasnn](https://github.com/arnasnn)
 - feat: relays to non-LLM APIs with a single credential, per-route pricing and usage mapping, streaming, header matchers on any header name, and relay plugin hooks for access, budgets and logging
 - feat: AWS SageMaker provider for real-time endpoints (OpenAI-compatible chat) plus InvokeEndpoint and InvokeEndpointWithResponseStream passthrough
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
