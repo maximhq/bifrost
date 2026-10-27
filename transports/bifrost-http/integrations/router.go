@@ -479,6 +479,7 @@ const (
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 	RouteConfigTypeTypesafe  RouteConfigType = "typesafe"
+	RouteConfigTypeAzure     RouteConfigType = "azure"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -557,6 +558,8 @@ type PassthroughConfig struct {
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
 	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
+	ModelFreePath func(method, path string) bool // optional: requests that run no model, so model allowlists are skipped
+	PathModel     func(path string) string       // optional: the model a provider-shaped path addresses, used for key selection and governance
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -1303,6 +1306,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			}
 			// Early return skips the common footer — apply routed-identity headers here.
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+			// Raw bytes are the audio itself, under the Content-Type the PostCallback set.
+			if rawBytes, ok := response.([]byte); ok {
+				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
+				ctx.Response.SetBody(rawBytes)
+				return
+			}
 			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			return
 		} else {
@@ -3641,7 +3650,8 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	case schemas.Anthropic:
 		forward = isAnthropicOAuthBearer(authHeader)
 	case schemas.OpenAI:
-		forward = isJWTBearer(authHeader)
+		// Only the ChatGPT backend takes a caller token, and only one ChatGPT issued; everything else keeps the stored key.
+		forward = upstreamURL == chatGPTUpstreamURL && isChatGPTBearer(authHeader)
 	}
 	if !forward {
 		return
@@ -3660,7 +3670,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
-		case "api-key", "x-api-key", "x-goog-api-key",
+		case "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key",
 			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
@@ -3698,6 +3708,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	resolvedModel := extractPassthroughModel(path, bodyModel)
+	if cfg.PathModel != nil {
+		resolvedModel = cfg.PathModel(path)
+	}
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
@@ -3715,6 +3728,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
+	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	}
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{

@@ -29,7 +29,7 @@ import (
 // at all: attemptCallFailureRecovery fails closed on missing hints (MCP's own
 // defaults are destructiveHint=true, idempotentHint=false), so an unannotated
 // tool is never retried automatically. Reuses sessionInvalidator from
-// connectionchecker_reconnect_test.go.
+// connectionchecker_reconnect_test.go. Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildRecoveryMCPServer(t *testing.T, toolOpts ...mcpgo.ToolOption) (*httptest.Server, *sessionInvalidator) {
 	t.Helper()
 
@@ -41,7 +41,7 @@ func buildRecoveryMCPServer(t *testing.T, toolOpts ...mcpgo.ToolOption) (*httpte
 		},
 	)
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	invalidator := &sessionInvalidator{dead: map[string]bool{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if invalidator.reject(w, r) {

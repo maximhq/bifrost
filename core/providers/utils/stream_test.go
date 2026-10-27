@@ -552,6 +552,30 @@ func TestAttachBilledUsageFromContext_CopiesUsage(t *testing.T) {
 	}
 }
 
+func TestAttachBilledUsageFromContext_CopiesIterations(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 10,
+		TotalTokens:  10,
+		Iterations: []schemas.ResponsesResponseUsage{
+			{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 900},
+		},
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+
+	bifrostErr := &schemas.BifrostError{}
+	attachBilledUsageFromContext(ctx, bifrostErr)
+	usage.Iterations[0].InputTokens = 999
+
+	billed := bifrostErr.ExtraFields.BilledUsage
+	if billed == nil || len(billed.Iterations) != 1 {
+		t.Fatalf("BilledUsage dropped the advisor pass: %+v", billed)
+	}
+	if billed.Iterations[0].InputTokens != 2000 {
+		t.Fatalf("BilledUsage aliases the accumulator's iterations: got %d, want 2000", billed.Iterations[0].InputTokens)
+	}
+}
+
 func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{})

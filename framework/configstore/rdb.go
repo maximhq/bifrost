@@ -180,6 +180,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
 		BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+		SageMakerKeyConfig:     dbKey.SageMakerKeyConfig,
 		Aliases:                dbKey.Aliases,
 		VLLMKeyConfig:          dbKey.VLLMKeyConfig,
 		ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
@@ -213,6 +214,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
 		BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+		SageMakerKeyConfig:     key.SageMakerKeyConfig,
 		Aliases:                key.Aliases,
 		VLLMKeyConfig:          key.VLLMKeyConfig,
 		ReplicateKeyConfig:     key.ReplicateKeyConfig,
@@ -228,6 +230,8 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 
 	if key.AzureKeyConfig != nil {
 		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+		dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+		dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 	}
 
 	if key.VertexKeyConfig != nil {
@@ -848,6 +852,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
 				BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+				SageMakerKeyConfig:     key.SageMakerKeyConfig,
 				Aliases:                key.Aliases,
 				VLLMKeyConfig:          key.VLLMKeyConfig,
 				ReplicateKeyConfig:     key.ReplicateKeyConfig,
@@ -864,6 +869,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			// Handle Azure config
 			if key.AzureKeyConfig != nil {
 				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+				dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+				dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 			}
 
 			// Handle Vertex config
@@ -1144,6 +1151,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
 			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+			SageMakerKeyConfig:     key.SageMakerKeyConfig,
 			Aliases:                key.Aliases,
 			VLLMKeyConfig:          key.VLLMKeyConfig,
 			ReplicateKeyConfig:     key.ReplicateKeyConfig,
@@ -1160,6 +1168,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 		}
 
 		// Handle Vertex config
@@ -1311,6 +1321,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
 			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
+			SageMakerKeyConfig:     key.SageMakerKeyConfig,
 			Aliases:                key.Aliases,
 			VLLMKeyConfig:          key.VLLMKeyConfig,
 			ReplicateKeyConfig:     key.ReplicateKeyConfig,
@@ -1326,6 +1337,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 		}
 		// Handle Vertex config
 		if key.VertexKeyConfig != nil {
@@ -9048,6 +9061,73 @@ func (s *RDBConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (in
 		return 0, fmt.Errorf("failed to delete expired oauth flows: %w", result.Error)
 	}
 	return result.RowsAffected, nil
+}
+
+// abandonedOauthConfigSweepBatch caps the rows one DeleteAbandonedOauthConfigs call removes.
+const abandonedOauthConfigSweepBatch = 500
+
+// DeleteAbandonedOauthConfigs hard-deletes oauth_configs rows left behind by
+// a bootstrap authorize that never completed: an install whose popup was
+// closed ('pending'), one whose callback came too late or whose token
+// exchange failed ('failed'), and the previous row of a config.json client
+// whose initiate-verification was retried (the client now points at a newer
+// row). A row qualifies only when it is older than olderThan, no MCP client
+// references it, no flow for it is still live, and no token row points at
+// it. Neither status can become 'authorized' again without a live flow, so
+// such a row is dead.
+//
+// config_mcp_clients.oauth_config_id cascades, so deleting a referenced row
+// would delete its MCP client too. The eligible rows are first locked FOR
+// UPDATE, then re-read and deleted with the same reference checks. On
+// Postgres READ COMMITTED the locking read evaluates NOT EXISTS against the
+// snapshot it started with, so a client insert that commits while it waits
+// on the row lock is invisible to it; the re-read takes a fresh snapshot and
+// sees that client, and the lock stops any new one from linking afterwards.
+// The rows are deleted as a slice so the vault remove callback sees each
+// row's ID and clears any client secret it owns. At most
+// abandonedOauthConfigSweepBatch rows go per call, which keeps the IN clause
+// under the database's bound-parameter limit; later sweep ticks drain a
+// larger backlog. Skipped silently when olderThan is zero or negative.
+func (s *RDBConfigStore) DeleteAbandonedOauthConfigs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	now := time.Now()
+	abandoned := func(db *gorm.DB) *gorm.DB {
+		return db.
+			Where("status IN ? AND created_at < ?", []string{"pending", "failed"}, now.Add(-olderThan)).
+			Where("NOT EXISTS (SELECT 1 FROM config_mcp_clients WHERE config_mcp_clients.oauth_config_id = oauth_configs.id)").
+			Where("NOT EXISTS (SELECT 1 FROM mcp_oauth_flows WHERE mcp_oauth_flows.oauth_config_id = oauth_configs.id AND mcp_oauth_flows.expires_at >= ?)", now).
+			Where("NOT EXISTS (SELECT 1 FROM mcp_oauth_tokens WHERE mcp_oauth_tokens.oauth_config_id = oauth_configs.id)")
+	}
+	var deleted int64
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ids []string
+		if err := dbForUpdate(tx.Model(&tables.TableOauthConfig{}).Scopes(abandoned)).
+			Order("created_at").Limit(abandonedOauthConfigSweepBatch).Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		var rows []tables.TableOauthConfig
+		if err := tx.Scopes(abandoned).Where("id IN ?", ids).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		result := tx.Scopes(abandoned).Delete(&rows)
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete abandoned oauth configs: %w", err)
+	}
+	return deleted, nil
 }
 
 // DeleteOrphanedOauthUserTokens hard-deletes token rows that have been in

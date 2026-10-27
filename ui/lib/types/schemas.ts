@@ -69,9 +69,44 @@ export const secretVarSchema = Object.assign(_secretVarBase, {
 });
 
 // Helper to check if a secretVar field has a value or secret reference
-function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
+export function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
 	return !!v.value?.trim() || !!v.ref?.trim();
+}
+
+// Message for private_key_jwt settings saved without the key they configure.
+export const PRIVATE_KEY_REQUIRED_MESSAGE = "A private key is required for private_key_jwt";
+
+// Message for a send method chosen without the secret it sends.
+export const SECRET_REQUIRED_FOR_METHOD_MESSAGE = "A client secret is required to choose how it is sent";
+
+// The id_jag upstream-authentication fields the form checks below read.
+interface IDJAGUpstreamAuthFields {
+	profile?: string;
+	resource_auth_mode?: string;
+	resource_client_secret?: { value?: string; ref?: string };
+	resource_client_auth_method?: string;
+	resource_private_key?: { value?: string; ref?: string };
+	resource_key_id?: string;
+	resource_signing_algorithm?: string;
+	resource_assertion_audience?: string;
+}
+
+// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
+// store a public client, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
+	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
+	return (
+		te.resource_auth_mode === "private_key" ||
+		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
+	);
+}
+
+// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
+// has none. The payload would drop the method and store a public client, which the server refuses.
+export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
+	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
 }
 
 // Azure key config schema
@@ -83,6 +118,8 @@ export const azureKeyConfigSchema = z
 		client_secret: secretVarSchema.optional(),
 		tenant_id: secretVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
+		use_speech_endpoints: z.boolean().optional(),
+		use_voice_live_endpoints: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.endpoint), {
 		message: "Endpoint is required",
@@ -286,6 +323,41 @@ export const bedrockMantleKeyConfigSchema = z
 		},
 	);
 
+// SageMaker key config schema: AWS credentials Bifrost mints the endpoint bearer token from,
+// or a pre-minted token in the key value (api_key auth).
+export const sageMakerKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		endpoints: z.object({ runtime: secretVarSchema.optional() }).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// Default-chain path: both keys empty is valid, but a lone session token cannot mint a token.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
 // VLLM key config schema
 export const vllmKeyConfigSchema = z
 	.object({
@@ -320,6 +392,42 @@ const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | 
 	if (value.startsWith("env.") || value.startsWith("vault.")) return false;
 	return isRedacted(value);
 };
+
+// The id_jag fields resourceCredentialResendRequired compares.
+interface IDJAGResourceTarget {
+	audience?: string;
+	resource_token_endpoint?: string;
+	resource_assertion_audience?: string;
+	resource_client_secret?: { value?: string; ref?: string; type?: string };
+	resource_private_key?: { value?: string; ref?: string; type?: string };
+}
+
+// RESOURCE_CREDENTIAL_RESEND_MESSAGE explains why a saved secret or key must be typed again.
+export const RESOURCE_CREDENTIAL_RESEND_MESSAGE =
+	"Re-enter it: the audience, upstream token endpoint or assertion audience changed, so the saved value is not sent to the new target";
+
+// resourceCredentialResendRequired mirrors the server's rule: an edit that changes where the
+// upstream credential is sent (the audience it is discovered from, the token endpoint, or the
+// client assertion's audience) must carry a saved literal secret or key again rather than its
+// mask. It returns the field to re-enter, or undefined when the edit can be saved as is.
+export function resourceCredentialResendRequired(
+	saved: IDJAGResourceTarget | undefined,
+	edited: IDJAGResourceTarget | undefined,
+): "resource_client_secret" | "resource_private_key" | undefined {
+	if (!saved || !edited) return undefined;
+	const same = (a?: string, b?: string) => (a ?? "").trim() === (b ?? "").trim();
+	const targetChanged =
+		!same(saved.audience, edited.audience) ||
+		!same(saved.resource_token_endpoint, edited.resource_token_endpoint) ||
+		!same(saved.resource_assertion_audience, edited.resource_assertion_audience);
+	if (!targetChanged) return undefined;
+	// A credential kept as an env or vault reference is resent as the reference, which the server
+	// accepts; only a saved literal, shown masked, has to be typed again.
+	const savedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
+	if (savedLiteral(edited.resource_client_secret)) return "resource_client_secret";
+	if (savedLiteral(edited.resource_private_key)) return "resource_private_key";
+	return undefined;
+}
 
 // oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
 // It is the check the outer key schema uses to decide whether an empty key value is fine.
@@ -383,14 +491,14 @@ const literalURLCarriesForbiddenParts = (v: { value?: string; ref?: string; type
 	const u = parseLiteralURL(v);
 	return !!u && (u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== "");
 };
-const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const raw = (v?.value ?? "").trim();
+// hasHTTPSOrLoopbackScheme accepts https URLs, and plain http only on a loopback host, for local
+// testing. Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+// The server re-checks every URL and refuses private targets when it connects; this only lets the
+// form reject a value the server would refuse.
+const hasHTTPSOrLoopbackScheme = (raw: string): boolean => {
 	try {
-		const u = new URL(raw);
-		if (u.protocol === "https:") return true;
-		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const u = new URL(raw.trim());
+		if (u.protocol === "https:") return u.hostname !== "";
 		const host = u.hostname.toLowerCase();
 		return (
 			u.protocol === "http:" &&
@@ -399,6 +507,26 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	} catch {
 		return false;
 	}
+};
+
+// isHTTPSOrLoopbackURL is hasHTTPSOrLoopbackScheme for the id_jag URLs, which the server also
+// refuses when they carry credentials or a fragment.
+export const isHTTPSOrLoopbackURL = (raw: string): boolean => {
+	try {
+		const u = new URL(raw.trim());
+		if (u.username !== "" || u.password !== "" || u.hash !== "") return false;
+	} catch {
+		return false;
+	}
+	return hasHTTPSOrLoopbackScheme(raw);
+};
+
+// isLiteralHTTPSOrLoopbackURL checks only the scheme: the OAuth token URL's credentials, query and
+// fragment are reported separately, pointing at extra_params.
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
@@ -564,6 +692,8 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
 	// Vertex overrides
@@ -623,6 +753,7 @@ export const modelProviderKeySchema = z
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
+		sagemaker_key_config: sageMakerKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -672,6 +803,14 @@ export const modelProviderKeySchema = z
 			// a top-level API key when the user explicitly chose the api_key auth method.
 			if (data.bedrock_mantle_key_config) {
 				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
+			// SageMaker mints a bearer token from AWS credentials; a key value (a pre-minted
+			// token) is only required when the user chose the api_key auth method.
+			if (data.sagemaker_key_config) {
+				if (data.sagemaker_key_config._auth_type === "api_key") {
 					return isSecretVarSet(data.value);
 				}
 				return true;
@@ -1780,6 +1919,42 @@ export const mcpClientUpdateSchema = z
 						message: "Authorization Server URL must start with http:// or https://",
 					}),
 				scopes: z.array(z.string()).optional(),
+				profile: z.enum(["", "id_jag"]).optional(),
+				resource: z.string().optional(),
+				resource_token_endpoint: z.string().optional(),
+				resource_client_id: secretVarSchema.optional(),
+				resource_client_secret: secretVarSchema.optional(),
+				resource_client_auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				resource_private_key: secretVarSchema.optional(),
+				resource_key_id: z.string().optional(),
+				resource_signing_algorithm: z.string().optional(),
+				resource_auth_mode: z.enum(["secret", "private_key"]).optional(),
+				resource_assertion_audience: z.string().optional(),
+			})
+			// The id_jag fields are hidden for the direct profile, so they are checked only
+			// with it selected: a value left behind must not block Save with no visible error.
+			.superRefine((te, ctx) => {
+				if (te.profile !== "id_jag") return;
+				const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+				if (!isSecretVarSet(te.resource_client_id)) {
+					issue("resource_client_id", "Client ID at the upstream server is required for Cross App Access");
+				}
+				if (te.resource_token_endpoint && !isHTTPSOrLoopbackURL(te.resource_token_endpoint)) {
+					issue("resource_token_endpoint", "Token endpoint must be an https URL (http is allowed only for localhost)");
+				}
+				const audience = te.resource_assertion_audience?.trim();
+				if (audience && !isHTTPSOrLoopbackURL(audience)) {
+					issue("resource_assertion_audience", "Assertion audience must be an https URL (http is allowed only for localhost)");
+				}
+				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
+					issue("resource_private_key", "Use either a client secret or a private key at the upstream server, not both");
+				}
+				if (hasPrivateKeySettingsWithoutKey(te)) {
+					issue("resource_private_key", PRIVATE_KEY_REQUIRED_MESSAGE);
+				}
+				if (hasSendMethodWithoutSecret(te)) {
+					issue("resource_client_secret", SECRET_REQUIRED_FOR_METHOD_MESSAGE);
+				}
 			})
 			.optional(),
 		tls_config: z

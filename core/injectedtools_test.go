@@ -657,6 +657,32 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	assert.Equal(t, 33, resp.Usage.TotalTokens)
 }
 
+// Each turn's advisor passes are billed from the merged usage, so the loop keeps every turn's iterations.
+func TestRunInjectedResponsesLoop_KeepsAdvisorIterations(t *testing.T) {
+	set := testInjectedSet(t)
+	advisorPass := func(input int) []schemas.ResponsesResponseUsage {
+		return []schemas.ResponsesResponseUsage{{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: input, OutputTokens: 1}}
+	}
+	scripted := []*schemas.BifrostResponsesResponse{
+		{Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)}},
+		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)}},
+	}
+	dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		resp := scripted[0]
+		scripted = scripted[1:]
+		return resp, nil
+	}
+
+	resp, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, dispatch, searchResult)
+
+	require.Nil(t, err)
+	require.Len(t, resp.Usage.Iterations, 2, "both turns' advisor passes must reach pricing")
+	assert.Equal(t, 100, resp.Usage.Iterations[0].InputTokens)
+	assert.Equal(t, 200, resp.Usage.Iterations[1].InputTokens)
+}
+
 // A client that forces web search gets the choice remapped to the injected tool. Kept on
 // every turn, it would force another search after each result until maxDepth, so the
 // loop relaxes a forced choice to auto once an injected call has run.

@@ -64,6 +64,7 @@ func (s *sessionInvalidator) reject(w http.ResponseWriter, r *http.Request) bool
 
 // buildExpiringSessionMCPServer starts a streamable-HTTP MCP server (one
 // "echo" tool) whose sessions the test can invalidate at will.
+// Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildExpiringSessionMCPServer(t *testing.T) (*httptest.Server, *sessionInvalidator) {
 	t.Helper()
 
@@ -75,7 +76,7 @@ func buildExpiringSessionMCPServer(t *testing.T) (*httptest.Server, *sessionInva
 		},
 	)
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	invalidator := &sessionInvalidator{dead: map[string]bool{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if invalidator.reject(w, r) {

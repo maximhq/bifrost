@@ -3,6 +3,7 @@ package openai
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,12 +20,14 @@ const openAIDecisionsPath = "/v1/decisions"
 // shape also carries Typesafe's structured values, so a structured input,
 // instruction, or description is sent as sorted JSON text, and a predicate's
 // criteria are folded into its instructions, as emulation renders them for a
-// chat model. Input messages, including inline images, pass through unchanged.
+// chat model (as a final text part of instructions written as parts). Input
+// items (messages with their parts, tool calls, and tool outputs), instruction
+// parts, and the prompt-cache settings pass through unchanged.
 //
 // A request OpenAI cannot serve is rejected with a 400 for this attempt, so a
 // fallback can take it: an empty (null) input, which OpenAI requires, an input
-// part other than text or an image, and a question of an unsupported type or
-// without its choices or levels.
+// part of a type OpenAI does not define, and a question of an unsupported type
+// or without its choices or levels.
 func ToOpenAIDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenAIDecisionRequest, error) {
 	if request == nil {
 		return nil, providerUtils.InvalidRequestErrorf("decision request is nil")
@@ -39,7 +42,7 @@ func ToOpenAIDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenAIDe
 		return nil, providerUtils.InvalidRequestErrorf("OpenAI decisions require an input, and this request has none")
 	}
 	if partType := unsupportedOpenAIPartType(request.Input); partType != "" {
-		return nil, providerUtils.InvalidRequestErrorf("OpenAI decisions read text and image input parts, not %q", partType)
+		return nil, providerUtils.InvalidRequestErrorf("OpenAI decisions read text, JSON, image, output text, and refusal parts, not %q", partType)
 	}
 
 	input := request.Input
@@ -50,7 +53,7 @@ func ToOpenAIDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenAIDe
 		}
 		input = schemas.DecisionInput{Text: schemas.Ptr(string(text))}
 	}
-	input.Messages = openAITextParts(input.Messages)
+	input.Messages = openAIMessageItems(openAITextParts(input.Messages))
 
 	questions := make([]OpenAIDecisionQuestion, len(request.Questions))
 	for i, question := range request.Questions {
@@ -62,26 +65,27 @@ func ToOpenAIDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenAIDe
 	}
 
 	return &OpenAIDecisionRequest{
-		Model:            request.Model,
-		Input:            input,
-		Questions:        questions,
-		SafetyIdentifier: request.SafetyIdentifier,
-		ExtraParams:      request.ExtraParams,
+		Model:              request.Model,
+		Input:              input,
+		Questions:          questions,
+		SafetyIdentifier:   request.SafetyIdentifier,
+		ExtraParams:        request.ExtraParams,
+		PromptCacheKey:     request.PromptCacheKey,
+		PromptCacheOptions: request.PromptCacheOptions,
 	}, nil
 }
 
-// unsupportedOpenAIPartType returns the type of the first input part that is
-// neither text nor an image ("untyped" for a part sent without a type), or ""
-// when every part is one of those. Only a part's type is decoded for another
-// kind, so it cannot be sent on.
+// unsupportedOpenAIPartType returns the type of the first message part that is
+// neither text, output text, a refusal, JSON, nor an image ("untyped" for a
+// part sent without a type), or "" when there is none. Only a part's type is
+// decoded for another kind, so it cannot be sent on.
 func unsupportedOpenAIPartType(input schemas.DecisionInput) string {
 	for _, message := range input.Messages {
 		for _, part := range message.Content.Parts {
-			switch part.Type {
-			case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeImage:
-			case "":
+			switch {
+			case part.Type == "":
 				return "untyped"
-			default:
+			case !part.IsTextual() && part.Type != schemas.DecisionInputPartTypeImage:
 				return part.Type
 			}
 		}
@@ -89,17 +93,70 @@ func unsupportedOpenAIPartType(input schemas.DecisionInput) string {
 	return ""
 }
 
-// toOpenAIDecisionQuestion converts one question to OpenAI's text-only
-// question. A level without a label is labelled by its index, the position
-// that already identifies it (the map form defines its levels that way).
+// openAIMessageItems returns the items with each message's id and status
+// removed, since OpenAI's message has neither and they were dropped before
+// tool items were modelled. The input is not modified, and is returned as it
+// is when no message carries one.
+func openAIMessageItems(messages []schemas.DecisionInputMessage) []schemas.DecisionInputMessage {
+	var converted []schemas.DecisionInputMessage
+	for i, message := range messages {
+		if (message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage) || (message.ID == nil && message.Status == nil) {
+			continue
+		}
+		if converted == nil {
+			converted = slices.Clone(messages)
+		}
+		converted[i].ID, converted[i].Status = nil, nil
+	}
+	if converted == nil {
+		return messages
+	}
+	return converted
+}
+
+// openAIInstructionParts returns instructions written as a list of
+// input_text, input_image, and input_json parts, which OpenAI's questions take
+// as they are, or nil for any other instructions.
+func openAIInstructionParts(instructions *schemas.DecisionText) []interface{} {
+	if instructions == nil {
+		return nil
+	}
+	parts, ok := instructions.Structured.([]interface{})
+	if !ok || len(parts) == 0 {
+		return nil
+	}
+	for _, part := range parts {
+		object, ok := part.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		switch object["type"] {
+		case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeImage, schemas.DecisionInputPartTypeJSON:
+		default:
+			return nil
+		}
+	}
+	return parts
+}
+
+// toOpenAIDecisionQuestion converts one question to OpenAI's question.
+// Instructions written as parts are sent as parts, with any criteria as a
+// final text part; any other instructions are sent as text. A level without a
+// label is labelled by its index, the position that already identifies it
+// (the map form defines its levels that way).
 func toOpenAIDecisionQuestion(index int, question schemas.DecisionQuestion) (OpenAIDecisionQuestion, error) {
 	if !question.Type.IsQuestionType() {
 		return OpenAIDecisionQuestion{}, providerUtils.InvalidRequestErrorf("question %d has unsupported type %q; expected predicate, choice, or score", index, question.Type)
 	}
-	converted := OpenAIDecisionQuestion{
-		Type:         question.Type,
-		Name:         question.Name,
-		Instructions: strings.TrimSpace(providerUtils.DecisionTextString(question.Instructions) + providerUtils.DecisionCriteriaText(question.Criteria)),
+	converted := OpenAIDecisionQuestion{Type: question.Type, Name: question.Name}
+	criteria := providerUtils.DecisionCriteriaText(question.Criteria)
+	if parts := openAIInstructionParts(question.Instructions); parts != nil {
+		if criteria = strings.TrimSpace(criteria); criteria != "" {
+			parts = append(slices.Clip(parts), map[string]interface{}{"type": schemas.DecisionInputPartTypeText, "text": criteria})
+		}
+		converted.Instructions = &schemas.DecisionText{Structured: parts}
+	} else {
+		converted.Instructions = schemas.NewDecisionText(strings.TrimSpace(providerUtils.DecisionTextString(question.Instructions) + criteria))
 	}
 
 	switch question.Type {
@@ -220,8 +277,9 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 // /openai/v1/decisions route into the normalized shape. The route takes exactly
 // OpenAI's request, so what OpenAI's Decisions API does not define is rejected
 // by name rather than dropped or interpreted: an input that is null or
-// structured, a top-level "state" (Typesafe's input), and any field a question,
-// choice, or level does not define. OpenAI's questions are a subset of the
+// structured, a top-level "state" (Typesafe's input), instructions that are
+// neither text nor a list of parts, and any field a question, choice, or level
+// does not define. OpenAI's questions are a subset of the
 // shared ones, so the rest maps across unchanged. The route fixes the wire
 // shape, not the provider: a model without a provider prefix is left for
 // routing to resolve, as on the other OpenAI-compatible routes.
@@ -255,17 +313,29 @@ func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDeci
 		SafetyIdentifier: r.SafetyIdentifier,
 		Fallbacks:        schemas.ParseFallbacks(r.Fallbacks),
 		ExtraParams:      r.ExtraParams,
+
+		PromptCacheKey:     r.PromptCacheKey,
+		PromptCacheOptions: r.PromptCacheOptions,
 	}, nil
 }
 
 // toBifrostDecisionQuestion maps one OpenAI question onto the shared question,
 // rejecting by name a field OpenAI's question, choice, or level does not
-// define. index is the question's position, for the error.
+// define, and instructions that are neither text nor a list of parts. Absent
+// instructions are empty text. index is the question's position, for the
+// error.
 func (q OpenAIDecisionQuestion) toBifrostDecisionQuestion(index int) (schemas.DecisionQuestion, error) {
 	if len(q.unknown) > 0 {
 		return schemas.DecisionQuestion{}, fmt.Errorf("question %d has %q, which is not part of OpenAI's Decisions request", index, q.unknown[0])
 	}
-	converted := schemas.DecisionQuestion{Type: q.Type, Name: q.Name, Instructions: schemas.NewDecisionText(q.Instructions)}
+	instructions := q.Instructions
+	if instructions == nil {
+		instructions = schemas.NewDecisionText("")
+	}
+	if instructions.Structured != nil && openAIInstructionParts(instructions) == nil {
+		return schemas.DecisionQuestion{}, fmt.Errorf("question %d instructions must be text or a list of input_text, input_image, and input_json parts, as in OpenAI's Decisions request", index)
+	}
+	converted := schemas.DecisionQuestion{Type: q.Type, Name: q.Name, Instructions: instructions}
 	for j, choice := range q.Choices {
 		if len(choice.unknown) > 0 {
 			return schemas.DecisionQuestion{}, fmt.Errorf("choice %d of question %d has %q, which is not part of OpenAI's Decisions request", j, index, choice.unknown[0])

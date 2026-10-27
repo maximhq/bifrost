@@ -772,6 +772,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if len(key.AzureKeyConfig.Scopes) > 0 {
 				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
+			azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
+			azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
 
@@ -855,6 +857,30 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
+		}
+
+		// Redact SageMaker key config if present
+		if key.SageMakerKeyConfig != nil {
+			smConfig := &schemas.SageMakerKeyConfig{}
+			smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
+			smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
+			if key.SageMakerKeyConfig.SessionToken != nil {
+				smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
+			}
+			if key.SageMakerKeyConfig.Region != nil {
+				smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
+			}
+			if key.SageMakerKeyConfig.RoleARN != nil {
+				smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
+			}
+			if key.SageMakerKeyConfig.ExternalID != nil {
+				smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
+			}
+			if key.SageMakerKeyConfig.RoleSessionName != nil {
+				smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
+			}
+			smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
+			redactedConfig.Keys[i].SageMakerKeyConfig = smConfig
 		}
 
 		if key.VLLMKeyConfig != nil {
@@ -1226,6 +1252,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash BedrockMantleKeyConfig
 	if key.BedrockMantleKeyConfig != nil {
 		data, err := sonic.Marshal(key.BedrockMantleKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash SageMakerKeyConfig
+	if key.SageMakerKeyConfig != nil {
+		data, err := sonic.Marshal(key.SageMakerKeyConfig)
 		if err != nil {
 			return "", err
 		}

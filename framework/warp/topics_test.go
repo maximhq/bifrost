@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -348,6 +349,48 @@ func topicTestNaming(_ context.Context, req *schemas.BifrostResponsesRequest) (*
 		return TextTurn("Refund requests"), nil
 	}
 	return TextTurn("Password resets"), nil
+}
+
+// A topic is named from each text once, the samples first, so a prompt sent
+// to several providers is shown to the model as one request.
+func TestLabelTextsShowsEachTextOnce(t *testing.T) {
+	texts := map[string]string{"a": "graviton summary", "b": "graviton summary", "c": "fix the docs", "d": "", "e": "cut a release"}
+	require.Equal(t, []string{"graviton summary", "fix the docs", "cut a release"},
+		labelTexts(texts, []string{"a", "b", "c"}, []string{"d", "c", "e", "missing"}))
+}
+
+// Names written after a merge are told the names merged, so the model names
+// what they share rather than picking one of them again.
+func TestLabelTopicOffersFormerNames(t *testing.T) {
+	var prompt string
+	chat := func(_ context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		prompt = responsesInputText(req.Input)
+		return TextTurn("Coding Agent Work"), nil
+	}
+	label, err := askTopicLabel(context.Background(), chat, configFromRow(validWarpConfigRow()), []string{"fix the docs"}, []string{"Documentation Updates", "Release Delay Management"})
+	require.NoError(t, err)
+	require.Equal(t, "Coding Agent Work", label)
+	require.Contains(t, prompt, "Documentation Updates; Release Delay Management")
+
+	_, err = labelTopic(context.Background(), chat, configFromRow(validWarpConfigRow()), []string{"fix the docs"})
+	require.NoError(t, err)
+	require.NotContains(t, prompt, "merged", "a topic named the first time has no former names")
+}
+
+// An answer with no name in it is no name to askTopicLabel, so a caller with
+// a name already keeps it; labelTopic, naming a topic the first time, falls
+// back to the texts' own words.
+func TestAskTopicLabelReportsAnAnswerWithNoName(t *testing.T) {
+	chat := func(context.Context, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		return TextTurn(" \"\" "), nil
+	}
+	config := configFromRow(validWarpConfigRow())
+	label, err := askTopicLabel(context.Background(), chat, config, []string{"refund please"}, nil)
+	require.NoError(t, err)
+	require.Empty(t, label)
+	label, err = labelTopic(context.Background(), chat, config, []string{"refund please"})
+	require.NoError(t, err)
+	require.Equal(t, fallbackTopicLabel([]string{"refund please"}), label)
 }
 
 // countingHydrator counts the log store round trips labelling makes.
@@ -905,9 +948,13 @@ func TestWriteTopicsPoolsWhatMatchedNoTopic(t *testing.T) {
 		cluster.size++
 		cluster.members = append(cluster.members, topicMember{logID: id, similarity: 0.8})
 	}
-	run := &topicRun{floor: 0.5, pooled: []topicVector{{logID: "log-4", vector: vectors["log-4"]}, {logID: "log-5", vector: vectors["log-5"]}}}
+	run := &topicRun{floor: 0.5}
+	for _, id := range []string{"log-4", "log-5"} {
+		run.pool(topicVector{logID: id, vector: vectors[id]})
+		run.placed = append(run.placed, requestPlacement{logID: id, cluster: -1})
+	}
 	meta := BackfillJobMeta{ConfigSignature: "sig", StartTime: start, EndTime: start.Add(24 * time.Hour)}
-	written, err := writeTopics(ctx, store, &meta, run, []topicCluster{cluster}, 0)
+	written, err := fileTestTopics(ctx, store, &meta, run, []topicCluster{cluster}, 0)
 	require.NoError(t, err)
 	require.Len(t, written, 1)
 	require.InDelta(t, 0.5, written[0].AssignFloor, 1e-9, "the floor the run settled on travels with the topic")
@@ -960,7 +1007,7 @@ func TestWriteTopicsFilesUnmatchedPastThePoolCap(t *testing.T) {
 	require.Len(t, run.pooled, 1, "the pool stops at its cap")
 
 	meta := BackfillJobMeta{ConfigSignature: "sig", StartTime: start, EndTime: start.Add(24 * time.Hour)}
-	written, err := writeTopics(ctx, store, &meta, run, run.clusters, 0)
+	written, err := fileTestTopics(ctx, store, &meta, run, run.clusters, 0)
 	require.NoError(t, err)
 	require.Len(t, written, 1)
 
@@ -978,6 +1025,82 @@ func TestWriteTopicsFilesUnmatchedPastThePoolCap(t *testing.T) {
 	pooled, err := store.ListWarpTopicUnmatched(ctx, "sig", 10)
 	require.NoError(t, err)
 	require.Equal(t, []string{"log-3"}, warpUnmatchedIDs(pooled), "only the pooled request is kept with its vector")
+}
+
+// The writer files requests as they are placed and keeps less than a batch:
+// the clustered requests leave the run once their topics are written, and
+// nothing after them is kept - not even which requests matched no topic. A
+// failed run retires the topics it wrote and deletes the rows it filed under
+// no topic, which would otherwise count as unmatched once the model has topics
+// again; it finds them in the store as the rows with no topic assigned since
+// it started, so an older one is left alone.
+func TestTopicWriterHoldsABatchAndAbandonsCleanly(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	logs := topicTestLogs(start)
+	store := topicTestReader(t, logs).topics
+	ctx := context.Background()
+	vectors := topicTestVectors()
+	cluster := topicCluster{sum: make([]float32, 3), label: "Refund requests", sampleIDs: []string{"log-0"}}
+	for _, id := range []string{"log-0", "log-1", "log-2"} {
+		for d, value := range vectors[id] {
+			cluster.sum[d] += value
+		}
+		cluster.size++
+		cluster.members = append(cluster.members, topicMember{logID: id, similarity: 0.9})
+	}
+	run := newTopicRun(topicLimits{}, 1)
+	run.floor, run.clusters, run.centres = 0.99, []topicCluster{cluster}, [][]float32{cluster.centroid()}
+	meta := BackfillJobMeta{ConfigSignature: "sig", StartTime: start, EndTime: start.Add(24 * time.Hour)}
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{{
+		LogID: "earlier", Timestamp: start, AssignedAt: time.Now().UTC().Add(-time.Hour),
+	}}))
+	writer := newTopicWriter(store, &meta, run, 2)
+
+	require.NoError(t, writer.file(ctx))
+	require.Nil(t, run.clusters[0].members, "the clustered requests leave the run once filed")
+	require.Less(t, len(writer.pending), 2, "less than a batch is kept back")
+	for _, id := range []string{"log-3", "log-4", "log-5"} {
+		run.assign(topicVector{logID: id, vector: vectors[id]})
+		require.NoError(t, writer.file(ctx))
+		require.Empty(t, run.placed)
+		require.Less(t, len(writer.pending), 2)
+	}
+	require.NoError(t, writer.finish(ctx))
+	byLog := func() map[string]string {
+		rows, err := store.ListWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{}, 100)
+		require.NoError(t, err)
+		filed := map[string]string{}
+		for _, row := range rows {
+			filed[row.LogID] = row.TopicID
+		}
+		return filed
+	}
+	topic := writer.topics[0].ID
+	require.Equal(t, map[string]string{
+		"log-0": topic, "log-1": topic, "log-2": topic, "log-3": "", "log-4": "", "log-5": "", "earlier": "",
+	}, byLog(), "every request is filed; the password requests matched no refund topic")
+
+	require.NoError(t, writer.abandon(ctx))
+	require.Equal(t, map[string]string{"log-0": topic, "log-1": topic, "log-2": topic, "earlier": ""}, byLog(),
+		"the rows this run filed under no topic are deleted, and the one from before it stays")
+	topics, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: []string{writer.topics[0].ID}})
+	require.NoError(t, err)
+	require.Equal(t, logstore.WarpTopicStatusRetired, topics[0].Status, "and the topic is retired, so its rows stop counting")
+}
+
+// fileTestTopics writes clusters as a run that merged into them would: their
+// members and whatever else the run placed are filed, then the topics are
+// made active. It returns the topics as written.
+func fileTestTopics(ctx context.Context, store logstore.WarpTopicStore, meta *BackfillJobMeta, run *topicRun, clusters []topicCluster, batchSize int) ([]logstore.WarpTopic, error) {
+	run.clusters = clusters
+	writer := newTopicWriter(store, meta, run, batchSize)
+	if err := writer.file(ctx); err != nil {
+		return writer.topics, err
+	}
+	if err := writer.finish(ctx); err != nil {
+		return writer.topics, err
+	}
+	return writer.topics, writer.activate(ctx, run.clusters)
 }
 
 func warpUnmatchedIDs(rows []logstore.WarpTopicUnmatched) []string {
@@ -1141,12 +1264,14 @@ func TestWarpTopicsJobKeepsPreviousTopicsWhenWriteFails(t *testing.T) {
 	require.Contains(t, final.Message, "previous topics were kept")
 }
 
-// A run writes its assignments in batches, and each one replaces the row a
-// request already had - on a re-seed, the row under a topic upkeep retired. A
-// run whose later batch fails puts back the rows its earlier batches replaced,
-// so the previous topics keep every request they had rather than losing the
-// ones the failed run got to first.
-func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
+// A run files its requests a batch at a time as it reads, replacing whatever
+// row each had: on a re-seed, a row under a topic upkeep retired, or one under
+// an older embedding model's. Those rows count for nothing, so a failed run
+// does not keep them to put back - keeping them made a run's memory grow with
+// its window. It retires the topics it wrote, which takes what it filed under
+// them out of every count, and deletes what it filed under no topic. What
+// list_topics answers is unchanged, and so are the rows it did not reach.
+func TestWarpTopicsJobFailingPartwayLeavesTheAnswerAsItWas(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	logs := topicTestLogs(start)
 	reader := topicTestReader(t, logs)
@@ -1169,32 +1294,64 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	}
 	_, err = run("job-1")
 	require.NoError(t, err)
-	// Upkeep retires every topic the first run wrote, so the second is a
-	// re-seed rather than a run queued behind a seeded model.
 	retireActiveTopics(t, ctx, store)
-	// One request with no row yet, so the failed run's first batch both
-	// replaces rows and adds one.
-	require.NoError(t, store.DeleteWarpTopicAssignments(ctx, []string{"log-0"}))
 	before := assignments()
-	require.Len(t, before, 5)
-	reader2 := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store)
-	end := start.Add(24 * time.Hour)
-	window := TopicQuery{Filter: logstore.WarpTopicAssignmentFilter{StartTime: &start, EndTime: &end}, Limit: 15}
-	listBefore, err := reader2.ListTopics(ctx, window)
-	require.NoError(t, err)
+	require.Len(t, before, 6)
+	topicReader := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store)
+	listBefore, totalBefore := listAllTopics(t, topicReader)
 
-	// Six requests in batches of four: the first batch lands, the second fails.
+	// Six requests in batches of two: the first lands, the second fails - its
+	// write may have partly landed - and the third is never reached.
 	limits := defaultTopicLimits()
-	limits.write = 4
+	limits.write = 2
 	service.topicLimits = limits
 	reader.topics = &failingTopicStore{LogStore: store, err: fmt.Errorf("log store unavailable"), failOn: 2}
-	_, err = run("job-2")
+	finalJSON, err := run("job-2")
 	require.ErrorContains(t, err, "log store unavailable")
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.Contains(t, final.Message, "previous topics were kept")
 
-	require.Equal(t, before, assignments(), "every request is back under the topic it had, and the added row is gone")
-	listAfter, err := reader2.ListTopics(ctx, window)
+	written, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive, logstore.WarpTopicStatusSeeding}})
 	require.NoError(t, err)
-	require.Equal(t, listBefore, listAfter, "the previous topics answer as they did, counts included")
+	require.Empty(t, written, "what the failed run wrote is retired")
+	after := assignments()
+	untouched := 0
+	for logID, topicID := range after {
+		if topicID == before[logID] {
+			untouched++
+		}
+		require.NotEmpty(t, topicID, "a row the run filed under no topic is deleted")
+	}
+	require.GreaterOrEqual(t, untouched, 2, "the batch it never reached keeps its rows")
+	listAfter, totalAfter := listAllTopics(t, topicReader)
+	require.Equal(t, listBefore, listAfter, "list_topics answers as it did")
+	require.Equal(t, totalBefore, totalAfter)
+}
+
+// The topics are written as soon as the merge settles them, so a run that
+// fails to report its progress after that has written something. It takes it
+// back as any other failure does, rather than leaving seeding topics behind.
+func TestWarpTopicsJobFailingAProgressReportTakesBackWhatItWrote(t *testing.T) {
+	for _, stage := range []string{"labelling", "Activating"} {
+		t.Run(stage, func(t *testing.T) {
+			service, start := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestNaming)
+			store := service.topicStore()
+			ctx := context.Background()
+			metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+			require.NoError(t, err)
+			_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(snapshot string) error {
+				if strings.Contains(snapshot, stage) {
+					return errors.New("job store unavailable")
+				}
+				return nil
+			})
+			require.ErrorContains(t, err, "job store unavailable")
+			left, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive, logstore.WarpTopicStatusSeeding}})
+			require.NoError(t, err)
+			require.Empty(t, left, "what the run wrote is retired")
+		})
+	}
 }
 
 // retireActiveTopics retires every active topic, as upkeep does once each
@@ -1265,6 +1422,54 @@ func TestWarpTopicsJobReportsAFailedCleanup(t *testing.T) {
 	require.NotContains(t, err.Error(), "retire")
 }
 
+// cancellingThemeStore cancels the run when grouping reads the themes: a
+// cancel that arrives after the new topics are active.
+type cancellingThemeStore struct {
+	logstore.LogStore
+	cancel context.CancelFunc
+}
+
+func (s *cancellingThemeStore) ListWarpTopics(ctx context.Context, filter logstore.WarpTopicFilter) ([]logstore.WarpTopic, error) {
+	if slices.Contains(filter.Kinds, logstore.WarpTopicKindTheme) {
+		s.cancel()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return s.LogStore.ListWarpTopics(ctx, filter)
+}
+
+// A run cancelled once its topics are active still groups them, then stops as
+// cancelled. Stopped before grouping, the topics stayed ungrouped for good: a
+// second seed run is refused, and nothing else regroups an unchanged set.
+// Here the stale theme holds no topic, so finished grouping retires it.
+func TestWarpTopicsJobGroupsBeforeStoppingWhenCancelled(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	reader := topicTestReader(t, topicTestLogs(start))
+	store := reader.topics.(logstore.LogStore)
+	service, _ := topicTestService(t, newFakeWarpVectorStore(), reader, topicTestNaming)
+	require.NoError(t, store.UpsertWarpTopics(context.Background(), []logstore.WarpTopic{
+		{ID: "theme-stale", Kind: logstore.WarpTopicKindTheme, Label: "Stale", EmbeddingSignature: topicTestSignature()},
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader.topics = &cancellingThemeStore{LogStore: store, cancel: cancel}
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
+
+	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(string) error { return nil })
+	require.ErrorIs(t, err, context.Canceled)
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.Contains(t, final.Message, "grouped into themes first")
+	require.Empty(t, final.LastError)
+
+	themes, err := store.ListWarpTopics(context.Background(), logstore.WarpTopicFilter{IDs: []string{"theme-stale"}})
+	require.NoError(t, err)
+	require.Len(t, themes, 1)
+	require.Equal(t, logstore.WarpTopicStatusRetired, themes[0].Status, "grouping ran to the end")
+}
+
 // A run that fails after writing its topics retires them, and the indexer in
 // this process is told: it may have read them while they were active, and
 // would otherwise keep filing requests under retired topics until its copy
@@ -1332,17 +1537,15 @@ func TestWriteTopicsSkipsABatchWithNothingToFile(t *testing.T) {
 		cluster.members = append(cluster.members, topicMember{logID: id, similarity: 0.9})
 	}
 	meta := BackfillJobMeta{ConfigSignature: "sig", StartTime: start, EndTime: start.Add(24 * time.Hour)}
-	// Batches of two, sorted: gone-1 and gone-2, then log-0.
-	_, err := writeTopics(ctx, store, &meta, &topicRun{floor: 0.5}, []topicCluster{cluster}, 2)
+	// Batches of two, in the order placed: gone-1 and gone-2, then log-0.
+	_, err := fileTestTopics(ctx, store, &meta, &topicRun{floor: 0.5}, []topicCluster{cluster}, 2)
 	require.NoError(t, err)
 	require.Equal(t, 2, meta.Skipped)
-	for _, filter := range store.assignmentReads {
-		require.NotEmpty(t, filter.LogIDs, "no read of every assignment")
-	}
+	require.Empty(t, store.assignmentReads, "the rows a request had are replaced, not read to put back")
 	for _, rows := range store.assignmentWrites {
 		require.NotEmpty(t, rows, "no empty write")
 	}
-	require.Len(t, store.assignmentReads, 1, "only the batch with a request to file reads")
+	require.Len(t, store.assignmentWrites, 1, "only the batch with a request to file writes")
 }
 
 // recordingTopicStore records the assignment reads and writes made through it.
@@ -1953,14 +2156,20 @@ func TestWarpTopicsJobJoinsClustersGivenTheSameName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, topics, 1)
 	require.Equal(t, "refund Requests", topics[0].Label)
-	require.Len(t, topics[0].ExampleLogIDs(), topicsLabelSamples)
+	require.Len(t, topics[0].ExampleLogIDs(), 6, "a topic of six keeps all six, as samples or drawn")
 	centroid, err := logstore.DecodeWarpVector(topics[0].Centroid)
 	require.NoError(t, err)
 	require.InDelta(t, 1, float64(dot(centroid, centroid)), 1e-5, "the centre is recomputed from every member")
-	usage, err := store.SummarizeWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{TopicIDs: []string{topics[0].ID}})
+	// Requests are filed before topics are named, so the one joined in keeps
+	// its own and is merged into the one it joined, as upkeep's merges are.
+	merged, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusMerged}})
 	require.NoError(t, err)
-	require.Len(t, usage, 1)
-	require.EqualValues(t, 6, usage[0].Requests, "the joined topic holds both clusters' requests")
+	require.Len(t, merged, 1)
+	require.Equal(t, topics[0].ID, merged[0].MergedInto)
+	listed, total := listAllTopics(t, NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store))
+	require.Len(t, listed, 1)
+	require.EqualValues(t, 6, listed[0].Requests, "the joined topic holds both clusters' requests")
+	require.Equal(t, 6, total)
 
 	var final BackfillJobMeta
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))

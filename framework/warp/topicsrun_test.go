@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/stretchr/testify/require"
 )
 
@@ -183,6 +184,66 @@ func TestTopicClusterIsExactWithoutItsMembers(t *testing.T) {
 	require.InDelta(t, cohesion, clusters[0].cohesion(), 1e-4)
 }
 
+// One prompt fanned out to several providers is several requests with one
+// vector. When it sits at the centre it must count as one example, not take
+// three of the four a topic is named from: a topic of coding sessions was
+// named after a single session summary sent to three providers that way.
+func TestTopicSamplesSkipRepeatsOfOneRequest(t *testing.T) {
+	const dimension, perSubject = 32, 40
+	rng := rand.New(rand.NewSource(11))
+	centre := topicTestDirection(dimension, 0, 0, 0)
+	points := topicTestPoints(rng, [][]float32{centre}, perSubject, 0.6)
+	vectors := topicTestVectorsFor(points, perSubject)
+	for fanout := range 3 {
+		vectors = append(vectors, topicVector{logID: fmt.Sprintf("fanout-%d", fanout), vector: centre})
+	}
+	clusters := topicTestClusters(vectors, make([]int, len(vectors)), 1)
+	require.Len(t, clusters, 1)
+	require.Len(t, clusters[0].sampleIDs, topicsLabelSamples)
+	repeats := 0
+	for _, id := range clusters[0].sampleIDs {
+		if strings.HasPrefix(id, "fanout-") {
+			repeats++
+		}
+	}
+	require.Equal(t, 1, repeats, "the fanned-out request is one example, got %v", clusters[0].sampleIDs)
+}
+
+// A topic is also named from members drawn at random, so its name is not
+// decided by the few requests at its centre. The draw has to be the same
+// whatever order the members came in, and a merged cluster's draw has to be
+// the one its members together would have made, or a run would name a
+// topic differently depending on how its batches happened to fall.
+func TestTopicMemberDrawIsOrderFreeAndMerges(t *testing.T) {
+	ids := make([]string, 200)
+	for index := range ids {
+		ids[index] = fmt.Sprintf("log-%03d", index)
+	}
+	all := drawMembers(nil, ids...)
+	require.Len(t, all, topicsLabelDrawn)
+
+	shuffled := append([]string(nil), ids...)
+	rand.New(rand.NewSource(5)).Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	require.Equal(t, all, drawMembers(nil, shuffled...), "the order members arrive in does not matter")
+
+	left, right := drawMembers(nil, ids[:120]...), drawMembers(nil, ids[120:]...)
+	require.Equal(t, all, drawMembers(left, right...), "two draws merge into the draw of both")
+	require.Equal(t, all, drawMembers(all, ids[:10]...), "an id already drawn is not drawn twice")
+
+	// Merging must not write into the draw it was merged from.
+	before := append([]string(nil), left...)
+	_ = drawMembers(left, right...)
+	require.Equal(t, before, left)
+}
+
+// A topic keeps its samples and drawn members alternately, each once, so the
+// few examples linked and the share a later merge names from both reach past
+// the centre.
+func TestTopicExamplesAlternateCentreAndDrawn(t *testing.T) {
+	cluster := topicCluster{sampleIDs: []string{"c1", "c2", "both"}, drawn: []string{"d1", "both", "d2", "d3"}}
+	require.Equal(t, []string{"c1", "d1", "c2", "both", "d2", "d3"}, cluster.exampleIDs())
+}
+
 // Slices are read in an order whose every prefix covers the range evenly, so
 // a run that stops clustering partway has sampled the whole window.
 func TestSpreadOrderCoversTheRangeAtEveryPrefix(t *testing.T) {
@@ -345,6 +406,36 @@ func TestTopicWindowIsReadInSlices(t *testing.T) {
 	}
 }
 
+// Read in slices, the set that keeps a request from being taken twice holds
+// one slice's requests and the probe's, not the window's: it held a hash for
+// every request read, which grew with the window. Slices are disjoint ranges
+// of time, so nothing taken in one comes back in another; the probe's range
+// lies under whichever slices cover it, read in spread order, so what it took
+// is kept for the whole read.
+func TestTopicWindowDedupeHoldsASliceNotTheWindow(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	vectors, _ := topicWindowTestStore(t, start, 600)
+	vectors.filtersOnServer = true
+	limits := topicLimits{batch: 1000, clustered: 1000, slice: 20, sliceCeiling: 30, page: 10}
+	taken, largest := map[string]int{}, 0
+	reader := &topicWindowReader{
+		ctx: vectorstore.WithIncludeVectors(context.Background()), store: vectors, namespace: schemas.WarpDefaultLogVectorStoreNamespace,
+		limits: limits, from: start.Unix(), to: start.Add(600 * time.Minute).Unix(), seen: map[uint64]struct{}{},
+	}
+	reader.take = func(entry topicVector) error {
+		taken[entry.logID]++
+		largest = max(largest, len(reader.seen))
+		return nil
+	}
+	require.NoError(t, reader.readSlices())
+	require.Len(t, taken, 600)
+	for id, times := range taken {
+		require.Equal(t, 1, times, "%s is taken once", id)
+	}
+	require.LessOrEqual(t, len(reader.probed), limits.sliceCeiling, "the probe stops at the slice ceiling")
+	require.Less(t, largest, 100, "the set holds a slice's requests, not the 600 read")
+}
+
 // A burst that lands in one second cannot be split into smaller slices, so it
 // is paged to the end rather than stopped at the slice ceiling: stopping there
 // dropped everything past it with no word that the window was cut short.
@@ -441,14 +532,41 @@ func TestWarpTopicsJobReportsClusteredAndAssigned(t *testing.T) {
 	}
 }
 
-// One run takes in a bounded number of requests. A window that holds more is
-// not read to the end: the run stops at the bound, says that it did, and what
-// it clustered is drawn from across the window rather than from its start.
+// A deployment's run reads the whole window: 20,000 requests are clustered
+// and every one after is filed under its nearest topic as it is read, so
+// nothing it keeps grows with the window. A run given a read limit stops at
+// it, says that it did, and what it read is drawn from across the window
+// rather than from its start.
 func TestWarpTopicsJobStopsAtItsReadLimit(t *testing.T) {
-	require.Equal(t, 20000, defaultTopicLimits().read, "the bound a deployment runs with")
-	require.Equal(t, defaultTopicLimits().read, defaultTopicLimits().clustered, "within it, everything read is clustered")
+	require.Zero(t, defaultTopicLimits().read, "a deployment's run reads the whole window")
+	require.Equal(t, 20000, defaultTopicLimits().clustered, "the bound on what is clustered, and so on vectors held")
 
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	t.Run("with no read limit, the whole window is read and the rest assigned", func(t *testing.T) {
+		vectors, logs := topicWindowTestStore(t, start, 400)
+		service := NewService(nil,
+			WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
+			WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
+		)
+		defer service.Shutdown()
+		service.topicLimits = topicLimits{batch: 150, clustered: 150, slice: 40, sliceCeiling: 60, page: 20}
+		metaJSON, err := service.BuildTopicsJobMeta(context.Background(), start, start.Add(24*time.Hour))
+		require.NoError(t, err)
+		finalJSON, err := service.RunTopicsJob(context.Background(), tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(string) error { return nil })
+		require.NoError(t, err)
+		var final BackfillJobMeta
+		require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+		require.Equal(t, 400, final.Scanned)
+		require.Equal(t, 150, final.Clustered)
+		require.Positive(t, final.Assigned, "requests past the clustered ones are filed under a topic")
+		inTopics := 0
+		for _, topic := range final.Topics {
+			inTopics += topic.Size
+		}
+		require.Equal(t, final.Scanned, inTopics+final.Unassigned, "every request read is in a topic or counted as in none")
+		require.False(t, final.Capped)
+		require.NotContains(t, final.Message, "Stopped at the limit")
+	})
 	for name, filtersOnServer := range map[string]bool{"a store that filters": true, "a store that does not": false} {
 		t.Run(name, func(t *testing.T) {
 			vectors, logs := topicWindowTestStore(t, start, 400)

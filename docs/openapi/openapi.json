@@ -12090,7 +12090,7 @@
       "get": {
         "operationId": "connectRealtime",
         "summary": "Realtime API WebSocket",
-        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream\nsocket and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
+        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview, Bedrock Nova Sonic). Bifrost proxies\nthe upstream session and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
         "tags": [
           "Realtime"
         ],
@@ -43383,7 +43383,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a key for a provider",
-        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
+        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,\nsagemaker_key_config.endpoints.runtime, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -43561,7 +43561,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a key for a provider",
-        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
+        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,\nsagemaker_key_config.endpoints.runtime, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -104633,7 +104633,7 @@
       "post": {
         "operationId": "startWarpTopicClustering",
         "summary": "Compute Warp topic clusters",
-        "description": "Groups the indexed requests of a time window by meaning, names each\ngroup with Warp's model, and stores the result for Warp's `list_topics`\ntool.\n\nThis is the one-time seed for an embedding model. Once it has written\ntopics, they are kept up to date without another run: each newly indexed\nrequest is filed under its topic, requests that match none are pooled\nand clustered into new topics once `topic_discovery_min_requests` of\nthem are waiting, and an hourly pass retires topics that went quiet and\nmerges ones that came to mean the same thing. A second run for the same\nmodel is refused with 409. Changing the embedding model starts over with\nno topics, and so does upkeep retiring every topic. A run that finds no\nindexed requests in the window completes without writing any, so the\nmodel can still be seeded with another window.\n\nOne run takes in at most 20,000 requests. A window that holds more is\nsampled across its length, and the status says so in `capped`.\n\nAdministrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
+        "description": "Groups the indexed requests of a time window by meaning, names each\ngroup with Warp's model, and stores the result for Warp's `list_topics`\ntool.\n\nThis is the one-time seed for an embedding model. Once it has written\ntopics, they are kept up to date without another run: each newly indexed\nrequest is filed under its topic, requests that match none are pooled\nand clustered into new topics once `topic_discovery_min_requests` of\nthem are waiting, and an hourly pass retires topics that went quiet and\nmerges ones that came to mean the same thing. A second run for the same\nmodel is refused with 409. Changing the embedding model starts over with\nno topics, and so does upkeep retiring every topic. A run that finds no\nindexed requests in the window completes without writing any, so the\nmodel can still be seeded with another window.\n\nOne run reads every indexed request in the window. Up to 20,000 of\nthem, drawn from across the window, are clustered into topics, and the\nrest are filed under their nearest topic as they are read (`assigned`\nin the status).\n\nAdministrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
         "tags": [
           "Warp"
         ],
@@ -104664,7 +104664,7 @@
             }
           },
           "400": {
-            "description": "The time range is invalid - `end_time` must be after `start_time`.",
+            "description": "The request body is malformed JSON, `start_time` or `end_time` is\nmissing or not an RFC3339 timestamp, or the time range is invalid -\n`end_time` must be after `start_time`.\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -112646,6 +112646,7 @@
           "azure",
           "bedrock",
           "bedrock_mantle",
+          "sagemaker",
           "cerebras",
           "cohere",
           "deepseek",
@@ -127589,7 +127590,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -127863,7 +127864,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -128095,7 +128096,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -128994,6 +128995,279 @@
                 }
               }
             }
+          },
+          "sagemaker_key_config": {
+            "type": "object",
+            "description": "AWS SageMaker real-time endpoint key configuration. A pre-minted token in Key.value takes precedence and is sent as is; otherwise Bifrost mints the SageMaker bearer token from these AWS credentials (leave access_key and secret_key empty to use the default AWS credential chain). Passthrough signs requests with AWS credentials and rejects keys that set Key.value.",
+            "properties": {
+              "access_key": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "secret_key": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_token": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "region": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "role_arn": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "external_id": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_name": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "endpoints": {
+                "type": "object",
+                "description": "Runtime host override (VPC endpoint, FIPS or dual-stack host)",
+                "properties": {
+                  "runtime": {
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                      },
+                      {
+                        "type": "object",
+                        "description": "Resolved form, as returned by GET responses",
+                        "properties": {
+                          "value": {
+                            "type": "string",
+                            "description": "Resolved value (redacted in GET responses for secret fields)"
+                          },
+                          "ref": {
+                            "type": "string",
+                            "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "plain_text",
+                              "env",
+                              "vault"
+                            ],
+                            "description": "Source type of the value"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "region"
+            ],
+            "additionalProperties": false
           },
           "vllm_key_config": {
             "type": "object",
@@ -139271,7 +139545,7 @@
           },
           "capped": {
             "type": "boolean",
-            "description": "Set when the window held more requests than one run takes in. The\nrequests that were read are drawn from across the window.\n"
+            "description": "Set when a run stopped at a read limit before the end of the window.\nRuns read the whole window, so this is not set.\n"
           },
           "merged": {
             "type": "integer",

@@ -39,5 +39,6 @@ jobs:
         working-directory: ./docs
         run: |
           echo "Checking for broken links in documentation..."
-          npx --yes mintlify@latest broken-links
+          # Pinned: @latest ran whatever npm served that minute. Bump to a release at least 7 days old.
+          npx --yes mintlify@4.2.1059 broken-links
           echo "✅ No broken links found"

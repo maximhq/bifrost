@@ -213,8 +213,10 @@ warp-topics:
       indexed requests in the window completes without writing any, so the
       model can still be seeded with another window.
 
-      One run takes in at most 20,000 requests. A window that holds more is
-      sampled across its length, and the status says so in `capped`.
+      One run reads every indexed request in the window. Up to 20,000 of
+      them, drawn from across the window, are clustered into topics, and the
+      rest are filed under their nearest topic as they are read (`assigned`
+      in the status).
 
       Administrators only: the local admin in OSS, `Warp` Update in enterprise.
     tags: [Warp]

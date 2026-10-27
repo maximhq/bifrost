@@ -705,6 +705,55 @@ expect_render_failure "sidecars: schema requires an image on extraContainers" \
 
 rm -f "$VALUES_DIR/sidecar-values.yaml"
 
+# Bundled PostgreSQL tuning and persistent volume metadata.
+cat > "$VALUES_DIR/postgresql-tuning.yaml" << 'VALS'
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs: ["-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+    persistence:
+      annotations:
+        example.com/storage-profile: "fast"
+VALS
+
+check_workload "postgresql: tuning and volume metadata omitted by default" \
+  'pg = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-postgresql")
+pvc = next(d for d in docs if d.get("kind") == "PersistentVolumeClaim")
+assert "args" not in pg["spec"]["template"]["spec"]["containers"][0], "PostgreSQL manifest contract failed"
+assert "annotations" not in pvc["metadata"], "PostgreSQL manifest contract failed"
+assert "volumeAttributesClassName" not in pvc["spec"], "PostgreSQL manifest contract failed"' \
+  --set storage.mode=postgres --set postgresql.enabled=true
+
+check_workload "postgresql: extra arguments and PVC annotations render verbatim" \
+  'pg = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-postgresql")
+pvc = next(d for d in docs if d.get("kind") == "PersistentVolumeClaim")
+assert pg["spec"]["template"]["spec"]["containers"][0].get("args") == ["-c", "max_connections=200", "-c", "shared_buffers=256MB"], "PostgreSQL manifest contract failed"
+assert pvc["metadata"].get("annotations") == {"example.com/storage-profile": "fast"}, "PostgreSQL manifest contract failed"
+assert pg["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] == pvc["metadata"]["name"], "PostgreSQL manifest contract failed"' \
+  -f "$VALUES_DIR/postgresql-tuning.yaml"
+
+check_workload "postgresql: optional VolumeAttributesClass renders on PVC" \
+  'pvc = next(d for d in docs if d.get("kind") == "PersistentVolumeClaim")
+assert pvc["spec"].get("volumeAttributesClassName") == "fast-storage", "PostgreSQL manifest contract failed"' \
+  --set storage.mode=postgres --set postgresql.enabled=true \
+  --set postgresql.primary.persistence.volumeAttributesClassName=fast-storage
+
+check_workload "postgresql: external database has no bundled workload or PVC" \
+  'assert not any(d.get("kind") == "PersistentVolumeClaim" or d["metadata"]["name"] == "bifrost-postgresql" for d in docs), "bundled PostgreSQL resources unexpectedly rendered"' \
+  -f "$VALUES_DIR/postgresql-tuning.yaml" \
+  --set postgresql.external.enabled=true --set postgresql.external.host=postgres.example.com
+
+check_workload "postgresql: disabled persistence has no PVC" \
+  'assert not any(d.get("kind") == "PersistentVolumeClaim" for d in docs), "bundled PostgreSQL resources unexpectedly rendered"' \
+  -f "$VALUES_DIR/postgresql-tuning.yaml" --set postgresql.primary.persistence.enabled=false
+
+expect_render_failure "postgresql: schema rejects non-string arguments" "extraArgs" \
+  --set 'postgresql.primary.extraArgs[0]=42'
+expect_render_failure "postgresql: schema rejects non-string PVC annotations" "annotations" \
+  --set 'postgresql.primary.persistence.annotations.invalid=42'
+
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
 

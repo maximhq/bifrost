@@ -337,6 +337,18 @@ func TestApplyServedTierToEntryRecordsResponseAndUsageSources(t *testing.T) {
 		}
 	})
 
+	t.Run("from passthrough usage", func(t *testing.T) {
+		entry := &logstore.Log{}
+		applyServedTierToEntry(entry, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				PassthroughUsage: &schemas.BifrostPassthroughUsage{ServiceTier: &flex},
+			},
+		}, nil)
+		if entry.ServiceTier == nil || *entry.ServiceTier != "flex" {
+			t.Fatalf("expected service_tier flex, got %v", entry.ServiceTier)
+		}
+	})
+
 	t.Run("a later usage-only chunk does not blank an established tier", func(t *testing.T) {
 		entry := &logstore.Log{}
 		applyServedTierToEntry(entry, &schemas.BifrostResponse{
