@@ -681,6 +681,7 @@ func testStreamSSEBilledByBodyChars(t *testing.T) {
 		_, _ = w.Write([]byte(second))
 	})
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+		InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens",
 		UnitsSource: schemas.GenericUnitsFromResponse, UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(0.01),
 	}})
 
