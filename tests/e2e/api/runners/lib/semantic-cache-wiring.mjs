@@ -31,10 +31,14 @@ export function verifyRedisExpiry(runRedis, pattern, expiredKeys = []) {
     const expiresAt = runRedis("HGET", key, "expires_at").trim();
     if (!expiresAt && runRedis("EXISTS", key).trim() === "0") continue;
     if (!/^-?\d+$/.test(expiresAt)) throw new Error(`${key} has invalid expires_at: ${expiresAt}`);
-    const nativeExpiry = runRedis("EXPIRETIME", key).trim();
-    if (nativeExpiry === "-2") continue;
-    if (!/^-?\d+$/.test(nativeExpiry) || BigInt(nativeExpiry) !== BigInt(expiresAt)) {
-      throw new Error(`${key} native expiry ${nativeExpiry} differs from expires_at ${expiresAt}`);
+    const serverTime = runRedis("TIME").trim().split(/\s+/);
+    if (serverTime.length !== 2 || !/^\d+$/.test(serverTime[0]) || !/^\d+$/.test(serverTime[1])) {
+      throw new Error(`${key} received invalid Redis TIME: ${serverTime.join(" ")}`);
+    }
+    const expectedTTL = BigInt(expiresAt) * 1000n - BigInt(serverTime[0]) * 1000n - BigInt(Math.floor(Number(serverTime[1]) / 1000));
+    const ttlDifference = BigInt(ttl) - expectedTTL;
+    if (ttlDifference < -1000n || ttlDifference > 1000n) {
+      throw new Error(`${key} PTTL ${ttl}ms differs from expires_at ${expiresAt} by ${ttlDifference}ms`);
     }
     checked++;
   }

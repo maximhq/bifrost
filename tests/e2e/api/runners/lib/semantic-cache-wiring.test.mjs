@@ -12,30 +12,36 @@ function test(name, fn) {
   console.log(`  ok - ${name}`);
 }
 
-test("Redis storage checks require native expiry, not only expires_at metadata", () => {
-  const runRedis = (ttl, expiresAt = "1793000000", exists = "1", nativeExpiry = expiresAt, keys = "ScwDirectrun:id\n") => (...args) => {
+test("Redis storage checks require a native TTL that matches expires_at", () => {
+  const existsChecks = [];
+  const runRedis = (ttl, expiresAt = "1793000000", exists = "1", serverSeconds = "1792999700", serverMicros = "0", keys = "ScwDirectrun:id\n") => (...args) => {
     if (args[0] === "--scan") {
       assert.deepStrictEqual(args, ["--scan", "--pattern", "Scw*run*:*"]);
       return keys;
     }
     if (args[0] === "PTTL") return ttl;
     if (args[0] === "HGET") return expiresAt;
-    if (args[0] === "EXPIRETIME") return nativeExpiry;
-    if (args[0] === "EXISTS") return exists;
+    if (args[0] === "TIME") return serverSeconds + "\n" + serverMicros;
+    if (args[0] === "EXISTS") {
+      existsChecks.push(args[1]);
+      return exists;
+    }
     throw new Error("unexpected Redis command: " + args.join(" "));
   };
   assert.strictEqual(verifyRedisExpiry(runRedis("300000"), "Scw*run*:*"), 1);
   assert.throws(() => verifyRedisExpiry(runRedis("-2"), "Scw*run*:*"), /no retained cache entries verified/);
   assert.throws(() => verifyRedisExpiry(runRedis("0", "", "0"), "Scw*run*:*"), /no retained cache entries verified/);
-  assert.throws(() => verifyRedisExpiry(runRedis("10", "1", "0", "1", ""), "Scw*run*:*"), /no retained cache entries verified/);
+  assert.throws(() => verifyRedisExpiry(runRedis("10", "1", "1", "1792999700", "0", ""), "Scw*run*:*"), /no retained cache entries verified/);
   assert.throws(() => verifyRedisExpiry(runRedis("-1"), "Scw*run*:*"), /no native expiry/);
   assert.throws(() => verifyRedisExpiry(runRedis("ERR unavailable"), "Scw*run*:*"), /no native expiry/);
   assert.throws(() => verifyRedisExpiry(runRedis("10", "bad"), "Scw*run*:*"), /invalid expires_at/);
-  assert.throws(() => verifyRedisExpiry(runRedis("10", "1", "1", "2"), "Scw*run*:*"), /differs from expires_at/);
-  assert.throws(() => verifyRedisExpiry(runRedis("10", "1", "1", "ERR unavailable"), "Scw*run*:*"), /differs from expires_at/);
-  assert.throws(() => verifyRedisExpiry(runRedis("10", "9223372036854775", "1", "9223372036854774"), "Scw*run*:*"), /differs from expires_at/);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000", "1793000000", "1", "1792999690"), "Scw*run*:*"), /differs from expires_at/);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000", "1793000000", "1", "bad"), "Scw*run*:*"), /invalid Redis TIME/);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000", "9223372036854775", "1", "9223372036854774"), "Scw*run*:*"), /differs from expires_at/);
+  existsChecks.length = 0;
   assert.strictEqual(verifyRedisExpiry(runRedis("300000", "1793000000", "0"), "Scw*run*:*", ["ScwDirectrun:expired"]), 1);
-  assert.throws(() => verifyRedisExpiry(runRedis("300000"), "Scw*run*:*", ["ScwDirectrun:expired"]), /remains after TTL without a matching cache lookup/);
+  assert.deepStrictEqual(existsChecks, ["ScwDirectrun:expired"]);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000"), "Scw*run*:*", ["ScwDirectrun:expired"]), /ScwDirectrun:expired remains after TTL without a matching cache lookup/);
 });
 
 // A Postman sandbox stand-in: one response, collection variables, and the recorded pm.test calls.
