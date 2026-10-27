@@ -8712,6 +8712,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 			StartTime:        startTime,
 			Logger:           provider.logger,
 			HasUsage:         HasOpenAIPassthroughUsage,
+			EndsStream:       EndsOpenAIPassthroughStream,
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
 				return ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
 			},
