@@ -873,3 +873,43 @@ func TestInstallRejectsAnUnrecognizedResidencyAdapter(t *testing.T) {
 		t.Fatalf("install with adapter lmstudio = %v, want it refused by name", err)
 	}
 }
+
+// An edit that leaves the provider with nothing to probe has to take the old endpoint with it:
+// keeping it would read residency, and route on it, against an address and credential the
+// operator has just removed.
+func TestRefreshDropsAnEndpointTheEditMadeUnusable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"models":[{"name":"flash","loaded":true}]}`)
+	}))
+	defer server.Close()
+
+	provider := func(baseURL string) configstore.ProviderConfig {
+		return configstore.ProviderConfig{NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             baseURL,
+			AllowPrivateNetwork: true,
+			ModelResidency:      &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOMLX},
+		}}
+	}
+
+	service := NewVirtualModelService(nil, nil)
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{"omlx": provider(server.URL)}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	vm, _ := service.Lookup("local-chat")
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+	if resolution, err := service.Resolve(ctx, vm); err != nil || resolution.Model != "flash" {
+		t.Fatalf("initial resolution = (%+v, %v), want flash", resolution, err)
+	}
+
+	service.Refresh(map[schemas.ModelProvider]configstore.ProviderConfig{"omlx": provider("")})
+
+	if target := service.installedRegistry().entries["local-chat"].target; target != nil {
+		t.Fatalf("the endpoint removed by the edit is still installed and points at %q", target.baseURL)
+	}
+	if _, err := service.Resolve(ctx, vm); err == nil || *err.StatusCode != 503 {
+		t.Fatalf("resolution after the endpoint was made unusable = %v, want a 503", err)
+	}
+}

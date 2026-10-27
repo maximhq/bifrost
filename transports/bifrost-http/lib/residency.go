@@ -476,10 +476,13 @@ func (s *VirtualModelService) Refresh(providers map[schemas.ModelProvider]config
 			// The edit left the provider unable to answer for residency, so its endpoint goes too:
 			// keeping it would probe an address and credential the operator has just removed. Resolve
 			// refuses with its 503 until a later edit makes the endpoint readable again.
-			if s.logger != nil {
-				s.logger.Warn("virtual model %q cannot read residency from provider %q after the edit: %v; keeping the previous endpoint", vm.Name, vm.Provider, err)
+			if entry.target != nil {
+				s.slots.Delete(entry.target.slotKey)
 			}
-			next.entries[key] = entry
+			next.entries[key] = &residencyEntry{model: vm}
+			if s.logger != nil {
+				s.logger.Warn("virtual model %q cannot read residency from provider %q after the edit: %v; requests to this name are refused until it can", vm.Name, vm.Provider, err)
+			}
 			continue
 		}
 		s.forgetProbeState(entry.target, target)
