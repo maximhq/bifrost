@@ -763,6 +763,59 @@ func TestToOpenAIChatRequest_CustomProfileBudgetUsesBaseBound(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_OtherCustomHostKeepsBudgetFallback protects the
+// existing compatibility-host behavior outside the OpenAI/Azure correction.
+func TestToOpenAIChatRequest_OtherCustomHostKeepsBudgetFallback(t *testing.T) {
+	const model = "compat-budget-model"
+	const profile schemas.ModelProvider = "opaque-fireworks-profile"
+	for _, tc := range []struct {
+		name           string
+		provider       schemas.ModelProvider
+		explicitBound  bool
+		explicitEffort bool
+		want           string
+	}{
+		{name: "opaque host keeps default bound", provider: profile, want: "medium"},
+		{name: "native host keeps capability bound", provider: schemas.Fireworks, want: "low"},
+		{name: "explicit bound remains authoritative", provider: profile, explicitBound: true, want: "low"},
+		{name: "explicit effort remains authoritative", provider: profile, explicitEffort: true, want: "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, name string) *schemas.ModelCapabilities {
+				if provider == schemas.Fireworks && name == model {
+					return &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(32000), ReasoningEffortLevels: []string{"low", "medium", "high"}}
+				}
+				return nil
+			})
+			t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+			params := &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)}}
+			if tc.explicitBound {
+				params.MaxCompletionTokens = schemas.Ptr(32000)
+			}
+			if tc.explicitEffort {
+				params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr("high")}
+			}
+			before, err := json.Marshal(params)
+			require.NoError(t, err)
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Fireworks)
+			request := &schemas.BifrostChatRequest{Provider: tc.provider, Model: model, Params: params, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}}
+			out := ToOpenAIChatRequest(ctx, request)
+			require.NotNil(t, out)
+			require.Equal(t, tc.provider, out.Provider)
+			require.Equal(t, model, out.Model)
+			after, err := json.Marshal(params)
+			require.NoError(t, err)
+			require.Equal(t, before, after, "caller-owned reasoning changed")
+			require.NotNil(t, out.Reasoning)
+			require.NotNil(t, out.Reasoning.Effort)
+			t.Logf("provider=%s effort=%s", tc.provider, *out.Reasoning.Effort)
+			require.Equal(t, tc.want, *out.Reasoning.Effort)
+		})
+	}
+}
+
 // BenchmarkToOpenAIChatRequest_CustomProfileBudgetBound measures budget-only
 // normalization for native hosts and opaque profiles without retained state.
 func BenchmarkToOpenAIChatRequest_CustomProfileBudgetBound(b *testing.B) {
