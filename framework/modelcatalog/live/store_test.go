@@ -271,6 +271,23 @@ func TestSnapshotIsDefensiveCopy(t *testing.T) {
 	}
 }
 
+func TestProvidersListsEachCachedProviderOnce(t *testing.T) {
+	s := New(nil)
+	if got := s.Providers(); len(got) != 0 {
+		t.Fatalf("empty store providers = %v, want none", got)
+	}
+	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
+	upsertFiltered(s, openai, "k2", []string{"gpt-4o-mini"})
+	upsertUnfiltered(s, openai, "k1", []string{"gpt-4o", "o3"})
+	upsertFiltered(s, anthropic, "k3", []string{"claude-sonnet-4"})
+
+	got := s.Providers()
+	slices.Sort(got)
+	if want := []schemas.ModelProvider{anthropic, openai}; !slices.Equal(got, want) {
+		t.Errorf("providers = %v, want %v", got, want)
+	}
+}
+
 func TestUpsertCopiesInputSlice(t *testing.T) {
 	s := New(nil)
 	input := []string{"gpt-4o"}

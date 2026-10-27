@@ -669,10 +669,10 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 			out = append(out, p)
 		}
 	}
-	for k := range mc.live.Snapshot() {
-		if _, ok := seen[k.Provider]; !ok {
-			seen[k.Provider] = struct{}{}
-			out = append(out, k.Provider)
+	for _, p := range mc.live.Providers() {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
 		}
 	}
 	for _, p := range mc.keyconf.Providers() {

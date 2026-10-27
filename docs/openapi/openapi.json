@@ -44207,6 +44207,118 @@
         }
       }
     },
+    "/api/models/newest": {
+      "get": {
+        "operationId": "listNewestModels",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List newest models per provider",
+        "description": "Returns each requested provider's newest models, ordered by the creation\ntime the provider last reported in its model list. Times come from the\ncached model catalog; providers are not polled. Times are compared only\nwithin one provider. Models without a time come last, and deprecated\nmodels are left out. A virtual key on the request scopes the listing the\nsame way it scopes `GET /api/models`.\n",
+        "tags": [
+          "Providers"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "required": true,
+            "description": "Comma-separated providers, in the order they are returned",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Models per provider",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 3
+            }
+          },
+          {
+            "name": "keys",
+            "in": "query",
+            "description": "Comma-separated provider key IDs to filter models accessible by those keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "models"
+                  ],
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "provider",
+                          "created"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "created": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Provider-reported creation time in Unix seconds, or 0 when none"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/plugins": {
       "get": {
         "operationId": "listPlugins",

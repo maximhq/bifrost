@@ -268,6 +268,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.GET("/api/models/newest", lib.ChainMiddlewares(h.listNewestModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
