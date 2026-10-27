@@ -11,17 +11,23 @@ import (
 // A rune split across chunks is counted once, invalid bytes count one each, and the total always
 // matches a buffered utf8.RuneCount of the same bytes, whatever the chunk boundaries.
 func TestCountRunesAcrossChunks(t *testing.T) {
-	body := []byte("h\xc3\xa9llo \xe2\x82\xac \xf0\x9f\x98\x80 \xff end")
-	want := int64(utf8.RuneCount(body))
-	for size := 1; size <= len(body); size++ {
-		var carry [utf8.UTFMax]byte
-		carryLen := 0
-		var got int64
-		for i := 0; i < len(body); i += size {
-			got += countRunes(body[i:min(i+size, len(body))], &carry, &carryLen)
+	for _, body := range [][]byte{
+		[]byte("h\xc3\xa9llo \xe2\x82\xac \xf0\x9f\x98\x80 \xff end"),
+		// A truncated lead byte right before a valid rune, and a lone continuation byte: each
+		// invalid byte is one rune, and the rune after it is still one rune, as buffered counting says.
+		[]byte("\xc3\xe2\x82\xac\xf0\x9f\x98\x80\x82x\xe2\x82"),
+	} {
+		want := int64(utf8.RuneCount(body))
+		for size := 1; size <= len(body); size++ {
+			var carry [utf8.UTFMax]byte
+			carryLen := 0
+			var got int64
+			for i := 0; i < len(body); i += size {
+				got += countRunes(body[i:min(i+size, len(body))], &carry, &carryLen)
+			}
+			got += int64(utf8.RuneCount(carry[:carryLen]))
+			assert.Equal(t, want, got, "body %q chunk size %d", body, size)
 		}
-		got += int64(utf8.RuneCount(carry[:carryLen]))
-		assert.Equal(t, want, got, "chunk size %d", size)
 	}
 }
 

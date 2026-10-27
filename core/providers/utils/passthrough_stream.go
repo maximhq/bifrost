@@ -61,16 +61,24 @@ type PassthroughStreamParams struct {
 // each, as utf8.RuneCount does, so the total matches a buffered utf8.RuneCount of the same body.
 func countRunes(chunk []byte, carry *[utf8.UTFMax]byte, carryLen *int) int64 {
 	var runes int64
-	if *carryLen > 0 {
-		need := min(utfSeqLen(carry[0])-*carryLen, len(chunk))
-		copy(carry[*carryLen:], chunk[:need])
-		*carryLen += need
-		if !utf8.FullRune(carry[:*carryLen]) {
-			return 0 // the chunk ended inside the same rune
+	// Finish the sequence carried from the last chunk the way a buffered decode would: bytes are
+	// pulled in a few at a time and decoded rune by rune, so an invalid lead byte counts as one
+	// rune on its own and the bytes after it (the start of a valid rune, say) are not swallowed
+	// with it.
+	for *carryLen > 0 && len(chunk) > 0 {
+		take := min(utf8.UTFMax-*carryLen, len(chunk))
+		copy(carry[*carryLen:], chunk[:take])
+		*carryLen += take
+		chunk = chunk[take:]
+		for *carryLen > 0 && utf8.FullRune(carry[:*carryLen]) {
+			_, size := utf8.DecodeRune(carry[:*carryLen])
+			runes++
+			copy(carry[:], carry[size:*carryLen])
+			*carryLen -= size
 		}
-		runes += int64(RuneCount(carry[:*carryLen]))
-		*carryLen = 0
-		chunk = chunk[need:]
+	}
+	if *carryLen > 0 {
+		return runes // the chunk ended inside a rune
 	}
 	end := len(chunk)
 	for k := len(chunk) - 1; k >= 0 && k >= len(chunk)-utf8.UTFMax; k-- {
@@ -94,19 +102,6 @@ func RuneCount(b []byte) int {
 		return 0
 	}
 	return utf8.RuneCountInString(unsafe.String(unsafe.SliceData(b), len(b)))
-}
-
-// utfSeqLen is the byte length a UTF-8 lead byte announces; an invalid lead is one byte.
-func utfSeqLen(lead byte) int {
-	switch {
-	case lead&0xE0 == 0xC0:
-		return 2
-	case lead&0xF0 == 0xE0:
-		return 3
-	case lead&0xF8 == 0xF0:
-		return 4
-	}
-	return 1
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
