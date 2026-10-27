@@ -2838,6 +2838,25 @@ func (s *BifrostHTTPServer) notificationPublisher() schemas.NotificationPublishe
 	}
 }
 
+// staleMCPOAuthDropper is what dropStaleMCPOAuthState needs from the server.
+type staleMCPOAuthDropper interface {
+	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
+	CloseAndMarkNeedsReauth(ctx context.Context, id string) error
+}
+
+// dropStaleMCPOAuthState drops an MCP client's cached tokens and shared connection after the OAuth
+// provider rotated its credentials. It goes through callbacks so enterprise peers drop theirs too, and
+// finishes before the sign-in it rotated for starts: a late drop would close that sign-in's connection.
+func dropStaleMCPOAuthState(callbacks staleMCPOAuthDropper) func(ctx context.Context, mcpClientID string) {
+	return func(ctx context.Context, mcpClientID string) {
+		ctx = context.WithoutCancel(ctx)
+		callbacks.EvictOauthTokenCacheByMCPClient(ctx, mcpClientID)
+		if err := callbacks.CloseAndMarkNeedsReauth(ctx, mcpClientID); err != nil && !errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+			logger.Warn("failed to close MCP client %s's connection after its OAuth credentials rotated: %v", mcpClientID, err)
+		}
+	}
+}
+
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
 func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	var err error
@@ -2985,6 +3004,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.OAuthProvider.SetOnTokenWritten(func(ctx context.Context, tokenID string) {
 			go callbacks.EvictOauthTokenCacheByID(context.WithoutCancel(ctx), tokenID)
 		})
+		// A rotation the provider makes itself drops what the update API drops after its own, inline as there.
+		s.Config.OAuthProvider.SetCredentialsRotatedHook(dropStaleMCPOAuthState(callbacks))
 	}
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)

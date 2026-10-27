@@ -223,6 +223,7 @@ export interface OAuthConfig {
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
 	resource?: string; // Optional OAuth resource indicator; omitted when empty
+	use_client_metadata_document?: boolean; // Register with Bifrost's Client ID Metadata Document; excludes client_id
 }
 
 /** OAuth fields allowed on MCP client update. Any field left unset keeps its stored value. */

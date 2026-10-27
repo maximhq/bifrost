@@ -8863,6 +8863,9 @@ type MCPOAuthConfigFields struct {
 	RegistrationURL string // "" means no registration URL stored (maps to a nil *string on the row)
 	Resource        string
 	Scopes          []string
+	RedirectURI     string // "" keeps the stored redirect_uri
+
+	ExpectedClientID *string // When set, rotate only while the stored client_id is still this; else ErrOAuthConfigChanged
 }
 
 // DiffersFrom reports whether ANY field in fields differs from what's
@@ -8897,6 +8900,7 @@ func (fields MCPOAuthConfigFields) DiffersFrom(existingOauthConfig *tables.Table
 		fields.TokenURL != existingOauthConfig.TokenURL ||
 		fields.RegistrationURL != existingRegistrationURL ||
 		fields.Resource != existingOauthConfig.Resource ||
+		(fields.RedirectURI != "" && fields.RedirectURI != existingOauthConfig.RedirectURI) ||
 		!slices.Equal(newScopesSorted, existingScopesSorted)
 }
 
@@ -8944,6 +8948,9 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 		existingOauthConfig.RegistrationURL = &registrationURL
 	}
 	existingOauthConfig.Resource = fields.Resource
+	if fields.RedirectURI != "" {
+		existingOauthConfig.RedirectURI = fields.RedirectURI
+	}
 	if len(fields.Scopes) == 0 {
 		existingOauthConfig.Scopes = ""
 	} else {
@@ -8956,6 +8963,18 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 
 	oauthConfigID := existingOauthConfig.ID
 	err := s.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Claims the row: a concurrent rotation from the same client_id waits on it, then matches nothing.
+		if fields.ExpectedClientID != nil {
+			result := tx.Model(&tables.TableOauthConfig{}).
+				Where("id = ? AND client_id = ?", oauthConfigID, *fields.ExpectedClientID).
+				Update("client_id", *fields.ExpectedClientID)
+			if result.Error != nil {
+				return fmt.Errorf("failed to claim oauth config: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return ErrOAuthConfigChanged
+			}
+		}
 		if err := s.UpdateOauthConfig(ctx, existingOauthConfig, tx); err != nil {
 			return fmt.Errorf("failed to update oauth config: %w", err)
 		}

@@ -299,6 +299,8 @@ type OAuthMetadata struct {
 	GrantTypes       []string `json:"grant_types_supported,omitempty"`
 	TokenAuthMethods []string `json:"token_endpoint_auth_methods_supported,omitempty"`
 	PKCEMethods      []string `json:"code_challenge_methods_supported,omitempty"`
+	// Accepts an HTTPS URL to a Client ID Metadata Document as client_id (MCP 2025-11-25+).
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
 }
 
 // ResourceMetadata contains metadata from protected resource
@@ -706,6 +708,7 @@ type DynamicClientRegistrationRequest struct {
 	GrantTypes              []string `json:"grant_types"`
 	ResponseTypes           []string `json:"response_types"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	ApplicationType         string   `json:"application_type,omitempty"` // OIDC: "web" or "native"; MCP requires it (SEP-837)
 	Scope                   string   `json:"scope,omitempty"`
 	LogoURI                 string   `json:"logo_uri,omitempty"`
 	ClientURI               string   `json:"client_uri,omitempty"`
@@ -739,11 +742,12 @@ type DynamicClientRegistrationResponse struct {
 // since; see ReregisterDynamicClient.
 func registerDynamicClient(ctx context.Context, registrationURL, redirectURI string, scopes []string) (clientID, clientSecret *schemas.SecretVar, err error) {
 	regReq := &DynamicClientRegistrationRequest{
-		ClientName:              "Bifrost MCP Gateway",
+		ClientName:              ClientName,
 		RedirectURIs:            []string{redirectURI},
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
 		TokenEndpointAuthMethod: "none", // Public client with PKCE (no client secret needed)
+		ApplicationType:         ApplicationTypeFor(redirectURI),
 	}
 	if len(scopes) > 0 {
 		regReq.Scope = strings.Join(scopes, " ")
@@ -770,6 +774,51 @@ func registerDynamicClient(ctx context.Context, registrationURL, redirectURI str
 	return &schemas.SecretVar{Val: regResp.ClientID, SecretType: schemas.SecretTypePlainText},
 		&schemas.SecretVar{Val: regResp.ClientSecret, SecretType: schemas.SecretTypePlainText}, // May be empty for public clients
 		nil
+}
+
+// ClientName is Bifrost's client_name in DCR and its Client ID Metadata Document.
+const ClientName = "Bifrost MCP Gateway"
+
+// clientMetadataDocumentID returns documentURL if it can be used as the client_id, else "".
+func clientMetadataDocumentID(documentURL string, supported bool) string {
+	if !supported || documentURL == "" {
+		return ""
+	}
+	u, err := url.Parse(documentURL)
+	if err != nil || u.Scheme != "https" || u.Path == "" || u.Path == "/" || ApplicationTypeFor(documentURL) == "native" {
+		return ""
+	}
+	return documentURL
+}
+
+// advertisesClientMetadataDocument reports whether serverURL's authorization server supports CIMD,
+// counting the flag only if its token endpoint is tokenURL.
+func advertisesClientMetadataDocument(ctx context.Context, serverURL, tokenURL string) bool {
+	metadata, err := DiscoverOAuthMetadata(ctx, serverURL)
+	if err != nil {
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Could not read Client ID Metadata Document support, using dynamic registration: %v", err))
+		return false
+	}
+	return cimdSupportedAt(metadata, tokenURL)
+}
+
+// cimdSupportedAt reports whether metadata's server supports CIMD and its token endpoint is tokenURL.
+func cimdSupportedAt(metadata *OAuthMetadata, tokenURL string) bool {
+	return metadata.ClientIDMetadataDocumentSupported && strings.TrimSuffix(metadata.TokenURL, "/") == strings.TrimSuffix(tokenURL, "/")
+}
+
+// ApplicationTypeFor returns "native" for a loopback redirectURI, else "web" (SEP-837).
+func ApplicationTypeFor(redirectURI string) string {
+	if u, err := url.Parse(redirectURI); err == nil {
+		host := u.Hostname()
+		if strings.EqualFold(host, "localhost") {
+			return "native"
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return "native"
+		}
+	}
+	return "web"
 }
 
 // RegisterDynamicClient performs dynamic client registration with the OAuth provider (RFC 7591)

@@ -995,6 +995,32 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
+// use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
+func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {
+	client := `{
+		"name": "linear",
+		"connection_type": "http",
+		"connection_string": "https://mcp.linear.app/mcp",
+		"auth_type": "oauth",
+		"oauth_config": {
+			"authorize_url": "https://linear.app/oauth/authorize",
+			"token_url": "https://api.linear.app/oauth/token",
+			"use_client_metadata_document": true
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(`{"mcp": {"client_configs": [`+client+`]}}`), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected use_client_metadata_document to pass validation: %v", err)
+	}
+	var parsed schemas.MCPClientConfig
+	if err := json.Unmarshal([]byte(client), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.PendingOAuthConfig == nil || !parsed.PendingOAuthConfig.UseClientMetadataDocument {
+		t.Fatal("use_client_metadata_document did not reach the pending OAuth config")
+	}
+}
+
 func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	// Valid MCP client config with http connection type
 	validConfig := `{

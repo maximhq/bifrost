@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -385,19 +387,30 @@ func TestReregisterMCPClient_StatusSaysWhoseProblemItIs(t *testing.T) {
 // registration an OAuth-protected MCP server on the operator's own host
 // exposes (the shape of examples/mcps/oauth-demo-server).
 func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
+	server, _ := newLoopbackOAuthMCPServerWithCIMD(t, false)
+	return server
+}
+
+// newLoopbackOAuthMCPServerWithCIMD is newLoopbackOAuthMCPServer, optionally advertising
+// Client ID Metadata Document support. It counts requests to its OAuth endpoints.
+func newLoopbackOAuthMCPServerWithCIMD(t *testing.T, supportsCIMD bool) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
+	var oauthRequests atomic.Int32
 	mux := http.NewServeMux()
 	var server *httptest.Server
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		oauthRequests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":                 server.URL,
-			"authorization_endpoint": server.URL + "/authorize",
-			"token_endpoint":         server.URL + "/token",
-			"registration_endpoint":  server.URL + "/register",
+			"issuer":                                server.URL,
+			"authorization_endpoint":                server.URL + "/authorize",
+			"token_endpoint":                        server.URL + "/token",
+			"registration_endpoint":                 server.URL + "/register",
+			"client_id_metadata_document_supported": supportsCIMD,
 		})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
+		oauthRequests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "loopback-client"})
@@ -407,7 +420,7 @@ func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
 	})
 	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return server
+	return server, &oauthRequests
 }
 
 // TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist pins the fix for MCP
@@ -457,6 +470,67 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			body := string(ctx.Response.Body())
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
 			assert.Contains(t, body, tc.wantBody)
+		})
+	}
+}
+
+// Across the shared and per-user auth types, OAuth ones present Bifrost's Client ID Metadata
+// Document as client_id when the upstream supports it (no dynamic registration), and header ones
+// never contact the authorization server.
+func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+
+	for _, tc := range []struct {
+		authType   string
+		extra      string // extra request fields
+		wantStatus int    // header types stop at the stub manager's connect
+		wantCIMD   bool
+	}{
+		{authType: "oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		{authType: "per_user_oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		{authType: "headers", extra: `,"headers":{"Authorization":"Bearer shared"}`, wantStatus: fasthttp.StatusInternalServerError},
+		{authType: "per_user_headers", extra: `,"per_user_header_keys":["Authorization"],"user_headers":{"Authorization":"Bearer sample"}`, wantStatus: fasthttp.StatusUnprocessableEntity},
+	} {
+		t.Run(tc.authType, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			server, oauthRequests := newLoopbackOAuthMCPServerWithCIMD(t, true)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
+				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
+			}}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"cimd_` + tc.authType + `","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `"` + tc.extra + `}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			if !tc.wantCIMD {
+				assert.Contains(t, body, "manager must not be reached", "reaches the connection step")
+				assert.NotContains(t, body, "authorize_url")
+				assert.Zero(t, oauthRequests.Load(), "header auth never contacts the authorization server")
+				return
+			}
+			var resp struct {
+				AuthorizeURL string `json:"authorize_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			authorize, err := url.Parse(resp.AuthorizeURL)
+			require.NoError(t, err)
+			assert.Equal(t, documentURL, authorize.Query().Get("client_id"))
+			assert.Equal(t, int32(1), oauthRequests.Load(), "metadata fetched once, no dynamic registration")
 		})
 	}
 }
@@ -664,4 +738,26 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 	for in, want := range cases {
 		assert.Equal(t, want, sanitizeMCPLibraryServerName(in), in)
 	}
+}
+
+// The use_client_metadata_document toggle reaches the provider on every bootstrap path: the create
+// request (through InitiateOAuthFlow) and a config.json client's stored pending config.
+func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
+	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil)
+	_, err := handler.InitiateOAuthFlow(context.Background(), OAuthInitiationRequest{
+		ClientID:                  schemas.NewSecretVar("preset"),
+		ClientMetadataURL:         "https://bifrost.example.com/api/oauth/client-metadata.json",
+		UseClientMetadataDocument: true,
+	})
+	require.ErrorIs(t, err, oauth2.ErrClientMetadataDocumentWithClientID, "the toggle was dropped before the provider")
+
+	req := pendingOAuthConfigToRequest(&schemas.OAuth2Config{UseClientMetadataDocument: true})
+	assert.True(t, req.UseClientMetadataDocument, "a config.json client's toggle survives to initiate-verification")
+}
+
+// A toggle the caller set wrongly is a 400, not a server error.
+func TestOAuthBootstrapErrorStatus(t *testing.T) {
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentWithClientID)))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
+	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
 }

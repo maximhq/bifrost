@@ -83,6 +83,7 @@ export class MCPRegistryPage extends BasePage {
   readonly envsInput: Locator
   // OAuth inputs
   readonly oauthClientIdInput: Locator
+  readonly oauthClientMetadataDocumentSwitch: Locator
   readonly oauthClientSecretInput: Locator
   readonly oauthAuthorizeUrlInput: Locator
   readonly oauthTokenUrlInput: Locator
@@ -128,6 +129,7 @@ export class MCPRegistryPage extends BasePage {
 
     // OAuth inputs
     this.oauthClientIdInput = this.sheet.locator('[data-testid="mcp-oauth-client-id"]').or(this.sheet.getByPlaceholder(/your-client-id/i))
+    this.oauthClientMetadataDocumentSwitch = this.sheet.getByTestId('mcp-oauth-use-client-metadata-document')
     this.oauthClientSecretInput = this.sheet.locator('[data-testid="mcp-oauth-client-secret"]').or(this.sheet.getByPlaceholder(/your-client-secret/i))
     this.oauthAuthorizeUrlInput = this.sheet.locator('[data-testid="mcp-oauth-authorize-url"]').or(this.sheet.getByPlaceholder(/oauth\/authorize/i))
     this.oauthTokenUrlInput = this.sheet.locator('[data-testid="mcp-oauth-token-url"]').or(this.sheet.getByPlaceholder(/oauth\/token/i))
