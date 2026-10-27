@@ -27,7 +27,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Image Edit           | ✅            | -         | `/generateContent` or `/predict` (Imagen) |
 | Video Generation     | ✅            | -         | `/predictLongRunning` (Veo models only)   |
 | Image Variation      | ❌            | -         | Not supported                             |
-| List Models          | ✅            | -         | `/models`                                 |
+| List Models          | ✅            | -         | `/publishers/{publisher}/models`          |
 | Text Completions     | ❌            | ❌        | -                                         |
 | Speech (TTS)         | ❌            | ❌        | -                                         |
 | Transcriptions (STT) | ❌            | ❌        | -                                         |
@@ -1345,125 +1345,81 @@ Image variation is not supported by Vertex AI.
 
 ## Request Parameters
 
-None required. Automatically uses project_id and region from key config.
+None required. The key's `region` picks the Model Garden host (`aiplatform.googleapis.com` for `global` and multi-region endpoints, `{region}-aiplatform.googleapis.com` otherwise).
 
-## Response Conversion
+## How Models Are Listed
 
-Lists models available in the specified project and region with metadata and deployment information:
+What `GET /v1/models?provider=vertex` returns for a key depends on how the key authenticates, because Vertex's Model Garden listing (`publishers.models.list`) accepts only OAuth credentials and rejects API keys.
 
-```json
-{
-  "models": [
-    {
-      "name": "projects/{project}/locations/{region}/models/gemini-2.0-flash",
-      "display_name": "Gemini 2.0 Flash",
-      "description": "Fast multimodal model",
-      "version_id": "1",
-      "version_aliases": ["latest", "stable"],
-      "capabilities": [...],
-      "deployed_models": [...]
-    }
-  ],
-  "next_page_token": "..."
-}
-```
+### Keys with OAuth Credentials
 
-## Custom vs Non-Custom Models
+A key with a service account (`auth_credentials`), AWS workload identity, or no credentials at all (Application Default Credentials) lists the Model Garden catalog for the `google`, `anthropic` and `mistralai` publishers, every page, and then:
 
-<Warning>
-  **Important**: Vertex AI's List Models API **only returns custom fine-tuned
-  models** that have been deployed to your project. It does NOT return standard
-  foundation models (Gemini, Claude, etc.).
-</Warning>
+1. Keeps the catalog models the key's `models` allowlist allows. `["*"]` keeps all of them, and a `regex:` entry such as `"regex:^gemini-.*$"` keeps every catalog model it matches.
+2. Adds the key's `aliases` that the allowlist allows, with the alias target in the model's `alias` field. Fine-tuned endpoints and model IDs the catalog does not list appear this way.
+3. Adds the exact `models` entries the catalog did not return.
+4. Drops everything `blacklisted_models` blocks.
 
-To provide a complete model listing experience, Bifrost performs **multi-pass model discovery**:
+Publishers that are not available in the key's region are skipped.
 
-### Three-Pass Model Discovery
+### Keys with Only an API Key
 
-1. **First Pass - Custom Models from API Response**
-   - Queries Vertex AI's List Models API
-   - Returns only custom fine-tuned models deployed to your project
-   - Custom models are identified by having deployment values that contain only digits
-   - Example: `"deployment": "1234567890"`
+An API key cannot list Model Garden, so a key with an API key and no OAuth credentials lists its own configuration without calling Vertex: the `aliases` its allowlist allows, and its exact `models` entries. A `regex:` entry lists no catalog models for such a key, although requests to the models it matches still work.
 
-2. **Second Pass - Non-Custom Models from Aliases**
-   - Adds standard foundation models from your `aliases` configuration
-   - Non-custom models have alphanumeric deployment values (e.g., `gemini-pro`, `claude-3-5-sonnet`)
-   - Filters by the key-level `models` allowlist, if specified
-   - Example: `"deployment": "gemini-2.0-flash"`
+The one exception is a key with `models: ["*"]` and no aliases, which calls Model Garden with the gateway host's Application Default Credentials and fails if the host has none.
 
-3. **Third Pass - Allowed Models Not in Aliases**
-   - Adds models specified in `models` that weren't in the `aliases` map
-   - Ensures all explicitly allowed models appear in the list
-   - Uses the model name itself as the deployment value
-   - Skips digit-only model IDs (reserved for custom models)
-
-### Model Filtering Logic
-
-- **If `models` is empty and no aliases are configured**: No models are returned
-- **If `models` is empty but aliases are configured**: Only aliased models are returned
-- **If `models` is `["*"]`**: All models from all three passes are included (unrestricted)
-- **If `models` is non-empty**: Only models/aliases whose request names appear in `models` are included
-- **Duplicate Prevention**: Each model ID is tracked to prevent duplicates across passes
-
-### Model Name Formatting
-
-Non-custom models from aliases and allowed models are automatically formatted for display:
-
-- `gemini-pro` → "Gemini Pro"
-- `claude-3-5-sonnet` → "Claude 3 5 Sonnet"
-- `gemini_2_flash` → "Gemini 2 Flash"
-
-Formatting uses title case and converts hyphens/underscores to spaces.
+<Note>
+  Model Garden lists one entry per model, not every model ID Vertex accepts. A
+  model ID that works for requests but is not in the catalog, such as a dated or
+  preview version, is listed only when it is an exact `models` entry or an alias.
+</Note>
 
 ### Example Configuration
 
 <Tabs>
-<Tab title="With Custom Models Only">
+<Tab title="Catalog by Pattern">
 
 ```json
 {
-  "aliases": {
-    "my-gemini-ft": "1234567890",
-    "my-claude-ft": "9876543210"
-  },
+  "models": ["regex:^gemini-.*$"],
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1"
+    "region": "us-central1",
+    "auth_credentials": "env.VERTEX_CREDENTIALS"
   }
 }
 ```
 
-This returns only your custom fine-tuned models from the API.
+Lists every Gemini model in the Model Garden catalog.
 
 </Tab>
-<Tab title="With Foundation Models">
+<Tab title="All Models Plus a Fine-Tuned Endpoint">
 
 ```json
 {
+  "models": ["*"],
   "aliases": {
-    "gemini-2.0-flash": "gemini-2.0-flash",
-    "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022"
+    "my-gemini-ft": { "model_id": "1234567890" }
   },
   "vertex_key_config": {
     "project_id": "my-project",
-    "region": "us-central1"
+    "region": "us-central1",
+    "auth_credentials": "env.VERTEX_CREDENTIALS"
   }
 }
 ```
 
-This returns both custom models AND foundation models from aliases.
+Lists the whole catalog plus `my-gemini-ft`, whose `alias` is `1234567890`.
 
 </Tab>
-<Tab title="With Allowed Models Filter">
+<Tab title="API Key">
 
 ```json
 {
-  "models": ["gemini-2.0-flash", "claude-3-5-sonnet"],
+  "value": "env.VERTEX_API_KEY",
+  "models": ["gemini-2.5-flash", "regex:^claude-.*"],
   "aliases": {
-    "gemini-2.0-flash": "gemini-2.0-flash",
-    "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022",
-    "gemini-1.5-pro": "gemini-1.5-pro"
+    "claude-fast": { "model_id": "claude-haiku-4-5" }
   },
   "vertex_key_config": {
     "project_id": "my-project",
@@ -1472,14 +1428,14 @@ This returns both custom models AND foundation models from aliases.
 }
 ```
 
-Only returns `gemini-2.0-flash` and `claude-3-5-sonnet`, excluding `gemini-1.5-pro`.
+Lists `gemini-2.5-flash` and `claude-fast`. The `regex:^claude-.*` entry lists no other Claude models, but requests to any `claude-` model are allowed.
 
 </Tab>
 </Tabs>
 
 ### Pagination
 
-Model listing is paginated automatically. If more than 100 models exist, `next_page_token` will be present. Bifrost handles pagination internally.
+Bifrost reads every Model Garden page before filtering, and applies `page_size` and `page_token` to the combined list.
 
 ---
 
@@ -1523,12 +1479,11 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
   `embedding.go:84-91`
 </Accordion>
 
-<Accordion title="List Models API Returns Only Custom Models">
-  **Severity**: High **Behavior**: Vertex AI's List Models API only returns
-  custom fine-tuned models, NOT foundation models **Impact**: Bifrost performs
-  three-pass discovery to include foundation models from aliases and the
-  key-level `models` allowlist **Why**: This is a Vertex AI API limitation -
-  foundation models must be explicitly configured **Code**: `models.go:76-217`
+<Accordion title="List Models Needs OAuth Credentials">
+  **Severity**: Medium **Behavior**: Model Garden listing rejects API keys
+  **Impact**: A key with only an API key lists its aliases and exact `models`
+  entries, so its `regex:` entries list no catalog models **Code**:
+  `vertex.go` `listModelsByKey`
 </Accordion>
 
 ---

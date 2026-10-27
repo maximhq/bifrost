@@ -81,8 +81,9 @@ type OAuth2Provider struct {
 	// never be guarded by p.mu, for the same reason tempTokens is not:
 	// p.mu is write-locked across token-endpoint network I/O, and a cached
 	// read that had to wait on it would lose the entire point of the cache.
-	// Write paths in this file evict inline; handler-level database writes
-	// that bypass the provider evict through the exported eviction methods.
+	// Write paths in this file evict through tokenWritten; handler-level
+	// database writes that bypass the provider evict through the exported
+	// eviction methods.
 	// Exchanged tokens (token_exchange auth) share this cache: same key
 	// scheme, same expiry-as-miss validator, same lifecycle evictions —
 	// they just carry no token row ID because nothing is persisted for them.
@@ -92,6 +93,18 @@ type OAuth2Provider struct {
 	// token exchange. Same atomic-pointer rationale as tempTokens: written
 	// once at startup, read on the request path, and never guarded by p.mu.
 	exchangeIdP atomic.Pointer[schemas.TokenExchangeIdPResolver]
+
+	// onTokenWritten, when set, runs after this provider writes a token row;
+	// see SetOnTokenWritten. Same atomic-pointer rationale as tempTokens.
+	onTokenWritten atomic.Pointer[func(ctx context.Context, tokenID string)]
+
+	// resourceEndpoints caches discovered upstream token endpoints for
+	// id_jag token-exchange clients, keyed by MCP client ID (one entry each).
+	resourceEndpoints sync.Map
+
+	// idjagGrants holds the ID-JAG last issued per (user, MCP client) for
+	// re-presentation until it expires; bounded like userTokens. See idjagGrant.
+	idjagGrants *idjagGrantCache
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -104,6 +117,7 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 		configStore:    configStore,
 		retryBaseDelay: time.Second,
 		userTokens:     newUserTokenCache(defaultUserTokenCacheCapacity),
+		idjagGrants:    newIDJAGGrantCache(defaultUserTokenCacheCapacity),
 	}
 }
 
@@ -350,7 +364,7 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 			}
 			// The row is no longer 'active'; drop any cached copy so lookups
 			// surface the re-auth requirement instead of a dead access token.
-			p.EvictUserTokenByID(token.ID)
+			p.tokenWritten(ctx, token.ID)
 			logger.Debug("OAuth refresh permanently rejected; token marked needs_reauth: mcp_client=%s auth_mode=%s upstream_status=%d",
 				token.MCPClientID, token.AuthMode, permErr.StatusCode)
 			return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
@@ -408,7 +422,7 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 
 	// Drop any cached copy of the old access token; the next lookup reads
 	// the freshly written row.
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(ctx, token.ID)
 
 	logger.Debug("OAuth token refreshed successfully: token_id=%s auth_mode=%s", token.ID, token.AuthMode)
 
@@ -544,7 +558,7 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	if err := p.configStore.DeleteSharedOauthTokensByConfigID(ctx, oauthConfigID); err != nil {
 		return fmt.Errorf("failed to delete token: %w", err)
 	}
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(ctx, token.ID)
 
 	logger.Debug("OAuth token revoked", "oauth_config_id", oauthConfigID)
 
@@ -997,7 +1011,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
 	// reused row's ID when one existed, so this evicts exactly the row that
 	// was written. A fresh row has nothing cached and the evict is a no-op.
-	p.EvictUserTokenByID(tokenRecord.ID)
+	p.tokenWritten(ctx, tokenRecord.ID)
 
 	// Flow row's purpose ends here — same reasoning as CompleteUserOAuthFlow
 	// (see cleanupFlow): the token row is the durable record now. Harmless
@@ -1351,11 +1365,22 @@ func (p *OAuth2Provider) requirePublicTargetFor(ctx context.Context, mcpClientID
 	return true
 }
 
+// tokenRequestOption adjusts a token endpoint request before it is sent.
+type tokenRequestOption func(*http.Request)
+
+// withBasicClientAuth sends client credentials with HTTP Basic, each half
+// form-encoded first as RFC 6749 §2.3.1 requires.
+func withBasicClientAuth(clientID, secret string) tokenRequestOption {
+	return func(req *http.Request) {
+		req.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(secret))
+	}
+}
+
 // callTokenEndpoint makes a POST request to the OAuth token endpoint with retry logic.
 // A response without an access token is classified by classifyTokenRejection:
 // transient ones are retried up to maxTokenRetries times with exponential
 // backoff, and dead grants or refused clients are returned as PermanentOAuthError.
-func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values, opts ...tokenRequestOption) (*schemas.OAuth2TokenExchangeResponse, error) {
 	client := newOAuthDiscoveryHTTPClient(ctx, networkTimeout)
 	var lastErr error
 
@@ -1366,6 +1391,9 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "application/json")
+		for _, opt := range opts {
+			opt(req)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1867,7 +1895,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
 	// reused row's ID when one existed, so this evicts exactly the row that
 	// was written; the next lookup for this binding reads the new credential.
-	p.EvictUserTokenByID(tokenRecord.ID)
+	p.tokenWritten(ctx, tokenRecord.ID)
 
 	// Token row is written; the flow row's purpose ends here. cleanupFlow
 	// deletes both the flow row (transient PKCE/state carrier — the token
@@ -1958,8 +1986,39 @@ func (p *OAuth2Provider) EvictUserTokenByID(tokenID string) {
 	p.userTokens.EvictByTokenID(tokenID)
 }
 
+// SetOnTokenWritten registers a callback invoked after this provider writes a
+// token row (a refresh, a re-authorization, a status change or a deletion),
+// with the row's ID, once the row is written and dropped from this process's
+// cache. That eviction reaches only this process; a deployment running
+// several processes over one token store uses the callback to have the others
+// drop the row too. The callback runs inline on the write path, including
+// inside refreshes other callers are waiting on, so it must return promptly.
+// Safe to call at any time; nil clears it.
+func (p *OAuth2Provider) SetOnTokenWritten(cb func(ctx context.Context, tokenID string)) {
+	if p == nil {
+		return
+	}
+	if cb == nil {
+		p.onTokenWritten.Store(nil)
+		return
+	}
+	p.onTokenWritten.Store(&cb)
+}
+
+// tokenWritten drops tokenID from this process's cache after this provider
+// wrote its row, then runs the SetOnTokenWritten callback. EvictUserTokenByID
+// stays local-only, so a process applying another process's eviction never
+// announces it again.
+func (p *OAuth2Provider) tokenWritten(ctx context.Context, tokenID string) {
+	p.userTokens.EvictByTokenID(tokenID)
+	if cb := p.onTokenWritten.Load(); cb != nil {
+		(*cb)(ctx, tokenID)
+	}
+}
+
 // EvictUserTokensByMCPClient drops every cached access token bound to the
-// given MCP client, across all auth modes and identities. Used after
+// given MCP client, across all auth modes and identities, with its held
+// ID-JAG grants and discovered upstream token endpoint. Used after
 // client-level mutations that invalidate its token rows as a set, such as
 // credential rotation, access reconciliation, or client deletion.
 // Side-effect only and safe to call when the cache is absent.
@@ -1968,6 +2027,8 @@ func (p *OAuth2Provider) EvictUserTokensByMCPClient(mcpClientID string) {
 		return
 	}
 	p.userTokens.EvictByMCPClient(mcpClientID)
+	p.evictIDJAGGrants(func(k idjagGrantKey) bool { return k.clientID == mcpClientID })
+	p.resourceEndpoints.Delete(mcpClientID)
 }
 
 // EvictUserTokensByVirtualKey drops every cached vk-mode access token bound
@@ -1990,6 +2051,7 @@ func (p *OAuth2Provider) EvictUserTokensByUser(userID string) {
 		return
 	}
 	p.userTokens.EvictByUser(userID)
+	p.evictIDJAGGrants(func(k idjagGrantKey) bool { return k.userID == userID })
 }
 
 // FlushUserTokenCache drops every cached per-user access token. The coarse
@@ -2000,4 +2062,5 @@ func (p *OAuth2Provider) FlushUserTokenCache() {
 		return
 	}
 	p.userTokens.Flush()
+	p.evictIDJAGGrants(func(idjagGrantKey) bool { return true })
 }

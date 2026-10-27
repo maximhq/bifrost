@@ -260,6 +260,15 @@ func (c ModelCaps) SupportsSystemMessages(fallback bool) bool {
 	return fallback
 }
 
+// SupportsDeveloperRole reports whether the model accepts role "developer".
+// Models that do not are sent developer messages as system instead.
+func (c ModelCaps) SupportsDeveloperRole(fallback bool) bool {
+	if c.record != nil && c.record.SupportsDeveloperRole != nil {
+		return *c.record.SupportsDeveloperRole
+	}
+	return fallback
+}
+
 // SupportsAssistantPrefill reports whether a trailing assistant message may be
 // sent for the model to continue. Models without it need it trimmed.
 func (c ModelCaps) SupportsAssistantPrefill(fallback bool) bool {

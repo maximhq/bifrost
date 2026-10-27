@@ -176,6 +176,14 @@
           "    } else if (typeof j.text === 'string' && !j.choices && !j.candidates && !j.output) {",
           "        shape = 'audio-transcription';",
           "        hasContent = j.text.length > 0;",
+          "    } else if (Array.isArray(j.combinedPhrases)) {",
+          "        shape = 'azure-fast-transcription';",
+          "        // Azure AI Speech fast transcription (/azure/speechtotext/...) carries its text in combinedPhrases, not text.",
+          "        hasContent = j.combinedPhrases.some(function (phrase) { return phrase && typeof phrase.text === 'string' && phrase.text.length > 0; });",
+          "    } else if (typeof j.RecognitionStatus === 'string') {",
+          "        shape = 'azure-short-audio';",
+          "        // Azure AI Speech short audio recognition (/azure/.../speech/recognition/...) carries its text in DisplayText.",
+          "        hasContent = typeof j.DisplayText === 'string' && j.DisplayText.length > 0;",
           "    } else if (__u.indexOf('/api/session/is-auth-enabled') !== -1 && typeof j.inference_auth_enforced === 'boolean') {",
           "        shape = 'session-auth-status';",
           "        hasContent = typeof j.is_auth_enabled === 'boolean';",
@@ -282112,6 +282120,3573 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "273. Regex allowlist lists aliases the upstream catalog never returns (regex-alias-listing)",
+      "description": "Pins the list-models backfill for aliases that a key allows only through a `regex:` entry. With a restricted allowlist, `ListModelsPipeline.BackfillModels` backfilled exact allowlist entries but skipped every `regex:` entry, so an alias whose name matched only a pattern, and whose target the upstream list never returns (a Bedrock inference profile, an Azure deployment name, a fine-tune), was missing from GET /v1/models while requests to it were routed. The shared pipeline is used by every provider's list-models, so the case drives it through a run-scoped custom provider on the OpenAI base: its key allows `regex:^harness-.*` and `gpt-4o-mini`, blocks `harness-blocked`, and maps two `harness-` aliases to fine-tune IDs OpenAI does not list. The listing must hold exactly the exact entry and the pattern-allowed alias (with its target in `alias`), never the blacklisted alias and never the pattern itself. Pre-fix the alias is missing. The listing call is free; the provider is deleted afterwards and stale run-scoped providers are swept first.",
+      "item": [
+        {
+          "name": "openai custom provider GET /v1/models lists an alias allowed only by a regex: entry - regex-alias-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped custom provider whose key allows models by pattern ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-regexalias-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('rgxAliasProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('rgxAliasProvider', name);",
+                  "      var key = {",
+                  "        name: name + '-key',",
+                  "        value: 'env.OPENAI_API_KEY',",
+                  "        weight: 1,",
+                  "        models: ['regex:^harness-.*', 'gpt-4o-mini'],",
+                  "        blacklisted_models: ['harness-blocked'],",
+                  "        aliases: {",
+                  "          'harness-pinned': { model_id: 'ft:gpt-4o-mini-2024-07-18:harness::regexalias' },",
+                  "          'harness-blocked': { model_id: 'ft:gpt-4o-mini-2024-07-18:harness::blocked' }",
+                  "        }",
+                  "      };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created key with a regex allowlist and two aliases', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('rgxAliasProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var byId = {}; (body.data || []).forEach(function (m) { byId[m.id] = m; });",
+                  "// Every listed id, duplicates kept, so the exact-set check below catches a model listed twice.",
+                  "var ids = (body.data || []).map(function (m) { return m.id; });",
+                  "pm.test('an alias allowed only by regex:^harness-.* is listed with its target (pre-fix: missing)', function () {",
+                  "  var m = byId[name + '/harness-pinned'];",
+                  "  pm.expect(m, 'not in ' + JSON.stringify(ids)).to.be.an('object');",
+                  "  pm.expect(m.alias).to.eql('ft:gpt-4o-mini-2024-07-18:harness::regexalias');",
+                  "});",
+                  "pm.test('a blacklisted alias stays out although the pattern matches it', function () {",
+                  "  pm.expect(ids).to.not.include(name + '/harness-blocked');",
+                  "});",
+                  "pm.test('exactly the exact entry and the regex-allowed alias are listed, no pattern among them', function () {",
+                  "  pm.expect(ids.slice().sort(), JSON.stringify(ids)).to.eql([name + '/gpt-4o-mini', name + '/harness-pinned'].sort());",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{rgxAliasProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{rgxAliasProvider}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "274. Vertex lists the Model Garden catalog for OAuth keys with deployments or a regex allowlist (vertex-catalog-listing)",
+      "description": "Pins Vertex list-models for keys that can mint an OAuth token. `listModelsByKey` used to answer from the key's configuration, without calling Model Garden, whenever the key had a deployment or an allowlist other than `*`: a `*` key with deployments listed only the deployments, and a `regex:` allowlist listed nothing but the deployments it matched, although requests to the catalog models were routed. Keys with a service account (or workload identity, or default credentials) now list the Model Garden catalog through the allowlist and add their deployments; keys with only an API key keep the configuration listing, because Model Garden rejects API keys (that path has Go coverage, the profile has no Vertex API key). Each case creates a run-scoped custom provider on the vertex base with the profile's service account and deletes it afterwards. (1) `regex:^gemini-2[.]5-.*` plus a deployment to a numeric endpoint: catalog models matching the pattern are listed, every listed model matches it, and the deployment carries its target. (2) `*` plus a deployment: catalog models are listed next to the deployment. Model ids are compared without their provider segment. The listing calls are free.",
+      "item": [
+        {
+          "name": "vertex service-account key with a regex: allowlist lists the matching Model Garden models and its endpoint deployment - vertex-catalog-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped vertex provider with the profile's service account ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-vertexlist-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'regex-run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('vertexListRegexProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers to sweep stale run-scoped ones', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      var staleName = stale.shift().name;",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(staleName), null, function (rd) {",
+                  "        // 404: a parallel run deleted it first.",
+                  "        pm.test('setup: swept stale provider ' + staleName, function () { pm.expect(rd && rd.code, rd ? rd.text() : 'no response').to.be.oneOf([200, 404]); });",
+                  "        sweep();",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'vertex', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped vertex provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('vertexListRegexProvider', name);",
+                  "      var key = { models: ['regex:^gemini-2[.]5-.*'], aliases: { 'gemini-2.5-harness-endpoint': { model_id: '1234567890' } } };",
+                  "      key.name = name + '-key';",
+                  "      key.weight = 1;",
+                  "      key.vertex_key_config = { project_id: 'env.VERTEX_PROJECT_ID', region: 'env.GOOGLE_LOCATION', auth_credentials: 'env.VERTEX_CREDENTIALS' };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created service-account key', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('vertexListRegexProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Model ids without their provider segment, mapped to their alias ('' when none).",
+                  "var models = {}; (body.data || []).forEach(function (m) { models[String(m.id).slice(String(m.id).indexOf('/') + 1)] = m.alias || ''; });",
+                  "var ids = Object.keys(models);",
+                  "pm.test('Model Garden models matching the pattern are listed (pre-fix: only the deployment)', function () {",
+                  "  var catalog = ids.filter(function (id) { return id !== 'gemini-2.5-harness-endpoint'; });",
+                  "  pm.expect(catalog.length, JSON.stringify(ids)).to.be.above(0);",
+                  "});",
+                  "pm.test('every listed model matches regex:^gemini-2[.]5-.*', function () {",
+                  "  ids.forEach(function (id) { pm.expect(id, JSON.stringify(ids)).to.match(/^gemini-2[.]5-/i); });",
+                  "});",
+                  "pm.test('the endpoint deployment the pattern allows is listed with its target', function () {",
+                  "  pm.expect(models['gemini-2.5-harness-endpoint'], JSON.stringify(models)).to.eql('1234567890');",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{vertexListRegexProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{vertexListRegexProvider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex service-account key with * and a deployment lists the Model Garden catalog plus the deployment - vertex-catalog-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped vertex provider with the profile's service account ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-vertexlist-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'wildcard-run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('vertexListWildcardProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers to sweep stale run-scoped ones', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      var staleName = stale.shift().name;",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(staleName), null, function (rd) {",
+                  "        // 404: a parallel run deleted it first.",
+                  "        pm.test('setup: swept stale provider ' + staleName, function () { pm.expect(rd && rd.code, rd ? rd.text() : 'no response').to.be.oneOf([200, 404]); });",
+                  "        sweep();",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'vertex', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped vertex provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('vertexListWildcardProvider', name);",
+                  "      var key = { models: ['*'], aliases: { 'harness-vertex-deployment': { model_id: 'gemini-2.5-flash' } } };",
+                  "      key.name = name + '-key';",
+                  "      key.weight = 1;",
+                  "      key.vertex_key_config = { project_id: 'env.VERTEX_PROJECT_ID', region: 'env.GOOGLE_LOCATION', auth_credentials: 'env.VERTEX_CREDENTIALS' };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created service-account key', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('vertexListWildcardProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Model ids without their provider segment, mapped to their alias ('' when none).",
+                  "var models = {}; (body.data || []).forEach(function (m) { models[String(m.id).slice(String(m.id).indexOf('/') + 1)] = m.alias || ''; });",
+                  "var ids = Object.keys(models);",
+                  "pm.test('Model Garden catalog models are listed next to the deployment (pre-fix: only the deployment)', function () {",
+                  "  var gemini = ids.filter(function (id) { return /^gemini-/i.test(id); });",
+                  "  pm.expect(gemini.length, JSON.stringify(ids)).to.be.above(0);",
+                  "});",
+                  "pm.test('the deployment is listed with its target', function () {",
+                  "  pm.expect(models['harness-vertex-deployment'], JSON.stringify(models)).to.eql('gemini-2.5-flash');",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{vertexListWildcardProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{vertexListWildcardProvider}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "275. Developer role and mid-conversation system message placement (PR #8884)",
+      "description": "PR #8884 makes the OpenAI-compatible request converters honor two datasheet capabilities on both /v1/chat/completions and /v1/responses. supports_developer_role=false sends developer messages as system: Cerebras qwen-3.8-27b fails a developer turn with 'Unexpected message role' from its chat template, and Mistral's API rejects the role outright with a 422. supports_mid_conversation_system_messages=false turns every system/developer message after the leading run into a user turn wrapped in <system-reminder>: Fireworks qwen3p8-max fails with 'System message must be at the beginning.' otherwise, which is what breaks Codex when it injects developer turns mid-session. The /v1/responses path for Mistral and Cerebras already sends developer as system through the Responses-to-Chat conversion, so the developer-role cases pin the chat path. Each case asserts the body Bifrost sent upstream (extra_fields.raw_request). Guards use models whose datasheet rows set neither flag (cerebras gpt-oss-120b, fireworks kimi-k3) and pin that nothing is rewritten for them. Prerequisite: the datasheet rows cerebras/qwen-3.8-27b and mistral/mistral-small-latest (supports_developer_role=false) and fireworks_ai/accounts/fireworks/models/qwen3p8-max (supports_mid_conversation_system_messages=false); without them the 275.1-275.3 and 275.5-275.7 cases stay red even with the fix.",
+      "item": [
+        {
+          "name": "275.1 cerebras/qwen-3.8-27b /v1/chat/completions developer message is sent as system (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('developer-role request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('developer reaches Cerebras as system', function () {",
+                  "  var rr = rawRequest();",
+                  "  pm.expect(rr.messages[0].role, 'upstream messages: ' + JSON.stringify(rr.messages)).to.equal('system');",
+                  "  pm.expect(rr.messages[1].role).to.equal('user');",
+                  "});",
+                  "pm.test('reply carries text', function () {",
+                  "  var c = pm.response.json().choices;",
+                  "  pm.expect(c, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cerebras/qwen-3.8-27b\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.2 mistral/mistral-small-latest /v1/chat/completions developer message is sent as system (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('developer-role request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('developer reaches Mistral as system', function () {",
+                  "  var rr = rawRequest();",
+                  "  pm.expect(rr.messages[0].role, 'upstream messages: ' + JSON.stringify(rr.messages)).to.equal('system');",
+                  "  pm.expect(rr.messages[1].role).to.equal('user');",
+                  "});",
+                  "pm.test('reply carries text', function () {",
+                  "  var c = pm.response.json().choices;",
+                  "  pm.expect(c, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/mistral-small-latest\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.3 mistral/mistral-small-latest /v1/chat/completions stream developer message is accepted (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('developer-role stream succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('stream completes without an error event', function () {",
+                  "  pm.expect(text, 'stream: ' + text).to.include('[DONE]');",
+                  "  pm.expect(text, 'stream: ' + text).to.include('\"delta\"');",
+                  "  pm.expect(text, 'stream carried an error: ' + text).to.not.match(/\"error\"\\s*:\\s*\\{/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/mistral-small-latest\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.4 cerebras/gpt-oss-120b /v1/chat/completions developer message is forwarded unchanged when the datasheet is silent (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('developer-role request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('developer is not rewritten for a model without the flag', function () {",
+                  "  var rr = rawRequest();",
+                  "  pm.expect(rr.messages[0].role, 'upstream messages: ' + JSON.stringify(rr.messages)).to.equal('developer');",
+                  "  pm.expect(rr.messages[1].role).to.equal('user');",
+                  "});",
+                  "pm.test('reply carries text', function () {",
+                  "  var c = pm.response.json().choices;",
+                  "  pm.expect(c, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cerebras/gpt-oss-120b\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.5 fireworks/qwen3p8-max /v1/chat/completions mid-conversation developer is inlined as a system-reminder user turn (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('mid-conversation request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('upstream keeps the leading system and inlines the mid-conversation developer', function () {",
+                  "  var items = rawRequest().messages;",
+                  "  var dump = JSON.stringify(items);",
+                  "  pm.expect(items, 'upstream messages: ' + dump).to.be.an('array').with.lengthOf(5);",
+                  "  pm.expect(items[0].role, 'leading system kept: ' + dump).to.equal('system');",
+                  "  pm.expect(items[3].role, 'mid-conversation developer inlined as user: ' + dump).to.equal('user');",
+                  "  pm.expect(JSON.stringify(items[3].content), dump).to.include('<system-reminder>').and.to.include('Answer in French.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.6 fireworks/qwen3p8-max /v1/responses mid-conversation developer is inlined as a system-reminder user turn (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('mid-conversation request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('upstream keeps the leading system and inlines the mid-conversation developer', function () {",
+                  "  var items = rawRequest().input;",
+                  "  var dump = JSON.stringify(items);",
+                  "  pm.expect(items, 'upstream input: ' + dump).to.be.an('array').with.lengthOf(5);",
+                  "  pm.expect(items[0].role, 'leading system kept: ' + dump).to.equal('system');",
+                  "  pm.expect(items[3].role, 'mid-conversation developer inlined as user: ' + dump).to.equal('user');",
+                  "  pm.expect(JSON.stringify(items[3].content), dump).to.include('<system-reminder>').and.to.include('Answer in French.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.7 fireworks/qwen3p8-max /openai/v1/responses stream Codex-style mid-conversation developer completes (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('mid-conversation stream succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('stream completes instead of failing on the chat template', function () {",
+                  "  var events = text.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) {",
+                  "    try { return JSON.parse(l.slice(5).trim()); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e && e.type; });",
+                  "  var errors = events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; });",
+                  "  pm.expect(errors.length, 'stream error event: ' + text).to.equal(0);",
+                  "  var terminal = events.filter(function (e) { return e.type === 'response.completed' || e.type === 'response.incomplete'; }).pop();",
+                  "  pm.expect(terminal, 'no terminal event: ' + text).to.be.an('object');",
+                  "  if (terminal.type === 'response.incomplete') {",
+                  "    var reason = terminal.response && terminal.response.incomplete_details && terminal.response.incomplete_details.reason;",
+                  "    pm.expect(reason, 'incomplete for a reason other than the output budget: ' + text).to.equal('max_output_tokens');",
+                  "  }",
+                  "  pm.expect(text, 'template error leaked: ' + text).to.not.include('System message must be at the beginning');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"max_output_tokens\": 32,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.8 fireworks/kimi-k3 /v1/chat/completions mid-conversation developer is forwarded unchanged when the datasheet is silent (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('mid-conversation request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('mid-conversation developer is not inlined for a model without the flag', function () {",
+                  "  var items = rawRequest().messages;",
+                  "  var dump = JSON.stringify(items);",
+                  "  pm.expect(items, 'upstream messages: ' + dump).to.be.an('array').with.lengthOf(5);",
+                  "  pm.expect(items[0].role, 'leading system kept: ' + dump).to.equal('system');",
+                  "  pm.expect(items[3].role, 'mid-conversation developer forwarded unchanged: ' + dump).to.equal('developer');",
+                  "  pm.expect(JSON.stringify(items[3].content), dump).to.not.include('<system-reminder>');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/kimi-k3\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "276. Azure Blob storage skill files [PREVIEW]",
+      "description": "Account-scoped prerequisites: start an Azure-configured gateway with logs_store.object_storage.type=azure, a writable container, and valid server-side credentials; set include_preview=1 (INCLUDE_PREVIEW=1 in the harness runner). This folder validates client paths after Azure startup; it does not establish credentials or modify the default paid provider profile. Run all rows in order with PROVIDER=azure FEATURE=\"Azure Blob storage\". GET /api/config must report connected object storage, and created Unicode text and binary dataurl files must persist storage_key references without DB blob_id fallback. Exact served bytes, owned skill deletion, and a 404 after deletion pin the lifecycle. Only the uniquely named skill created here is deleted; no global orphan cleanup is performed.",
+      "item": [
+        {
+          "name": "[PREVIEW] Azure Blob storage: connected objectstore precondition",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('azureBlobStorageConnected');",
+                  "pm.collectionVariables.unset('azureBlobStorageSkillId');",
+                  "pm.collectionVariables.unset('azureBlobStorageSkillName');",
+                  "pm.collectionVariables.unset('azureBlobStorageDeleted');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage gateway has connected object storage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_object_storage_connected, 'requires an Azure-configured gateway: ' + pm.response.text()).to.equal(true);",
+                  "  pm.collectionVariables.set('azureBlobStorageConnected', '1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: create skill with Unicode text and binary dataurl files",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('azureBlobStorageSkillId');",
+                  "pm.collectionVariables.unset('azureBlobStorageDeleted');",
+                  "pm.collectionVariables.set('azureBlobStorageSkillName', 'azure-blob-storage-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "// Capture only our newly created skill before assertions so cleanup still runs if a file assertion fails.",
+                  "if (body && body.skill && body.skill.name === pm.collectionVariables.get('azureBlobStorageSkillName') && body.skill.id) {",
+                  "  pm.collectionVariables.set('azureBlobStorageSkillId', body.skill.id);",
+                  "}",
+                  "pm.test('Azure Blob storage creates object-backed files without DB fallback', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageConnected'), 'connected objectstore precondition must run first: ' + pm.response.text()).to.equal('1');",
+                  "  pm.expect(body, 'expected JSON: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.skill.name, pm.response.text()).to.equal(pm.collectionVariables.get('azureBlobStorageSkillName'));",
+                  "  pm.expect(body.skill.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.skill.files, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  var expected = { 'reference/unicode.txt': 'text', 'assets/bytes.bin': 'dataurl' };",
+                  "  body.skill.files.forEach(function (file) {",
+                  "    pm.expect(expected, pm.response.text()).to.have.property(file.path);",
+                  "    pm.expect(file.source_type, pm.response.text()).to.equal(expected[file.path]);",
+                  "    pm.expect(file.storage_key, 'missing object storage reference: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(file, 'DB blob fallback is forbidden: ' + pm.response.text()).to.not.have.property('blob_id');",
+                  "    delete expected[file.path];",
+                  "  });",
+                  "  pm.expect(Object.keys(expected), pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{azureBlobStorageSkillName}}\",\n  \"description\": \"Owned Azure Blob storage harness skill\",\n  \"skill_md_body\": \"Use only for the Azure Blob storage harness lifecycle.\",\n  \"version\": \"1.0.0\",\n  \"files\": [\n    {\n      \"path\": \"reference/unicode.txt\",\n      \"source_type\": \"text\",\n      \"content\": \"Azure Blob storage: café, 日本語\\nSecond line.\\n\",\n      \"mime_type\": \"text/plain; charset=utf-8\"\n    },\n    {\n      \"path\": \"assets/bytes.bin\",\n      \"source_type\": \"dataurl\",\n      \"dataurl\": \"data:application/octet-stream;base64,AAECAwQFf4D+/w==\",\n      \"mime_type\": \"application/octet-stream\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/skills",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: serve exact Unicode text",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage preserves exact UTF-8 text', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.text(), 'unexpected text bytes: ' + pm.response.text()).to.equal(\"Azure Blob storage: café, 日本語\\nSecond line.\\n\");",
+                  "  pm.expect(Buffer.from(pm.response.stream).toString('hex'), 'unexpected UTF-8 bytes: ' + pm.response.text()).to.equal(Buffer.from(\"Azure Blob storage: café, 日本語\\nSecond line.\\n\", 'utf8').toString('hex'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/serve/{{azureBlobStorageSkillName}}/files/reference/unicode.txt",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{azureBlobStorageSkillName}}",
+                "files",
+                "reference",
+                "unicode.txt"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: serve exact binary dataurl bytes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage preserves NUL and non-UTF-8 binary bytes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(Buffer.from(pm.response.stream).toString('hex'), 'unexpected binary bytes: ' + pm.response.text()).to.equal('0001020304057f80feff');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/serve/{{azureBlobStorageSkillName}}/files/assets/bytes.bin",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{azureBlobStorageSkillName}}",
+                "files",
+                "assets",
+                "bytes.bin"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: delete owned skill and files",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage deletes only the skill created by this lifecycle', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('skill deleted successfully');",
+                  "  pm.collectionVariables.set('azureBlobStorageDeleted', '1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/{{azureBlobStorageSkillId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{azureBlobStorageSkillId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-404] Azure Blob storage: deleted skill content is missing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage never serves content after owned skill deletion', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageDeleted'), 'owned skill deletion must succeed first: ' + pm.response.text()).to.equal('1');",
+                  "  pm.expect(pm.response.text(), 'expected missing skill error: ' + pm.response.text()).to.include(pm.collectionVariables.get('azureBlobStorageSkillName')).and.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/serve/{{azureBlobStorageSkillName}}/files/reference/unicode.txt",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{azureBlobStorageSkillName}}",
+                "files",
+                "reference",
+                "unicode.txt"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "277. Server tool models are held to the virtual key model list (server tool model check) [SERIAL]",
+      "description": "A server tool can name a model of its own: Anthropic's advisor_20260301 tool carries tools[].model, and the provider runs that model inside the same request and bills it at that model's rate. Governance checked only the request's outer model, so a virtual key restricted to claude-haiku-4-5 could put claude-opus-4-8 in the advisor tool and have it run. Governance now evaluates every model a server tool names the same way it evaluates the models a passthrough body names, so a model outside the key's allowed_models is refused with model_blocked before any provider call. Setup creates a run-scoped virtual key whose Anthropic provider config allows only claude-haiku-4-5; the refusal rows cost nothing (refused before the provider is called), the control row spends one small claude-haiku-4-5 call. Red before the change: the refusal rows returned 200 and the advisor ran. Routes: the native /anthropic/v1/messages route (unary and streaming, with the advisor beta header a real client sends) and the neutral /v1/responses route (no anthropic-beta header, the tool in its neutral 'advisor' shape). With x-bf-passthrough-extra-params: true, extra_params.tools is merged onto the provider body after governance runs, so the /openai/v1/chat/completions and /openai/v1/responses rows put the advisor there and expect the same refusal. Not covered here: raw forwarding on the native route (needs Claude Code OAuth credentials) and inline /anthropic/v1/messages/batches items (a red run would submit a real batch); both are pinned by governance unit tests.",
+      "item": [
+        {
+          "name": "anthropic server tool model check setup: create a virtual key that allows only claude-haiku-4-5",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sweep virtual keys an earlier run left behind (a failed cleanup or an aborted run). The folder is",
+                  "// [SERIAL], so it runs whole and once per run: every run-tagged key that exists now is a leftover.",
+                  "(function () {",
+                  "  var BASE = pm.variables.get('baseUrl');",
+                  "  var PREFIX = 'harness-stmc-vk-run-';",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys?search=' + encodeURIComponent(PREFIX) + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    ((json && json.virtual_keys) || []).filter(function (v) { return String(v.name || '').indexOf(PREFIX) === 0; }).forEach(function (v) {",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + v.id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "})();",
+                  "pm.collectionVariables.set('stmcVK', 'missing');",
+                  "pm.collectionVariables.unset('stmcVKID');",
+                  "pm.collectionVariables.set('stmcBody', JSON.stringify({",
+                  "  name: 'harness-stmc-vk-run-' + Date.now(),",
+                  "  provider_configs: [{ provider: 'anthropic', allowed_models: ['claude-haiku-4-5'], key_ids: ['*'], weight: 1 }]",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('server tool model check: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = {}; try { vk = (pm.response.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "pm.test('server tool model check: the virtual key has a value and an id', function () {",
+                  "  pm.expect(value, pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (value && vk.id) { pm.collectionVariables.set('stmcVK', value); pm.collectionVariables.set('stmcVKID', vk.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{stmcBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The executor model is allowed, the advisor model is not: the provider would run (and bill)",
+                  "// claude-opus-4-8 on this key's behalf, so governance must refuse before any provider call.",
+                  "pm.test('anthropic messages: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('anthropic messages: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The executor model is allowed, the advisor model is not: the provider would run (and bill)",
+                  "// claude-opus-4-8 on this key's behalf, so governance must refuse before any provider call.",
+                  "pm.test('anthropic messages stream: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('anthropic messages stream: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic/claude-haiku-4-5 /v1/responses: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The executor model is allowed, the advisor model is not: the provider would run (and bill)",
+                  "// claude-opus-4-8 on this key's behalf, so governance must refuse before any provider call.",
+                  "pm.test('responses: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('responses: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": \"Reply with the single word: ok\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic/claude-haiku-4-5 /openai/v1/chat/completions extra_params: an advisor tool naming claude-opus-4-8 in extra_params.tools is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// x-bf-passthrough-extra-params merges extra_params.tools onto the provider body after governance runs,",
+                  "// so the advisor model riding there must be held to the key's model list like a typed tool.",
+                  "pm.test('chat extra_params: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('chat extra_params: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"extra_params\": {\n    \"tools\": [\n      {\n        \"type\": \"advisor_20260301\",\n        \"name\": \"advisor\",\n        \"model\": \"claude-opus-4-8\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic/claude-haiku-4-5 /openai/v1/responses extra_params: an advisor tool naming claude-opus-4-8 in extra_params.tools is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// x-bf-passthrough-extra-params merges extra_params.tools onto the provider body after governance runs,",
+                  "// so the advisor model riding there must be held to the key's model list like a typed tool.",
+                  "pm.test('responses extra_params: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('responses extra_params: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": \"Reply with the single word: ok\",\n  \"extra_params\": {\n    \"tools\": [\n      {\n        \"type\": \"advisor_20260301\",\n        \"name\": \"advisor\",\n        \"model\": \"claude-opus-4-8\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages: the same key without an advisor tool is served - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Control: the key itself works for its allowed model, so the refusals above are about the",
+                  "// advisor model and not about the key.",
+                  "pm.test('server tool model check: allowed model without a server tool is served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.not.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic server tool model check cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('stmcVKID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('server tool model check: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes the key.",
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('stmcVKID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{stmcVKID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{stmcVKID}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "278. Advisor passes are billed at the advisor model rate (advisor pass billing) [SERIAL]",
+      "description": "Anthropic's advisor_20260301 tool runs a second model inside the request. The provider reports each advisor pass only in usage.iterations[] (type advisor_message, with its model) and bills it at the advisor model's rate; the top-level usage mirrors the executor passes alone. Bifrost priced the top-level usage only, so the log cost and every budget charge left out the advisor passes, which on an Opus advisor is most of the bill. The anthropic passthrough usage also dropped the iterations list. Cost now adds each advisor pass at its own model's rate (falling back to the executor's rate when the advisor model has no pricing, never to zero), on the Responses unary, Responses stream and passthrough paths. Setup creates a run-scoped virtual key and two virtual-key scoped pricing overrides (executor claude-haiku-4-5 and advisor claude-opus-4-8), so the expected cost is exact from the token counts in the response. Three routes are pinned: /anthropic/v1/messages unary and streaming (usage read from message_start overlaid by message_delta) and the neutral /v1/responses (no anthropic-beta header, the tool in its neutral 'advisor' shape). Each case asks the executor to consult the advisor and fails loudly if no advisor pass was reported (the pin needs one). Red before the change: the logged cost equalled the executor tokens alone. This spends three live executor calls plus the advisor passes Anthropic runs.",
+      "item": [
+        {
+          "name": "anthropic advisor pass billing setup: create a virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sweep what an earlier run left behind (a failed cleanup or an aborted run): the run-tagged pricing",
+                  "// overrides first, then the run-tagged virtual keys they were scoped to. The folder is [SERIAL], so it",
+                  "// runs whole and once per run: every run-tagged object that exists now is a leftover.",
+                  "(function () {",
+                  "  var BASE = pm.variables.get('baseUrl');",
+                  "  function sweep(path, field, prefix, done) {",
+                  "    pm.sendRequest({ url: BASE + path + '?search=' + encodeURIComponent(prefix) + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "      var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "      var items = ((json && json[field]) || []).filter(function (o) { return String(o.name || '').indexOf(prefix) === 0; });",
+                  "      var i = 0; (function next() { if (i >= items.length) { return done(); } pm.sendRequest({ url: BASE + path + '/' + items[i++].id, method: 'DELETE' }, function () { next(); }); })();",
+                  "    });",
+                  "  }",
+                  "  sweep('/api/governance/pricing-overrides', 'pricing_overrides', 'harness-apb-', function () {",
+                  "    sweep('/api/governance/virtual-keys', 'virtual_keys', 'harness-apb-vk-run-', function () {});",
+                  "  });",
+                  "})();",
+                  "pm.collectionVariables.set('apbVK', 'missing');",
+                  "pm.collectionVariables.unset('apbVKID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-apb-vk-run-' + Date.now(),",
+                  "  provider_configs: [{ provider: 'anthropic', allowed_models: ['*'], key_ids: ['*'], weight: 1 }]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = {}; try { vk = (pm.response.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "if (value && vk.id) { pm.collectionVariables.set('apbVK', value); pm.collectionVariables.set('apbVKID', vk.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing setup: virtual-key scoped rates for executor [EXPECT-201]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('apbExecOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-apb-executor-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('apbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'claude-haiku-4-5*',",
+                  "  request_types: ['responses'],",
+                  "  patch: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: executor override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('advisor pass billing: executor override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('apbExecOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing setup: virtual-key scoped rates for advisor [EXPECT-201]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('apbAdvisorOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-apb-advisor-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('apbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'claude-opus-4-8*',",
+                  "  request_types: ['responses'],",
+                  "  patch: { input_cost_per_token: 0.00001, output_cost_per_token: 0.0001 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: advisor override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('advisor pass billing: advisor override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('apbAdvisorOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages: the logged cost includes each advisor pass at the advisor rate - advisor pass billing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('advisor pass billing: messages request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var usage = body.usage || {};",
+                  "var passes = (usage.iterations || []).filter(function (it) { return it && it.type === 'advisor_message'; });",
+                  "pm.test('advisor pass billing: the executor consulted the advisor (this pin needs an advisor pass)', function () {",
+                  "  pm.expect(passes.length, 'no advisor_message in usage.iterations: ' + JSON.stringify(usage).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function cached(u) { return (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); }",
+                  "pm.test('advisor pass billing: no prompt caching, so input and output rates fully determine the cost', function () {",
+                  "  pm.expect(cached(usage), JSON.stringify(usage).slice(0, 800)).to.eql(0);",
+                  "  passes.forEach(function (p) { pm.expect(cached(p), JSON.stringify(p)).to.eql(0); });",
+                  "});",
+                  "var executorCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "var advisorCost = 0;",
+                  "passes.forEach(function (p) { advisorCost += (p.input_tokens || 0) * 0.00001 + (p.output_tokens || 0) * 0.0001; });",
+                  "var expected = executorCost + advisorCost;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('advisor pass billing: x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || passes.length === 0) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var total = (j.cost_breakdown || {}).total_cost;",
+                  "      pm.test('advisor pass billing: logged cost is executor tokens at the executor rate plus each advisor pass at the advisor rate', function () {",
+                  "        pm.expect(total, 'log: ' + JSON.stringify({ cost: j.cost, cost_breakdown: j.cost_breakdown }) + ' executor-only would be ' + executorCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('advisor pass billing: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"system\": \"Before you answer anything, you must call the advisor tool exactly once. Then answer in one short sentence.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Consult the advisor, then tell me whether 17 is prime.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages stream: the logged cost includes each advisor pass at the advisor rate - advisor pass billing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'advisor pass billing stream';",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test(LABEL + ': messages stream served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "// Usage is message_start's usage overlaid by each message_delta's (cumulative, iterations included).",
+                  "var usage = {};",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  var u = ev && ev.type === 'message_start' ? (ev.message || {}).usage : (ev && ev.type === 'message_delta' ? ev.usage : null);",
+                  "  if (u) { Object.keys(u).forEach(function (k) { if (u[k] !== null && u[k] !== undefined) { usage[k] = u[k]; } }); }",
+                  "});",
+                  "var passes = (usage.iterations || []).filter(function (it) { return it && it.type === 'advisor_message'; });",
+                  "pm.test(LABEL + ': the executor consulted the advisor (this pin needs an advisor pass)', function () {",
+                  "  pm.expect(passes.length, 'no advisor_message in usage.iterations: ' + JSON.stringify(usage).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function cached(u) { return (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); }",
+                  "pm.test(LABEL + ': no prompt caching, so input and output rates fully determine the cost', function () {",
+                  "  pm.expect(cached(usage), JSON.stringify(usage).slice(0, 800)).to.eql(0);",
+                  "  passes.forEach(function (p) { pm.expect(cached(p), JSON.stringify(p)).to.eql(0); });",
+                  "});",
+                  "var executorCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "var advisorCost = 0;",
+                  "passes.forEach(function (p) { advisorCost += (p.input_tokens || 0) * 0.00001 + (p.output_tokens || 0) * 0.0001; });",
+                  "var expected = executorCost + advisorCost;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || passes.length === 0) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var total = (j.cost_breakdown || {}).total_cost;",
+                  "      pm.test(LABEL + ': logged cost is executor tokens at the executor rate plus each advisor pass at the advisor rate', function () {",
+                  "        pm.expect(total, 'log: ' + JSON.stringify({ cost: j.cost, cost_breakdown: j.cost_breakdown }) + ' executor-only would be ' + executorCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"system\": \"Before you answer anything, you must call the advisor tool exactly once. Then answer in one short sentence.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Consult the advisor, then tell me whether 17 is prime.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses: the logged cost includes each advisor pass at the advisor rate - advisor pass billing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'advisor pass billing responses';",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test(LABEL + ': /v1/responses request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var usage = body.usage || {};",
+                  "var passes = (usage.iterations || []).filter(function (it) { return it && it.type === 'advisor_message'; });",
+                  "pm.test(LABEL + ': the executor consulted the advisor (this pin needs an advisor pass)', function () {",
+                  "  pm.expect(passes.length, 'no advisor_message in usage.iterations: ' + JSON.stringify(usage).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function cached(u) { return ((u.input_tokens_details || {}).cached_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); }",
+                  "pm.test(LABEL + ': no prompt caching, so input and output rates fully determine the cost', function () {",
+                  "  pm.expect(cached(usage), JSON.stringify(usage).slice(0, 800)).to.eql(0);",
+                  "  passes.forEach(function (p) { pm.expect(cached(p), JSON.stringify(p)).to.eql(0); });",
+                  "});",
+                  "var executorCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "var advisorCost = 0;",
+                  "passes.forEach(function (p) { advisorCost += (p.input_tokens || 0) * 0.00001 + (p.output_tokens || 0) * 0.0001; });",
+                  "var expected = executorCost + advisorCost;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || passes.length === 0) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var total = (j.cost_breakdown || {}).total_cost;",
+                  "      pm.test(LABEL + ': logged cost is executor tokens at the executor rate plus each advisor pass at the advisor rate', function () {",
+                  "        pm.expect(total, 'log: ' + JSON.stringify({ cost: j.cost, cost_breakdown: j.cost_breakdown }) + ' executor-only would be ' + executorCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{apbVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 512,\n  \"instructions\": \"Before you answer anything, you must call the advisor tool exactly once. Then answer in one short sentence.\",\n  \"input\": \"Consult the advisor, then tell me whether 17 is prime.\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"model\": \"claude-opus-4-8\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing cleanup: delete the advisor override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('apbAdvisorOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: the advisor override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('apbAdvisorOverrideID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{apbAdvisorOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{apbAdvisorOverrideID}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing cleanup: delete the executor override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('apbExecOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: the executor override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('apbExecOverrideID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{apbExecOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{apbExecOverrideID}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('apbVKID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: the virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('apbVKID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{apbVKID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{apbVKID}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "279. MCP OAuth discovery ignores protected resource metadata for another resource (mcp oauth resource match)",
+      "description": "Management-endpoint check with no live provider involved. When an OAuth MCP client is added without authorize/token URLs, Bifrost discovers them from the MCP server: the 401's WWW-Authenticate resource_metadata document (RFC 9728) names the authorization servers. RFC 9728 section 3.3 says that document must not be used unless its resource identifies the server being connected to; before the fix any document was trusted, so an MCP server could hand Bifrost a different resource and any authorization server, and Bifrost sent its dynamic client registration and the admin's sign-in there.\n\nPrerequisite: node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs (port 8799, override with --port and the mcpOauthResourceFixtureUrl variable). Its /mcp advertises metadata whose resource is https://other-mcp.invalid/mcp and whose authorization server is the fixture's /rogue issuer; the server origin's own authorization server metadata points at /legit. Nothing in the harness runners starts it, so the row is [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp oauth resource match\" INCLUDE_PREVIEW=1 once the fixture is up. The row names no model, so no provider fork selects it and a run without PROVIDER=mcp skips it. The harness profile allowlists 127.0.0.1 for the MCP OAuth chain (see mcp-oauth-private-allowlist).\n\nRed before the fix: the authorize URL points at /rogue/authorize and the fixture records a registration on /rogue/register. Green after: the document is ignored, discovery falls back to the server origin, the authorize URL is /legit/authorize, and only /legit/register is called. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
+      "item": [
+        {
+          "name": "[PREVIEW] POST /api/mcp/client · metadata naming another resource does not choose the authorization server - mcp oauth resource match",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The MCP server is the local fixture (node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs, port 8799).",
+                  "var FIXTURE = pm.variables.get('mcpOauthResourceFixtureUrl') || 'http://127.0.0.1:8799';",
+                  "pm.variables.set('mcpOauthResourceFixtureUrl', FIXTURE);",
+                  "pm.sendRequest({ url: FIXTURE + '/__reset', method: 'POST' }, function (err) {",
+                  "  if (err) { console.warn('mcp oauth resource match: fixture not reachable at ' + FIXTURE + ', start node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs'); }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The fixture's /mcp advertises protected resource metadata whose resource is https://other-mcp.invalid/mcp and whose",
+                  "// authorization server is the fixture's /rogue issuer. Before the fix that document was trusted: the authorize URL",
+                  "// pointed at /rogue/authorize and dynamic client registration POSTed to /rogue/register. Now the document is ignored,",
+                  "// discovery falls back to the server origin as the authorization server, and everything goes to /legit.",
+                  "var FIXTURE = pm.variables.get('mcpOauthResourceFixtureUrl') || 'http://127.0.0.1:8799';",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('registration starts the OAuth flow (200)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(body.status, pm.response.text()).to.eql('pending_oauth');",
+                  "});",
+                  "pm.test('authorize URL comes from the server origin, not the authorization server named by the mismatched metadata', function () {",
+                  "  var authorizeURL = String(body.authorize_url || '');",
+                  "  pm.expect(authorizeURL, pm.response.text()).to.include(FIXTURE + '/legit/authorize?');",
+                  "  pm.expect(authorizeURL).to.not.include('/rogue/');",
+                  "});",
+                  "pm.test('the resource named by the mismatched metadata is not sent as the resource indicator', function () {",
+                  "  pm.expect(decodeURIComponent(String(body.authorize_url || ''))).to.not.include('other-mcp.invalid');",
+                  "});",
+                  "pm.sendRequest({ url: FIXTURE + '/__hits', method: 'GET' }, function (err, res) {",
+                  "  pm.test('dynamic client registration went only to the server origin', function () {",
+                  "    pm.expect(err, 'start node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs').to.equal(null);",
+                  "    var hits = res.json();",
+                  "    pm.expect(hits.filter(function (h) { return h.server === 'rogue'; }), JSON.stringify(hits)).to.have.length(0);",
+                  "    pm.expect(hits.filter(function (h) { return h.server === 'legit'; }), JSON.stringify(hits)).to.have.length(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_resource_match_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"{{mcpOauthResourceFixtureUrl}}/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "270. Azure AI Speech: SSML text to speech and fast transcription through use_speech_endpoints aliases (azure speech)",
+      "description": "Pins F-19: Azure AI Speech behind the azure provider. An alias with use_speech_endpoints leaves the Azure OpenAI audio routes; the shared Azure key carries speech-neural, speech-mai-voice and speech-fast-transcription. Text to speech is sent as SSML to {endpoint}/tts/cognitiveservices/v1 with Ocp-Apim-Subscription-Key, X-Microsoft-OutputFormat and a User-Agent. The voice suffix comes from the model ID (MAI-Voice-2.1-Flash + en-US-Harper is en-US-Harper:MAI-Voice-2.1-Flash) and speed becomes <prosody rate>. Speech to text is sent to fast transcription (/speechtotext/transcriptions:transcribe) as an audio part plus a JSON definition, and usage is the duration rounded up to the second, which is what Azure meters. Without the flag every case reaches /openai/v1/audio/speech or /openai/deployments/<model>/... and fails. The cases cover native /v1 and the OpenAI drop-in routes, the SSE stream with its billable characters on the done event, the empty-body 400 that Azure answers to an unknown voice, and diarization requested through a multipart extra field. The /azure cases (270.11 to 270.17) pin the Azure-shaped REST routes: SSML text to speech on the regional and resource paths with the Content-Type of the requested format and the model taken from the voice suffix, the virtual key read from Ocp-Apim-Subscription-Key, fast transcription and short audio returning Azure's own JSON (the profile aliases neural, DragonHDLatestNeural, fast-transcription and short-audio carry use_speech_endpoints), Azure's short audio 400 reason, and an Azure OpenAI deployment served on the same /azure base URL.",
+      "item": [
+        {
+          "name": "270.1 azure speech-neural alias native /v1/audio/speech returns SSML-synthesized audio (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"Harness Azure Speech probe.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Speech returned audio bytes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct + ' ' + pm.response.text().slice(0, 200)).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.2 azure speech-mai-voice alias takes the voice suffix from the model and speed as prosody (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech-mai-voice\",\n  \"input\": \"Harness MAI voice probe.\",\n  \"voice\": \"en-US-Harper\",\n  \"speed\": 1.2,\n  \"response_format\": \"opus\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Speech returned audio bytes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct + ' ' + pm.response.text().slice(0, 200)).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.3 azure speech-neural alias OpenAI drop-in /openai/v1/audio/speech returns audio (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"Harness drop-in probe.\",\n  \"voice\": \"en-US-GuyNeural\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Speech returned audio bytes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct + ' ' + pm.response.text().slice(0, 200)).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.4 azure speech-neural alias stream_format sse streams audio deltas and a done event with billable characters (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"Harness streaming probe for Azure Speech.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Speech SSE stream carries deltas and a done event with input_chars', function () {",
+                  "  pm.expect(pm.response.code, 'stream failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'not an SSE stream').to.include('text/event-stream');",
+                  "  pm.expect(body, 'no audio delta: ' + body.slice(0, 300)).to.include('speech.audio.delta');",
+                  "  pm.expect(body, 'no done event: ' + body.slice(-300)).to.include('speech.audio.done');",
+                  "  pm.expect(body, 'done event lacks billable characters: ' + body.slice(-300)).to.match(/\"input_chars\":\\s*[1-9]/);",
+                  "  pm.expect(body, 'stream carried an error: ' + body.slice(0, 300)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 270.5 azure speech-neural alias unknown voice surfaces Azure's empty-body 400 with a hint (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech-neural\",\n  \"input\": \"x\",\n  \"voice\": \"en-US-NoSuchVoiceNeural\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the empty-body 400 carries the Azure Speech hint', function () {",
+                  "  pm.expect(pm.response.code, 'expected the upstream 400: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'missing the hint: ' + body.slice(0, 300)).to.include('check the voice name, SSML and output format');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.6 azure speech-fast-transcription alias native /v1/audio/transcriptions returns text and duration usage (azure speech)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/speech-fast-transcription",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en-US",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure fast transcription returned text billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j.duration, 'duration: ' + body.slice(0, 300)).to.be.above(0).and.at.most(j.usage.seconds);",
+                  "  pm.expect(j.language, 'locale: ' + body.slice(0, 300)).to.equal('en-US');",
+                  "  pm.expect(j.segments, 'segments: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.words, 'word timings: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.7 azure speech-fast-transcription alias diarization extra form field returns speaker-labelled segments (azure speech)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/speech-fast-transcription",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "diarization",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "max_speakers",
+                  "value": "2",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure fast transcription returned text billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j.duration, 'duration: ' + body.slice(0, 300)).to.be.above(0).and.at.most(j.usage.seconds);",
+                  "  pm.expect(j.segments, 'segments: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.segments[0].speaker, 'diarization never reached Azure: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.8 azure speech-fast-transcription alias OpenAI drop-in /openai/v1/audio/transcriptions returns text (azure speech)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/speech-fast-transcription",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('drop-in transcription returned text', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.9 azure/whisper native /v1/audio/transcriptions json returns text with duration usage (azure whisper)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper json returns the text alone, billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'Azure Whisper sends no usage, so the gateway reads it from the duration: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j, 'json carries only text and usage, as OpenAI json does: ' + body.slice(0, 300)).to.not.have.any.keys('duration', 'language', 'task', 'segments', 'words');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.10 azure/whisper OpenAI drop-in /openai/v1/audio/transcriptions verbose_json keeps segments and adds duration usage (azure whisper)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper verbose_json keeps its fields and is billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.segments, 'segments: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'Azure Whisper sends no usage, so the gateway reads it from the duration: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j.duration, 'duration: ' + body.slice(0, 300)).to.be.above(0).and.at.most(j.usage.seconds);",
+                  "  pm.expect(j.usage.seconds - j.duration, 'billed seconds round the duration up by less than one second').to.be.below(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.11 azure/whisper native /v1/audio/transcriptions explicit json returns text with duration usage (azure whisper)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper explicit json returns the text alone, billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'Azure Whisper sends no usage, so the gateway reads it from the duration: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j, 'json carries only text and usage, as OpenAI json does: ' + body.slice(0, 300)).to.not.have.any.keys('duration', 'language', 'task', 'segments', 'words');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.11 azure /azure/cognitiveservices/v1 SSML text to speech with the virtual key in Ocp-Apim-Subscription-Key returns mp3 (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/ssml+xml"
+              },
+              {
+                "key": "X-Microsoft-OutputFormat",
+                "value": "audio-24khz-48kbitrate-mono-mp3"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"en-US\"><voice name=\"en-US-AvaMultilingualNeural\">Harness Azure route probe.</voice></speak>"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/cognitiveservices/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "cognitiveservices",
+                "v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SSML on the Azure regional path returns mp3 under the neural model', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.equal('audio/mpeg');",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model taken from the voice').to.equal('neural');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.12 azure /azure/tts/cognitiveservices/v1 HD voice returns riff wav and the model follows the voice suffix (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/ssml+xml"
+              },
+              {
+                "key": "X-Microsoft-OutputFormat",
+                "value": "riff-24khz-16bit-mono-pcm"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"en-US\"><voice name=\"en-US-Ava:DragonHDLatestNeural\">Harness Azure HD voice probe.</voice></speak>"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/tts/cognitiveservices/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "tts",
+                "cognitiveservices",
+                "v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the HD voice is synthesized as wav and billed to DragonHDLatestNeural', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.equal('audio/x-wav');",
+                  "  pm.expect(pm.response.stream.slice(0, 4).toString(), 'not a RIFF body').to.equal('RIFF');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model taken from the voice suffix').to.equal('DragonHDLatestNeural');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-401] 270.13 azure /azure/cognitiveservices/v1 unknown virtual key in Ocp-Apim-Subscription-Key is rejected (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/ssml+xml"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-harness-unknown-azure-vk"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xml:lang=\"en-US\"><voice name=\"en-US-AvaMultilingualNeural\">Never synthesized.</voice></speak>"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/cognitiveservices/v1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "cognitiveservices",
+                "v1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the header is read as a virtual key and the unknown one is refused', function () {",
+                  "  pm.expect(pm.response.code, 'want 401, got: ' + pm.response.text().slice(0, 300)).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.14 azure /azure/speechtotext/transcriptions:transcribe fast transcription keeps the Azure result shape with two locales and diarization (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "definition",
+                  "value": "{\"locales\":[\"en-US\",\"de-DE\"],\"diarization\":{\"enabled\":true,\"maxSpeakers\":2}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/speechtotext/transcriptions:transcribe?api-version=2024-11-15",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "speechtotext",
+                "transcriptions:transcribe"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2024-11-15"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('fast transcription on /azure answers in the Azure shape with diarized phrases', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.durationMilliseconds, 'durationMilliseconds: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.combinedPhrases && j.combinedPhrases[0] && j.combinedPhrases[0].text, 'combinedPhrases: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.phrases, 'phrases: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.phrases[0].speaker, 'diarization from the definition reached Azure: ' + body.slice(0, 300)).to.be.a('number');",
+                  "  pm.expect(j.text, 'Bifrost-shaped body instead of the Azure one').to.be.undefined;",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model from the definition').to.equal('fast-transcription');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.15 azure /azure/stt/speech/recognition/conversation/cognitiveservices/v1 short audio detailed returns the NBest result (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "audio/wav; codecs=audio/pcm; samplerate=16000"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/sample.wav"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/stt/speech/recognition/conversation/cognitiveservices/v1?language=en-US&format=detailed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "stt",
+                "speech",
+                "recognition",
+                "conversation",
+                "cognitiveservices",
+                "v1"
+              ],
+              "query": [
+                {
+                  "key": "language",
+                  "value": "en-US"
+                },
+                {
+                  "key": "format",
+                  "value": "detailed"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('short audio on /azure returns the detailed result under the short-audio model', function () {",
+                  "  pm.expect(pm.response.code, 'recognition failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.RecognitionStatus, 'status: ' + body.slice(0, 300)).to.equal('Success');",
+                  "  pm.expect(j.DisplayText, 'text: ' + body.slice(0, 300)).to.match(/quick brown fox/i);",
+                  "  pm.expect(j.NBest && j.NBest[0] && j.NBest[0].Lexical, 'detailed format: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-original-model'), 'model for the route').to.equal('short-audio');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 270.16 azure /azure/speech/recognition/dictation/cognitiveservices/v1 unknown language surfaces the Azure 400 reason (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "audio/wav; codecs=audio/pcm; samplerate=16000"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "body": {
+              "mode": "file",
+              "file": {
+                "src": "tests/e2e/api/fixtures/sample.wav"
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/speech/recognition/dictation/cognitiveservices/v1?language=xx-YY",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "speech",
+                "recognition",
+                "dictation",
+                "cognitiveservices",
+                "v1"
+              ],
+              "query": [
+                {
+                  "key": "language",
+                  "value": "xx-YY"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure rejects the language and the gateway keeps its reason', function () {",
+                  "  pm.expect(pm.response.code, 'want 400, got: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(pm.response.json().message, 'message: ' + body.slice(0, 300)).to.include(\"Invalid 'language'\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.17 azure /azure/openai/deployments/gpt-4o-mini-tts/audio/speech serves Azure OpenAI on the resource base URL (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Harness Azure resource probe.\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure/openai/deployments/gpt-4o-mini-tts/audio/speech?api-version=2025-04-01-preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "openai",
+                "deployments",
+                "gpt-4o-mini-tts",
+                "audio",
+                "speech"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2025-04-01-preview"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the Azure OpenAI deployment answers on the /azure base URL', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'content-type: ' + ct).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'provider').to.equal('azure');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.18 azure /azure/openai/files with no provider lists Azure files on the resource base URL (azure speech)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/azure/openai/files?api-version=2025-04-01-preview&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "openai",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2025-04-01-preview"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The /azure URL names an Azure resource, so a files call that names no provider and does",
+                  "// not come from the AzureOpenAI SDK still goes to Azure, not OpenAI.",
+                  "pm.test('the /azure base URL lists Azure files when no provider is named', function () {",
+                  "  pm.expect(pm.response.code, 'file list failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'provider').to.equal('azure');",
+                  "  pm.expect(pm.response.json().data, pm.response.text().slice(0, 300)).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "271. Azure Voice Live: use_voice_live_endpoints aliases are WebSocket only (azure voice live)",
+      "description": "A key or alias with use_voice_live_endpoints sends realtime WebSocket sessions to {endpoint}/voice-live/realtime?api-version=2026-04-10&model=<model_id>; the profile alias gpt-realtime-vl (model_id gpt-realtime) sets it. newman cannot open a WebSocket, so these cases pin the HTTP routes Voice Live refuses. Voice Live signals WebRTC over its own WebSocket and reports usage on the browser data channel, so the WebRTC SDP exchange and client secret minting answer 400 before any upstream call. Without the flag both reached Azure OpenAI's /openai/v1/realtime routes.",
+      "item": [
+        {
+          "name": "[EXPECT-400] 271.1 azure gpt-realtime-vl alias WebRTC /v1/realtime/calls is refused as WebSocket only (azure voice live)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Voice Live is served over the realtime WebSocket only, so this route must refuse the",
+                  "// gpt-realtime-vl alias with a 400 before any upstream call; any other status is a failure.",
+                  "pm.test('azure voice live WebRTC (azure voice live): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('azure voice live WebRTC (azure voice live): the 400 says Voice Live is WebSocket only', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('realtime websocket only');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/sdp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic: WMS\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:AAAA\r\na=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\na=setup:actpass\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:0 PCMU/8000\r\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/calls?model=azure/gpt-realtime-vl",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "calls"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "azure/gpt-realtime-vl"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] 271.2 azure gpt-realtime-vl alias /v1/realtime/client_secrets is refused as WebSocket only (azure voice live)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Voice Live is served over the realtime WebSocket only, so this route must refuse the",
+                  "// gpt-realtime-vl alias with a 400 before any upstream call; any other status is a failure.",
+                  "pm.test('azure voice live client secret (azure voice live): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('azure voice live client secret (azure voice live): the 400 says Voice Live is WebSocket only', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('realtime websocket only');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-realtime-vl\",\n  \"expires_after\": {\n    \"seconds\": 60\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/client_secrets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "client_secrets"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] 271.3 azure /azure/voice-live/realtime plain GET reaches the Voice Live WebSocket handler with the api-key header (azure voice live)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/azure/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "voice-live",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2026-07-15"
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-realtime-vl"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the Azure Voice Live path is served by the realtime handler', function () {",
+                  "  pm.expect(pm.response.code, 'want the WebSocket handler 400, got: ' + body.slice(0, 200)).to.equal(400);",
+                  "  pm.expect(body, 'the dashboard page answered, so the path is not routed').to.not.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 271.4 azure /voice-live/realtime root path for the JavaScript Voice Live SDK with api-key in the query (azure voice live)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=sk-bf-test-key",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "voice-live",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2026-07-15"
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-realtime-vl"
+                },
+                {
+                  "key": "api-key",
+                  "value": "sk-bf-test-key"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the root Voice Live path the JavaScript SDK connects to is served', function () {",
+                  "  pm.expect(pm.response.code, 'want the WebSocket handler 400, got: ' + body.slice(0, 200)).to.equal(400);",
+                  "  pm.expect(body, 'the dashboard page answered, so the path is not routed').to.not.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 271.5 azure /azure/openai/realtime deployment path for the Azure OpenAI SDK (azure voice live)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "api-key",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/azure/openai/realtime?api-version=2025-04-01-preview&deployment=gpt-realtime",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure",
+                "openai",
+                "realtime"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2025-04-01-preview"
+                },
+                {
+                  "key": "deployment",
+                  "value": "gpt-realtime"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the Azure OpenAI realtime path is served by the realtime handler', function () {",
+                  "  pm.expect(pm.response.code, 'want the WebSocket handler 400, got: ' + body.slice(0, 200)).to.equal(400);",
+                  "  pm.expect(body, 'the dashboard page answered, so the path is not routed').to.not.match(/<html/i);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

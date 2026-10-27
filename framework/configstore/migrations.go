@@ -572,6 +572,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
 	{IDs: []string{"add_passthrough_json_column"}, run: migrationAddPassthroughJSONColumn},
 	{IDs: []string{"add_warp_topic_discovery_min_requests_column"}, run: migrationAddWarpTopicDiscoveryMinRequestsColumn},
+	{IDs: []string{"add_azure_use_speech_endpoints_column"}, run: migrationAddAzureUseSpeechEndpointsColumn},
+	{IDs: []string{"add_azure_use_voice_live_endpoints_column"}, run: migrationAddAzureUseVoiceLiveEndpointsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16385,6 +16387,52 @@ func migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx
 				}
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddAzureUseSpeechEndpointsColumn adds the azure_use_speech_endpoints column to the key table.
+// Existing keys default to false (NULL), so their audio keeps going to Azure OpenAI.
+func migrationAddAzureUseSpeechEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_azure_use_speech_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "azure_use_speech_endpoints")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_use_speech_endpoints")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddAzureUseVoiceLiveEndpointsColumn adds the azure_use_voice_live_endpoints column to the key table.
+// Existing keys default to false (NULL), so their realtime sessions keep going to Azure OpenAI.
+func migrationAddAzureUseVoiceLiveEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_azure_use_voice_live_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "azure_use_voice_live_endpoints")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_use_voice_live_endpoints")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

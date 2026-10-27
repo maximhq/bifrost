@@ -479,6 +479,7 @@ const (
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 	RouteConfigTypeTypesafe  RouteConfigType = "typesafe"
+	RouteConfigTypeAzure     RouteConfigType = "azure"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -1303,6 +1304,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			}
 			// Early return skips the common footer — apply routed-identity headers here.
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+			// Raw bytes are the audio itself, under the Content-Type the PostCallback set.
+			if rawBytes, ok := response.([]byte); ok {
+				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
+				ctx.Response.SetBody(rawBytes)
+				return
+			}
 			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			return
 		} else {
@@ -3660,7 +3667,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
-		case "api-key", "x-api-key", "x-goog-api-key",
+		case "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key",
 			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {

@@ -4,8 +4,8 @@ realtime:
     summary: Realtime API WebSocket
     description: |
       Opens a bidirectional WebSocket session to a realtime-capable provider
-      (e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream
-      socket and applies governance, observability, and key selection on connect.
+      (e.g. OpenAI Realtime, Azure Realtime preview, Bedrock Nova Sonic). Bifrost proxies
+      the upstream session and applies governance, observability, and key selection on connect.
 
       The target model is provided via the `model` query parameter (or `deployment`
       for Azure-style routes). The OpenAI SDK sends the API key over the
