@@ -329,3 +329,16 @@ func TestJWTBearerMinter(t *testing.T) {
 		assert.False(t, IsPermanentError(bErr))
 	})
 }
+
+// TestValidatePrivateKey checks the parse-only key check accepts what
+// SignAssertion can sign and refuses the rest without signing.
+func TestValidatePrivateKey(t *testing.T) {
+	_, rsaKey := rsaPEM(t)
+	_, ecKey := ecPEM(t)
+	require.NoError(t, ValidatePrivateKey(rsaKey, ""), "RS256 is the default")
+	require.NoError(t, ValidatePrivateKey(ecKey, "ES256"))
+	require.Error(t, ValidatePrivateKey("not a pem", ""))
+	require.Error(t, ValidatePrivateKey(rsaKey, "ES256"), "the key family must match the algorithm")
+	require.Error(t, ValidatePrivateKey(rsaKey, "HS256"), "symmetric algorithms are refused")
+	require.Error(t, ValidatePrivateKey(ecKey, "ES384"), "a P-256 key cannot sign ES384")
+}

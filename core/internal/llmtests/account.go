@@ -287,7 +287,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "amazon.nova-2-sonic-v1:0"}, // Nova Sonic needs a key without an ARN: realtime streams to the ARN when one is set
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -695,6 +695,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
 			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
 			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+			{"VLLM_DECISION_BASE_URL", "VLLM_DECISION_MODEL"},
 		}
 		for _, instance := range secondaryVLLMInstances {
 			url := strings.TrimSpace(os.Getenv(instance.urlEnv))

@@ -663,8 +663,29 @@ bifrost:
       #     useIdpCredentials: false                     # true = exchange as the SSO login app (ignores clientId/secret)
       #     clientId: "env.MY_EXCHANGE_CLIENT_ID"        # required unless useIdpCredentials is true (env./vault. prefix)
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
-      #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
+      #     authorizationServerUrl: ""                   # optional — override exchange endpoint: an issuer, or a full .../token URL used as is
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      #
+      # - name: "example-cross-app-access-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://mcp.linear.app/mcp"
+      #   # Cross App Access (Okta XAA, Enterprise builds only): Bifrost exchanges the user's SSO session for an
+      #   # ID-JAG addressed to the upstream authorization server, which redeems it for the user's own token.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     profile: "id_jag"
+      #     audience: "https://mcp.linear.app"            # upstream authorization server issuer
+      #     scopes: ["read"]
+      #     resourceClientId: "env.LINEAR_XAA_CLIENT_ID"  # required: Bifrost's client at the upstream authorization server
+      #     resourceClientSecret: "env.LINEAR_XAA_CLIENT_SECRET"  # omit for a public client or with resourcePrivateKey
+      #     # resourcePrivateKey: "env.LINEAR_XAA_PRIVATE_KEY"    # private_key_jwt instead of a secret (PEM RSA or EC)
+      #     # resourceKeyId: ""                                   # kid of the client assertion
+      #     # resourceSigningAlgorithm: "RS256"                   # ES256/384/512 for an EC key
+      #     # resourceAssertionAudience: ""                       # default the upstream token endpoint
+      #     # resourceClientAuthMethod: ""                        # client_secret_basic or client_secret_post; default follows discovery
+      #     resourceTokenEndpoint: ""                     # optional; discovered from the audience's metadata when empty
+      #     resource: ""                                  # optional; only if the IdP connection defines a resource indicator
       # - name: "example-per-user-headers-mcp"
       #   connectionType: "http"
       #   httpConfig:

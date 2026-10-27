@@ -30,6 +30,8 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 | [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
 | [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
 | [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide`, `databricks/system.ai.openjev-qwen35-4b`, `databricks/system.ai.typesafeai-jev-1-14-0` | `/v1/decisions` | System One models, by reference (see [Images by Reference](#images-by-reference)) |
+| [vLLM](/providers/supported-providers/vllm#decisions) | `vllm/clef-flash`, `vllm/d1-3b`, any loaded model | `/v1/decisions` | Depends on the model |
+| [SGLang](/providers/supported-providers/sgl#decisions) | `sgl/clef-flash`, `sgl/kev-4b`, any loaded model | `/v1/decisions` | Yes (Clef) |
 | [Laya, Nimble](/providers/self-hosted-decision-models) | `laya/english`, `nimble/nimble-latest` | `/v1/decisions` | No |
 
 Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
@@ -96,7 +98,7 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 - `image_url` is a base64 data URL or an `https` URL. Ollama reads base64 only.
 - `detail` is optional: `low`, `high`, `auto`, or `original`.
-- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (Azure, Databricks' `ai_decide`, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request. TypeSafe and Databricks' System One models read images by reference only, as below, and reject an inline image the same way.
+- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (Azure, Databricks' `ai_decide`, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request. TypeSafe and Databricks' System One models read images by reference only, as below, and reject an inline image the same way. vLLM and SGLang v0.5.22 or later forward images to the model, which answers or returns its own `400`. SGLang v0.5.21 ignores images, so it can answer without them instead of returning a `400`.
 - An `input_text` part's `text` is a string, or structured data (object or array) that System One models read as is and OpenAI receives as JSON text.
 
 ### Images by Reference
@@ -116,7 +118,7 @@ TypeSafe places an image wherever its ID is written: in the input, inside a ques
 ]
 ```
 
-Here `r-cam` is the evidence, and `r-thumb` can define a choice option (`{ "value": "thumbs_up", "description": "r-thumb" }`) without becoming part of the evidence. Bifrost adds the header TypeSafe requires for images. Images sent by reference work only with TypeSafe and Databricks' System One models; other providers reject them. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
+Here `r-cam` is the evidence, and `r-thumb` can define a choice option (`{ "value": "thumbs_up", "description": "r-thumb" }`) without becoming part of the evidence. Bifrost adds the header TypeSafe requires for images. Images sent by reference work only with TypeSafe and Databricks' System One models; other providers reject them, including vLLM and SGLang, which would otherwise ignore the image and answer without it. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
 
 To send the files as they are instead of base64, use a multipart request: the JSON goes in a part named `request`, each image in its own file part, and the image part names its file part with `name` instead of carrying `data`:
 
@@ -135,13 +137,13 @@ curl http://localhost:8080/v1/decisions \
 
 A `name` in a JSON request, a `name` with no matching file part, and a file part no image part names are each rejected with `400`.
 
-**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, Laya, Nimble) as is, and to OpenAI as JSON text.
+**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, vLLM, SGLang, Laya, Nimble) as is, and to OpenAI as JSON text.
 
 ```json
 "input": { "ticket_id": 4812, "message": "I was double charged.", "plan": "pro" }
 ```
 
-**`null`**: no input. OpenAI rejects it with a `400`, and Clef rejects it with a `422`.
+**`null`**: no input. OpenAI rejects it with a `400`, Clef rejects it with a `422`, and Bifrost rejects it with a `400` for vLLM and SGLang, which would otherwise answer without evidence.
 
 ## Questions
 

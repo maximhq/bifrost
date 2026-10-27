@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/config"
@@ -478,6 +481,122 @@ func TestAuthPrintTokenRefreshesBeforeOutput(t *testing.T) {
 	}
 	if secretStore["test:agent-token"] != "ck-bf-agent-new" || secretStore["test:agent-refresh-token"] != "refresh-new" {
 		t.Fatalf("stored rotated credentials = %#v", secretStore)
+	}
+}
+
+// TestAuthPrintTokenBrowserLogin verifies browser sign-in persists the session
+// while keeping stdout limited to the validated agent token.
+func TestAuthPrintTokenBrowserLogin(t *testing.T) {
+	runner, outputBuffer, secretStore := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/agent/auth/status":
+			return jsonResponse(request, `{"idp_configured":true}`), nil
+		case "/api/agent/auth/token":
+			return jsonResponse(request, `{"agent_access_token":"ck-bf-agent-login","refresh_token":"refresh-login","user":{"email":"user@example.com"}}`), nil
+		case "/api/agent/virtual-keys":
+			return jsonResponse(request, `{"virtual_keys":[]}`), nil
+		case "/v1/models":
+			if got := request.Header.Get("Authorization"); got != "Bearer ck-bf-agent-login" {
+				t.Fatalf("authorization = %q", got)
+			}
+			return jsonResponse(request, `{"data":[]}`), nil
+		default:
+			t.Fatalf("unexpected path %q", request.URL.Path)
+			return nil, nil
+		}
+	}))
+	env, err := runner.resolveEnvironment(globalOptions{Output: "json"}, credentialAgentToken|credentialAgentVirtualKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := false
+	env.BrowserAuth.OpenBrowser = func(target string) error {
+		opened = true
+		authorization, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		callback, err := url.Parse(authorization.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("state", authorization.Query().Get("state"))
+		query.Set("code", "test-code")
+		callback.RawQuery = query.Encode()
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+		if err != nil {
+			return err
+		}
+		callbackClient := &http.Client{Timeout: 5 * time.Second}
+		response, err := callbackClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("callback status = %d", response.StatusCode)
+		}
+		return nil
+	}
+	if err := runner.authPrintToken(context.Background(), env, []string{"--browser-login"}); err != nil {
+		t.Fatal(err)
+	}
+	if !opened {
+		t.Fatal("browser was not opened")
+	}
+	if got := outputBuffer.String(); got != "ck-bf-agent-login\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if secretStore["test:agent-token"] != "ck-bf-agent-login" || secretStore["test:agent-refresh-token"] != "refresh-login" {
+		t.Fatalf("login credentials were not persisted: %#v", secretStore)
+	}
+}
+
+// TestAuthPrintTokenBrowserLoginConditions verifies login is opt-in, existing
+// tokens bypass browser sign-in, and invalid requests fail without token output.
+func TestAuthPrintTokenBrowserLoginConditions(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		args      []string
+		token     string
+		wantError string
+	}{
+		{name: "missing without flag", wantError: "no Enterprise SSO session"},
+		{name: "existing with flag", args: []string{"--browser-login"}, token: "ck-bf-agent-existing"},
+		{name: "login unavailable", args: []string{"--browser-login"}, wantError: "browser SSO is not enabled"},
+		{name: "unexpected argument", args: []string{"unexpected"}, wantError: "usage:"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, outputBuffer, secretStore := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				switch {
+				case test.name == "existing with flag" && request.URL.Path == "/v1/models":
+					return jsonResponse(request, `{"data":[]}`), nil
+				case test.name == "login unavailable" && request.URL.Path == "/api/agent/auth/status":
+					return jsonResponse(request, `{"idp_configured":false}`), nil
+				default:
+					t.Fatalf("unexpected request %s", request.URL)
+					return nil, nil
+				}
+			}))
+			secretStore["test:agent-token"] = test.token
+			err := runner.Run(context.Background(), append([]string{"auth", "print-token"}, test.args...))
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want %q", err, test.wantError)
+				}
+				if outputBuffer.Len() != 0 {
+					t.Fatalf("unexpected stdout = %q", outputBuffer.String())
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := outputBuffer.String(); got != test.token+"\n" {
+					t.Fatalf("stdout = %q", got)
+				}
+			}
+		})
 	}
 }
 

@@ -331,6 +331,10 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "serving endpoint model on databricks marked", enabled: true, req: decision(schemas.Databricks, "databricks-claude-sonnet-4"), wantConverted: true},
 		{name: "ai_decide on openai marked", enabled: true, req: decision(schemas.OpenAI, "ai_decide"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
+		{name: "vllm provider never marked", enabled: true, req: decision(schemas.VLLM, "Qwen/Qwen3-0.6B")},
+		{name: "vllm provider never marked by header", override: true, req: decision(schemas.VLLM, "clef-flash")},
+		{name: "sgl provider never marked", enabled: true, req: decision(schemas.SGL, "clef-flash")},
+		{name: "sgl provider never marked by header", override: true, req: decision(schemas.SGL, "jaredpalmer/kev-4b")},
 		{name: "chat request untouched", enabled: true, req: chat},
 	}
 	for _, tt := range tests {

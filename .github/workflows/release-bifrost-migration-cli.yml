@@ -36,7 +36,7 @@ jobs:
 
       - name: Get version from file
         id: get-version
-        run: echo "version=$(cat scripts/bifrost-migration-cli/version)" >> "$GITHUB_OUTPUT"
+        run: ./.github/workflows/scripts/read-version-file.sh scripts/bifrost-migration-cli/version
 
       - name: Check if tag exists
         id: check-tag
@@ -117,4 +117,5 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: ./.github/workflows/scripts/release-bifrost-migration-cli.sh "${{ needs.check-version.outputs.version }}"
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: ./.github/workflows/scripts/release-bifrost-migration-cli.sh "$VERSION"

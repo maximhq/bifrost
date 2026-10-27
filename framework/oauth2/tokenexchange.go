@@ -97,6 +97,9 @@ func (p *OAuth2Provider) GetExchangedAccessToken(ctx *schemas.BifrostContext, co
 	if err := validateExchangeConfig(config); err != nil {
 		return "", err
 	}
+	if config.TokenExchange.IsIDJAG() {
+		return p.getIDJAGAccessToken(ctx, config)
+	}
 	mode := ctx.MCPAuthMode()
 	// Session identities are caller-asserted opaque strings with no
 	// verification, so they can never anchor a delegated exchange; the
@@ -168,6 +171,9 @@ func (p *OAuth2Provider) ExchangeAdminCredential(ctx *schemas.BifrostContext, co
 	if err := validateExchangeConfig(config); err != nil {
 		return nil, err
 	}
+	if config.TokenExchange.IsIDJAG() {
+		return p.exchangeIDJAGAdminCredential(ctx, config, userID)
+	}
 	if subjectToken != "" {
 		return p.rawExchange(ctx, config, subjectExchangeForm(config, subjectToken))
 	}
@@ -193,6 +199,12 @@ func (p *OAuth2Provider) RetainExchangeAdminCredential(ctx context.Context, conf
 	}
 	if response.RefreshToken != "" {
 		token.RefreshToken = strings.TrimSpace(response.RefreshToken)
+	}
+	// id_jag renewal re-reads the verifying admin's SSO session, so remember who that was.
+	if config.TokenExchange.IsIDJAG() {
+		if userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string); userID != "" {
+			token.UserID = &userID
+		}
 	}
 	if response.ExpiresIn > 0 {
 		exp := time.Now().Add(time.Duration(response.ExpiresIn) * time.Second)
@@ -231,6 +243,9 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 	}
 	if err := validateExchangeConfig(clientConfig); err != nil {
 		return err
+	}
+	if clientConfig.TokenExchange.IsIDJAG() {
+		return p.refreshIDJAGAdminToken(ctx, token, clientConfig)
 	}
 
 	if strings.TrimSpace(token.RefreshToken) == "" {
@@ -301,6 +316,11 @@ func (p *OAuth2Provider) markExchangeAdminNeedsReauth(token *tables.TableMCPOaut
 // fingerprint.
 func (p *OAuth2Provider) EvictExchangedToken(mode schemas.MCPAuthMode, identity, mcpClientID string) {
 	p.userTokens.EvictByBinding(mode, identity, mcpClientID)
+	// A forced refresh follows an upstream rejection: drop the held ID-JAG too
+	// so the identity provider re-evaluates its policy on the next call.
+	if mode == schemas.MCPAuthModeUser {
+		p.idjagGrants.delete(idjagGrantKey{userID: identity, clientID: mcpClientID})
+	}
 }
 
 // subjectTokenFingerprint derives a stable, non-reversible cache-key
@@ -482,7 +502,7 @@ func validateExchangeConfig(config *schemas.MCPClientConfig) error {
 	if config.TokenExchange == nil || config.TokenExchange.Audience == "" {
 		return fmt.Errorf("MCP client %s is missing its token_exchange audience", config.Name)
 	}
-	if config.TokenExchange.UseIdPCredentials {
+	if config.TokenExchange.ExchangesAsSSOApplication() {
 		return nil
 	}
 	if strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" {
@@ -501,7 +521,7 @@ func validateExchangeConfig(config *schemas.MCPClientConfig) error {
 // without this check the caller would silently send client_id= (empty) to
 // the identity provider instead of a clear, actionable failure.
 func exchangeClientCredentials(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTokenExchangeConfig) (clientID, clientSecret string, err error) {
-	if cfg.UseIdPCredentials {
+	if cfg.ExchangesAsSSOApplication() {
 		if idp == nil || strings.TrimSpace(idp.IdPClientID) == "" {
 			return "", "", fmt.Errorf("token_exchange.use_idp_credentials is set, but the identity-provider integration has no client ID configured")
 		}
