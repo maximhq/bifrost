@@ -210,6 +210,22 @@ func TestSetStateNormalizesKeys(t *testing.T) {
 	}
 }
 
+func TestParseResidencyAdapter(t *testing.T) {
+	for _, raw := range []string{"", "  ", "auto", "OLLAMA", " llamacpp ", "omlx", "Custom"} {
+		if _, err := ParseResidencyAdapter(raw); err != nil {
+			t.Fatalf("ParseResidencyAdapter(%q) = %v, want it accepted", raw, err)
+		}
+	}
+	if got, err := ParseResidencyAdapter(""); err != nil || got != ResidencyAdapterAuto {
+		t.Fatalf("an omitted adapter = (%q, %v), want auto", got, err)
+	}
+	for _, raw := range []string{"lmstudio", "vllm", "definitely-not-an-adapter"} {
+		if got, err := ParseResidencyAdapter(raw); err == nil {
+			t.Fatalf("ParseResidencyAdapter(%q) = %q, want it refused", raw, got)
+		}
+	}
+}
+
 func TestNormalizeModelErrorPolicy(t *testing.T) {
 	if got := NormalizeModelErrorPolicy(" FIRST "); got != VirtualModelFirstOnProbeError {
 		t.Fatalf("NormalizeModelErrorPolicy(\" FIRST \") = %q, want %q", got, VirtualModelFirstOnProbeError)

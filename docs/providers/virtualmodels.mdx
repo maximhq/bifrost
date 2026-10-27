@@ -66,7 +66,7 @@ Configure `model_residency` under the provider's `network_config`, next to the `
 | `custom` | Required `path` | Configured field mapping |
 | `auto` (default) | Tries oMLX, llama.cpp, then Ollama | First recognized residency response |
 
-Explicit adapters probe only their configured endpoint. `path` overrides the default path. Auto-detection remembers the successful adapter for subsequent probes. A normal OpenAI model list without residency fields is not accepted as a residency snapshot.
+Explicit adapters probe only their configured endpoint. `path` overrides the default path. Auto-detection remembers the successful adapter for subsequent probes. A normal OpenAI model list without residency fields is not accepted as a residency snapshot. An adapter name outside that set is refused at startup, naming `model_residency.adapter`, rather than quietly falling back to `auto`.
 
 Ollama's OpenAI-compatible `/v1/models` does not expose residency. Use `adapter: "ollama"` to probe `/api/ps`, including when the provider itself uses OpenAI-compatible inference. Set `network_config.base_url` to the engine root, without a trailing `/v1`.
 

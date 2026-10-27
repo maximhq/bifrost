@@ -248,7 +248,11 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 	ttl := time.Duration(schemas.DefaultResidencyCacheTTLMS) * time.Millisecond
 	var fields *schemas.ResidencyFieldMap
 	if residency != nil {
-		adapter = schemas.NormalizeResidencyAdapter(string(residency.Adapter))
+		parsed, err := schemas.ParseResidencyAdapter(string(residency.Adapter))
+		if err != nil {
+			return nil, err
+		}
+		adapter = parsed
 		path = strings.TrimSpace(residency.Path)
 		ttl = residency.CacheTTL()
 		timeout = int(residency.Timeout() / time.Millisecond)
@@ -469,6 +473,9 @@ func (s *VirtualModelService) Refresh(providers map[schemas.ModelProvider]config
 		}
 		target, err := buildResidencyTarget(vm.Provider, providerCfg)
 		if err != nil {
+			// The edit left the provider unable to answer for residency, so its endpoint goes too:
+			// keeping it would probe an address and credential the operator has just removed. Resolve
+			// refuses with its 503 until a later edit makes the endpoint readable again.
 			if s.logger != nil {
 				s.logger.Warn("virtual model %q cannot read residency from provider %q after the edit: %v; keeping the previous endpoint", vm.Name, vm.Provider, err)
 			}

@@ -29,21 +29,27 @@ const (
 	ResidencyAdapterCustom   ResidencyAdapter = "custom"
 )
 
-// NormalizeResidencyAdapter maps an unvalidated config string to a known adapter,
-// defaulting to auto. An unrecognized name is not silently ignored: it falls back to
-// auto, which reports unknown rather than pretending a model is resident.
-func NormalizeResidencyAdapter(raw string) ResidencyAdapter {
+// ParseResidencyAdapter maps a config string to a known adapter and refuses an
+// unrecognized name. An omitted adapter is auto.
+//
+// config.json is only unmarshalled, not schema-validated, so a typo has to fail where the
+// probe is built: normalizing it to auto instead would substitute the built-in readers for
+// the reader the operator asked for, and a backend none of them fits then reports unknown
+// residency for a reason nobody can see in the config.
+func ParseResidencyAdapter(raw string) (ResidencyAdapter, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(ResidencyAdapterAuto):
+		return ResidencyAdapterAuto, nil
 	case string(ResidencyAdapterOllama):
-		return ResidencyAdapterOllama
+		return ResidencyAdapterOllama, nil
 	case string(ResidencyAdapterLlamaCPP):
-		return ResidencyAdapterLlamaCPP
+		return ResidencyAdapterLlamaCPP, nil
 	case string(ResidencyAdapterOMLX):
-		return ResidencyAdapterOMLX
+		return ResidencyAdapterOMLX, nil
 	case string(ResidencyAdapterCustom):
-		return ResidencyAdapterCustom
+		return ResidencyAdapterCustom, nil
 	default:
-		return ResidencyAdapterAuto
+		return "", fmt.Errorf("unrecognized model_residency.adapter %q: use auto, ollama, llamacpp, omlx or custom", raw)
 	}
 }
 

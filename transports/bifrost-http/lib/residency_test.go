@@ -854,3 +854,22 @@ func BenchmarkResidencyCached(b *testing.B) {
 		service.snapshot(ctx, target)
 	}
 }
+
+// config.json is unmarshalled, not schema-validated, so an adapter the schema forbids reaches
+// the transport. Substituting auto would silently swap the built-in readers for the one the
+// operator named and, on an engine none of them fits, refuse every request for a reason that is
+// nowhere in their config.
+func TestInstallRejectsAnUnrecognizedResidencyAdapter(t *testing.T) {
+	service := NewVirtualModelService(nil, nil)
+	err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"omlx": {NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:        "http://127.0.0.1:1",
+			ModelResidency: &schemas.ModelResidencyConfig{Adapter: "lmstudio"},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "model_residency.adapter") {
+		t.Fatalf("install with adapter lmstudio = %v, want it refused by name", err)
+	}
+}
