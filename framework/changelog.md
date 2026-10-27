@@ -1,4 +1,5 @@
 - feat: added Azure Blob object storage for logs and skills with connection-string or default Azure identity authentication, JSON/gzip and Parquet support
+- fix: MCP OAuth discovery uses protected resource metadata only when its resource matches the MCP server URL (RFC 9728)
 - fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
 - [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped
