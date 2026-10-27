@@ -1371,6 +1371,7 @@ export const coreConfigSchema = z.object({
 	enforce_vk_object_ownership: z.boolean().default(true),
 	skip_access_profile_user_virtual_key_creation: z.boolean().default(false),
 	skip_access_profile_user_virtual_key_deletion: z.boolean().default(false),
+	govern_chatgpt_sign_in: z.boolean().default(false),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),

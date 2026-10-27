@@ -893,6 +893,8 @@ export interface CoreConfig {
 	skip_access_profile_user_virtual_key_creation?: boolean;
 	// Enterprise: losing the last access profile does not delete the user's virtual keys.
 	skip_access_profile_user_virtual_key_deletion?: boolean;
+	// Hold Codex traffic signed in with ChatGPT to access profiles, budgets and rate limits.
+	govern_chatgpt_sign_in?: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
@@ -957,6 +959,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	enforce_vk_object_ownership: true,
 	skip_access_profile_user_virtual_key_creation: false,
 	skip_access_profile_user_virtual_key_deletion: false,
+	govern_chatgpt_sign_in: false,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };
