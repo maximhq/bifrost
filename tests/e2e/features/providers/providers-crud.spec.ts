@@ -624,6 +624,12 @@ test.describe("Providers", () => {
       // Adding a route and saving round-trips through the update API.
       await page.getByTestId("generic-route-add-btn").click();
       await page.getByTestId("generic-route-path-input-0").fill("/search");
+      // Per-route quantity pricing sits behind a collapsed disclosure: a price per unit for this route only.
+      await expect(page.getByTestId("generic-route-cost-per-unit-input-0")).toHaveCount(0);
+      await page.getByTestId("generic-route-pricing-toggle-0").click();
+      await page.getByTestId("generic-route-cost-per-unit-input-0").fill("0.015");
+      // A price per unit needs a quantity to count: this route reads it at its own path.
+      await page.getByTestId("generic-route-units-path-input-0").fill("usage.credits");
       // Every matcher name is saved as typed, even one a plain JS object would swallow.
       await page.getByTestId("generic-route-header-add-btn-0").click();
       await page.getByTestId("generic-route-header-name-input-0-0").fill("__proto__");
@@ -653,9 +659,13 @@ test.describe("Providers", () => {
         .toBe("/search");
       const savedRoute = (
         (await (await page.request.get(`/api/providers/${providerData.name}`)).json()) as {
-          custom_provider_config?: { generic_config?: { routes?: { headers?: Record<string, string> }[] } };
+          custom_provider_config?: {
+            generic_config?: { routes?: { headers?: Record<string, string>; usage?: { cost_per_unit?: number; units_path?: string } }[] };
+          };
         }
       ).custom_provider_config?.generic_config?.routes?.[0];
+      expect(savedRoute?.usage?.cost_per_unit, "the route's own price per unit is saved").toBe(0.015);
+      expect(savedRoute?.usage?.units_path, "the route's own quantity path is saved").toBe("usage.credits");
       expect(
         savedRoute?.headers && Object.prototype.hasOwnProperty.call(savedRoute.headers, "__proto__") ? savedRoute.headers["__proto__"] : undefined,
         "the __proto__ matcher is saved",

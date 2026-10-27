@@ -1,6 +1,7 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,7 +27,7 @@ import { genericProviderFormSchema, genericUsagePreviewSampleSchema } from "@/li
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Info, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { type FieldErrors, useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -321,7 +322,15 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	// A refused save must show its reason: the routes list and the advanced section are collapsed
 	// by default, so an error inside either opens it instead of failing silently.
 	const onInvalid = (errors: FieldErrors<FormValues>) => {
-		if (errors.routes) setRoutesOpen(true);
+		if (errors.routes) {
+			setRoutesOpen(true);
+			// A pricing error sits inside a collapsed disclosure; open it so the inline message shows.
+			const routeErrors = errors.routes as unknown as ({ usage?: unknown } | undefined)[];
+			const withPricingErrors = routes.fields.filter((_, i) => routeErrors[i]?.usage).map((f) => f.id);
+			if (withPricingErrors.length > 0) {
+				setPricingOverrideOpen((prev) => ({ ...prev, ...Object.fromEntries(withPricingErrors.map((id) => [id, true])) }));
+			}
+		}
 		if (errors.streaming) setAdvancedOpen(true);
 	};
 
@@ -437,9 +446,13 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	const [advancedOpen, setAdvancedOpen] = useState(() => advancedHasSettings(form.getValues()));
 	// The provider sheet reuses this tab when another provider is selected, so the sections are set
 	// again for that provider's settings; a save of the same provider leaves them as the operator had them.
+	// Per-route pricing disclosures the operator toggled this session; a route with an override set
+	// starts open, so a saved price is never hidden, and the rest start collapsed.
+	const [pricingOverrideOpen, setPricingOverrideOpen] = useState<Record<string, boolean>>({});
 	useEffect(() => {
 		setAdvancedOpen(advancedHasSettings(form.getValues()));
 		setRoutesOpen(false);
+		setPricingOverrideOpen({});
 	}, [provider.name]);
 	const fieldLabel = (label: string, info?: string) => (
 		<div className="flex items-center gap-1.5">
@@ -805,7 +818,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 												<Trash2 className="h-4 w-4" />
 											</Button>
 										</div>
-										<div className="grid gap-3 md:grid-cols-2">
+										<div className="grid gap-3">
 											<FormField
 												control={form.control}
 												name={`routes.${index}.billable`}
@@ -837,34 +850,222 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 													</FormItem>
 												)}
 											/>
-											<FormField
-												control={form.control}
-												name={`routes.${index}.usage.cost_per_request`}
-												render={({ field }) => (
-													<FormItem>
-														<div className="flex items-center gap-1.5">
-															<FormLabel>Flat fee for this route (USD)</FormLabel>
-															<InfoTip
-																label="Flat fee for this route"
-																text="Replaces the flat fee per call for calls to this route. Leave empty to use the flat fee below; set 0 to charge this route only by quantity."
-															/>
-														</div>
-														<FormControl>
-															<Input
-																type="number"
-																step="any"
-																min={0}
-																placeholder="Same as the flat fee below"
-																data-testid={`generic-route-cost-per-request-input-${index}`}
-																disabled={disabled}
-																value={field.value ?? ""}
-																onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-															/>
-														</FormControl>
-													</FormItem>
-												)}
-											/>
 										</div>
+										<Collapsible
+											open={pricingOverrideOpen[route.id] ?? routeHasPricingOverride(form.watch(`routes.${index}.usage`))}
+											onOpenChange={(open) => setPricingOverrideOpen((prev) => ({ ...prev, [route.id]: open }))}
+											className="space-y-3"
+										>
+											<CollapsibleTrigger
+												className="hover:text-foreground flex items-center gap-1 text-sm font-medium transition-colors"
+												data-testid={`generic-route-pricing-toggle-${index}`}
+											>
+												<ChevronRight
+													className={`h-4 w-4 transition-transform ${(pricingOverrideOpen[route.id] ?? routeHasPricingOverride(form.watch(`routes.${index}.usage`))) ? "rotate-90" : ""}`}
+												/>
+												Pricing override
+												<span className="text-muted-foreground font-normal" data-testid={`generic-route-pricing-summary-${index}`}>
+													· {routePricingSummary(form.watch(`routes.${index}.usage`))}
+												</span>
+											</CollapsibleTrigger>
+											<CollapsibleContent
+												onFocusCapture={() => setPricingOverrideOpen((prev) => (prev[route.id] ? prev : { ...prev, [route.id]: true }))}
+											>
+												<div className="grid gap-3 md:grid-cols-2">
+													<FormField
+														control={form.control}
+														name={`routes.${index}.usage.cost_per_request`}
+														render={({ field }) => (
+															<FormItem>
+																<div className="flex items-center gap-1.5">
+																	<FormLabel>Flat fee for this route (USD)</FormLabel>
+																	<InfoTip
+																		label="Flat fee for this route"
+																		text="Replaces the provider's flat fee per call for calls to this route. Leave empty to use the provider's fee; set 0 to charge this route only by quantity."
+																	/>
+																</div>
+																<FormControl>
+																	<Input
+																		type="number"
+																		step="any"
+																		min={0}
+																		placeholder="Same as the provider"
+																		data-testid={`generic-route-cost-per-request-input-${index}`}
+																		disabled={disabled}
+																		value={field.value ?? ""}
+																		onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name={`routes.${index}.usage.cost_per_unit`}
+														render={({ field }) => (
+															<FormItem>
+																{fieldLabel(
+																	"Price per unit for this route (USD)",
+																	"Replaces the provider's price per unit for calls to this route; the quantity is still read where the settings say (here or below). Leave empty to use the provider's price.",
+																)}
+																<FormControl>
+																	<Input
+																		type="number"
+																		step="any"
+																		min={0}
+																		placeholder="Same as the provider"
+																		data-testid={`generic-route-cost-per-unit-input-${index}`}
+																		disabled={disabled}
+																		value={field.value ?? ""}
+																		onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name={`routes.${index}.usage.units_source`}
+														render={({ field }) => (
+															<FormItem>
+																{fieldLabel(
+																	"Count from",
+																	"Where this route's quantity is read, when it differs from the provider's setting.",
+																)}
+																<Select
+																	value={field.value ?? "inherit"}
+																	onValueChange={(v) => field.onChange(v === "inherit" ? undefined : v)}
+																	disabled={disabled}
+																>
+																	<FormControl>
+																		<SelectTrigger className="w-full" data-testid={`generic-route-units-source-select-${index}`}>
+																			<SelectValue />
+																		</SelectTrigger>
+																	</FormControl>
+																	<SelectContent>
+																		<SelectItem value="inherit">Same as the provider</SelectItem>
+																		{(Object.keys(GenericUnitsSourceLabels) as (keyof typeof GenericUnitsSourceLabels)[]).map((k) => (
+																			<SelectItem key={k} value={k}>
+																				{GenericUnitsSourceLabels[k]}
+																			</SelectItem>
+																		))}
+																	</SelectContent>
+																</Select>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name={`routes.${index}.usage.units_measure`}
+														render={({ field }) => (
+															<FormItem>
+																{fieldLabel(
+																	"What to count",
+																	"How this route's quantity is measured, when it differs from the provider's setting.",
+																)}
+																<Select
+																	value={field.value ?? "inherit"}
+																	onValueChange={(v) => field.onChange(v === "inherit" ? undefined : v)}
+																	disabled={disabled}
+																>
+																	<FormControl>
+																		<SelectTrigger className="w-full" data-testid={`generic-route-units-measure-select-${index}`}>
+																			<SelectValue />
+																		</SelectTrigger>
+																	</FormControl>
+																	<SelectContent>
+																		<SelectItem value="inherit">Same as the provider</SelectItem>
+																		{(Object.keys(GenericUnitsMeasureLabels) as (keyof typeof GenericUnitsMeasureLabels)[]).map((k) => (
+																			<SelectItem key={k} value={k}>
+																				{GenericUnitsMeasureLabels[k]}
+																			</SelectItem>
+																		))}
+																	</SelectContent>
+																</Select>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													{!genericUnitsMeasureReadsWholeBody(form.watch(`routes.${index}.usage.units_measure`) ?? unitsMeasure) && (
+														<FormField
+															control={form.control}
+															name={`routes.${index}.usage.units_path`}
+															render={({ field }) => (
+																<FormItem>
+																	{fieldLabel(
+																		"Where to find it",
+																		"A dot path for this route's quantity, e.g. Document.Content for Translate's TranslateDocument next to Text for TranslateText. Leave empty to use the provider's path.",
+																	)}
+																	<FormControl>
+																		<Input
+																			placeholder="Same as the provider"
+																			data-testid={`generic-route-units-path-input-${index}`}
+																			disabled={disabled}
+																			{...field}
+																			value={field.value ?? ""}
+																		/>
+																	</FormControl>
+																	<FormMessage />
+																</FormItem>
+															)}
+														/>
+													)}
+													<FormField
+														control={form.control}
+														name={`routes.${index}.usage.units_block_size`}
+														render={({ field }) => (
+															<FormItem>
+																{fieldLabel(
+																	"Bill in blocks of",
+																	"Round this route's quantity up to whole blocks. Leave empty to use the provider's setting.",
+																)}
+																<FormControl>
+																	<Input
+																		type="number"
+																		step="any"
+																		min={0}
+																		placeholder="Same as the provider"
+																		data-testid={`generic-route-units-block-size-input-${index}`}
+																		disabled={disabled}
+																		value={field.value ?? ""}
+																		onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name={`routes.${index}.usage.units_minimum`}
+														render={({ field }) => (
+															<FormItem>
+																{fieldLabel(
+																	"Minimum units per call",
+																	"The least number of units billed on this route once a quantity was found. Leave empty to use the provider's setting.",
+																)}
+																<FormControl>
+																	<Input
+																		type="number"
+																		step="any"
+																		min={0}
+																		placeholder="Same as the provider"
+																		data-testid={`generic-route-units-minimum-input-${index}`}
+																		disabled={disabled}
+																		value={field.value ?? ""}
+																		onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+												</div>
+											</CollapsibleContent>
+										</Collapsible>
 										<RouteHeaderMatchers control={form.control} index={index} disabled={disabled} />
 										{form.watch(`routes.${index}.job`) && (
 											<p className="text-muted-foreground text-xs" data-testid={`generic-route-job-note-${index}`}>
@@ -1359,6 +1560,34 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 
 // advancedHasSettings reports whether the Advanced section holds anything, so it opens itself then
 // and a configured path or stream rule is never hidden.
+// routeHasPricingOverride reports whether a route sets any of its own quantity pricing.
+function routeHasPricingOverride(u: NonNullable<FormValues["routes"]>[number]["usage"] | undefined): boolean {
+	if (!u) return false;
+	return (
+		u.cost_per_request !== undefined ||
+		u.cost_per_unit !== undefined ||
+		!!u.units_source ||
+		!!u.units_measure ||
+		!!u.units_path ||
+		u.units_block_size !== undefined ||
+		u.units_minimum !== undefined
+	);
+}
+
+// routePricingSummary is the collapsed disclosure's one-line account of a route's own pricing.
+function routePricingSummary(u: NonNullable<FormValues["routes"]>[number]["usage"] | undefined): string {
+	if (!u || !routeHasPricingOverride(u)) return "Same as the provider";
+	const parts: string[] = [];
+	if (u.cost_per_request !== undefined) parts.push(`fee ${u.cost_per_request}`);
+	if (u.cost_per_unit !== undefined) parts.push(`${u.cost_per_unit} per unit`);
+	if (u.units_measure) parts.push(GenericUnitsMeasureLabels[u.units_measure].toLowerCase());
+	if (u.units_source) parts.push(`from the ${GenericUnitsSourceLabels[u.units_source].toLowerCase()}`);
+	if (u.units_path) parts.push(`at ${u.units_path}`);
+	if (u.units_block_size !== undefined) parts.push(`blocks of ${u.units_block_size}`);
+	if (u.units_minimum !== undefined) parts.push(`min ${u.units_minimum}`);
+	return parts.join(" · ");
+}
+
 function advancedHasSettings(v: FormValues): boolean {
 	const u = v.usage ?? {};
 	return Boolean(
