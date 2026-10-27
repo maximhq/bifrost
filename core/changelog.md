@@ -1,1 +1,2 @@
 - chore: upgraded Go to 1.27.3
+- feat: copy `x-bf-bedrock-metadata-*` request headers into Bedrock Converse `requestMetadata`
