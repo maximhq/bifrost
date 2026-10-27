@@ -1,3 +1,4 @@
+- [fix]: Cloudflare 520-524 origin errors from providers behind Cloudflare, such as OpenAI, now retry on the same key as transient instead of reaching the caller (#8967) [@wangrat](https://github.com/wangrat)
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
