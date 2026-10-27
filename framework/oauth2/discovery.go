@@ -301,6 +301,10 @@ type OAuthMetadata struct {
 	PKCEMethods      []string `json:"code_challenge_methods_supported,omitempty"`
 	// Accepts an HTTPS URL to a Client ID Metadata Document as client_id (MCP 2025-11-25+).
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+	// Sends iss in authorization responses (RFC 9207).
+	IssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
+
+	AuthorizationServers []string `json:"-"` // every authorization server the MCP server advertises; this metadata is the first that answered
 }
 
 // ResourceMetadata contains metadata from protected resource
@@ -391,6 +395,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authorization server metadata: %w", err)
 	}
+	metadata.AuthorizationServers = authServers
 
 	// Step 6: Merge scopes (priority: header > resource metadata > discovered)
 	if len(scopesFromHeader) > 0 {
@@ -519,14 +524,19 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 // fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
 // Tries multiple authorization servers until one succeeds
 func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
+	var lastErr error
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
-		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasAuthorizationEndpoint)
+		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasAuthorizationEndpoint, true)
 		if err == nil && metadata != nil {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
 		}
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Failed to fetch from %s: %v", issuer, err))
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to fetch metadata from any authorization server: %w", lastErr)
 	}
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
@@ -540,8 +550,9 @@ func hasAuthorizationEndpoint(m *OAuthMetadata) bool { return m.AuthorizationURL
 func hasTokenEndpoint(m *OAuthMetadata) bool { return m.TokenURL != "" }
 
 // fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization server
-// and returns the first document usable accepts. Implements RFC 8414 discovery
-func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable func(*OAuthMetadata) bool) (*OAuthMetadata, error) {
+// and returns the first document usable accepts. Implements RFC 8414 discovery; strictIssuer skips a
+// document naming another issuer (callers that check the issuer themselves pass false).
+func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable func(*OAuthMetadata) bool, strictIssuer bool) (*OAuthMetadata, error) {
 	base, path := splitURL(issuer)
 	if base == "" {
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
@@ -553,6 +564,8 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable fu
 		candidateURLs = append(candidateURLs,
 			fmt.Sprintf("%s/.well-known/oauth-authorization-server/%s", base, path),
 			fmt.Sprintf("%s/.well-known/openid-configuration/%s", base, path),
+			// OpenID Connect Discovery appends to the issuer's path (Keycloak realms, Entra tenants).
+			strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration",
 		)
 	}
 	candidateURLs = append(candidateURLs,
@@ -563,6 +576,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable fu
 
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
+	var mismatch error
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
 		req, err := http.NewRequestWithContext(ctx, "GET", candidateURL, nil)
@@ -584,17 +598,23 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable fu
 				continue
 			}
 
-			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
-				if usable(&metadata) {
-					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
-					return &metadata, nil
+			if err := json.Unmarshal(bodyBytes, &metadata); err == nil && usable(&metadata) {
+				// RFC 8414 3.3: metadata naming another issuer must not be used.
+				if strictIssuer && metadata.Issuer != issuer {
+					mismatch = fmt.Errorf("%w: metadata at %s names issuer %q, expected %q", ErrIssuerMismatch, candidateURL, metadata.Issuer, issuer)
+					continue
 				}
+				logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
+				return &metadata, nil
 			}
 		} else {
 			resp.Body.Close()
 		}
 	}
 
+	if mismatch != nil {
+		return nil, mismatch
+	}
 	return nil, fmt.Errorf("no valid metadata found for issuer: %s", issuer)
 }
 
@@ -806,20 +826,22 @@ func clientMetadataDocumentID(documentURL string, supported bool) string {
 	return documentURL
 }
 
-// advertisesClientMetadataDocument reports whether serverURL's authorization server supports CIMD,
-// counting the flag only if its token endpoint is tokenURL.
-func advertisesClientMetadataDocument(ctx context.Context, serverURL, tokenURL string) bool {
+// metadataForTokenURL discovers serverURL's authorization server metadata for hand-entered
+// endpoints, or nil when it fails or names another token endpoint than tokenURL.
+func metadataForTokenURL(ctx context.Context, serverURL, tokenURL string) *OAuthMetadata {
 	metadata, err := DiscoverOAuthMetadata(ctx, serverURL)
 	if err != nil {
-		logger.Debug(fmt.Sprintf("[OAuth Discovery] Could not read Client ID Metadata Document support, using dynamic registration: %v", err))
-		return false
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Could not read the authorization server metadata for hand-entered endpoints: %v", err))
+		return nil
 	}
-	return cimdSupportedAt(metadata, tokenURL)
+	if !sameTokenEndpoint(metadata.TokenURL, tokenURL) {
+		return nil
+	}
+	return metadata
 }
 
-// cimdSupportedAt reports whether metadata's server supports CIMD and its token endpoint is tokenURL.
-func cimdSupportedAt(metadata *OAuthMetadata, tokenURL string) bool {
-	return metadata.ClientIDMetadataDocumentSupported && strings.TrimSuffix(metadata.TokenURL, "/") == strings.TrimSuffix(tokenURL, "/")
+func sameTokenEndpoint(a, b string) bool {
+	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
 }
 
 // ApplicationTypeFor returns "native" for a loopback redirectURI, else "web" (SEP-837).

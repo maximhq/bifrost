@@ -289594,6 +289594,147 @@
           }
         }
       ]
+    },
+    {
+      "name": "278. MCP OAuth client checks the authorization response issuer (mcp-oauth-issuer-check)",
+      "description": "RFC 9207 / SEP-2468, client role: Bifrost records the issuer of an upstream MCP server's authorization server (from validated RFC 8414 metadata) on each sign-in flow, and its OAuth callback compares the response's iss against it before acting on the code or on an error. A different iss, or a missing one from a server that advertises authorization_response_iss_parameter_supported, is refused with a generic failure page and the code never reaches a token endpoint. Pre-fix the callback ignored iss: the code went to the token endpoint (and here failed generically), and an error response was shown as a denial. Metadata naming another issuer than the one it was fetched for, and the authorization server binding of client credentials (SEP-2352), are covered by Go tests (TestDiscoverOAuthMetadata_RejectsMetadataNamingAnotherIssuer, TestInitiateUserOAuthFlow_AuthorizationServerChanged).\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .), which advertises and sends iss. Nothing in the harness runners starts it, so the rows are [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp-oauth-issuer-check\" INCLUDE_PREVIEW=1 once it is up. Like folder 207 the registration needs localhost on mcp_oauth_private_allowlist (the harness profile has it) and leaves an inert pending OAuth config behind. No provider calls; run them with PROVIDER=mcp, the partition for MCP management rows.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-issuer-check registering an OAuth MCP server records its issuer and starts a flow",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration starts the OAuth flow against the demo server', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, pm.response.text()).to.equal('pending_oauth');",
+                  "  var authorize = String(body.authorize_url || '');",
+                  "  pm.expect(authorize, pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  var state = (authorize.match(/[?&]state=([^&]+)/) || [])[1];",
+                  "  pm.expect(state, 'no state in ' + authorize).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('issuerCheckState', decodeURIComponent(state));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_issuer_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-issuer-check a callback naming another issuer is refused before the code is used",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an authorization response from another issuer is refused (RFC 9207)\", function () {",
+                  "  pm.expect(pm.collectionVariables.get('issuerCheckState'), 'the registration row did not capture a flow state').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=failed');",
+                  "  pm.expect(location, 'pre-fix the code went to the token endpoint and failed generically: ' + location).to.include('did not come from');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/oauth/callback?state={{issuerCheckState}}&code=harness-code&iss=https%3A%2F%2Fattacker.example"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-issuer-check a callback without iss from a server that sends it is refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a missing iss is refused when the authorization server advertises sending it\", function () {",
+                  "  pm.expect(pm.collectionVariables.get('issuerCheckState'), 'the registration row did not capture a flow state').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=failed');",
+                  "  pm.expect(location, location).to.include('did not come from');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/oauth/callback?state={{issuerCheckState}}&code=harness-code"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-issuer-check an error callback naming another issuer is not acted on",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an error response from another issuer is refused, not shown as a denial\", function () {",
+                  "  pm.expect(pm.collectionVariables.get('issuerCheckState'), 'the registration row did not capture a flow state').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=failed');",
+                  "  pm.expect(location, location).to.include('did not come from');",
+                  "  pm.expect(location, location).to.not.include('denied');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/oauth/callback?state={{issuerCheckState}}&error=access_denied&iss=https%3A%2F%2Fattacker.example"
+          }
+        }
+      ]
     }
   ]
 }

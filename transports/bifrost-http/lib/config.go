@@ -2604,6 +2604,7 @@ func rotateMCPOauthConfigFromFile(ctx context.Context, store configstore.ConfigS
 	if fileBlock.Scopes != nil {
 		fields.Scopes = fileBlock.Scopes
 	}
+	fields.KeepBinding(authorizedOauth)
 	rotated, err := store.RotateMCPOAuthConfig(ctx, authorizedOauth, fields)
 	if err != nil {
 		logger.Warn("failed to rotate OAuth config for MCP client %q from config file: %v", clientName, err)

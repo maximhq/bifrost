@@ -263,6 +263,22 @@ If only `client_id` and `server_url` are provided, Bifrost will probe in order:
 }
 ```
 
+Bifrost only uses an authorization server's metadata when the issuer it names is exactly the authorization server it was fetched for. A provider whose metadata names a different issuer, even one that differs only by a trailing slash, fails discovery. Ask the provider to correct its metadata. Entering its endpoints by hand also works, but then Bifrost has no issuer to check sign-in responses against, so it cannot confirm they come from that authorization server.
+
+---
+
+## Authorization server changes
+
+Bifrost remembers which authorization server issued an MCP client's OAuth credentials, and checks that the MCP server still points to it each time a sign-in or reauthorization starts. The check needs the MCP server's authorization metadata: if Bifrost cannot read it, the sign-in goes ahead with the stored authorization server. An MCP client set up before this check existed is tied to its authorization server once the token URL it uses matches the one the MCP server names. If the MCP server has moved to a different authorization server:
+
+- **Client ID Metadata Document:** Bifrost's client ID carries over when the new authorization server supports Client ID Metadata Documents. Otherwise Bifrost falls back to Dynamic Client Registration with it.
+- **Dynamic Client Registration:** Bifrost registers a new client with the new authorization server. If the new server offers no registration, or registration fails, the sign-in fails; register a client with it yourself and enter its credentials as below.
+- **Credentials entered by hand:** the sign-in fails with an error naming both authorization servers. Register a client with the new one, set its `client_id` / `client_secret` on the MCP client (and its `authorize_url` / `token_url`, if they differ from the old server's), then [reauthorize](#reauthorization). The reauthorization binds the MCP client to the new authorization server.
+
+The move happens when the sign-in starts. Once the MCP client has moved to the new authorization server, every credential bound to it is signed out, including every end user's on a `per_user_oauth` server, since Bifrost cannot use tokens from the old authorization server with the new one. Bifrost does not revoke them at the old authorization server. They stay signed out even if that sign-in is then abandoned or denied. A move that fails, such as one with credentials entered by hand for the old server, signs nobody out.
+
+If the MCP server lists several authorization servers, the one its credentials belong to stays in use for as long as it is listed, even when another listed server answers first.
+
 ---
 
 ## OAuth servers on localhost or a private network
@@ -559,6 +575,11 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 You changed Bifrost's public URL after the upstream client was registered. Use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost re-runs DCR with the new URL; for manually registered credentials, add the new redirect URI at the provider's dashboard and then [reauthorize](#reauthorization).
 </Accordion>
 
+<Accordion title="Sign-in fails: the response did not come from this MCP server's authorization server">
+
+The provider's response named a different authorization server than the one Bifrost sent the user to, or left that out although the provider says it always includes it. Bifrost refuses such a response before using the authorization code. If it keeps happening for one provider, its configuration is inconsistent: check that the issuer in its OAuth metadata matches the address the MCP server points to.
+</Accordion>
+
 <Accordion title="`invalid_client: Invalid client_id` on refresh, and Reauthorize does not help">
 
 The provider has stopped recognising the `client_id` itself, not just the token issued under it, so redoing consent with the same client fails at the code exchange the same way the refresh did. This is common with Dynamic Client Registration, where the provider's client registry is often in memory and does not survive a restart.
@@ -591,6 +612,7 @@ If the provider has no `registration_url`, register a client in its dashboard by
 - Tokens are stored encrypted at rest (set `BIFROST_ENCRYPTION_KEY`)
 - PKCE is enforced automatically for public clients
 - The OAuth `state` parameter is verified server-side for CSRF protection
+- Bifrost compares the issuer an authorization response names with the authorization server it sent the user to, and refuses a mismatch. A response without an issuer is refused when that authorization server advertises that it always sends one; authorization servers that do not send it are not checked this way
 - Use HTTPS — most upstream providers refuse HTTP redirect URIs in production
 - Request only the scopes your tools need
 

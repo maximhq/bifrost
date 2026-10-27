@@ -101,8 +101,9 @@ func (r *staleOAuthRecorder) CloseAndMarkNeedsReauth(_ context.Context, id strin
 	return r.closeErr
 }
 
-// A rotation's cached tokens and shared connection are dropped before the hook returns, so the
-// sign-in it rotated for cannot reconnect first and have its new connection closed by a late drop.
+// A rotation (a metadata-document move, or a sign-in moving to a new authorization server) drops the
+// client's cached tokens and shared connection before the hook returns, so the sign-in it rotated for
+// cannot reconnect first and have its new connection closed by a late drop.
 func TestDropStaleMCPOAuthState(t *testing.T) {
 	recorder := &staleOAuthRecorder{release: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())

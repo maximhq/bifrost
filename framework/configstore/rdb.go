@@ -8684,6 +8684,18 @@ func (s *RDBConfigStore) UpdateOauthUserSession(ctx context.Context, session *ta
 	return nil
 }
 
+// RecordOAuthFlowIssuer writes only a flow's expected issuer, while the flow is still pending with
+// state, so a sign-in renewed meanwhile keeps its new state and verifier.
+func (s *RDBConfigStore) RecordOAuthFlowIssuer(ctx context.Context, id, state, issuer string, issParameterSupported bool) (bool, error) {
+	result := s.DB().WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("id = ? AND state = ? AND status = ?", id, state, "pending").
+		Updates(map[string]any{"issuer": issuer, "iss_parameter_supported": issParameterSupported})
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to record the expected issuer on oauth flow %s: %w", id, result.Error)
+	}
+	return result.RowsAffected > 0, nil
+}
+
 // ---------- Per-User OAuth Token CRUD ----------
 
 // perUserOauthAuthModes is the set of TableMCPOauthToken.AuthMode values that
@@ -8918,7 +8930,30 @@ type MCPOAuthConfigFields struct {
 	Scopes          []string
 	RedirectURI     string // "" keeps the stored redirect_uri
 
-	ExpectedClientID *string // When set, rotate only while the stored client_id is still this; else ErrOAuthConfigChanged
+	// The authorization-server binding; callers that do not set it resolve it with KeepBinding.
+	Issuer                string
+	IssParameterSupported bool
+	DynamicallyRegistered bool
+
+	ExpectedIssuer   *string // when set, applies only while the stored issuer still equals it (ErrOAuthConfigChanged otherwise)
+	ExpectedClientID *string // when set, applies only while the stored client_id still equals it (ErrOAuthConfigChanged otherwise)
+}
+
+// KeepBinding resolves the binding fields for a caller that does not set them (the update-MCP-client
+// API handler and the config.json sync path): the issuer stays while the client_id and the authorize and
+// token endpoints do, and the dynamic-registration flag stays with the client_id it describes. New
+// credentials or endpoints drop the issuer; the next sign-in adopts the one its token endpoint belongs to.
+func (fields *MCPOAuthConfigFields) KeepBinding(existingOauthConfig *tables.TableOauthConfig) {
+	if existingOauthConfig == nil {
+		return
+	}
+	sameClient := fields.ClientID.Equals(existingOauthConfig.ClientID)
+	if sameClient && fields.AuthorizeURL == existingOauthConfig.AuthorizeURL && fields.TokenURL == existingOauthConfig.TokenURL {
+		fields.Issuer, fields.IssParameterSupported = existingOauthConfig.Issuer, existingOauthConfig.IssParameterSupported
+	}
+	if sameClient {
+		fields.DynamicallyRegistered = existingOauthConfig.DynamicallyRegistered
+	}
 }
 
 // DiffersFrom reports whether ANY field in fields differs from what's
@@ -8954,7 +8989,9 @@ func (fields MCPOAuthConfigFields) DiffersFrom(existingOauthConfig *tables.Table
 		fields.RegistrationURL != existingRegistrationURL ||
 		fields.Resource != existingOauthConfig.Resource ||
 		(fields.RedirectURI != "" && fields.RedirectURI != existingOauthConfig.RedirectURI) ||
-		!slices.Equal(newScopesSorted, existingScopesSorted)
+		!slices.Equal(newScopesSorted, existingScopesSorted) ||
+		// A new issuer is a new authorization server even at the same URLs; "" means not provided.
+		(fields.Issuer != "" && fields.Issuer != existingOauthConfig.Issuer)
 }
 
 // RotateMCPOAuthConfig updates every field of an oauth_configs row in place
@@ -9004,6 +9041,9 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 	if fields.RedirectURI != "" {
 		existingOauthConfig.RedirectURI = fields.RedirectURI
 	}
+	existingOauthConfig.Issuer = fields.Issuer
+	existingOauthConfig.IssParameterSupported = fields.IssParameterSupported
+	existingOauthConfig.DynamicallyRegistered = fields.DynamicallyRegistered
 	if len(fields.Scopes) == 0 {
 		existingOauthConfig.Scopes = ""
 	} else {
@@ -9028,6 +9068,18 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 				return ErrOAuthConfigChanged
 			}
 		}
+		// Claims the row: a concurrent rebind from the same issuer waits on it, then matches nothing.
+		if fields.ExpectedIssuer != nil {
+			result := tx.Model(&tables.TableOauthConfig{}).
+				Where("id = ? AND COALESCE(issuer, '') = ?", oauthConfigID, *fields.ExpectedIssuer).
+				Update("issuer", *fields.ExpectedIssuer)
+			if result.Error != nil {
+				return fmt.Errorf("failed to claim oauth config: %w", result.Error)
+			}
+			if result.RowsAffected == 0 {
+				return ErrOAuthConfigChanged
+			}
+		}
 		if err := s.UpdateOauthConfig(ctx, existingOauthConfig, tx); err != nil {
 			return fmt.Errorf("failed to update oauth config: %w", err)
 		}
@@ -9040,6 +9092,19 @@ func (s *RDBConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauth
 		return false, err
 	}
 	return true, nil
+}
+
+// BindOAuthConfigIssuer records the authorization server issuer an oauth config is bound to, writing
+// only issuer and iss_parameter_supported, and only while the stored issuer and token_url are still
+// the expected ones. It reports whether the row matched.
+func (s *RDBConfigStore) BindOAuthConfigIssuer(ctx context.Context, id, expectedIssuer, expectedTokenURL, issuer string, issParameterSupported bool) (bool, error) {
+	result := s.DB().WithContext(ctx).Model(&tables.TableOauthConfig{}).
+		Where("id = ? AND COALESCE(issuer, '') = ? AND token_url = ?", id, expectedIssuer, expectedTokenURL).
+		Updates(map[string]any{"issuer": issuer, "iss_parameter_supported": issParameterSupported})
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to bind oauth config %s to its authorization server: %w", id, result.Error)
+	}
+	return result.RowsAffected > 0, nil
 }
 
 // GetOauthUserTokenByID looks up a single per-user token row by primary key.
