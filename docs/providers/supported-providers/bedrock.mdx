@@ -568,7 +568,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 - `performanceConfig` - Performance optimization with `latency` ("optimized" or "standard")
 - `additionalModelRequestFieldPaths` - Pass-through for model-specific fields not in standard schema
 - `promptVariables` - Variables for prompt templates (if using prompt caching)
-- `requestMetadata` - Custom metadata for request tracking. It can also be set with `x-bf-bedrock-metadata-<key>: <value>` request headers, which only the Bedrock Converse paths read, so routes that try another provider first never forward them there. Header names are case-insensitive, so keys are stored in lower case. Values in the body win, and entries outside AWS's limits (16 entries; letters, digits, whitespace and `:_@$#=/+,-.`, up to 256 characters) are skipped.
+- `requestMetadata` - Custom metadata for request tracking. It can also be set with `x-bf-bedrock-metadata-<key>: <value>` request headers, which only the Bedrock Converse paths read, so routes that try another provider first never forward them there. Header names are case-insensitive, so keys are stored in lower case. Values in the body win. Header entries outside AWS's limits (16 entries; letters, digits, whitespace and `:_@$#=/+,-.`, up to 256 characters) are skipped, while body values are sent unchanged and Bedrock rejects invalid ones.
 
 ### Selective Guardrail Evaluation
 
