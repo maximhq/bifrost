@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -773,9 +774,9 @@ func (m *capturingAddMCPManager) AddMCPClient(_ context.Context, config *schemas
 	return errors.New("stop after capture")
 }
 
-func (m *capturingAddMCPManager) VerifyHeadersConnection(_ context.Context, config *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (m *capturingAddMCPManager) VerifyHeadersConnection(_ context.Context, config *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
 	m.got = config
-	return nil, nil, "", errors.New("stop after capture")
+	return nil, errors.New("stop after capture")
 }
 
 // A new MCP client follows the global max protocol version unless the caller sets one; an
@@ -877,4 +878,64 @@ func TestUpdateMCPClient_MaxProtocolVersion(t *testing.T) {
 			assert.Equal(t, tc.want, manager.got.MaxProtocolVersion, "applied live")
 		})
 	}
+}
+
+// An ordinary settings edit of a client with saved discovery keeps its saved resources, prompts and
+// instructions: the edit carries the saved tools forward, and that is not a new discovery.
+func TestUpdateMCPClient_SettingsEditKeepsSavedSnapshot(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newTestConfigStore(t)
+	existing := &schemas.MCPClientConfig{
+		ID: "client-1", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}
+	require.NoError(t, store.CreateMCPClientConfig(ctx, existing))
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, existing.ID, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{"docs-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "docs-search"}}},
+		Instructions: "Use the handbook first.",
+		Resources:    []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+		Prompts:      []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+	}))
+	cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}, ConfigStore: store}
+	h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}}
+	// Init attaches a server, so the store's queries can use the request as their context.
+	var req fasthttp.Request
+	req.SetBodyString(`{"is_code_mode_client":true}`)
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Init(&req, nil, nil)
+	reqCtx.SetUserValue("id", existing.ID)
+	h.updateMCPClient(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	row, err := store.GetMCPClientByID(ctx, existing.ID)
+	require.NoError(t, err)
+	assert.True(t, row.IsCodeModeClient, "fixture check: the edit was stored")
+	assert.Len(t, row.DiscoveredTools, 1)
+	assert.Len(t, row.DiscoveredResources, 1, "the saved resources survive the edit")
+	assert.Len(t, row.DiscoveredPrompts, 1, "the saved prompts survive the edit")
+	assert.Equal(t, "Use the handbook first.", row.DiscoveredInstructions)
+}
+
+// The resources and prompts lists are always arrays on the wire, empty when the server offers none, so clients
+// can iterate them like tools.
+func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {
+	var empty MCPClientResponse
+	empty.setResourcesAndPrompts(nil)
+	data, err := json.Marshal(empty)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"resources":[]`)
+	assert.Contains(t, string(data), `"resource_templates":[]`)
+	assert.Contains(t, string(data), `"prompts":[]`)
+
+	var full MCPClientResponse
+	full.setResourcesAndPrompts(&schemas.MCPClient{
+		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+		Prompts:   []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+	})
+	data, err = json.Marshal(full)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"uri":"file:///handbook.md"`)
+	assert.Contains(t, string(data), `"name":"docs-review"`)
+	assert.Contains(t, string(data), `"resource_templates":[]`)
 }

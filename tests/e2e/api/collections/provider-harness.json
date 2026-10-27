@@ -288336,6 +288336,289 @@
           }
         }
       ]
+    },
+    {
+      "name": "275. MCP gateway refuses disallowed browser origins (mcp-origin-validation)",
+      "description": "MCP Streamable HTTP requires servers to validate Origin on every request and answer an invalid one with 403, against DNS rebinding and cross-site calls. While /mcp accepts unauthenticated calls (enforce_auth_on_inference off, as in the harness profile), only localhost origins and origins listed in client_config.allowed_origins reach it: the bare \"*\" does not count, and a same-origin request is not exempt (a rebound page is same-origin). With auth enforced, allowed_origins applies as configured (Go test TestMCPGateway_OriginValidation). Requests without an Origin are never affected. Assumes the harness profile (auth not enforced, allowed_origins [\"*\"]). No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-origin-validation.",
+      "item": [
+        {
+          "name": "[EXPECT-403] openai mcp-origin-validation POST from an unlisted origin is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a browser page on another origin cannot call an unauthenticated /mcp\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 403, got: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include('allowed_origins');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Origin",
+                "value": "https://evil.example"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai mcp-origin-validation GET from an unlisted origin is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the notification stream is guarded too, though a plain GET needs no preflight\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 403, got: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include('allowed_origins');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Origin",
+                "value": "https://evil.example"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai mcp-origin-validation DELETE from an unlisted origin is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ending a session is guarded too\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 403, got: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include('allowed_origins');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Origin",
+                "value": "https://evil.example"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp"
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-origin-validation POST from a localhost origin is served",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"local browser tools (inspectors, dev UIs) keep working\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:5173"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-origin-validation POST without an Origin is served",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"non-browser clients are unaffected\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "276. MCP client resources and prompts are discovered (mcp-resources-prompts-discovery)",
+      "description": "Bifrost lists what an upstream MCP server offers besides tools - resources, resource templates and prompts - when the server advertises them, alongside tool discovery, and reports them read-only on GET /api/mcp/clients (resources, resource_templates, prompts; always arrays). Prompt names are prefixed with the client name like tools; resource URIs and templates are the server's own. Uses the profile's sse_mcp fixture (examples/mcps/remote-test-server), which offers one of each; a stale fixture build or an older process already on port 3012 lists none. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-resources-prompts-discovery.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-resources-prompts-discovery sse_mcp reports its resources, templates and prompts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('sse_mcp lists its resources, resource templates and prompts', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var mine = (pm.response.json().clients || []).filter(function (c) { return c.config && c.config.name === 'sse_mcp'; })[0];",
+                  "  pm.expect(mine, 'sse_mcp is not registered: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(mine.resources, 'resources missing: ' + JSON.stringify(mine)).to.be.an('array');",
+                  "  var uris = mine.resources.map(function (r) { return r.uri; });",
+                  "  pm.expect(uris, 'resource URIs are the server\\'s own').to.include('file:///fixture/handbook.md');",
+                  "  var templates = (mine.resource_templates || []).map(function (t) { return t.uriTemplate; });",
+                  "  pm.expect(templates).to.include('fixture://notes/{id}');",
+                  "  var review = (mine.prompts || []).filter(function (p) { return p.name === 'sse_mcp-review'; })[0];",
+                  "  pm.expect(review, 'prompts are prefixed with the client name like tools: ' + JSON.stringify(mine.prompts)).to.be.an('object');",
+                  "  pm.expect((review.arguments || []).map(function (a) { return a.name; })).to.include('diff');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients?search=sse_mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "sse_mcp"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

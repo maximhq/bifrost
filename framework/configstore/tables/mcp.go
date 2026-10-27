@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
@@ -56,6 +57,10 @@ type TableMCPClient struct {
 	// same reason the tools above are: a per-call client holds no connection to re-read it
 	// from, so without this a restart leaves it serving tools with no instructions.
 	DiscoveredInstructions string `gorm:"type:text" json:"-"`
+
+	DiscoveredResourcesJSON         string `gorm:"type:text" json:"-"` // JSON serialized []mcp.Resource
+	DiscoveredResourceTemplatesJSON string `gorm:"type:text" json:"-"` // JSON serialized []mcp.ResourceTemplate
+	DiscoveredPromptsJSON           string `gorm:"type:text" json:"-"` // JSON serialized []mcp.Prompt
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"
@@ -127,6 +132,10 @@ type TableMCPClient struct {
 	TokenExchange             *schemas.MCPTokenExchangeConfig `gorm:"-" json:"token_exchange,omitempty"` // Runtime mirror of TokenExchangeJSON
 	PendingOAuthConfig        *schemas.OAuth2Config           `gorm:"-" json:"oauth_config,omitempty"`   // Runtime mirror of PendingOAuthConfigJSON
 	OpenAPIConfig             *schemas.MCPOpenAPIConfig       `gorm:"-" json:"openapi_config,omitempty"` // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
+
+	DiscoveredResources         []mcp.Resource         `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourcesJSON
+	DiscoveredResourceTemplates []mcp.ResourceTemplate `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourceTemplatesJSON
+	DiscoveredPrompts           []mcp.Prompt           `gorm:"-" json:"-"` // Runtime mirror of DiscoveredPromptsJSON
 }
 
 // SplitOpenAPIConfigForStorage separates an openapi_config into its two
@@ -284,6 +293,10 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		c.ToolNameMappingJSON = string(data)
+	}
+
+	if err := c.EncodeDiscoveredLists(); err != nil {
+		return err
 	}
 
 	if c.PerUserHeaderKeys != nil {
@@ -471,6 +484,22 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
+	// encoding/json: resource templates decode through mcp.URITemplate's UnmarshalJSON.
+	if c.DiscoveredResourcesJSON != "" {
+		if err := json.Unmarshal([]byte(c.DiscoveredResourcesJSON), &c.DiscoveredResources); err != nil {
+			return err
+		}
+	}
+	if c.DiscoveredResourceTemplatesJSON != "" {
+		if err := json.Unmarshal([]byte(c.DiscoveredResourceTemplatesJSON), &c.DiscoveredResourceTemplates); err != nil {
+			return err
+		}
+	}
+	if c.DiscoveredPromptsJSON != "" {
+		if err := json.Unmarshal([]byte(c.DiscoveredPromptsJSON), &c.DiscoveredPrompts); err != nil {
+			return err
+		}
+	}
 	if c.PerUserHeaderKeysJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.PerUserHeaderKeysJSON), &c.PerUserHeaderKeys); err != nil {
 			return err
@@ -506,3 +535,25 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 // VaultPathKey implements schemas.VaultPathKeyer so the global GORM vault
 // callback can compute the vault base path for this model automatically.
 func (c *TableMCPClient) VaultPathKey() string { return c.ClientID }
+
+// EncodeDiscoveredLists fills the resources, templates and prompts columns from their mirrors.
+func (c *TableMCPClient) EncodeDiscoveredLists() error {
+	var err error
+	if c.DiscoveredResourcesJSON, err = marshalListJSON(c.DiscoveredResources); err != nil {
+		return err
+	}
+	if c.DiscoveredResourceTemplatesJSON, err = marshalListJSON(c.DiscoveredResourceTemplates); err != nil {
+		return err
+	}
+	c.DiscoveredPromptsJSON, err = marshalListJSON(c.DiscoveredPrompts)
+	return err
+}
+
+// marshalListJSON encodes a discovered list for its column; nil (the server offers none) is "".
+func marshalListJSON[T any](list []T) (string, error) {
+	if list == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(list)
+	return string(data), err
+}

@@ -2167,6 +2167,8 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPOpenAPIPreviewResponse"
     MCPConnectionFailure:
       $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPIcon:
+      $ref: "./schemas/management/mcp.yaml#/MCPIcon"
     MCPInstanceState:
       $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:

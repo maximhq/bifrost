@@ -97,7 +97,19 @@ func newMCPServer(instructions string) *server.MCPServer {
 	if instructions != "" {
 		opts = append(opts, server.WithInstructions(instructions))
 	}
+	opts = append(opts, server.WithResourceCapabilities(false, true), server.WithPromptCapabilities(true))
 	s := server.NewMCPServer("remote-test-server", "1.0.0", opts...)
+
+	// Back the provider-harness resources and prompts discovery cases: one of each, plus a
+	// resource template, so Bifrost has something to list besides tools.
+	s.AddResource(mcp.NewResource("file:///fixture/handbook.md", "handbook",
+		mcp.WithResourceDescription("Fixture handbook"), mcp.WithMIMEType("text/markdown"),
+	), handbookHandler)
+	s.AddResourceTemplate(mcp.NewResourceTemplate("fixture://notes/{id}", "note"), noteHandler)
+	s.AddPrompt(mcp.NewPrompt("review",
+		mcp.WithPromptDescription("Review a change"),
+		mcp.WithArgument("diff", mcp.ArgumentDescription("The change to review"), mcp.RequiredArgument()),
+	), reviewPromptHandler)
 
 	s.AddTool(mcp.NewTool(
 		"echo",
@@ -152,6 +164,20 @@ func newMCPServer(instructions string) *server.MCPServer {
 	), prefixedErrorHandler)
 
 	return s
+}
+
+func handbookHandler(context.Context, mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{mcp.TextResourceContents{URI: "file:///fixture/handbook.md", MIMEType: "text/markdown", Text: "# Fixture handbook"}}, nil
+}
+
+func noteHandler(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{mcp.TextResourceContents{URI: req.Params.URI, Text: "note"}}, nil
+}
+
+func reviewPromptHandler(_ context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	return mcp.NewGetPromptResult("Review a change", []mcp.PromptMessage{
+		mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("Review this change: "+req.Params.Arguments["diff"])),
+	}), nil
 }
 
 func prefixedErrorHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {

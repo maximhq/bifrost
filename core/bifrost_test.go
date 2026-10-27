@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
@@ -8009,11 +8010,11 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
 		}()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+			_, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
 		}()
 		wg.Wait()
 		b.Shutdown()
@@ -8056,6 +8057,43 @@ func TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings(t *testing.T) {
 	}
 	if err := with.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20251125); err != nil {
 		t.Fatalf("updating the running manager's cap: %v", err)
+	}
+}
+
+// TestSetMCPDiscoveryChangeCallback_ReachesLazyManager: the HTTP transport registers its discovery
+// callback at boot, before a deployment with no mcp block has a manager. The manager created lazily
+// for the first client must still fire it, or that client's discoveries are never persisted.
+func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	fired := make(chan string, 4)
+	b.SetMCPDiscoveryChangeCallback(func(clientID, _ string, _ *schemas.MCPDiscovery) { fired <- clientID })
+	b.SetMCPInProcessServerFactory(func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		s := server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false))
+		s.AddTool(mcpgo.NewTool("ping"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("pong"), nil
+		})
+		return s, nil
+	})
+	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID:             "first-id",
+		Name:           "first",
+		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+		ToolsToExecute: schemas.WhiteList{"*"},
+		OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+	}); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	select {
+	case id := <-fired:
+		if id != "first-id" {
+			t.Fatalf("callback fired for %q, want first-id", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lazily created manager never fired the discovery callback registered before it existed")
 	}
 }
 

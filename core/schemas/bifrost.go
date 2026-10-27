@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 const (
@@ -1262,8 +1264,11 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 type MCPRequestType string
 
 const (
-	MCPRequestTypePing      MCPRequestType = "ping"
-	MCPRequestTypeListTools MCPRequestType = "list_tools"
+	MCPRequestTypePing                  MCPRequestType = "ping"
+	MCPRequestTypeListTools             MCPRequestType = "list_tools"
+	MCPRequestTypeListResources         MCPRequestType = "list_resources"
+	MCPRequestTypeListResourceTemplates MCPRequestType = "list_resource_templates"
+	MCPRequestTypeListPrompts           MCPRequestType = "list_prompts"
 
 	// [DEPRECATED] these will be replaced by MCPRequestTypeExecuteTool in the next major bump, but are kept for backward compatibility for now since some tools still rely on the old fields
 	MCPRequestTypeChatToolCall      MCPRequestType = "chat_tool_call"      // Chat API format
@@ -1300,6 +1305,12 @@ func (t MCPRequestType) OTelMethodName() string {
 		return "tools/call"
 	case t == MCPRequestTypeListTools:
 		return "tools/list"
+	case t == MCPRequestTypeListResources:
+		return "resources/list"
+	case t == MCPRequestTypeListResourceTemplates:
+		return "resources/templates/list"
+	case t == MCPRequestTypeListPrompts:
+		return "prompts/list"
 	case t == MCPRequestTypePing:
 		return "ping"
 	default:
@@ -1315,6 +1326,7 @@ func (t MCPRequestType) OTelMethodName() string {
 // Exactly one of the embedded sub-request pointers is populated, matched by RequestType:
 //   - RequestType == MCPRequestTypePing       → BifrostMCPPingRequest
 //   - RequestType == MCPRequestTypeListTools  → BifrostMCPListToolsRequest
+//   - RequestType == MCPRequestTypeListResources / ListResourceTemplates / ListPrompts → the matching empty request
 //   - RequestType == MCPRequestTypeExecuteTool / MCPRequestTypeChatToolCall / MCPRequestTypeResponsesToolCall → BifrostMCPExecuteToolRequest
 type BifrostMCPRequest struct {
 	RequestType MCPRequestType
@@ -1322,6 +1334,9 @@ type BifrostMCPRequest struct {
 
 	*BifrostMCPPingRequest
 	*BifrostMCPListToolsRequest
+	*BifrostMCPListResourcesRequest
+	*BifrostMCPListResourceTemplatesRequest
+	*BifrostMCPListPromptsRequest
 
 	// [DEPRECATED] these will be replaced by BifrostMCPExecuteToolRequest in the next major bump, but are kept for backward compatibility for now since some tools still rely on the old fields
 	*ChatAssistantMessageToolCall
@@ -1356,6 +1371,17 @@ type BifrostMCPPingRequest struct {
 // reuses the existing transport's headers. Plugins observe via ClientName and may short-circuit
 // (e.g. cached tool list).
 type BifrostMCPListToolsRequest struct {
+}
+
+// BifrostMCPListResourcesRequest, BifrostMCPListResourceTemplatesRequest and
+// BifrostMCPListPromptsRequest are empty for the same reason as list_tools.
+type BifrostMCPListResourcesRequest struct {
+}
+
+type BifrostMCPListResourceTemplatesRequest struct {
+}
+
+type BifrostMCPListPromptsRequest struct {
 }
 
 // Keeping the stub for now, will be used from the next major bump when we remove the old ChatToolCall and ResponsesToolMessage fields.
@@ -1830,6 +1856,9 @@ func setCoreExtraFields(ef *BifrostResponseExtraFields, requestType RequestType,
 type BifrostMCPResponse struct {
 	*BifrostMCPPingResponse
 	*BifrostMCPListToolsResponse
+	*BifrostMCPListResourcesResponse
+	*BifrostMCPListResourceTemplatesResponse
+	*BifrostMCPListPromptsResponse
 
 	// [DEPRECATED] back-compat fields for execute-tool requests; will move into
 	// BifrostMCPExecuteToolResponse in the next major bump.
@@ -1892,6 +1921,18 @@ type BifrostMCPListToolsResponse struct {
 	ToolNameMapping map[string]string   // sanitized_name -> original_mcp_name
 	RawToolCount    int                 // Count returned by the MCP server before Bifrost-side filtering
 	SkippedTools    []SkippedMCPTool    // Tools Bifrost dropped during conversion + reason
+}
+
+type BifrostMCPListResourcesResponse struct {
+	Resources []mcp.Resource // As the server lists them
+}
+
+type BifrostMCPListResourceTemplatesResponse struct {
+	ResourceTemplates []mcp.ResourceTemplate // As the server lists them
+}
+
+type BifrostMCPListPromptsResponse struct {
+	Prompts []mcp.Prompt // Names prefixed with the client name
 }
 
 // SkippedMCPTool describes a tool that the MCP server returned but Bifrost did not include

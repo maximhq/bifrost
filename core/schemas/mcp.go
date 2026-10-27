@@ -872,6 +872,10 @@ type MCPClientConfig struct {
 	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
 	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
 	DiscoveredInstructions string `json:"-"`
+	// The upstream's resources, resource templates and prompts, persisted for the same reason.
+	DiscoveredResources         []mcp.Resource         `json:"-"`
+	DiscoveredResourceTemplates []mcp.ResourceTemplate `json:"-"`
+	DiscoveredPrompts           []mcp.Prompt           `json:"-"` // names prefixed like tools
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -1385,7 +1389,23 @@ type MCPClientState struct {
 	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
 	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
 	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	LastDiscoveryHash  string                `json:"-"`                      // Content hash of the last discovery (tools, mapping, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
+
+	Resources         []mcp.Resource         `json:"-"` // As the server lists them
+	ResourceTemplates []mcp.ResourceTemplate `json:"-"` // As the server lists them
+	Prompts           []mcp.Prompt           `json:"-"` // Names prefixed with the client name, like tools
+}
+
+// MCPDiscovery is what an MCP server exposed as of one connection: its tools, instructions,
+// resources and prompts. Tool and prompt names are prefixed with the client name; resource URIs
+// and templates are the server's own.
+type MCPDiscovery struct {
+	Tools             map[string]ChatTool
+	ToolNameMapping   map[string]string // sanitized_name -> original_mcp_name
+	Instructions      string
+	Resources         []mcp.Resource
+	ResourceTemplates []mcp.ResourceTemplate
+	Prompts           []mcp.Prompt
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
@@ -1403,4 +1423,8 @@ type MCPClient struct {
 	Tools       []ChatToolFunction    `json:"tools"`                  // Available tools
 	State       MCPConnectionState    `json:"state"`                  // Connection state
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy
+
+	Resources         []mcp.Resource         `json:"resources,omitempty"`
+	ResourceTemplates []mcp.ResourceTemplate `json:"resource_templates,omitempty"`
+	Prompts           []mcp.Prompt           `json:"prompts,omitempty"`
 }

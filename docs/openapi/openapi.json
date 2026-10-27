@@ -130224,6 +130224,195 @@
               }
             }
           },
+          "resources": {
+            "type": "array",
+            "description": "Resources the server lists, as last discovered; empty when it offers none. URIs are the server's own.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "uri",
+                "name"
+              ],
+              "properties": {
+                "uri": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Size in bytes, when the server reports it"
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "audience": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "assistant"
+                        ]
+                      }
+                    },
+                    "priority": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "lastModified": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPIcon"
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "resource_templates": {
+            "type": "array",
+            "description": "Resource templates the server lists, as last discovered; empty when it offers none.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "uriTemplate",
+                "name"
+              ],
+              "properties": {
+                "uriTemplate": {
+                  "type": "string",
+                  "description": "RFC 6570 URI template"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "audience": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "assistant"
+                        ]
+                      }
+                    },
+                    "priority": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "lastModified": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPIcon"
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "prompts": {
+            "type": "array",
+            "description": "Prompts the server lists, as last discovered; empty when it offers none. Names are prefixed with the client name, like tools.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPIcon"
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -130793,6 +130982,36 @@
             "type": "string",
             "format": "date-time",
             "description": "The first failed attempt of the current unhealthy run."
+          }
+        }
+      },
+      "MCPIcon": {
+        "type": "object",
+        "description": "An icon the server offers for a resource, template or prompt.",
+        "required": [
+          "src"
+        ],
+        "properties": {
+          "src": {
+            "type": "string",
+            "description": "HTTP(S) or data URI"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "sizes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sizes such as \"48x48\", or \"any\""
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark"
+            ]
           }
         }
       },

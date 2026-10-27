@@ -21,30 +21,26 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// computeToolsHash returns a stable content hash of a tool map + name
-// mapping, used to gate the tools-change funnel (SetClientTools,
-// connectToMCPClient, writeBackTools) to genuine changes only — a
-// rediscovery that returns byte-identical tools (the common case on most
-// periodic ticks and reconnects) must not re-trigger a registered
-// callback's work (DB persist, external MCP server resync). json.Marshal
-// sorts map string keys, so this is deterministic regardless of the maps'
-// iteration order; errors are treated as "never matches" (marshal failure
-// on these plain data types isn't expected, but must never panic or block
-// a genuine discovery result from being recorded).
-func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) string {
+// computeDiscoveryHash hashes a discovery so an identical rediscovery does not re-fire the change
+// callback. json.Marshal sorts map keys, so the hash is deterministic; marshal errors never match.
+func computeDiscoveryHash(discovery *schemas.MCPDiscovery) string {
 	h := sha256.New()
-	if data, err := json.Marshal(tools); err == nil {
+	if data, err := json.Marshal(discovery.Tools); err == nil {
 		h.Write(data)
 	}
 	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
-	if data, err := json.Marshal(toolNameMapping); err == nil {
+	if data, err := json.Marshal(discovery.ToolNameMapping); err == nil {
 		h.Write(data)
 	}
-	// Instructions ride the same hash so a server that rewrote only its instructions
-	// still counts as a change: without this the callback never fires and the new text
-	// is never persisted or re-served.
+	// Hashed too, so a change to only these still fires the callback.
 	h.Write([]byte{0})
-	h.Write([]byte(instructions))
+	h.Write([]byte(discovery.Instructions))
+	for _, list := range []any{discovery.Resources, discovery.ResourceTemplates, discovery.Prompts} {
+		h.Write([]byte{0})
+		if data, err := json.Marshal(list); err == nil {
+			h.Write(data)
+		}
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
