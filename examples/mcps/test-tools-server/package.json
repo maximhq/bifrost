@@ -22,6 +22,7 @@
     "fast-uri": "3.1.9",
     "hono": "4.13.11",
     "@hono/node-server": "2.0.10",
-    "zod": "$zod"
+    "zod": "$zod",
+    "body-parser": "2.4.0"
   }
 }
