@@ -40,6 +40,113 @@ const pgTestSchema = "configstore_test"
 // framework/docker-compose.yml.
 const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
+func TestAgentPushTenantMigration(t *testing.T) {
+	dbs := []namedDB{{name: "sqlite", db: setupTestDB(t)}}
+	if dsn := os.Getenv("BIFROST_PUSH_MIGRATION_TEST_DSN"); dsn != "" {
+		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		require.NoError(t, err)
+		pool, err := db.DB()
+		require.NoError(t, err)
+		pool.SetMaxOpenConns(1)
+		schema := fmt.Sprintf("push_identity_%d", time.Now().UnixNano())
+		require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
+		require.NoError(t, db.Exec("SET search_path TO "+schema).Error)
+		t.Cleanup(func() {
+			db.Exec("DROP SCHEMA " + schema + " CASCADE")
+			pool.Close()
+		})
+		dbs = append(dbs, namedDB{name: "postgres", db: db})
+	}
+	for _, backend := range dbs {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			if backend.name == "sqlite" {
+				require.NoError(t, db.Exec("PRAGMA foreign_keys = ON").Error)
+			}
+			require.NoError(t, db.AutoMigrate(&tables.TableAgentRegistration{}))
+			require.NoError(t, db.Create(&tables.TableAgentRegistration{Name: "fixture", AgentCardURL: "https://example.com"}).Error)
+			// Start from the old physical schema, not today's AutoMigrate model.
+			require.NoError(t, db.Exec(`CREATE TABLE config_agent_push_configs (
+				agent_name varchar(255) NOT NULL, task_id varchar(255) NOT NULL, config_id varchar(255) NOT NULL,
+				url text NOT NULL, tenant varchar(255), token text, auth_scheme varchar(64), auth_credentials text,
+				ingress_token_hash varchar(64) NOT NULL, encryption_status varchar(20), created_at timestamp, updated_at timestamp,
+				PRIMARY KEY (agent_name, task_id, config_id),
+				FOREIGN KEY (agent_name) REFERENCES config_agent_registrations(name) ON DELETE CASCADE)`).Error)
+			require.NoError(t, db.Exec("CREATE INDEX idx_push_legacy_callback ON config_agent_push_configs(url)").Error)
+			require.NoError(t, db.Exec(`CREATE TABLE config_agent_push_deliveries (
+				id varchar(64) PRIMARY KEY, agent_name varchar(255), task_id varchar(255), config_id varchar(255),
+				payload text, status varchar(16), attempts integer, next_attempt_at timestamp, last_error text,
+				claimed_by varchar(255), claimed_until timestamp, created_at timestamp, updated_at timestamp)`).Error)
+			now := time.Now().UTC()
+			require.NoError(t, db.Exec("INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, token, auth_credentials, ingress_token_hash, encryption_status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)",
+				"fixture", "task", "config", "https://callback.example", "unchanged-ciphertext", "unchanged-auth", "legacy-hash", "encrypted", now, now).Error)
+			require.NoError(t, db.Exec("INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, ingress_token_hash) VALUES (?, ?, ?, ?, ?, ?)",
+				"fixture", "legacy-task", "config", "https://legacy.example", "tenant-a", "legacy-a-hash").Error)
+			for _, status := range []string{schemas.AgentPushDeliveryStatusPending, schemas.AgentPushDeliveryStatusDelivered} {
+				require.NoError(t, db.Exec("INSERT INTO config_agent_push_deliveries (id, agent_name, task_id, config_id, payload, status, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+					status, "fixture", "task", "config", "retained-payload", status, now, now, now).Error)
+			}
+			require.NoError(t, db.Exec("UPDATE config_agent_push_deliveries SET claimed_by = ?, claimed_until = ? WHERE status = ?",
+				"old-runner", now.Add(time.Hour), schemas.AgentPushDeliveryStatusPending).Error)
+			require.NoError(t, migrationScopeAgentPushIdentity(context.Background(), db, testMigrationLogger))
+			var config struct {
+				Tenant, Token, AuthCredentials, IngressTokenHash, EncryptionStatus string
+			}
+			require.NoError(t, db.Raw("SELECT tenant, token, auth_credentials, ingress_token_hash, encryption_status FROM config_agent_push_configs WHERE task_id = 'task'").Scan(&config).Error)
+			require.Equal(t, "", config.Tenant)
+			require.Equal(t, "unchanged-ciphertext", config.Token)
+			require.Equal(t, "unchanged-auth", config.AuthCredentials)
+			require.Equal(t, "legacy-hash", config.IngressTokenHash)
+			require.Equal(t, "encrypted", config.EncryptionStatus)
+			require.True(t, db.Migrator().HasIndex(&tables.TableAgentPushConfig{}, "idx_push_legacy_callback"))
+			var pending tables.TableAgentPushDelivery
+			require.NoError(t, db.First(&pending, "id = ?", schemas.AgentPushDeliveryStatusPending).Error)
+			require.Equal(t, schemas.AgentPushDeliveryStatusDead, pending.Status)
+			require.Equal(t, "retained-payload", pending.Payload)
+			require.Contains(t, pending.LastError, "cannot be safely delivered")
+			require.Empty(t, pending.ClaimedBy)
+			require.Nil(t, pending.ClaimedUntil)
+			var delivered tables.TableAgentPushDelivery
+			require.NoError(t, db.First(&delivered, "id = ?", schemas.AgentPushDeliveryStatusDelivered).Error)
+			require.Equal(t, schemas.AgentPushDeliveryStatusDelivered, delivered.Status)
+			store := &RDBConfigStore{}
+			store.db.Store(db)
+			legacy, err := store.GetAgentPushConfig(context.Background(), "fixture", "tenant-a", "legacy-task", "config")
+			require.NoError(t, err)
+			require.NotNil(t, legacy)
+			require.Equal(t, "https://legacy.example", legacy.URL)
+			// NULL cannot form a separate namespace; older writers can omit tenant.
+			require.Error(t, db.Exec("INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, ingress_token_hash) VALUES (?, ?, ?, ?, NULL, ?)",
+				"fixture", "null-task", "config", "https://null.example", "null-hash").Error)
+			require.NoError(t, db.Exec("INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, ingress_token_hash) VALUES (?, ?, ?, ?, ?)",
+				"fixture", "default-task", "config", "https://default.example", "default-hash").Error)
+			defaultConfig, err := store.GetAgentPushConfig(context.Background(), "fixture", "", "default-task", "config")
+			require.NoError(t, err)
+			require.NotNil(t, defaultConfig)
+			require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{AgentName: "fixture", Tenant: "tenant-b", TaskID: "task", ConfigID: "config", URL: "https://b.example", IngressTokenHash: "b-hash", CreatedAt: now, UpdatedAt: now}))
+			current, err := store.GetAgentPushConfig(context.Background(), "fixture", "tenant-b", "task", "config")
+			require.NoError(t, err)
+			require.Equal(t, "tenant-b", current.Tenant)
+			var count int64
+			require.NoError(t, db.Table("config_agent_push_configs").Count(&count).Error)
+			require.EqualValues(t, 4, count)
+			created, err := store.CreateAgentPushDeliveryIfNotExists(context.Background(), &schemas.AgentPushDelivery{
+				ID: "new-delivery", AgentName: "fixture", Tenant: "tenant-b", TaskID: "task", ConfigID: "config", Payload: "fresh-payload", Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: now,
+			})
+			require.NoError(t, err)
+			require.True(t, created)
+			require.NoError(t, migrationScopeAgentPushIdentity(context.Background(), db, testMigrationLogger))
+			due, err := store.ListDueAgentPushDeliveries(context.Background(), now.Add(time.Second), 10)
+			require.NoError(t, err)
+			require.Len(t, due, 1, "rerunning the migration must not dead-letter new tenant-scoped events")
+			require.Equal(t, "tenant-b", due[0].Tenant)
+			require.NoError(t, db.Exec("DELETE FROM config_agent_registrations WHERE name = ?", "fixture").Error)
+			require.NoError(t, db.Table("config_agent_push_configs").Count(&count).Error)
+			require.Zero(t, count, "agent deletion must still cascade across all tenant callbacks")
+		})
+	}
+}
+
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
 	name string

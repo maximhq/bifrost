@@ -82,6 +82,10 @@ A `202 Accepted` response to the upstream agent means Bifrost queued the notific
   Delivery is at least once. Your callback may receive the same event again if it processed a request but Bifrost did not receive its successful response. Make callback processing idempotent. After the retry limit, the delivery stops and records the failure. A delivery whose configuration has been deleted stops without further retries.
 </Accordion>
 
+<Warning>
+When upgrading across the `scope_agent_push_identity` migration, stop the old gateway nodes and their push relays before migrating and starting the new nodes. Stored callbacks and credentials are retained, but legacy pending notifications without a tenant namespace are dead-lettered rather than guessing which callback owns their payload. Obtain fresh notifications from the upstream agent instead of replaying those rows.
+</Warning>
+
 <Accordion title="An update never reaches my callback">
   1. Confirm the upstream agent can reach Bifrost's External Client URL and callback route.
   2. Find the task's **Push notification** event. A missing event points to the agent-to-Bifrost hop. Invalid notification tokens, malformed events, and events for another task are rejected.
