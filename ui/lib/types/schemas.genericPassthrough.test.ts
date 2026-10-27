@@ -30,7 +30,14 @@ describe("generic route header matchers", () => {
 describe("genericUsagePreviewSampleSchema path", () => {
 	const check = (path: string) => genericUsagePreviewSampleSchema.safeParse({ method: "POST", path, status_code: 200 });
 	it("accepts the paths the relay accepts", () => {
-		for (const path of ["/", "/search", "/files/a%20b.json", "/v1/chat?stream=true"]) {
+		for (const path of [
+			"/",
+			"/search",
+			"/files/a%20b.json",
+			"/v1/chat?stream=true",
+			"/search?url=https%3A%2F%2Fexample.com",
+			"/x?u=http://evil",
+		]) {
 			expect(check(path).success, path).toBe(true);
 		}
 	});
@@ -39,7 +46,7 @@ describe("genericUsagePreviewSampleSchema path", () => {
 			["search", "must start with /"],
 			["//host/x", "must not start with //"],
 			["/a\\b", "backslashes"],
-			["/x?u=http://evil", "scheme"],
+			["/x://evil", "scheme"],
 			["/%2F%2Fhost", "must not start with //"],
 			["/a%5Cb", "backslashes"],
 			["/bad%zz", "percent-escape"],

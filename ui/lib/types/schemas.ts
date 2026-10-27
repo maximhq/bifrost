@@ -1345,7 +1345,11 @@ export const genericProviderFormSchema = genericProviderConfigSchema.extend({
 // field errors show inline rather than as a failed request.
 // relayPathError mirrors the relay's path guard (ValidatePassthroughPath) on the raw and the
 // percent-decoded path, so a sample the preview endpoint would refuse with 400 fails inline instead.
-export function relayPathError(path: string): string | undefined {
+// A query string may follow the path, as in /jobs/1?stream=true; the relay checks the path alone,
+// so the query is split off first.
+export function relayPathError(pathWithQuery: string): string | undefined {
+	const q = pathWithQuery.indexOf("?");
+	const path = q === -1 ? pathWithQuery : pathWithQuery.slice(0, q);
 	const rules = (p: string): string | undefined => {
 		if (!p.startsWith("/")) return "Path must start with /";
 		if (p.startsWith("//")) return "Path must not start with //";
