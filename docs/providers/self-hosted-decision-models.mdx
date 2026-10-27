@@ -192,6 +192,8 @@ curl http://localhost:8080/v1/decisions \
 
 [Decision Models](https://decisionmodels.io) is a hosted API that serves the same System One shape on `POST https://api.decisionmodels.io/v1/systemone` with a bearer API key. Nothing to run yourself: add it as a custom provider on the **Typesafe** base format, like Laya and Nimble above.
 
+Before the first request, accept the Data Processing Agreement in the Decision Models dashboard. Until then the API answers `403` with `dpa_acceptance_required`.
+
 | | Decision Models |
 |---|---|
 | **Models** | `s1-fast`, `s1-pro`, `reax-1` (aliases that always point to the current version) |
@@ -204,7 +206,7 @@ curl http://localhost:8080/v1/decisions \
 
 1. Navigate to **Models** > **Model Providers** and click **Add New Provider**.
 2. In **Add Custom Provider**, set **Name** (for example `decisionmodels`) and **Base Format** to **Typesafe**.
-3. Set **Base URL** to `https://api.decisionmodels.io`.
+3. Set **Base URL** to `https://api.decisionmodels.io`, and add the extra header `S1-Region` with `global` (Peer-to-Peer tier) or `eu` (EU tier).
 4. Under **Allowed Request Types**, turn on **Decisions** and turn **List Models** off.
 5. Add a key with your Decision Models API key, and in **Allowed Models** type `s1-fast`, `s1-pro`, `reax-1`.
 6. Save.
@@ -225,7 +227,10 @@ curl http://localhost:8080/v1/decisions \
         }
       ],
       "network_config": {
-        "base_url": "https://api.decisionmodels.io"
+        "base_url": "https://api.decisionmodels.io",
+        "extra_headers": {
+          "S1-Region": "global"
+        }
       },
       "custom_provider_config": {
         "base_provider_type": "typesafe",
@@ -256,7 +261,7 @@ curl http://localhost:8080/v1/decisions \
   }'
 ```
 
-Input prices are in USD per 1 million input tokens on the Peer-to-Peer tier, with output tokens free: `s1-fast` 0.019, `s1-pro` 0.08, `reax-1` 0.08 (current list at `https://api.decisionmodels.io/v1/models`). Add a [pricing override](#pricing) to see them in Bifrost's cost tracking. Images go through a separate `/v1/multimodal` endpoint that this provider does not use.
+Input prices are in USD per 1 million input tokens, with output tokens free. Peer-to-Peer (`S1-Region: global`, as in the example): `s1-fast` 0.019, `s1-pro` 0.08, `reax-1` 0.08. EU (`S1-Region: eu`): `s1-fast` 0.021, `s1-pro` 0.084, `reax-1` 0.084. Current list at `https://api.decisionmodels.io/v1/models`. Add a [pricing override](#pricing) with the rates of the tier you set to see them in Bifrost's cost tracking. The listed models are text only, and Bifrost sends all their requests to `/v1/systemone`. Decision Models' image endpoint (`/v1/multimodal`) is not used by this setup.
 
 ---
 
