@@ -72,6 +72,10 @@ type ClientConnectionChecker struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	isRunning bool
+	// stopped is set by Stop and never cleared: a Stop that lands before Start
+	// takes c.mu leaves the checker stopped rather than started behind the
+	// registry's back.
+	stopped bool
 	// onSteadyCadence records whether the armed timer was set with the
 	// steady-state cadence (healthyInterval) rather than the tight Unstable
 	// one, so a runtime healthyInterval change knows whether to re-arm it.
@@ -116,22 +120,30 @@ func NewClientConnectionChecker(
 // waiting a full healthyInterval — potentially 10 minutes — before the
 // first recovery attempt would defeat that).
 func (c *ClientConnectionChecker) Start() {
+	// Read the client before taking c.mu: RemoveClient and DisableClient hold
+	// MCPManager.mu while StopChecking waits for c.mu, so waiting for
+	// MCPManager.mu while holding c.mu would deadlock against them.
+	c.manager.mu.RLock()
+	clientState, exists := c.manager.clientMap[c.clientID]
+	var onSteady bool
+	var name string
+	if exists {
+		onSteady = clientState.State == schemas.MCPConnectionStateHealthy
+		name = clientState.ExecutionConfig.Name
+	}
+	c.manager.mu.RUnlock()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isRunning {
+	if c.isRunning || c.stopped {
 		return
 	}
-
-	c.manager.mu.RLock()
-	clientState, exists := c.manager.clientMap[c.clientID]
-	c.manager.mu.RUnlock()
 	if !exists {
 		c.logger.Error("%s Connection checker failed to start for client %s, client not found in manager", MCPLogPrefix, c.clientID)
 		return
 	}
 
-	onSteady := clientState.State == schemas.MCPConnectionStateHealthy
 	firstInterval := c.healthyInterval
 	if !onSteady {
 		firstInterval = UnstableConnectionCheckInterval
@@ -143,7 +155,7 @@ func (c *ClientConnectionChecker) Start() {
 	c.onSteadyCadence = onSteady
 
 	go c.checkLoop()
-	c.logger.Debug("%s Connection checker started for client %s", MCPLogPrefix, clientState.ExecutionConfig.Name)
+	c.logger.Debug("%s Connection checker started for client %s", MCPLogPrefix, name)
 }
 
 // Stop stops the periodic check.
@@ -151,6 +163,7 @@ func (c *ClientConnectionChecker) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.stopped = true
 	if !c.isRunning {
 		return
 	}
