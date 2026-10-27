@@ -169,18 +169,11 @@ func virtualListedModels(cfg *lib.Config, allowed []schemas.ModelProvider, acces
 // published ahead of the grants that cover them. Callers pair it with virtualKeyPresented to tell
 // an unrestricted request apart from a refused one, which nil alone cannot express.
 func (h *CompletionHandler) virtualModelAccess(ctx *schemas.BifrostContext) schemas.Access {
-	if h.modelsManager == nil {
-		return nil
-	}
-	access, err := h.modelsManager.ResolveAccess(ctx)
-	if err != nil {
-		return nil
-	}
-	return access
+	return resolveVirtualModelAccess(ctx, h.modelsManager)
 }
 
-// resolveVirtualModelAccess is the same answer for the management listing, which reaches it
-// through its own manager rather than the inference handler's.
+// resolveVirtualModelAccess is the same answer for callers that reach governance through their own
+// manager rather than the inference handler's.
 func resolveVirtualModelAccess(ctx *schemas.BifrostContext, manager ModelsManager) schemas.Access {
 	if manager == nil {
 		return nil
