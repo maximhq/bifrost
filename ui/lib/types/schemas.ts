@@ -1357,17 +1357,26 @@ export function relayPathError(pathWithQuery: string): string | undefined {
 		if (p.includes("://")) return "Path must not contain a scheme";
 		// eslint-disable-next-line no-control-regex
 		if (/[\x00-\x1f\x7f]/.test(p)) return "Path must not contain control characters";
+		if (p.slice(1).split("/")[0].includes("@")) return "The first path segment must not contain @";
+		if (p.split("/").includes("..")) return "Path must not contain .. segments";
 		return undefined;
 	};
-	const raw = rules(path);
-	if (raw) return raw;
-	let decoded: string;
-	try {
-		decoded = decodeURIComponent(path);
-	} catch {
-		return "Path has a malformed percent-escape";
+	// The preview endpoint decodes the sample once and the relay guard decodes once more, so the
+	// raw, once-decoded and twice-decoded forms are all checked, as they are server-side.
+	let form = path;
+	for (let pass = 0; pass < 3; pass++) {
+		const message = rules(form);
+		if (message) return message;
+		let decoded: string;
+		try {
+			decoded = decodeURIComponent(form);
+		} catch {
+			return "Path has a malformed percent-escape";
+		}
+		if (decoded === form) return undefined;
+		form = decoded;
 	}
-	return decoded === path ? undefined : rules(decoded);
+	return undefined;
 }
 
 export const genericUsagePreviewSampleSchema = z.object({

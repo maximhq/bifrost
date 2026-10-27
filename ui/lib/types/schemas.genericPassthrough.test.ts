@@ -51,6 +51,10 @@ describe("genericUsagePreviewSampleSchema path", () => {
 			["/a%5Cb", "backslashes"],
 			["/bad%zz", "percent-escape"],
 			["/tab\there", "control characters"],
+			["/user@host/x", "first path segment must not contain @"],
+			["/a/../b", ".. segments"],
+			["/%252F%252Fhost", "must not start with //"],
+			["/%252e%252e/x", ".. segments"],
 		] as const) {
 			const result = check(path);
 			expect(result.success, path).toBe(false);
