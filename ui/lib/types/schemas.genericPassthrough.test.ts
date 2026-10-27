@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { genericRouteFormSchema } from "./schemas";
+import { genericRouteFormSchema, genericUsagePreviewSampleSchema } from "./schemas";
 
 describe("generic route header matchers", () => {
 	const route = (headers: { name: string; value: string }[]) => ({ method: "POST" as const, path: "/", headers });
@@ -25,5 +25,29 @@ describe("generic route header matchers", () => {
 			]),
 		);
 		expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
+	});
+});
+describe("genericUsagePreviewSampleSchema path", () => {
+	const check = (path: string) => genericUsagePreviewSampleSchema.safeParse({ method: "POST", path, status_code: 200 });
+	it("accepts the paths the relay accepts", () => {
+		for (const path of ["/", "/search", "/files/a%20b.json", "/v1/chat?stream=true"]) {
+			expect(check(path).success, path).toBe(true);
+		}
+	});
+	it("refuses inline the paths the relay refuses with 400, decoded variants included", () => {
+		for (const [path, message] of [
+			["search", "must start with /"],
+			["//host/x", "must not start with //"],
+			["/a\\b", "backslashes"],
+			["/x?u=http://evil", "scheme"],
+			["/%2F%2Fhost", "must not start with //"],
+			["/a%5Cb", "backslashes"],
+			["/bad%zz", "percent-escape"],
+			["/tab\there", "control characters"],
+		] as const) {
+			const result = check(path);
+			expect(result.success, path).toBe(false);
+			expect(JSON.stringify(result.error?.issues), path).toContain(message);
+		}
 	});
 });

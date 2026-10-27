@@ -1343,9 +1343,39 @@ export const genericProviderFormSchema = genericProviderConfigSchema.extend({
 
 // Sample call for the Passthrough tab's "Test this mapping" box, checked before it is sent so the
 // field errors show inline rather than as a failed request.
+// relayPathError mirrors the relay's path guard (ValidatePassthroughPath) on the raw and the
+// percent-decoded path, so a sample the preview endpoint would refuse with 400 fails inline instead.
+export function relayPathError(path: string): string | undefined {
+	const rules = (p: string): string | undefined => {
+		if (!p.startsWith("/")) return "Path must start with /";
+		if (p.startsWith("//")) return "Path must not start with //";
+		if (p.includes("\\")) return "Path must not contain backslashes";
+		if (p.includes("://")) return "Path must not contain a scheme";
+		// eslint-disable-next-line no-control-regex
+		if (/[\x00-\x1f\x7f]/.test(p)) return "Path must not contain control characters";
+		return undefined;
+	};
+	const raw = rules(path);
+	if (raw) return raw;
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(path);
+	} catch {
+		return "Path has a malformed percent-escape";
+	}
+	return decoded === path ? undefined : rules(decoded);
+}
+
 export const genericUsagePreviewSampleSchema = z.object({
 	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
-	path: z.string().trim().min(1, "Path is required"),
+	path: z
+		.string()
+		.trim()
+		.min(1, "Path is required")
+		.superRefine((p, ctx) => {
+			const message = relayPathError(p);
+			if (message) ctx.addIssue({ code: "custom", message });
+		}),
 	status_code: z
 		.number()
 		.int("Status must be a whole number")
