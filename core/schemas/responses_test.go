@@ -310,6 +310,28 @@ func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing
 	}
 }
 
+// WithDefaults shapes the wire copy. Governance prices the same response in a goroutine, so the
+// advisor passes and the rest of the caller's usage must survive it.
+func TestBifrostResponsesResponseWithDefaultsLeavesUsageUntouched(t *testing.T) {
+	usage := &ResponsesResponseUsage{
+		Type:         Ptr("message"),
+		InputTokens:  10,
+		OutputTokens: 1,
+		Iterations:   []ResponsesResponseUsage{{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000}},
+	}
+	got := (&BifrostResponsesResponse{Usage: usage}).WithDefaults()
+
+	if got.Usage.Iterations != nil || got.Usage.Type != nil || got.Usage.InputTokensDetails == nil || got.Usage.OutputTokensDetails == nil {
+		t.Fatalf("wire usage = %+v, want iterations and type cleared and token details defaulted", got.Usage)
+	}
+	if got.Usage.InputTokens != 10 || got.Usage.OutputTokens != 1 {
+		t.Fatalf("wire usage tokens = %d/%d, want 10/1", got.Usage.InputTokens, got.Usage.OutputTokens)
+	}
+	if len(usage.Iterations) != 1 || usage.Type == nil || usage.InputTokensDetails != nil || usage.OutputTokensDetails != nil {
+		t.Fatalf("WithDefaults changed the caller's usage: %+v", usage)
+	}
+}
+
 // Cursor (and other Chat Completions clients) send function tools nested under
 // a "function" wrapper. The unmarshal must lift name/description/parameters so
 // providers that require a top-level name (e.g. Bedrock) don't reject the tool.

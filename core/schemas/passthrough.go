@@ -156,6 +156,8 @@ type BifrostPassthroughUsage struct {
 	Speed        *string             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	InferenceGeo *string             // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
 
+	Iterations []ResponsesResponseUsage // per-pass breakdown as sent (Anthropic usage.iterations[]); advisor passes are priced from it
+
 	// Image generation / edit / variation
 	ImageUsage   *ImageUsage
 	ImageSize    string // e.g. "1024x1024"

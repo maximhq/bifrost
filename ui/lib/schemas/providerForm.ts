@@ -79,6 +79,8 @@ const AzureKeyConfigSchema = z.object({
 	client_id: z.string().optional(),
 	client_secret: z.string().optional(),
 	tenant_id: z.string().optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 });
 
 // AWS → GCP Workload Identity Federation block; see VertexAWSWorkloadIdentityConfig.

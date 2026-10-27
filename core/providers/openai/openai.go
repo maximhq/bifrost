@@ -997,10 +997,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ChatParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return HandleOpenAIChatCompletionRequest(
@@ -1234,10 +1231,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, keyErr
 	}
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ChatParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	// Use shared streaming logic
@@ -1987,10 +1981,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ResponsesParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return HandleOpenAIResponsesRequest(
@@ -2184,10 +2175,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return nil, keyErr
 	}
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ResponsesParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	// Use shared streaming logic

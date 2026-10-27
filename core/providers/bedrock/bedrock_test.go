@@ -167,6 +167,9 @@ func TestBedrock(t *testing.T) {
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
 	roleArn := os.Getenv("AWS_BEDROCK_ROLE_ARN")
 	rerankModelARN := strings.TrimSpace(os.Getenv("AWS_BEDROCK_RERANK_MODEL_ARN"))
+	// Live Nova Sonic speech session (e.g. amazon.nova-2-sonic-v1:0); skipped unless set, since
+	// the model is only enabled in some regions and accounts.
+	novaSonicModel := strings.TrimSpace(os.Getenv("AWS_BEDROCK_NOVA_SONIC_MODEL"))
 
 	// Build extra params for batch and file operations
 	var batchExtraParams map[string]interface{}
@@ -194,6 +197,7 @@ func TestBedrock(t *testing.T) {
 		},
 		EmbeddingModel:           "cohere.embed-v4:0",
 		RerankModel:              rerankModelARN,
+		RealtimeModel:            novaSonicModel,
 		ReasoningModel:           "claude-4.5-sonnet",
 		PromptCachingModel:       "claude-4.5-sonnet",
 		ImageEditModel:           "amazon.nova-canvas-v1:0",
@@ -244,6 +248,7 @@ func TestBedrock(t *testing.T) {
 			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
 			Compaction:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
 			ToolSearch:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
+			Realtime:                   novaSonicModel != "",
 			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
 			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},

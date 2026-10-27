@@ -13,30 +13,32 @@ resolution-markers = [
 exclude-newer = "2026-09-09T00:00:00Z"
 
 [options.exclude-newer-package]
-aiohttp = "2026-10-06T00:00:00Z"
-anthropic = "2026-10-03T00:00:00Z"
-black = "2026-10-11T00:00:00Z"
-certifi = "2026-10-21T00:00:00Z"
-genai-prices = "2026-10-03T00:00:00Z"
-langgraph-sdk = "2026-10-07T00:00:00Z"
-multidict = "2026-10-07T00:00:00Z"
-opentelemetry-api = "2026-10-07T00:00:00Z"
-opentelemetry-semantic-conventions = "2026-10-07T00:00:00Z"
-pillow = "2026-10-17T00:00:00Z"
-pydantic-ai = "2026-10-03T00:00:00Z"
-pydantic-ai-slim = "2026-10-03T00:00:00Z"
-pydantic-evals = "2026-10-03T00:00:00Z"
-pydantic-graph = "2026-10-03T00:00:00Z"
-pyjwt = "2026-10-02T00:00:00Z"
-typesafe-sdk = "2026-09-23T00:00:00Z"
 urllib3 = "2026-10-02T00:00:00Z"
+pillow = "2026-10-17T00:00:00Z"
+pydantic-ai-slim = "2026-10-03T00:00:00Z"
+pydantic-graph = "2026-10-03T00:00:00Z"
+pydantic-ai = "2026-10-03T00:00:00Z"
+multidict = "2026-10-07T00:00:00Z"
+pyjwt = "2026-10-02T00:00:00Z"
+pydantic-evals = "2026-10-03T00:00:00Z"
+opentelemetry-api = "2026-10-07T00:00:00Z"
+aiohttp = "2026-10-06T00:00:00Z"
+opentelemetry-semantic-conventions = "2026-10-07T00:00:00Z"
 yarl = "2026-09-16T00:00:00Z"
+typesafe-sdk = "2026-09-23T00:00:00Z"
+langgraph-sdk = "2026-10-07T00:00:00Z"
+anthropic = "2026-10-03T00:00:00Z"
+genai-prices = "2026-10-03T00:00:00Z"
+certifi = "2026-10-21T00:00:00Z"
+black = "2026-10-11T00:00:00Z"
+filelock = "2026-10-19T00:00:00Z"
 
 [manifest]
 constraints = [
     { name = "aiohttp", specifier = "==3.14.4" },
     { name = "black", specifier = "==26.10.1" },
     { name = "certifi", specifier = "==2026.10.19" },
+    { name = "filelock", specifier = "==4.2.2" },
     { name = "langgraph-sdk", specifier = "==0.4.4" },
     { name = "multidict", specifier = "==6.9.1" },
     { name = "opentelemetry-api", specifier = "==1.45.1" },
@@ -1092,11 +1094,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.32.2"
+version = "4.2.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f6/57/3ba6e6cb097f85b855b00163d169f35365f44277df044dcf96d55b8f62a3/filelock-3.32.2.tar.gz", hash = "sha256:c33351e1f49cae33414acbc6d56784e6ecee82514ec90795da1161fc4836b5b8", size = 217172, upload-time = "2026-07-29T22:46:04.895Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/08/d8f81287742010e38daf3632380c8d80ede7b4df2716f8ca3d0a2b087d44/filelock-4.2.2.tar.gz", hash = "sha256:b29ff2ae9140bb17b3bc77c648dc4f010d9ac0955eccabff4f2b01dde859f787", size = 651339, upload-time = "2026-10-18T07:26:44.624Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/e8/72f8cef9fdfeffe06213fe8508039396ee48daa0e3259457ed766173bfd6/filelock-3.32.2-py3-none-any.whl", hash = "sha256:87dd94cf281e586d135fa51132b8e3d9a598b316e90377a288663c9321036c82", size = 98830, upload-time = "2026-07-29T22:46:03.52Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/53/35698fff350cb99c49ee01ae5cb1eb4408567792a286314ea984b53b5002/filelock-4.2.2-py3-none-any.whl", hash = "sha256:1851d2f14ca2901e98069d68333b33ad7409f56904e17b48cc0c32a0db8ed73a", size = 162415, upload-time = "2026-10-18T07:26:43.115Z" },
 ]
 
 [[package]]

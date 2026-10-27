@@ -1,6 +1,6 @@
 ---
 title: "Storage"
-description: "Configure Bifrost storage backends in Helm - SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS object storage for logs"
+description: "Configure Bifrost storage backends in Helm - SQLite, PostgreSQL (embedded and external), per-store overrides, and S3/GCS/Azure Blob object storage for logs"
 icon: "database"
 ---
 
@@ -518,7 +518,7 @@ With ClickHouse, the table **TTL** comes from `logs_store.retention_days`, which
 
 ## Object Storage for Logs
 
-Offload large request/response payloads from the database to S3 or GCS. The DB retains only lightweight index records; payloads are fetched on demand.
+Offload large request/response payloads from the database to S3, GCS, or Azure Blob Storage. The DB retains only lightweight index records; payloads are fetched on demand.
 
 ### AWS S3
 
@@ -638,6 +638,42 @@ bifrost:
       key: "service-account-json"
       envVar: "GCS_CREDENTIALS_JSON"
 ```
+
+### Azure Blob Storage
+
+Create the container first; `bucket` is its name. `endpoint` uses `DefaultAzureCredential` with managed identity, workload identity, or environment service-principal credentials, separate from Azure model-provider credentials.
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: "bifrost-logs"  # existing container
+      endpoint: "https://myaccount.blob.core.windows.net"
+      prefix: "bifrost"
+      compress: true
+```
+
+For connection-string authentication, omit `endpoint` and reference a Kubernetes Secret whose `connection-string` key contains the connection string:
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: "bifrost-logs"
+      existingSecret: "azure-storage-credentials"
+      prefix: "bifrost"
+      compress: true
+```
+
+Use only one of `endpoint`, `connectionString`, or `existingSecret`. Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete access. Blob index-tag permissions are not needed.
+
+For Parquet logs, set `format: parquet`; `compression` accepts `snappy` (default), `none`, `gzip`, or `zstd`. JSON accepts `none` or `gzip`. Explicit `compression` overrides `compress`.
+
+Restart after configuration or credential changes; identity tokens refresh automatically. For lifecycle rules and migration precautions, see [Azure operations](/enterprise/log-exports#azure-operations).
 
 ### MinIO (Self-Hosted)
 
