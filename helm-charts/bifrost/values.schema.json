@@ -6316,11 +6316,29 @@
                 },
                 "size": {
                   "type": "string"
+                },
+                "annotations": {
+                  "type": "object",
+                  "description": "Annotations for the bundled PostgreSQL PVC",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "volumeAttributesClassName": {
+                  "type": "string",
+                  "description": "VolumeAttributesClass for the bundled PostgreSQL PVC; requires cluster and CSI driver support"
                 }
               }
             },
             "resources": {
               "type": "object"
+            },
+            "extraArgs": {
+              "type": "array",
+              "description": "Arguments passed to the bundled PostgreSQL image entrypoint",
+              "items": {
+                "type": "string"
+              }
             }
           }
         },

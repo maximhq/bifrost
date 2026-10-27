@@ -2037,9 +2037,18 @@ postgresql:
     passwordKey: "password"
 
   primary:
+    # Arguments passed to the PostgreSQL image entrypoint, e.g.
+    # ["-c", "max_connections=200", "-c", "shared_buffers=256MB"].
+    # Changing these arguments restarts the bundled PostgreSQL pod.
+    extraArgs: []
+
     persistence:
       enabled: true
       size: 8Gi
+      # Optional PVC metadata for storage-controller integrations.
+      annotations: {}
+      # Requires VolumeAttributesClass support in Kubernetes and the CSI driver.
+      volumeAttributesClassName: ""
 
     resources:
       limits:
