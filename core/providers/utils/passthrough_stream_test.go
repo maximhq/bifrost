@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,11 +22,32 @@ func endsResponsesStream(event []byte) bool {
 	return strings.Contains(string(event), `"type":"response.completed"`)
 }
 
+// hangupBody makes a read that the cancellation close interrupts fail the way a live connection
+// does. fasthttp's body reports io.EOF there, which the stream loop would take as a clean end.
+type hangupBody struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (b *hangupBody) CloseWithError(err error) error {
+	b.closed.Store(true)
+	closeBodyStream(b.Reader, err)
+	return nil
+}
+
+func (b *hangupBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if err == io.EOF && b.closed.Load() {
+		err = net.ErrClosed
+	}
+	return n, err
+}
+
 // runParkedPassthroughStream serves responsesStreamBody as a chunked SSE response and then keeps
-// the connection open, like an upstream that parks after response.completed. The request is
-// cancelled after cancelAfter, the way Codex hangs up. It returns every post-hook call and
-// whether the stream channel closed within the deadline.
-func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, cancelAfter time.Duration) (finals []*schemas.BifrostPassthroughResponse, errs []*schemas.BifrostError, closed bool) {
+// the connection open, like an upstream that parks after response.completed. With hangUp set the
+// request is cancelled as soon as the client reads response.completed, the way Codex hangs up. It
+// returns every post-hook call and whether the stream channel closed within the deadline.
+func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, hangUp bool) (finals []*schemas.BifrostPassthroughResponse, errs []*schemas.BifrostError, closed bool) {
 	t.Helper()
 	hold := make(chan struct{})
 	t.Cleanup(func() { close(hold) })
@@ -52,7 +75,7 @@ func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, canc
 		return r, err
 	}
 
-	ch := StreamPassthrough(ctx, runner, nil, resp, resp.BodyStream(), PassthroughStreamParams{
+	ch := StreamPassthrough(ctx, runner, nil, resp, &hangupBody{Reader: resp.BodyStream()}, PassthroughStreamParams{
 		StatusCode: 200,
 		EndsStream: endsStream,
 		Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
@@ -63,10 +86,12 @@ func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, canc
 		},
 	})
 
-	time.AfterFunc(cancelAfter, cancel)
 	done := make(chan struct{})
 	go func() {
-		for range ch {
+		for chunk := range ch {
+			if hangUp && chunk.BifrostPassthroughResponse != nil && strings.Contains(string(chunk.BifrostPassthroughResponse.Body), "response.completed") {
+				cancel()
+			}
 		}
 		close(done)
 	}()
@@ -80,7 +105,7 @@ func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, canc
 
 func TestStreamPassthrough_EndsStreamAbandonsParkedUpstream(t *testing.T) {
 	// No client hangup: release must not drain a body the upstream never closes.
-	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, time.Hour)
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, false)
 	if !closed {
 		t.Fatal("stream channel did not close: release is draining the parked upstream body")
 	}
@@ -93,7 +118,7 @@ func TestStreamPassthrough_EndsStreamAbandonsParkedUpstream(t *testing.T) {
 }
 
 func TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup(t *testing.T) {
-	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, 200*time.Millisecond)
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, true)
 	if !closed {
 		t.Fatal("stream channel did not close")
 	}
