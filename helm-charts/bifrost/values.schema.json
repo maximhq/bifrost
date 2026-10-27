@@ -741,6 +741,11 @@
               "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
             },
+            "governChatGPTSignIn": {
+              "type": "boolean",
+              "description": "When true, Codex traffic signed in with ChatGPT through /chatgpt_passthrough is held to access profiles, model allowlists, budgets and rate limits. Off by default: the caller's ChatGPT plan pays for and limits that traffic, so Bifrost only logs it. Maps to client.govern_chatgpt_sign_in.",
+              "default": false
+            },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",

@@ -458,6 +458,9 @@ false
 {{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
 {{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "governChatGPTSignIn" }}
+{{- $_ := set $client "govern_chatgpt_sign_in" .Values.bifrost.client.governChatGPTSignIn }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
 {{- end }}

@@ -594,6 +594,49 @@ func TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence(t *testin
 	}
 }
 
+// govern_chatgpt_sign_in is copied only when sent, so a partial save from an API client can't silently ungovern ChatGPT sign-in traffic.
+func TestUpdateConfig_GovernChatGPTSignInPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.GovernChatGPTSignIn = true
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.GovernChatGPTSignIn
+	}
+	put := func(body string) {
+		t.Helper()
+		req := putConfigCtx(body)
+		h.updateConfig(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), string(req.Response.Body()))
+	}
+
+	put(`{"client_config":{"log_retention_days":8}}`)
+	assert.True(t, cfg.ClientConfig.GovernChatGPTSignIn, "an omitted field keeps the live value")
+	assert.True(t, stored(), "an omitted field keeps the stored value")
+	assert.True(t, cfg.ShouldGovernChatGPTSignIn())
+
+	put(`{"client_config":{"log_retention_days":8,"govern_chatgpt_sign_in":false}}`)
+	assert.False(t, cfg.ClientConfig.GovernChatGPTSignIn)
+	assert.False(t, stored())
+	assert.False(t, cfg.ShouldGovernChatGPTSignIn())
+
+	put(`{"client_config":{"log_retention_days":8,"govern_chatgpt_sign_in":true}}`)
+	assert.True(t, cfg.ClientConfig.GovernChatGPTSignIn)
+	assert.True(t, stored())
+
+	// null would decode as false and pass the presence check, silently ungoverning the route, so it is refused before anything changes.
+	refused := putConfigCtx(`{"client_config":{"log_retention_days":8,"govern_chatgpt_sign_in":null}}`)
+	h.updateConfig(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+	assert.True(t, cfg.ClientConfig.GovernChatGPTSignIn, "null left the live value unchanged")
+	assert.True(t, stored(), "null left the stored value unchanged")
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

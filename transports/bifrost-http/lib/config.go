@@ -97,6 +97,8 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
 	ShouldSendExtraFieldsInHeaders() bool
+	// ShouldGovernChatGPTSignIn returns whether Codex traffic signed in with ChatGPT is held to access profiles, budgets and rate limits
+	ShouldGovernChatGPTSignIn() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetCustomProviderPassthrough returns a custom provider's base provider type and whether it
@@ -7672,6 +7674,14 @@ func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	return c.ClientConfig != nil && c.ClientConfig.ExtraFieldsPlacement == configstoreTables.ExtraFieldsPlacementHeaders
+}
+
+// ShouldGovernChatGPTSignIn reports client.govern_chatgpt_sign_in. It reads under Mu, the lock config
+// saves and reloads hold while they copy the client config in; unset means off.
+func (c *Config) ShouldGovernChatGPTSignIn() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.GovernChatGPTSignIn
 }
 
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.

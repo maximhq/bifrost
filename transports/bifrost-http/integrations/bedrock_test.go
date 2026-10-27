@@ -32,6 +32,7 @@ type mockHandlerStore struct {
 	mcpHeaderCombinedAllowlist schemas.WhiteList
 	modelCatalog               *modelcatalog.ModelCatalog
 	customProviders            map[schemas.ModelProvider]mockCustomProvider
+	governChatGPTSignIn        bool
 }
 
 // mockCustomProvider is what GetCustomProviderPassthrough reports for one custom provider.
@@ -78,6 +79,10 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 
 func (m *mockHandlerStore) ShouldSendExtraFieldsInHeaders() bool {
 	return false
+}
+
+func (m *mockHandlerStore) ShouldGovernChatGPTSignIn() bool {
+	return m.governChatGPTSignIn
 }
 
 func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {

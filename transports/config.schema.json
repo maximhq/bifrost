@@ -358,6 +358,11 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "govern_chatgpt_sign_in": {
+          "type": "boolean",
+          "description": "When true, Codex traffic signed in with ChatGPT through /chatgpt_passthrough is held to access profiles, model allowlists, budgets and rate limits. Off by default: the caller's ChatGPT plan pays for and limits that traffic, so Bifrost only logs it. A virtual key that resolves to nothing and a user whose access profiles have all lapsed are refused either way.",
+          "default": false
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",

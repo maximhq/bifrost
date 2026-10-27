@@ -574,6 +574,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_topic_discovery_min_requests_column"}, run: migrationAddWarpTopicDiscoveryMinRequestsColumn},
 	{IDs: []string{"add_azure_use_speech_endpoints_column"}, run: migrationAddAzureUseSpeechEndpointsColumn},
 	{IDs: []string{"add_azure_use_voice_live_endpoints_column"}, run: migrationAddAzureUseVoiceLiveEndpointsColumn},
+	{IDs: []string{"add_client_config_govern_chatgpt_sign_in_column"}, run: migrationAddClientConfigGovernChatGPTSignInColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -713,6 +714,26 @@ func migrationAddWarpTopicDiscoveryMinRequestsColumn(ctx context.Context, db *go
 		Rollback: func(tx *gorm.DB) error {
 			// Reversible: without the column discovery runs at the default.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "topic_discovery_min_requests")
+		},
+	})
+}
+
+// migrationAddClientConfigGovernChatGPTSignInColumn adds govern_chatgpt_sign_in to config_client.
+// Existing rows default to false, leaving Codex ChatGPT sign-in traffic ungoverned.
+func migrationAddClientConfigGovernChatGPTSignInColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_govern_chatgpt_sign_in_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "govern_chatgpt_sign_in"); err != nil {
+				return fmt.Errorf("add govern_chatgpt_sign_in column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "govern_chatgpt_sign_in")
 		},
 	})
 }
