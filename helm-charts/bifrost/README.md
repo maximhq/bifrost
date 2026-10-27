@@ -911,6 +911,38 @@ See `values-examples/separate-logs-postgres.yaml` for a complete example.
 | `postgresql.external.existingSecret` | Name of an existing Kubernetes secret containing the password for the external instance                                                                                                                                                          | `""`               |
 | `postgresql.external.passwordKey`    | Key inside the external `existingSecret` that holds the password                                                                                                                                                                                 | `password`         |
 
+#### Tuning Bundled PostgreSQL
+
+Pass PostgreSQL server settings through `postgresql.primary.extraArgs`. These
+arguments go to the image entrypoint; with the default PostgreSQL image, `-c`
+sets a server parameter. Choose limits for your database resources and the total
+connection pools across all gateway replicas, including rolling-update surge.
+Changing these arguments restarts the single bundled PostgreSQL pod, which uses
+`Recreate` and temporarily interrupts database availability.
+
+```yaml
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs:
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+```
+
+Optional `postgresql.primary.persistence.annotations` (a map of string values)
+and `postgresql.primary.persistence.volumeAttributesClassName` (a class name)
+configure storage-controller integrations on the existing PVC. They do not
+change its name or the workload's claim reference. The defaults `{}` and `""`
+omit these fields. A VolumeAttributesClass must already exist, and both the
+cluster and CSI driver must support volume modification. Consult your driver's
+requirements before choosing a class or performance annotations; changing PVC
+metadata alone does not guarantee a backend volume modification succeeded.
+These options apply only to bundled PostgreSQL with persistence enabled.
+
 #### Using an Existing Secret for Hosted PostgreSQL
 
 If you manage secrets externally (e.g. with Vault Secrets Operator, External Secrets Operator, or Sealed Secrets), point `existingSecret` at the synced Kubernetes secret instead of providing a plaintext password:
