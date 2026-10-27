@@ -2312,6 +2312,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-mcp-fixture.log" "MCP test server log (sse_mcp on 3012; only if we started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-relay-fixture.log" "Relay upstream fixture log (relays-e2e rows, 127.0.0.1:8783; only if we started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
@@ -2532,6 +2533,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			kill $$(cat tmp/harness-mcp-fixture.pid) 2>/dev/null; \
 			rm -f tmp/harness-mcp-fixture.pid; \
 		fi; \
+		if [ -f tmp/harness-relay-fixture.pid ]; then \
+			kill $$(cat tmp/harness-relay-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-relay-fixture.pid; \
+		fi; \
 	}; \
 	preempt_viewer_port() { \
 		if [ -f tmp/harness-viewer.pid ]; then \
@@ -2594,6 +2599,20 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			else \
 				say "$(RED)MCP test server did not open 3012. See tmp/harness-mcp-fixture.log$(NC)"; \
 			fi; \
+		fi; \
+	fi; \
+	: "The profile's relays (harness-relay-*) point at a local upstream on 127.0.0.1:8783, so the"; \
+	: "relays-e2e rows never reach a third party. The gateway dials it per request, not at boot."; \
+	if nc -z 127.0.0.1 8783 2>/dev/null; then \
+		say "$(GREEN)Relay upstream fixture already listening on 8783$(NC)"; \
+	else \
+		$(USE_NODE); RELAY_UPSTREAM_FIXTURE_PORT=8783 node tests/e2e/api/runners/relay-upstream-fixture.mjs > tmp/harness-relay-fixture.log 2>&1 & \
+		echo $$! > tmp/harness-relay-fixture.pid; \
+		for i in $$(seq 1 40); do nc -z 127.0.0.1 8783 2>/dev/null && break; sleep 0.25; done; \
+		if nc -z 127.0.0.1 8783 2>/dev/null; then \
+			say "$(GREEN)Relay upstream fixture up on 8783 (log: tmp/harness-relay-fixture.log)$(NC)"; \
+		else \
+			say "$(RED)Relay upstream fixture did not open 8783; relays-e2e rows will fail. See tmp/harness-relay-fixture.log$(NC)"; \
 		fi; \
 	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
