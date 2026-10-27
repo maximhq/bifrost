@@ -13,6 +13,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -129,13 +130,11 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 				return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
 			}),
 		}
-		perUserTLSClient, tlsErr := m.buildTLSHTTPClient(config)
+		shared, tlsErr := m.perCallConnFor(config)
 		if tlsErr != nil {
 			return nil, fmt.Errorf("failed to build TLS HTTP client: %w", tlsErr)
 		}
-		if perUserTLSClient != nil {
-			perUserOpts = append(perUserOpts, transport.WithHTTPBasicClient(perUserTLSClient))
-		}
+		perUserOpts = append(perUserOpts, transport.WithHTTPBasicClient(shared.httpClient))
 		initRequest := mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -164,33 +163,58 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		// achieves that without extra bookkeeping to track which stage a
 		// given retry is rebuilding for.
 		var initResult *mcp.InitializeResult
+		// connect dials and handshakes once, replacing any client a previous try left behind. A pinned
+		// legacy revision skips the server/discover probe the upstream would refuse anyway.
+		connect := func(pinned string) error {
+			if tempClient != nil {
+				if closeErr := tempClient.Close(); closeErr != nil {
+					m.logger.Warn("%s Failed to close ephemeral client during retry: %v", MCPLogPrefix, closeErr)
+				}
+			}
+			httpTransport, err := transport.NewStreamableHTTP(targetURL, perUserOpts...)
+			if err != nil {
+				return fmt.Errorf("failed to create HTTP transport: %w", err)
+			}
+			request := initRequest
+			var clientOpts []client.ClientOption
+			if pinned != "" {
+				request.Params.ProtocolVersion = pinned
+				clientOpts = append(clientOpts, client.WithProtocolVersion(pinned))
+			}
+			tempClient = client.NewClient(httpTransport, clientOpts...)
+			if err := tempClient.Start(ctx); err != nil {
+				return err
+			}
+
+			// Bound the MCP `initialize` handshake — a stalled upstream (TCP
+			// open succeeds but JSON-RPC initialize never returns) would
+			// otherwise block the entire tool call until the parent request
+			// ctx fires. Mirrors the bound used for shared-connection
+			// Initialize in connectToMCPClient. Fresh per try.
+			initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
+			defer initCancel()
+			initResult, err = initializeClient(initCtx, tempClient, request)
+			if err != nil {
+				return err
+			}
+			shared.rememberVersion(targetURL, tempClient.ProtocolVersion())
+			return nil
+		}
 		if err := ExecuteWithRetry(
 			ctx,
 			func() error {
-				if tempClient != nil {
-					if closeErr := tempClient.Close(); closeErr != nil {
-						m.logger.Warn("%s Failed to close ephemeral client during retry: %v", MCPLogPrefix, closeErr)
-					}
+				pinned := shared.knownVersion(targetURL)
+				if mcp.IsModernProtocol(pinned) {
+					pinned = "" // no way to resume a modern revision without server/discover
 				}
-				httpTransport, err := transport.NewStreamableHTTP(targetURL, perUserOpts...)
-				if err != nil {
-					return fmt.Errorf("failed to create HTTP transport: %w", err)
-				}
-				tempClient = client.NewClient(httpTransport)
-				if err := tempClient.Start(ctx); err != nil {
+				err := connect(pinned)
+				if err == nil || pinned == "" {
 					return err
 				}
-
-				// Bound the MCP `initialize` handshake — a stalled upstream (TCP
-				// open succeeds but JSON-RPC initialize never returns) would
-				// otherwise block the entire tool call until the parent request
-				// ctx fires. Mirrors the bound used for shared-connection
-				// Initialize in connectToMCPClient. Fresh per attempt, not
-				// deferred to the end of the retry loop.
-				initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
-				defer initCancel()
-				initResult, err = initializeClient(initCtx, tempClient, initRequest)
-				return err
+				// The upstream refused the revision it negotiated before. Forget it and negotiate now,
+				// whatever the error, rather than leaving recovery to the retry classifier.
+				shared.rememberVersion(targetURL, "")
+				return connect("")
 			},
 			PerCallConnectRetryConfig,
 			m.logger,
@@ -255,6 +279,115 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		}
 	}
 	return tempClient, release, nil
+}
+
+// perCallConn is what one client's per-call connections share: an HTTP client, so calls reuse
+// pooled upstream connections, and the protocol version the upstream last negotiated.
+type perCallConn struct {
+	// The settings httpClient was built from; a client whose config changes them gets a new one.
+	insecureSkipVerify  bool
+	caCertPEM           string
+	requirePublicTarget bool
+
+	httpClient *http.Client
+	negotiated atomic.Pointer[negotiatedVersion]
+}
+
+// negotiatedVersion is the protocol version an upstream negotiated, and the URL it answered on.
+type negotiatedVersion struct {
+	url     string
+	version string
+}
+
+func newPerCallConn(config *schemas.MCPClientConfig, httpClient *http.Client) *perCallConn {
+	insecure, caPEM := perCallTLSSettings(config)
+	return &perCallConn{insecureSkipVerify: insecure, caCertPEM: caPEM, requirePublicTarget: config.RequirePublicTarget, httpClient: httpClient}
+}
+
+func perCallTLSSettings(config *schemas.MCPClientConfig) (insecure bool, caPEM string) {
+	if config.TLSConfig == nil {
+		return false, ""
+	}
+	return config.TLSConfig.InsecureSkipVerify, config.TLSConfig.CACertPEM.GetValue()
+}
+
+// builtFrom reports whether p's HTTP client matches the settings config asks for.
+func (p *perCallConn) builtFrom(config *schemas.MCPClientConfig) bool {
+	insecure, caPEM := perCallTLSSettings(config)
+	return p.insecureSkipVerify == insecure && p.caCertPEM == caPEM && p.requirePublicTarget == config.RequirePublicTarget
+}
+
+// knownVersion returns the version the upstream at url last negotiated, or "".
+func (p *perCallConn) knownVersion(url string) string {
+	if n := p.negotiated.Load(); n != nil && n.url == url {
+		return n.version
+	}
+	return ""
+}
+
+func (p *perCallConn) rememberVersion(url, version string) {
+	if version == "" {
+		p.negotiated.Store(nil)
+		return
+	}
+	if n := p.negotiated.Load(); n != nil && n.url == url && n.version == version {
+		return
+	}
+	p.negotiated.Store(&negotiatedVersion{url: url, version: version})
+}
+
+// perCallConnFor returns the state config's per-call connections share, building it on first use
+// or when the config's TLS settings changed. The previous HTTP client's idle connections are closed.
+func (m *MCPManager) perCallConnFor(config *schemas.MCPClientConfig) (*perCallConn, error) {
+	if v, ok := m.perCallConns.Load(config.ID); ok && v.(*perCallConn).builtFrom(config) {
+		return v.(*perCallConn), nil
+	}
+	shared, err := m.buildPerCallConn(config)
+	if err != nil {
+		return nil, err
+	}
+	// A call holding a snapshot of a client RemoveClient has since dropped must not cache it again.
+	// Checked after the store, without perCallConnsMu: RemoveClient holds m.mu while it drops.
+	m.mu.RLock()
+	_, live := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	if !live && m.perCallConns.CompareAndDelete(config.ID, shared) {
+		shared.httpClient.CloseIdleConnections()
+	}
+	return shared, nil
+}
+
+// buildPerCallConn builds and caches config's per-call state, unless a concurrent call already did.
+func (m *MCPManager) buildPerCallConn(config *schemas.MCPClientConfig) (*perCallConn, error) {
+	m.perCallConnsMu.Lock()
+	defer m.perCallConnsMu.Unlock()
+	if v, ok := m.perCallConns.Load(config.ID); ok && v.(*perCallConn).builtFrom(config) {
+		return v.(*perCallConn), nil
+	}
+	httpClient, err := m.buildTLSHTTPClient(config)
+	if err != nil {
+		return nil, err
+	}
+	shared := newPerCallConn(config, httpClient)
+	if old, loaded := m.perCallConns.Swap(config.ID, shared); loaded {
+		old.(*perCallConn).httpClient.CloseIdleConnections()
+	}
+	return shared, nil
+}
+
+// notePerCallVersion records a version negotiated outside a per-call connection, for a client that
+// already has per-call state.
+func (m *MCPManager) notePerCallVersion(clientID, url, version string) {
+	if v, ok := m.perCallConns.Load(clientID); ok {
+		v.(*perCallConn).rememberVersion(url, version)
+	}
+}
+
+// dropPerCallConn forgets a removed client's per-call state and closes its idle connections.
+func (m *MCPManager) dropPerCallConn(clientID string) {
+	if old, loaded := m.perCallConns.LoadAndDelete(clientID); loaded {
+		old.(*perCallConn).httpClient.CloseIdleConnections()
+	}
 }
 
 // GetClients returns all MCP clients managed by the manager.
@@ -1110,6 +1243,8 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 		if initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
 		}
+		// This handshake is unpinned, so it is where an upstream that moved to a newer revision is noticed.
+		m.notePerCallVersion(config.ID, finalURL, tempClient.ProtocolVersion())
 
 		resp := &schemas.BifrostMCPConnectResponse{
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
@@ -1286,6 +1421,8 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 		if initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
 		}
+		// This handshake is unpinned, so it is where an upstream that moved to a newer revision is noticed.
+		m.notePerCallVersion(config.ID, finalURL, tempClient.ProtocolVersion())
 
 		resp := &schemas.BifrostMCPConnectResponse{
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
@@ -1489,6 +1626,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	client.ToolMap = make(map[string]schemas.ChatTool)
 
 	delete(m.clientMap, id)
+	m.dropPerCallConn(id)
 	return nil
 }
 

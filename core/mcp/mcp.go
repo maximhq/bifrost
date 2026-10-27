@@ -50,6 +50,8 @@ type MCPManager struct {
 	bootClientConfigs      []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
 	connectOnce            sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
 	inProcessServerFactory schemas.InProcessServerFactory     // Builds synthesized servers (openapi clients); nil = unsupported
+	perCallConns           sync.Map                           // Client ID → *perCallConn, shared by that client's per-call connections
+	perCallConnsMu         sync.Mutex                         // Serializes building a perCallConn on a miss
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
