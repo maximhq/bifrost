@@ -1769,9 +1769,14 @@ const ADM66 = folder("ADM-66 per_user_headers create succeeds", "Setup: admin cr
   ...alphaRequiresKey("ADM-66"),
   createExpect("ADM-66", "create with X-Key \"good\"", HEADERS_BASE("adm66-h", "adm66_h", { per_user_header_keys: ["X-Key"], user_headers: { "X-Key": "good" } }),
     [A.status(200), A.jsonMessage("MCP client registered. 2 tools discovered. Each user will submit their own headers on first tool use.")]),
-  getClient("ADM-66", "adm66-h", "keys [\"x-key\"], healthy, 2 tools, no credential", [clientField("config.per_user_header_keys", ["x-key"]), clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), A.custom("there is no credential", [
-    "pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');",
-  ])]),
+  getClient("ADM-66", "adm66-h", "keys [\"x-key\"], healthy, 2 tools, an active headers credential for x-key", [clientField("config.per_user_header_keys", ["x-key"]), clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]),
+    A.custom("credential kind \"headers\", status \"active\", header_keys [\"x-key\"], and no value", [
+      "var cr = pm.response.json().clients[0].credential || {};",
+      "pm.expect(cr.kind, 'body: ' + pm.response.text()).to.equal('headers');",
+      "pm.expect(cr.status).to.equal('active');",
+      "pm.expect(cr.header_keys).to.eql(['x-key']);",
+      "pm.expect(JSON.stringify(cr)).to.not.include('good');",
+    ])]),
   deleteClient("ADM-66", "adm66-h"),
 ]);
 
@@ -1982,7 +1987,6 @@ const headersFlow = ({ saveAs, sameAs, full }) => A.custom(`mcp_auth_required ki
   ...(sameAs ? [`pm.expect(m[1]).to.equal(pm.collectionVariables.get(${lit(sameAs)}));`] : []),
   ...(full ? ["pm.expect(r.required_header_keys).to.eql(['x-api-key']);", "pm.expect(r.admin_header_keys).to.eql(['X-Org']);"] : []),
 ]);
-const noCredential = () => A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');"]);
 
 const AUTH41 = folder("AUTH-41 per_user_headers create", `Setup: ${KEY_A_TEXT}; per_user_headers clients on alpha with tools_to_execute ["*"].`, [
   ...alphaKeyA("AUTH-41"),
@@ -2030,7 +2034,11 @@ const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-
   createClient("AUTH-45", perUser("auth45-c", "auth45_c", PER_USER_KEY_A), "setup: create the per_user_headers client"),
   createClient("AUTH-45", httpClient("auth45-h", "auth45_h", "alpha", { auth_type: "headers", headers: { "X-Api-Key": "key-a" } }), "setup: create the headers client"),
   createClient("AUTH-45", { client_id: "auth45-o", name: "auth45_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI per_user_headers client"),
-  getClient("AUTH-45", "auth45-c", "control: no credential before verify-headers", [noCredential()]),
+  getClient("AUTH-45", "auth45-c", "control: the create already kept an active headers credential", [A.custom("credential kind \"headers\", status \"active\"", [
+    "var cr = pm.response.json().clients[0].credential || {};",
+    "pm.expect(cr.kind, 'body: ' + pm.response.text()).to.equal('headers');",
+    "pm.expect(cr.status).to.equal('active');",
+  ])], { extraTests: ["pm.collectionVariables.set('auth45_cred_at', (pm.response.json().clients[0].credential || {}).updated_at || '');"] }),
   verifyHeaders("AUTH-45", "verify-headers on the headers client", "auth45-h", { "x-api-key": "key-a" }, [A.status(400)]),
   verifyHeaders("AUTH-45", "verify-headers on the OpenAPI client", "auth45-o", { "x-api-key": "key-a" }, [A.status(400), A.msgContains("verify-headers does not apply to openapi clients")]),
   verifyHeaders("AUTH-45", "verify-headers with an empty x-api-key", "auth45-c", { "x-api-key": "" }, [A.status(400)]),
@@ -2042,6 +2050,10 @@ const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-
     "pm.expect(cr.status).to.equal('active');",
     "pm.expect(cr.header_keys).to.eql(['x-api-key']);",
     "pm.expect(JSON.stringify(cr)).to.not.include('key-a');",
+  ]), A.custom("verify-headers rewrote it: updated_at is later than after the create", [
+    "var before = pm.collectionVariables.get('auth45_cred_at');",
+    "var after = pm.response.json().clients[0].credential.updated_at;",
+    "pm.expect(Date.parse(after), 'before ' + before + ', after ' + after).to.be.above(Date.parse(before));",
   ])]),
   deleteClient("AUTH-45", "auth45-c"),
   deleteClient("AUTH-45", "auth45-h"),
@@ -6331,6 +6343,19 @@ const ADM86 = folder("ADM-86 Verifying a pending client starts its tool sync", `
   restoreConfig("ADM-86"),
 ]);
 
+// AUTH-46: a per_user_headers client created over the API keeps the admin's sample values as its admin credential, which
+// periodic discovery uses to pick up a tool the server adds later.
+const AUTH46_TOOLS = ["add_tool", "echo_tool", "extra_tool"];
+const AUTH46 = folder("AUTH-46 Periodic discovery of an API-created per_user_headers client", "Setup: admin credentials; fleet server auth46 (echo_tool, add_tool) requires x-key: good; a per_user_headers client on it, created over the API with per_user_header_keys [\"x-key\"], sample x-key good, tools_to_execute [\"*\"] and tool_sync_interval \"5s\"; auth46 then adds extra_tool.", [
+  ...freshServer("AUTH-46", "auth46", ["echo_tool", "add_tool"]),
+  mockAuth("AUTH-46", "auth46", "setup: auth46 requires x-key: good", { require_headers: { "x-key": "good" } }),
+  createClient("AUTH-46", HEADERS_BASE("auth46-h", "auth46_h", { connection_string: `${CHAOS}/s/auth46/mcp`, per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" }, tools_to_execute: ["*"], tool_sync_interval: "5s" }), "setup: create the per_user_headers client, syncing every 5s"),
+  getClient("AUTH-46", "auth46-h", "after create: healthy with two tools, syncing every 5s, with an active headers credential", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), SYNC_5S, credKind("headers"), credStatus("active")]),
+  request("AUTH-46", "auth46 adds extra_tool", "POST", "/control/auth46/tools/add", { base: CHAOS, noAuth: true, body: { tool: { name: "extra_tool" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('auth46_t0', Date.now());"] }),
+  getClient("AUTH-46", "auth46-h", "the client lists extra_tool within 20s and stays healthy", [toolNamesAre(AUTH46_TOOLS), seenWithin("auth46-h", 20), clientState("healthy")], { pre: pollClientTools("auth46-h", 3, 20, "auth46_t0") }),
+  deleteClient("AUTH-46", "auth46-h"),
+]);
+
 // ================================================================ per-user header credentials, flows and the sessions list
 
 const HDR_FLOWS = "/api/mcp/per-user-headers/flows/";
@@ -7358,7 +7383,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48, AUTH49, AUTH50]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),

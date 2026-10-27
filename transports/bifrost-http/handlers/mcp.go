@@ -2493,9 +2493,11 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	// Handle per-user headers: admin declares the required key names (schema)
 	// AND supplies a sample set of values inline so the server can verify
 	// upstream + discover tools in a single round-trip. Mirrors the per-user
-	// OAuth flow exactly — the sample values are used once for verification
-	// and discarded (never persisted); each end-user submits their own values
-	// later via the inline-401 flow.
+	// OAuth flow: the sample values verify the upstream and are then kept as
+	// the client's admin credential, the same one verify-headers keeps, so
+	// periodic tool discovery can connect with them. They are never used for a
+	// caller's tool call; each end-user submits their own values later via the
+	// inline-401 flow.
 	if req.AuthType == string(schemas.MCPAuthTypePerUserHeaders) && !isOpenAPIClient {
 		if len(req.PerUserHeaderKeys) == 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys must be a non-empty list when auth_type is 'per_user_headers'")
@@ -2596,6 +2598,23 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
 			return
+		}
+		// Keep the verified sample values as the client's admin credential
+		// before the client is registered, so its connection checker finds the
+		// credential on its first periodic discovery. A failed registration
+		// below deletes the stored client, and that delete removes its header
+		// credentials with it. Best-effort, as in verify-headers: the client is
+		// verified and serves callers either way, and verify-headers can store
+		// the credential later.
+		if h.store.MCPHeadersProvider != nil {
+			if err := h.store.MCPHeadersProvider.UpsertCredential(ctx, &schemas.MCPHeadersUserCredential{
+				MCPClientID: schemasConfig.ID,
+				AuthMode:    schemas.MCPAuthModeAdmin,
+				Headers:     canonUserHeaders,
+				Status:      schemas.MCPHeadersUserCredentialStatusActive,
+			}); err != nil {
+				logger.Warn(fmt.Sprintf("failed to retain admin header credential for MCP client %s: %v", schemasConfig.ID, err))
+			}
 		}
 		if err := h.mcpManager.AddMCPClient(bifrostCtx, schemasConfig); err != nil {
 			if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, schemasConfig.ID); delErr != nil {
