@@ -688,6 +688,46 @@ func settle(t *testing.T) {
 	}
 }
 
+// BenchmarkRequestTimeoutUnset measures what x-bf-request-timeout adds to a
+// request that does not declare one, the default: the work ChatCompletionRequest
+// and handleRequest/handleStreamRequest do (resolve, arm, stop, stream wrap).
+// Expected to allocate nothing.
+func BenchmarkRequestTimeoutUnset(b *testing.B) {
+	root := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	caller := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ch := make(chan *schemas.BifrostStreamChunk)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, in := range []*schemas.BifrostContext{caller, root} {
+			ctx, owned := resolveRequestContext(in, root)
+			if owned != nil {
+				b.Fatal("derived a context with no timeout declared")
+			}
+			stop, armed := armRequestTimeout(ctx)
+			if wrapStreamForRequestTimeout(ctx, ch, stop, armed) != ch {
+				b.Fatal("wrapped a stream with no timeout declared")
+			}
+			stop()
+		}
+	}
+}
+
+// BenchmarkRequestTimeoutSet measures the cost when a caller declares a
+// timeout: one outer arm plus a nested per-turn arm, as an MCP agent call does.
+func BenchmarkRequestTimeoutSet(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Minute)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stopOuter, _ := armRequestTimeout(ctx)
+		stopInner, _ := armRequestTimeout(ctx)
+		stopInner()
+		stopOuter()
+	}
+}
+
 // atomicBool is a minimal race-safe bool for the drain-ordering assertion
 // above (the proxy goroutine and the test goroutine both touch it).
 type atomicBool struct {
