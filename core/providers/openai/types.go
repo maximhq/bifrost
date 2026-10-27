@@ -1657,6 +1657,24 @@ type OpenAIModel struct {
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
+
+	// Metadata fields emitted by many OpenAI-compatible upstreams
+	// (OpenRouter, Kimi, Together, ...) in their list-models responses.
+	// Decoded in both the envelope and top-level-array shapes and carried
+	// through to Bifrost's catalog entries; nil for providers that omit them.
+	ContextLength   *int                    `json:"context_length,omitempty"`
+	MaxInputTokens  *int                    `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                    `json:"max_output_tokens,omitempty"`
+	DisplayName     *string                 `json:"display_name,omitempty"`
+	Reasoning       *schemas.ModelReasoning `json:"reasoning,omitempty"`
+	Modalities      *OpenAIModelModalities  `json:"modalities,omitempty"`
+}
+
+// OpenAIModelModalities mirrors the `modalities` object emitted by some
+// OpenAI-compatible upstreams (e.g. Kimi) in their list-models responses.
+type OpenAIModelModalities struct {
+	Input  []string `json:"input,omitempty"`
+	Output []string `json:"output,omitempty"`
 }
 
 // OpenAIListModelsResponse represents an OpenAI list models response
@@ -1671,26 +1689,34 @@ func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
 
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
-		return sonic.Unmarshal(trimmed, (*envelope)(response))
-	}
-
-	var models []struct {
-		OpenAIModel
-		Organization  string `json:"organization"`
-		ContextLength *int   `json:"context_length,omitempty"`
-	}
-	if err := sonic.Unmarshal(trimmed, &models); err != nil {
-		return err
-	}
-
-	response.Data = make([]OpenAIModel, len(models))
-	for i, model := range models {
-		response.Data[i] = model.OpenAIModel
-		if response.Data[i].OwnedBy == "" {
-			response.Data[i].OwnedBy = model.Organization
+		if err := sonic.Unmarshal(trimmed, (*envelope)(response)); err != nil {
+			return err
 		}
+	} else {
+		// Top-level-array upstreams (Together and friends) use `organization`
+		// instead of `owned_by`; both context aliases decode onto OpenAIModel.
+		var models []struct {
+			OpenAIModel
+			Organization string `json:"organization"`
+		}
+		if err := sonic.Unmarshal(trimmed, &models); err != nil {
+			return err
+		}
+
+		response.Data = make([]OpenAIModel, len(models))
+		for i, model := range models {
+			response.Data[i] = model.OpenAIModel
+			if response.Data[i].OwnedBy == "" {
+				response.Data[i].OwnedBy = model.Organization
+			}
+		}
+	}
+
+	// Reconcile the context-window aliases so both response shapes agree:
+	// Groq-style `context_window` wins, falling back to `context_length`.
+	for i := range response.Data {
 		if response.Data[i].ContextWindow == nil {
-			response.Data[i].ContextWindow = model.ContextLength
+			response.Data[i].ContextWindow = response.Data[i].ContextLength
 		}
 	}
 	return nil

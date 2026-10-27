@@ -34,10 +34,20 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	for _, model := range response.Data {
 		for _, result := range pipeline.FilterModel(model.ID) {
 			entry := schemas.Model{
-				ID:            string(providerKey) + "/" + result.ResolvedID,
-				Created:       model.Created,
-				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
+				ID:              string(providerKey) + "/" + result.ResolvedID,
+				Created:         model.Created,
+				OwnedBy:         schemas.Ptr(model.OwnedBy),
+				ContextLength:   model.ContextWindow,
+				MaxInputTokens:  model.MaxInputTokens,
+				MaxOutputTokens: model.MaxOutputTokens,
+				DisplayName:     model.DisplayName,
+				Reasoning:       model.Reasoning,
+			}
+			if model.Modalities != nil {
+				entry.Architecture = &schemas.Architecture{
+					InputModalities:  model.Modalities.Input,
+					OutputModalities: model.Modalities.Output,
+				}
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -59,15 +69,34 @@ func (model *OpenAIModel) ToBifrostModelRetrieveResponse(providerKey schemas.Mod
 		return nil
 	}
 
-	return &schemas.BifrostModelRetrieveResponse{
+	// The list path reconciles context aliases at unmarshal time; the retrieve
+	// path decodes a bare OpenAIModel, so reconcile here: `context_window`
+	// (Groq-style) wins, falling back to `context_length`.
+	contextLength := model.ContextWindow
+	if contextLength == nil {
+		contextLength = model.ContextLength
+	}
+
+	entry := &schemas.BifrostModelRetrieveResponse{
 		Model: schemas.Model{
-			ID:            string(providerKey) + "/" + model.ID,
-			Created:       model.Created,
-			OwnedBy:       schemas.Ptr(model.OwnedBy),
-			ContextLength: model.ContextWindow,
-			ShutdownDate:  model.ShutdownDate,
+			ID:              string(providerKey) + "/" + model.ID,
+			Created:         model.Created,
+			OwnedBy:         schemas.Ptr(model.OwnedBy),
+			ContextLength:   contextLength,
+			MaxInputTokens:  model.MaxInputTokens,
+			MaxOutputTokens: model.MaxOutputTokens,
+			DisplayName:     model.DisplayName,
+			Reasoning:       model.Reasoning,
+			ShutdownDate:    model.ShutdownDate,
 		},
 	}
+	if model.Modalities != nil {
+		entry.Architecture = &schemas.Architecture{
+			InputModalities:  model.Modalities.Input,
+			OutputModalities: model.Modalities.Output,
+		}
+	}
+	return entry
 }
 
 // ToOpenAIModelRetrieveResponse converts a Bifrost model retrieve response to an OpenAI model object.
