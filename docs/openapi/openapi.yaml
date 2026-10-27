@@ -813,6 +813,8 @@ paths:
     $ref: "./paths/management/providers.yaml#/models-parameters"
   /api/models/base:
     $ref: "./paths/management/providers.yaml#/models-base"
+  /api/models/newest:
+    $ref: "./paths/management/providers.yaml#/models-newest"
 
   # Plugins
   /api/plugins:

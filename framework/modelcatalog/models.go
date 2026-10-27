@@ -32,13 +32,14 @@ var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
 
 // GetModelCreatedTimes returns the creation time, in Unix seconds, that the
 // provider last reported for each of its listed models, taken from the cached
-// list-models responses. It never calls the provider. Models the provider gave
-// no time for are absent. The returned map is owned by the caller.
-func (mc *ModelCatalog) GetModelCreatedTimes(provider schemas.ModelProvider) map[string]int64 {
+// list-models responses in the given mode, so times line up with the listing
+// read in that mode. It never calls the provider. Models the provider gave no
+// time for are absent. The returned map is owned by the caller.
+func (mc *ModelCatalog) GetModelCreatedTimes(provider schemas.ModelProvider, unfiltered bool) map[string]int64 {
 	if mc == nil || mc.live == nil {
 		return map[string]int64{}
 	}
-	return mc.live.CreatedForProvider(provider, false)
+	return mc.live.CreatedForProvider(provider, unfiltered)
 }
 
 // GetModelsForProvider returns the effective allowed model set for the

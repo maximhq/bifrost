@@ -16,7 +16,6 @@
 package live
 
 import (
-	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -35,22 +34,8 @@ type Key struct {
 
 // Entry is a single cached response.
 type Entry struct {
-	Models []string
-	// Created maps a model to the creation time the provider reported for it,
-	// in Unix seconds. Models the provider gave no time for are absent.
-	Created map[string]int64
-}
-
-// clone returns a copy that shares no slice or map with e.
-func (e Entry) clone() Entry {
-	out := Entry{Models: slices.Clone(e.Models)}
-	if out.Models == nil {
-		out.Models = []string{}
-	}
-	if len(e.Created) > 0 {
-		out.Created = maps.Clone(e.Created)
-	}
-	return out
+	Models  []string
+	Created map[string]int64 // provider-reported creation time in Unix seconds; untimed models are absent
 }
 
 type Store struct {
@@ -88,16 +73,14 @@ func New(logger schemas.Logger) *Store {
 // Upsert stores a successful fetch unconditionally. Use it for writes with no
 // in-flight window to lose a race in (seeding, tests); anything that fetches
 // from an upstream first should go through Generation + UpsertIfCurrent.
-func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
-	s.UpsertEntry(provider, keyID, unfiltered, Entry{Models: models})
-}
-
-// UpsertEntry is Upsert for a full entry, including provider creation times.
-func (s *Store) UpsertEntry(provider schemas.ModelProvider, keyID string, unfiltered bool, entry Entry) {
-	entry = entry.clone()
+// models is copied; the store takes ownership of created, so callers must not
+// modify it after the call.
+func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, created map[string]int64) {
+	cp := make([]string, len(models))
+	copy(cp, models)
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
-	s.entries[k] = entry
+	s.entries[k] = Entry{Models: cp, Created: created}
 	s.mu.Unlock()
 	s.writeGen.Add(1)
 }
@@ -116,7 +99,8 @@ func (s *Store) Generation(provider schemas.ModelProvider) uint64 {
 }
 
 // UpsertIfCurrent stores a fetch only if nothing invalidated the provider
-// since gen was read, and reports whether it wrote.
+// since gen was read, and reports whether it wrote. Like Upsert, it copies
+// models and takes ownership of created.
 //
 // This is what keeps a deleted or disabled key's models from being resurrected
 // by a fetch that outlived it. The background refresher works from a key
@@ -124,21 +108,16 @@ func (s *Store) Generation(provider schemas.ModelProvider) uint64 {
 // may be gone. Its Invalidate already ran, and no later pass re-fetches or
 // prunes a key that is no longer configured, so an unguarded commit would
 // advertise that key's models until the process restarted.
-func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, gen uint64) bool {
-	return s.UpsertEntryIfCurrent(provider, keyID, unfiltered, Entry{Models: models}, gen)
-}
-
-// UpsertEntryIfCurrent is UpsertIfCurrent for a full entry, including
-// provider creation times.
-func (s *Store) UpsertEntryIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, entry Entry, gen uint64) bool {
-	entry = entry.clone()
+func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, created map[string]int64, gen uint64) bool {
+	cp := make([]string, len(models))
+	copy(cp, models)
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gen[provider] != gen {
 		return false
 	}
-	s.entries[k] = entry
+	s.entries[k] = Entry{Models: cp, Created: created}
 	s.writeGen.Add(1)
 	return true
 }
@@ -229,7 +208,9 @@ func (s *Store) Snapshot() map[Key]Entry {
 	defer s.mu.RUnlock()
 	out := make(map[Key]Entry, len(s.entries))
 	for k, e := range s.entries {
-		out[k] = e.clone()
+		cp := make([]string, len(e.Models))
+		copy(cp, e.Models)
+		out[k] = Entry{Models: cp}
 	}
 	return out
 }
