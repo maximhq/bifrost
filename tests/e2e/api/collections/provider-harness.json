@@ -284730,6 +284730,71 @@
           }
         }
       ]
+    },
+    {
+      "name": "281. Custom OpenAI budget-only reasoning uses base bounds (custom-profile-budget)",
+      "description": "Requires the synced OpenAI gpt-5-mini capability row max_output_tokens=128000. The existing openai_pc_auto profile has no provider-matching row. A 4096-token reasoning budget maps to low under the OpenAI bound, but the opaque-profile miss previously used 4096 and mapped to high. Omitting both max_tokens and max_completion_tokens is essential: either explicit bound bypasses the catalog bound and masks this bug. One neutral unary request only. No completion cap is supplied, so paid execution requires an operator decision; this case is structurally qualified only and has not been executed against a provider. Run with COMPAT=off; exact 200 and raw outbound field assertions have no status skips.",
+      "item": [
+        {
+          "name": "openai gpt-5-mini /v1/chat/completions budget-only no output cap - custom-profile-budget",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var response = pm.response.json();",
+                  "pm.test('chat completion returned', function () { pm.expect(response.choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "var rr = (response.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('budget normalization uses configured OpenAI capability bound', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('gpt-5-mini');",
+                  "  pm.expect(rr.reasoning_effort, JSON.stringify(rr)).to.eql('low');",
+                  "  pm.expect(rr.reasoning_max_tokens).to.eql(undefined);",
+                  "  pm.expect(rr.reasoning).to.eql(undefined);",
+                  "  pm.expect(rr.max_completion_tokens).to.eql(undefined);",
+                  "  pm.expect(rr.max_tokens).to.eql(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"reasoning_max_tokens\": 4096,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

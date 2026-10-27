@@ -342,7 +342,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
 			// Estimate effort from max_tokens
 			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, req.Model, DefaultCompletionMaxTokens)
+			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(caps.Provider(), caps.Model(), DefaultCompletionMaxTokens)
 			if req.ChatParameters.MaxCompletionTokens != nil {
 				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
 			}

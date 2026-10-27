@@ -709,6 +709,96 @@ func TestToOpenAIChatRequest_CustomProfileSampling(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_CustomProfileBudgetUsesBaseBound checks budget conversion
+// against the configured host while keeping opaque routing identities intact.
+func TestToOpenAIChatRequest_CustomProfileBudgetUsesBaseBound(t *testing.T) {
+	const model = "opaque-budget-model"
+	const profile schemas.ModelProvider = "opaque-budget-profile"
+	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure} {
+		for _, control := range []string{"budget only", "explicit bound", "explicit effort"} {
+			t.Run(string(base)+"/"+control, func(t *testing.T) {
+				schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, name string) *schemas.ModelCapabilities {
+					if provider == base && name == model {
+						return &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(32000), ReasoningEffortLevels: []string{"low", "medium", "high"}}
+					}
+					return nil
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+				convert := func(provider schemas.ModelProvider) *OpenAIChatRequest {
+					params := &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(4096)}}
+					if control == "explicit bound" {
+						params.MaxCompletionTokens = schemas.Ptr(32000)
+					}
+					if control == "explicit effort" {
+						params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr("high")}
+					}
+					before, err := json.Marshal(params)
+					require.NoError(t, err)
+					ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+					ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+					req := &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: params, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}}
+					out := ToOpenAIChatRequest(ctx, req)
+					require.NotNil(t, out)
+					require.Equal(t, provider, out.Provider)
+					require.Equal(t, model, out.Model)
+					after, err := json.Marshal(params)
+					require.NoError(t, err)
+					require.Equal(t, before, after, "caller-owned reasoning changed")
+					return out
+				}
+				native := convert(base)
+				alias := convert(profile)
+				require.NotNil(t, native.Reasoning)
+				require.NotNil(t, alias.Reasoning)
+				want := "low"
+				if control == "explicit effort" {
+					want = "high"
+				}
+				require.Equal(t, want, *native.Reasoning.Effort, "native control")
+				t.Logf("base=%s case=%s native=%s alias=%s", base, control, *native.Reasoning.Effort, *alias.Reasoning.Effort)
+				require.Equal(t, *native.Reasoning.Effort, *alias.Reasoning.Effort, "configured-base alias must retain native budget semantics")
+			})
+		}
+	}
+}
+
+// BenchmarkToOpenAIChatRequest_CustomProfileBudgetBound measures budget-only
+// normalization for native hosts and opaque profiles without retained state.
+func BenchmarkToOpenAIChatRequest_CustomProfileBudgetBound(b *testing.B) {
+	const model = "opaque-budget-model"
+	const profile schemas.ModelProvider = "opaque-budget-profile"
+	record := &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(32000), ReasoningEffortLevels: []string{"low", "medium", "high"}}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, name string) *schemas.ModelCapabilities {
+		if (provider == schemas.OpenAI || provider == schemas.Azure) && name == model {
+			return record
+		}
+		return nil
+	})
+	b.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure} {
+		for _, custom := range []bool{false, true} {
+			provider, name := base, string(base)+"/native"
+			if custom {
+				provider, name = profile, string(base)+"/alias"
+			}
+			b.Run(name, func(b *testing.B) {
+				ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+				req := &schemas.BifrostChatRequest{Provider: provider, Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}, Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(4096)}}}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for b.Loop() {
+					if ToOpenAIChatRequest(ctx, req) == nil {
+						b.Fatal("missing request")
+					}
+				}
+			})
+		}
+	}
+}
+
 // The worker marks an alias of a standard OpenAI base as non-custom. Exercise
 // that real context through serialization and an owned provider HTTP boundary.
 func TestHandleOpenAIChatCompletionRequest_CustomProfileSampling(t *testing.T) {
