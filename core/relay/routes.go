@@ -81,6 +81,22 @@ func (route *compiledRoute) matchHeaders(headers, operator map[string]string) bo
 // headerValue is the value a header will carry upstream: the operator's extra header when one is
 // configured, since it replaces the caller's copy, else the caller's. The transport lower-cases
 // caller names; a Go SDK caller may not, so a miss falls back to a case-insensitive scan.
+// matchedHeaders returns, by name, the value that selected the route for each header the route
+// matches on: the operator's when the relay sets that header, else the caller's. nil for a route
+// without header matchers.
+func (route *compiledRoute) matchedHeaders(headers, operator map[string]string) map[string]string {
+	if len(route.headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(route.headers))
+	for _, h := range route.headers {
+		if value, ok := headerValue(h.name, headers, operator); ok {
+			out[h.name] = value
+		}
+	}
+	return out
+}
+
 func headerValue(name string, headers, operator map[string]string) (string, bool) {
 	if v, ok := operator[name]; ok {
 		return v, true

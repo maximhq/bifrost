@@ -109,8 +109,7 @@ export function UsagePreviewPanel({ endpoint }: { endpoint: Relay }) {
 				<div className="space-y-2">
 					<Label>Request Body</Label>
 					<Textarea
-						rows={6}
-						className="font-mono text-xs"
+						className="h-44 resize-none overflow-auto font-mono text-xs"
 						value={requestBody}
 						onChange={(e) => setRequestBody(e.target.value)}
 						placeholder='{"query":"..."}'
@@ -120,19 +119,29 @@ export function UsagePreviewPanel({ endpoint }: { endpoint: Relay }) {
 				<div className="space-y-2">
 					<Label>Response Body</Label>
 					<Textarea
-						rows={6}
-						className="font-mono text-xs"
+						className="h-44 resize-none overflow-auto font-mono text-xs"
 						value={responseBody}
 						onChange={(e) => setResponseBody(e.target.value)}
 						placeholder='{"usage":{"credits":4}}'
 						data-testid="relay-preview-response-body"
 					/>
-					<Input
-						className="h-8 text-xs"
-						value={responseType}
-						onChange={(e) => setResponseType(e.target.value)}
-						aria-label="Response content type"
-					/>
+					<div className="space-y-1">
+						<Label htmlFor="relay-preview-response-content-type" className="text-xs">
+							Response Content-Type
+						</Label>
+						<Input
+							id="relay-preview-response-content-type"
+							className="h-8 text-xs"
+							value={responseType}
+							onChange={(e) => setResponseType(e.target.value)}
+							placeholder="application/json"
+							data-testid="relay-preview-response-content-type"
+						/>
+						<p className="text-muted-foreground text-xs">
+							What the upstream replies with. A JSON body is read for units, cost and model; text/event-stream previews the streamed path;
+							anything else is measured as bytes or characters only.
+						</p>
+					</div>
 				</div>
 			</div>
 			<div className="flex justify-end">

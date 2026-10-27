@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { specFingerprint, type OpenAPISourceMode } from "../../mcp-registry/views/mcpClientOpenApiUtils";
 import { OpenAPISpecSource } from "../../mcp-registry/views/openApiSpecSource";
 
@@ -31,17 +31,24 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 	const sourceKey = specFingerprint(mode, text, undefined);
 	const isCurrent = preview?.key === sourceKey;
 
+	// Each parse gets a sequence number; a result from an older attempt (the YAML parser loading
+	// while the text was replaced with JSON, say) is dropped, error and loading state included, so
+	// it can never overwrite a newer preview and leave Import disabled.
+	const parseSeq = useRef(0);
 	const parse = useCallback(async () => {
+		const seq = ++parseSeq.current;
 		setIsParsing(true);
 		setParseError(null);
 		try {
 			const doc = await parseOpenAPIText(text);
+			if (seq !== parseSeq.current) return;
 			setPreview({ key: sourceKey, result: importOpenAPI(doc) });
 		} catch (e) {
+			if (seq !== parseSeq.current) return;
 			setPreview(null);
 			setParseError(e instanceof Error ? e.message : "The document could not be read");
 		} finally {
-			setIsParsing(false);
+			if (seq === parseSeq.current) setIsParsing(false);
 		}
 	}, [text, sourceKey]);
 

@@ -2,7 +2,6 @@ package logging
 
 import (
 	"errors"
-	"maps"
 	"net/url"
 	"strconv"
 	"strings"
@@ -63,9 +62,10 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 			entry.App = &app
 		}
 	}
-	if len(req.Headers) > 0 {
-		entry.RequestHeadersParsed = boundedHeaders(schemas.RedactSensitiveHeaders(maps.Clone(req.Headers)))
-	}
+	// The same metadata LLM and MCP rows carry: the configured logging headers, every x-bf-lh-*
+	// label, the x-bf-dim-* dimensions, and the virtual key's metadata on top.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
+	entry.RequestHeadersParsed = relayMatchedHeaders(req)
 	if len(req.Body) > 0 {
 		entry.RequestBody = boundedBody(req.Body)
 	}
@@ -87,6 +87,9 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
 	}
 	entry.ApplyGovernanceContext(ctx)
+	// Merged again here, as PostLLMHook does: the key's metadata is stamped by governance, which may
+	// run after this plugin's pre-hook, and the key's values win over caller-sent labels.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
 	if resp != nil {
 		if entry.RelayName == "" {
 			entry.RelayName = clampString(resp.RelayName, 64)
@@ -103,9 +106,6 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			overhead := latency - upstream
 			entry.UpstreamLatency = &upstream
 			entry.OverheadLatency = &overhead
-		}
-		if len(resp.Headers) > 0 {
-			entry.ResponseHeadersParsed = boundedHeaders(schemas.RedactSensitiveHeaders(maps.Clone(resp.Headers)))
 		}
 		if len(resp.Body) > 0 {
 			entry.ResponseBody = boundedBody(resp.Body)
@@ -151,9 +151,10 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			p.logger.Warn("retain_content_in_object_storage does not apply to Relay Logs yet; content-disabled relay calls are dropped entirely")
 		})
 	}
+	// Metadata and the matched headers stay when content logging is off, as on LLM and MCP rows:
+	// the operator chose them; only the bodies and the query string are content.
 	if !policy.storeContent || policy.hidden {
 		entry.RequestBody, entry.ResponseBody = nil, nil
-		entry.RequestHeadersParsed, entry.ResponseHeadersParsed = nil, nil
 		if i := strings.IndexByte(entry.Path, '?'); i >= 0 {
 			entry.Path = entry.Path[:i]
 		}
@@ -398,6 +399,24 @@ func boundedBody(body []byte) *string {
 	}
 	s := string(body)
 	return &s
+}
+
+// relayMatchedHeaders keeps the request headers the matched route matches on, since they are what
+// told the relay which route (and price) applied; they are relay-specific, so they live beside
+// the row's metadata rather than in it. Nothing else is kept here, and the reply's headers never.
+func relayMatchedHeaders(req *schemas.BifrostRelayRequest) map[string]string {
+	if len(req.RouteHeaders) == 0 {
+		return nil
+	}
+	// The route layer hands over the values that selected the route (an operator-set header's
+	// value, else the caller's), operator secrets already redacted. A route may also match on a
+	// credential-like header the caller sends; its value is redacted as the gateway redacts such
+	// headers everywhere else, so a matcher never turns the row into a credential store.
+	kept := make(map[string]string, len(req.RouteHeaders))
+	for name, value := range req.RouteHeaders {
+		kept[strings.ToLower(name)] = value
+	}
+	return boundedHeaders(schemas.RedactSensitiveHeaders(kept))
 }
 
 // relayHeaderValueLimit bounds one stored header value; the header count is bounded by the

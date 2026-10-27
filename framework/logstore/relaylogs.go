@@ -78,6 +78,7 @@ type RelayLog struct {
 	BudgetIDs               *string               `gorm:"type:text" json:"-"`
 	RateLimitIDs            *string               `gorm:"type:text" json:"-"`
 	RequestID               string                `gorm:"type:varchar(255);index:idx_relay_logs_request_id;not null" json:"request_id"`
+	Metadata                *string               `gorm:"type:text" json:"-"` // JSON map: logging headers, x-bf-lh-* labels, x-bf-dim-* dimensions and the key's metadata, as on LLM and MCP rows
 	RequestHeaders          *string               `gorm:"type:text" json:"-"`
 	ResponseHeaders         *string               `gorm:"type:text" json:"-"`
 	RequestBody             *string               `gorm:"type:text" json:"request_body,omitempty"`
@@ -87,6 +88,7 @@ type RelayLog struct {
 	PluginLogs              string                `gorm:"type:text" json:"plugin_logs,omitempty"`
 	BudgetIDsParsed         []string              `gorm:"-" json:"budget_ids,omitempty"`
 	RateLimitIDsParsed      []string              `gorm:"-" json:"rate_limit_ids,omitempty"`
+	MetadataParsed          map[string]any        `gorm:"-" json:"metadata,omitempty"`
 	RequestHeadersParsed    map[string]string     `gorm:"-" json:"request_headers,omitempty"`
 	ResponseHeadersParsed   map[string]string     `gorm:"-" json:"response_headers,omitempty"`
 	ErrorDetailsParsed      *schemas.BifrostError `gorm:"-" json:"error_details,omitempty"`
@@ -165,6 +167,11 @@ func (l *RelayLog) SerializeFields() error {
 			return fmt.Errorf("failed to serialize relay %s: %w", column.name, err)
 		}
 	}
+	if len(l.MetadataParsed) > 0 {
+		if err := marshal(l.MetadataParsed, &l.Metadata); err != nil {
+			return fmt.Errorf("failed to serialize relay metadata: %w", err)
+		}
+	}
 	if len(l.RequestHeadersParsed) > 0 {
 		if err := marshal(l.RequestHeadersParsed, &l.RequestHeaders); err != nil {
 			return fmt.Errorf("failed to serialize relay request headers: %w", err)
@@ -208,6 +215,7 @@ func (l *RelayLog) DeserializeFields() error {
 	unmarshal(l.CustomerNames, &l.CustomerNamesParsed)
 	unmarshal(l.BusinessUnitIDs, &l.BusinessUnitIDsParsed)
 	unmarshal(l.BusinessUnitNames, &l.BusinessUnitNamesParsed)
+	unmarshal(l.Metadata, &l.MetadataParsed)
 	unmarshal(l.RequestHeaders, &l.RequestHeadersParsed)
 	unmarshal(l.ResponseHeaders, &l.ResponseHeadersParsed)
 	l.ErrorDetailsParsed = nil

@@ -1,6 +1,5 @@
 import { LogAppCell, LogCostCell, LogLatencyCell, LogTimeCell } from "@/app/workspace/logs/views/columns";
 import { formatCostPrecise } from "@/app/workspace/relay-logs/views/relayLogDetailsSheet";
-import { StatusPill, statusCodeBadgeClass } from "@/app/workspace/logs/views/logHeroStat";
 import { AttributionCell } from "@/components/logAttributionCell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,7 +7,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { RelayLog } from "@/lib/types/relays";
-import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef, Row } from "@tanstack/react-table";
 import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
@@ -98,21 +96,6 @@ export const createRelayColumns = (
 					</TruncatedLabel>
 					<span className="text-muted-foreground truncate text-[10.5px]">{secondary}</span>
 				</div>
-			);
-		},
-	},
-	{
-		accessorKey: "status_code",
-		header: "Status",
-		size: 90,
-		cell: ({ row }) => {
-			// The LLM log header's status-code badge; a row with no HTTP code (a settled job) shows its status pill instead.
-			const code = row.original.status_code;
-			if (!code) return <StatusPill status={statusOf(row.original.status)} />;
-			return (
-				<Badge variant="outline" className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(code))}>
-					{code}
-				</Badge>
 			);
 		},
 	},

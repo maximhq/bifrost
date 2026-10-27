@@ -243,7 +243,8 @@ export interface RelayLog {
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
 	app?: string; // Backend-detected client app derived from user_agent
 	request_id: string;
-	request_headers?: Record<string, string>;
+	metadata?: Record<string, unknown>; // logging headers, x-bf-lh-* labels, x-bf-dim-* dimensions and the key's metadata, as on LLM and MCP rows
+	request_headers?: Record<string, string>; // the headers the matched route matches on
 	response_headers?: Record<string, string>;
 	request_body?: string;
 	response_body?: string;

@@ -82,20 +82,20 @@ export function UsagePreviewResult({ result, endpoint }: { result: UsagePreview;
 				</p>
 			) : (
 				<>
-					<div className="rounded-sm border">
-						<Table>
+					<div className="overflow-hidden rounded-sm border">
+						<Table className="table-fixed">
 							<TableBody>
 								<TableRow>
-									<TableCell className="text-muted-foreground w-40">Fee per call</TableCell>
-									<TableCell>
+									<TableCell className="text-muted-foreground w-32 whitespace-nowrap">Fee per call</TableCell>
+									<TableCell className="break-words whitespace-normal">
 										{route?.usage?.cost_per_request !== undefined ? "From the route override" : "From the relay pricing"}
 									</TableCell>
-									<TableCell className="text-right font-mono">{usd(result.cost_per_request)}</TableCell>
+									<TableCell className="w-24 text-right font-mono whitespace-nowrap">{usd(result.cost_per_request)}</TableCell>
 								</TableRow>
 								{result.cost_per_unit > 0 && (
 									<TableRow>
-										<TableCell className="text-muted-foreground">Units</TableCell>
-										<TableCell>
+										<TableCell className="text-muted-foreground whitespace-nowrap">Units</TableCell>
+										<TableCell className="break-words whitespace-normal">
 											{result.units === null ? (
 												<>
 													Nothing found at <Code>{result.units_path || "the body"}</Code> in the {result.units_source} body, so no units are
@@ -109,20 +109,20 @@ export function UsagePreviewResult({ result, endpoint }: { result: UsagePreview;
 												</>
 											)}
 										</TableCell>
-										<TableCell className="text-right font-mono">{usd(unitCharge)}</TableCell>
+										<TableCell className="w-24 text-right font-mono whitespace-nowrap">{usd(unitCharge)}</TableCell>
 									</TableRow>
 								)}
 								{result.extracted_cost !== null && (
 									<TableRow>
-										<TableCell className="text-muted-foreground">Reported cost</TableCell>
-										<TableCell>Cost the upstream reported in its reply</TableCell>
-										<TableCell className="text-right font-mono">{usd(result.extracted_cost)}</TableCell>
+										<TableCell className="text-muted-foreground whitespace-nowrap">Reported cost</TableCell>
+										<TableCell className="break-words whitespace-normal">Cost the upstream reported in its reply</TableCell>
+										<TableCell className="w-24 text-right font-mono whitespace-nowrap">{usd(result.extracted_cost)}</TableCell>
 									</TableRow>
 								)}
 								<TableRow>
 									<TableCell className="font-medium">Total</TableCell>
 									<TableCell />
-									<TableCell className="text-right font-mono font-medium">{usd(result.cost)}</TableCell>
+									<TableCell className="w-24 text-right font-mono font-medium whitespace-nowrap">{usd(result.cost)}</TableCell>
 								</TableRow>
 							</TableBody>
 						</Table>

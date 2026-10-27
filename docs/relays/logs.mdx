@@ -40,13 +40,14 @@ The details sheet opens on a hero card with the kind (**Call**), a **Streamed** 
 - **Timings** — start and end, total latency, **Upstream Latency** (time blocked on the upstream socket) and **Bifrost Overhead** (the rest), with the per-stage [overhead breakdown](/features/observability/latency-breakdown) once the trace completes.
 - **Cost** — the figure charged and every term behind it: fee per call, price per unit, units read, units billed, reported cost, and token counts when mapped (marked not priced).
 - **Request Details** — relay, kind, detected client **App** (from the `User-Agent`), method, path and query, matched route, billable, streamed, model, and the virtual key, user, team, customer, business unit and project.
-- **Request Headers** and **Response Headers**, with credential-bearing values redacted.
+- **Metadata** — the same map LLM and MCP rows carry: the request headers the `client.logging_headers` setting names (exact names and wildcard patterns), every `x-bf-lh-*` header as a label (prefix stripped), the `x-bf-dim-*` dimensions, and the virtual key's own metadata.
+- **Matched Headers** — the headers the matched route matches on, with the value that selected the route: the relay's own extra header when it sets that header, else the caller's. They decided the route and its price. A value the relay reads from the environment or a vault is stored redacted. No other header, and never the reply's, is stored. Metadata and matched headers stay on the row when content logging is off; only bodies and the query string are content.
 
 Below the disclosure, the **Error** box shows the error returned to the caller, and the **Request Body** and **Response Body** boxes show up to 64 KB of each body as text. Binary bodies are not kept. Any plugin that logged during the call appears under **Plugin logs**.
 
 ### Content logging
 
-Bodies, headers and the query string are content, and follow the same [content logging](/features/observability/content-logging) decision as LLM rows: `client.disable_content_logging`, the virtual key's and project's overrides, and the `x-bf-disable-content-logging` request header when per-request overrides are allowed. A row whose content is hidden keeps its metadata and cost and shows **Content logging has been disabled for this request**. Query parameters that carry credentials (`key`, `token`, `api_key`, `signature`, ...) are redacted before the path is stored even when content is kept.
+Bodies and the query string are content, and follow the same [content logging](/features/observability/content-logging) decision as LLM rows: `client.disable_content_logging`, the virtual key's and project's overrides, and the `x-bf-disable-content-logging` request header when per-request overrides are allowed. A row whose content is hidden keeps its metadata and cost and shows **Content logging has been disabled for this request**. Query parameters that carry credentials (`key`, `token`, `api_key`, `signature`, ...) are redacted before the path is stored even when content is kept.
 
 ## Row statuses
 
