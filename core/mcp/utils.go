@@ -572,6 +572,12 @@ func isDeadSessionError(err error) bool {
 	return isDeadSessionErrorText(transportErr.Error())
 }
 
+// hasProtocolSession reports whether conn speaks a revision with protocol-level sessions, which
+// 2026-07-28 removed.
+func hasProtocolSession(conn *client.Client) bool {
+	return conn != nil && !mcp.IsModernProtocol(conn.ProtocolVersion())
+}
+
 // isDeadSessionErrorText is the text half of isDeadSessionError, kept separate
 // for callers that only hold the flattened message.
 func isDeadSessionErrorText(errStr string) bool {

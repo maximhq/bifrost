@@ -845,10 +845,12 @@ func (m *ToolsManager) executeToolInternal(
 		//     at all: it is not auth-shaped, and it matches no transient
 		//     substring, so ToolCallRetryConfig does not even retry it. Every
 		//     later call failed the same way until the periodic connection
-		//     checker reconnected, up to a full check interval away.
+		//     checker reconnected, up to a full check interval away. Only on
+		//     revisions that have sessions: mcp-go reports any 404 as a
+		//     terminated session, which on 2026-07-28 it cannot be.
 		//
 		// See attemptCallFailureRecovery for the per-auth-type mechanics.
-		if isAuthFailureErrorText(callErr.Error()) || isDeadSessionError(callErr) {
+		if isAuthFailureErrorText(callErr.Error()) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn)) {
 			// Recovery runs inside this call's own budget, not the caller's.
 			// The attempt above already spent part of toolCtx, and handing the
 			// parent ctx down instead would let the reconnect wait its full
