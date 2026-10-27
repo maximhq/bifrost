@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -1534,4 +1535,57 @@ func TestParseRequestDurationUnits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAddMCPClient_PerUserHeadersKeepsAdminCredential: creating a per_user_headers
+// client keeps the admin's sample values as its admin credential, the one periodic
+// tool discovery connects with, just as verify-headers keeps them. Without it the
+// client's first discovery check finds no credential and marks it unstable.
+func TestAddMCPClient_PerUserHeadersKeepsAdminCredential(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+
+	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	require.NoError(t, err, "the create call keeps an admin credential")
+	require.NotNil(t, cred)
+	assert.Equal(t, map[string]string{"x-api-key": "sample-key"}, cred.Headers, "the sample value, under its canonical key")
+	assert.Equal(t, schemas.MCPHeadersUserCredentialStatusActive, cred.Status)
+}
+
+// failingHeaderCredentialStore is a config store whose header credential writes fail.
+type failingHeaderCredentialStore struct{ configstore.ConfigStore }
+
+// UpsertMCPPerUserHeaderCredential always fails.
+func (failingHeaderCredentialStore) UpsertMCPPerUserHeaderCredential(context.Context, *configtables.TableMCPPerUserHeaderCredential) error {
+	return errors.New("credential table unavailable")
+}
+
+// TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept: keeping the
+// sample values is best effort, so a failed credential write leaves the verified
+// client created and registered; verify-headers can store the credential later.
+func TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = mcp_headers.NewProvider(failingHeaderCredentialStore{h.store.ConfigStore}, &mockLogger{})
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_h", "connection_type": "http", "connection_string": "http://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1, "the client is registered without the credential")
+	_, err = h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
+	assert.Error(t, err, "no admin credential was kept")
 }

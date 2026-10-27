@@ -45835,7 +45835,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46152,7 +46152,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46469,7 +46469,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },
@@ -46806,7 +46806,7 @@
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. The create call also keeps\nthem as the client's admin discovery credential, as\nPOST /api/mcp/client/{id}/verify-headers does, used only for periodic\nand on-demand (POST /api/mcp/client/{id}/refresh-tools) tool-list\nrefresh. Keeping them is best effort: if storing the credential fails,\nthe client is still created. Each end-user submits their own values at\nruntime.\n"
                           }
                         }
                       },

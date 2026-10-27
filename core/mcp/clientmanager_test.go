@@ -1700,6 +1700,38 @@ func TestRefreshClientTools_OpenAPI_RebuildsServer(t *testing.T) {
 	assert.Equal(t, []string{"petstore-createPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
 }
 
+// TestRefreshClientTools_PerUserHeadersDiscoversWithTheAdminCredential: an on-demand
+// refresh of a per_user_headers client connects with its stored admin credential, as
+// periodic discovery does; no caller's values are involved.
+func TestRefreshClientTools_PerUserHeadersDiscoversWithTheAdminCredential(t *testing.T) {
+	ts, rec := buildAdminDiscoveryHTTPServer(t)
+	cred := &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"admin-key-1"}}}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID:                "client-refresh",
+		Name:              "headers_client",
+		AuthType:          schemas.MCPAuthTypePerUserHeaders,
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar(ts.URL),
+		PerUserHeaderKeys: []string{"x-api-key"},
+		ToolsToExecute:    schemas.WhiteList{"*"},
+		DiscoveredTools:   map[string]schemas.ChatTool{}, // verified at create
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	before := cred.callCount()
+
+	count, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	assert.Equal(t, before+1, cred.callCount(), "the refresh read the admin credential")
+	keys := rec.headerValues("X-Api-Key")
+	require.NotEmpty(t, keys)
+	for _, v := range keys {
+		assert.Equal(t, "admin-key-1", v)
+	}
+}
+
 // TestRefreshClientTools_OpenAPI_RespectsExclusiveOp: the rebuild a refresh
 // performs is a reconnect, so it takes the same per-client guard as UpdateClient
 // and ReconnectClient. While another operation holds it, refresh must refuse
