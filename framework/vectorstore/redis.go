@@ -73,7 +73,9 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 	return s.client.Ping(ctx).Err()
 }
 
-// CreateNamespace creates a new namespace in the Redis vector store.
+// CreateNamespace creates a search index. Annotated schemas index only
+// Filterable metadata; unannotated schemas retain legacy index-all behavior.
+// Existing indexes and the hash payloads themselves are left unchanged.
 func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
@@ -95,10 +97,15 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		return fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)
 	}
 
-	// Extract metadata field names from properties
-	var metadataFields []string
-	for fieldName := range properties {
-		metadataFields = append(metadataFields, fieldName)
+	// The schema describes indexes, not which fields HSET may store or
+	// FT.SEARCH RETURN may retrieve. Omit payload-only fields rather than
+	// using NOINDEX, which is not supported by all Valkey search modules.
+	hasFilterableProperties := false
+	for _, prop := range properties {
+		if prop.Filterable {
+			hasFilterableProperties = true
+			break
+		}
 	}
 
 	// Create index with VECTOR field + metadata fields
@@ -120,11 +127,11 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		"DISTANCE_METRIC", "COSINE",
 	}
 
-	// Add all metadata fields as TEXT with exact matching
-	// All values are converted to strings for consistent searching
-	for _, field := range metadataFields {
-		// Detect field type from VectorStoreProperties
-		prop := properties[field]
+	// Keep native NUMERIC range filters and exact-match TAG filters.
+	for field, prop := range properties {
+		if hasFilterableProperties && !prop.Filterable {
+			continue
+		}
 		switch prop.DataType {
 		case VectorStorePropertyTypeInteger:
 			args = append(args, field, "NUMERIC")

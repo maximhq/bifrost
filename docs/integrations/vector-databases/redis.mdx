@@ -238,4 +238,22 @@ deleteResults, err := store.DeleteAll(ctx, namespace, queries)
 - Monitor memory usage and set appropriate TTL values
 </Warning>
 
+### Semantic-Cache Indexes
+
+For new semantic-cache namespaces, Bifrost creates an HNSW `embedding` field
+and TAG indexes on `cache_key`, `provider`, `model`, `params_hash`, and
+`from_bifrost_semantic_cache_plugin`. Serialized `response`, `stream_chunks`,
+and `expires_at` remain in the hashes but are not indexed. Search projections
+can retrieve these payload-only fields without adding them to the search schema.
+Expiry is checked after retrieval.
+
+The same creation path is used for Redis and Valkey with compatible search
+support. Other vector-store callers without `Filterable` annotations keep
+indexing all declared properties, including NUMERIC fields for integer filters.
+
+Existing search indexes are not rebuilt or modified on startup. Upgrading
+therefore does not reclaim indexes on payload-only fields that already exist;
+that requires an operator-managed index rebuild. Bifrost does not drop indexes
+or delete hash data automatically.
+
 For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).
