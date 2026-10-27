@@ -16,6 +16,7 @@
 package live
 
 import (
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,21 @@ type Key struct {
 // Entry is a single cached response.
 type Entry struct {
 	Models []string
+	// Created maps a model to the creation time the provider reported for it,
+	// in Unix seconds. Models the provider gave no time for are absent.
+	Created map[string]int64
+}
+
+// clone returns a copy that shares no slice or map with e.
+func (e Entry) clone() Entry {
+	out := Entry{Models: slices.Clone(e.Models)}
+	if out.Models == nil {
+		out.Models = []string{}
+	}
+	if len(e.Created) > 0 {
+		out.Created = maps.Clone(e.Created)
+	}
+	return out
 }
 
 type Store struct {
@@ -73,11 +89,15 @@ func New(logger schemas.Logger) *Store {
 // in-flight window to lose a race in (seeding, tests); anything that fetches
 // from an upstream first should go through Generation + UpsertIfCurrent.
 func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
-	cp := make([]string, len(models))
-	copy(cp, models)
+	s.UpsertEntry(provider, keyID, unfiltered, Entry{Models: models})
+}
+
+// UpsertEntry is Upsert for a full entry, including provider creation times.
+func (s *Store) UpsertEntry(provider schemas.ModelProvider, keyID string, unfiltered bool, entry Entry) {
+	entry = entry.clone()
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
-	s.entries[k] = Entry{Models: cp}
+	s.entries[k] = entry
 	s.mu.Unlock()
 	s.writeGen.Add(1)
 }
@@ -105,15 +125,20 @@ func (s *Store) Generation(provider schemas.ModelProvider) uint64 {
 // prunes a key that is no longer configured, so an unguarded commit would
 // advertise that key's models until the process restarted.
 func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, gen uint64) bool {
-	cp := make([]string, len(models))
-	copy(cp, models)
+	return s.UpsertEntryIfCurrent(provider, keyID, unfiltered, Entry{Models: models}, gen)
+}
+
+// UpsertEntryIfCurrent is UpsertIfCurrent for a full entry, including
+// provider creation times.
+func (s *Store) UpsertEntryIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, entry Entry, gen uint64) bool {
+	entry = entry.clone()
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gen[provider] != gen {
 		return false
 	}
-	s.entries[k] = Entry{Models: cp}
+	s.entries[k] = entry
 	s.writeGen.Add(1)
 	return true
 }
@@ -204,9 +229,28 @@ func (s *Store) Snapshot() map[Key]Entry {
 	defer s.mu.RUnlock()
 	out := make(map[Key]Entry, len(s.entries))
 	for k, e := range s.entries {
-		cp := make([]string, len(e.Models))
-		copy(cp, e.Models)
-		out[k] = Entry{Models: cp}
+		out[k] = e.clone()
+	}
+	return out
+}
+
+// CreatedForProvider returns the provider creation time of each model across
+// the provider's entries in the given mode, in Unix seconds. When keys report
+// different times for one model, the latest wins. Models without a reported
+// time are absent. The returned map is owned by the caller.
+func (s *Store) CreatedForProvider(provider schemas.ModelProvider, unfiltered bool) map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64)
+	for k, e := range s.entries {
+		if k.Provider != provider || k.Unfiltered != unfiltered {
+			continue
+		}
+		for model, created := range e.Created {
+			if created > out[model] {
+				out[model] = created
+			}
+		}
 	}
 	return out
 }
