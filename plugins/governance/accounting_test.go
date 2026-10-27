@@ -606,6 +606,34 @@ func TestAccounting_ModellessPassthroughIsCharged(t *testing.T) {
 	}
 }
 
+// A request told to skip its spending checks is not charged either. Codex traffic signed in with
+// ChatGPT is paid for by the caller's plan, so a usage report on it must not move the key's limits.
+func TestAccounting_SpendingChecksSkippedIsNotCharged(t *testing.T) {
+	plugin, store := governedPassthroughFixture(t)
+
+	ctx := presentCtx("sk-bf-pt")
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Vertex,
+			Method:   "POST",
+			Path:     "/v1/projects/p/locations/l/endpoints/123456:predict",
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+
+	_, _, err = plugin.PostLLMHook(ctx, passthroughResponseWithUsage(schemas.PassthroughRequest, "", 5000), nil)
+	require.NoError(t, err)
+	settleAccounting(t, plugin)
+
+	rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Zero(t, rateLimit.TokenCurrentUsage)
+	assert.Zero(t, rateLimit.RequestCurrentUsage)
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs))
+}
+
 // A call that spent nothing is charged nothing, and being forwarded raw does not change that.
 // The passthrough routes carry metadata traffic as well as inference — a job status poll, a file
 // retrieve — and an agent polling one of those would otherwise drain a caller's request allowance
