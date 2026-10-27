@@ -94,4 +94,19 @@ For local development with Pinecone Local, any API key value works (e.g., "pcloc
 Pinecone requires all IDs to be unique strings. Namespaces are created automatically when you first upsert vectors.
 </Warning>
 
+### Metadata Indexing
+
+Bifrost connects to the index identified by `index_host` and lets upserts create
+namespaces implicitly. It does not apply `VectorStoreProperties.Filterable` to
+Pinecone's index or namespace metadata schemas. Indexing therefore follows the
+operator-configured Pinecone policy, which indexes all metadata by default.
+
+If you configure selective metadata indexing outside Bifrost, include
+`cache_key`, `provider`, `model`, `params_hash`, and
+`from_bifrost_semantic_cache_plugin` for semantic-cache filtering. The
+`response`, `stream_chunks`, and `expires_at` fields must still be stored and
+retrievable, but Bifrost does not filter on them. Namespace schema capabilities
+depend on the Pinecone deployment and API version; Bifrost does not migrate
+existing schemas or override operator-managed indexing rules on startup.
+
 For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).
