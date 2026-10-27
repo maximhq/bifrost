@@ -290719,6 +290719,337 @@
           }
         }
       ]
+    },
+    {
+      "name": "285. Chat tool-result cache_control on the Cursor route keeps one breakpoint per tool result (cursor-tool-result-cache, #8981 / PR #8982)",
+      "description": "/cursor/v1/chat/completions converts Cursor's chat messages with ChatMessage.ToResponsesMessages(). A cache_control on a role \"tool\" message's content block used to land on the function_call_output's output blocks only. The Bedrock Responses converter reads a tool result's breakpoint from the item, so no cachePoint was sent and every Cursor agent step was billed in full (#8981). The marker now also sits on the item. The Anthropic Responses converter reads both places, so it keeps only the one on the tool_result: Anthropic counts nested markers toward its limit of four, and the breakpoint clamp only sees top-level blocks.\n\nThe Cursor route returns only prompt/completion/total tokens and no extra_fields, so each case sets x-request-id and reads the outgoing provider body back from the log row (/api/logs/<id>), as folder 171 does. 285.1 pins the Anthropic placement: each marked result carries one marker, on the tool_result itself, none nested (before the Anthropic change it carried two, so three results made six and a 400). 285.2 pins the Converse shape [toolResult, cachePoint, toolResult]; before the fix the cachePoint is missing. 285.3 and 285.4 send five marked results. Both providers reject more than four markers. Anthropic's clamp only sees top-level blocks, so the markers must sit on the tool_results to be trimmed; Bedrock's clamp counts nested ones too. Each request must go out with exactly four, on the last four results. On dev, 285.3 goes out with five nested markers and 285.4 with no cachePoint.",
+      "item": [
+        {
+          "name": "285.1 anthropic/claude-haiku-4-5 /cursor/v1/chat/completions three cache-marked tool results reach Anthropic with one cache_control each - cursor-tool-result-cache - #8981",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('cursorToolResultCacheAnthropicRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('anthropic cursor tool-result cache: request succeeds (six markers would be a 400)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('cursorToolResultCacheAnthropicRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var marks = function (o) { if (!o || typeof o !== 'object') { return 0; } var n = (!Array.isArray(o) && o.cache_control) ? 1 : 0; Object.keys(o).forEach(function (k) { if (k !== 'cache_control') { n += marks(o[k]); } }); return n; };",
+                  "      var results = [];",
+                  "      (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_result') { results.push(b); } }); });",
+                  "      pm.test('anthropic cursor tool-result cache: each marked tool result carries its cache_control on the tool_result itself, where the breakpoint clamp can see it, and none nested inside (two would make six and a 400)', function () {",
+                  "        pm.expect(results.length, 'tool_result blocks in raw_request: ' + JSON.stringify(rr.messages).slice(0, 600)).to.eql(3);",
+                  "        results.forEach(function (b) {",
+                  "          pm.expect(b.cache_control, 'no cache_control on ' + JSON.stringify(b)).to.be.an('object');",
+                  "          pm.expect(marks(b.content), 'nested markers in ' + JSON.stringify(b)).to.eql(0);",
+                  "        });",
+                  "      });",
+                  "      pm.test('anthropic cursor tool-result cache: the request stays within the four cache_control blocks Anthropic allows', function () {",
+                  "        pm.expect(marks(rr), 'markers in raw_request: ' + JSON.stringify(rr).slice(0, 600)).to.be.at.most(4);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic cursor tool-result cache: log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris, Berlin and Rome?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Berlin\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Rome\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"15C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"24C, sunny\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "285.2 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /cursor/v1/chat/completions cache-marked tool result becomes a Converse cachePoint after its toolResult - cursor-tool-result-cache - #8981",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('cursorToolResultCacheBedrockRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock cursor tool-result cache: request succeeds (tool conversation with cache_control on a tool message block)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('cursorToolResultCacheBedrockRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var turn = (rr.messages || []).filter(function (m) { return (m.content || []).some(function (b) { return !!b.toolResult; }); })[0];",
+                  "      pm.test('bedrock cursor tool-result cache: tool-result cache_control becomes a cachePoint directly after its toolResult (absent before the fix)', function () {",
+                  "        pm.expect(turn, 'no toolResult message in raw_request: ' + JSON.stringify(rr).slice(0, 600)).to.not.equal(undefined);",
+                  "        var kinds = turn.content.map(function (b) { return b.toolResult ? 'toolResult' : (b.cachePoint ? 'cachePoint' : 'other'); });",
+                  "        pm.expect(kinds, 'expected [toolResult, cachePoint, toolResult], raw turn=' + JSON.stringify(turn)).to.eql(['toolResult', 'cachePoint', 'toolResult']);",
+                  "        pm.expect(turn.content[1].cachePoint.type, 'cachePoint type').to.equal('default');",
+                  "        turn.content.forEach(function (b) {",
+                  "          if (!b.toolResult) { return; }",
+                  "          var nested = (b.toolResult.content || []).filter(function (x) { return !!x.cachePoint; });",
+                  "          pm.expect(nested.length, 'nested cachePoint inside toolResult.content: ' + JSON.stringify(b.toolResult)).to.equal(0);",
+                  "        });",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('bedrock cursor tool-result cache: log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris and Berlin?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Berlin\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n      \"content\": \"15C, cloudy\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "285.3 anthropic/claude-haiku-4-5 /cursor/v1/chat/completions five cache-marked tool results are clamped to four cache_control blocks - cursor-tool-result-cache - #8981",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('cursorToolResultCacheAnthropicFiveRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('anthropic cursor tool-result cache: request succeeds (five nested markers would be a 400)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('cursorToolResultCacheAnthropicFiveRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var marks = function (o) { if (!o || typeof o !== 'object') { return 0; } var n = (!Array.isArray(o) && o.cache_control) ? 1 : 0; Object.keys(o).forEach(function (k) { if (k !== 'cache_control') { n += marks(o[k]); } }); return n; };",
+                  "      var results = [];",
+                  "      (rr.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_result') { results.push(b); } }); });",
+                  "      pm.test('anthropic cursor tool-result cache: five marked tool results reach Anthropic as exactly four cache_control blocks, on the last four tool_results (nested markers escape the clamp, and five is a 400)', function () {",
+                  "        var ids = results.map(function (b) { return b.tool_use_id; });",
+                  "        pm.expect(ids, 'tool_result ids in raw_request: ' + JSON.stringify(rr.messages).slice(0, 600)).to.eql([\"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\"]);",
+                  "        pm.expect(marks(rr), 'markers in raw_request: ' + JSON.stringify(rr.messages).slice(0, 900)).to.eql(4);",
+                  "        var markedIds = results.filter(function (b) { return !!b.cache_control; }).map(function (b) { return b.tool_use_id; });",
+                  "        pm.expect(markedIds, 'the clamp drops the earliest marker, so the last four keep theirs').to.eql([\"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\"]);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic cursor tool-result cache: log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris, Berlin, Rome, Madrid and Vienna?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Berlin\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Rome\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Madrid\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Vienna\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"14C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"15C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"16C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"17C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "285.4 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /cursor/v1/chat/completions five cache-marked tool results are clamped to four cachePoints - cursor-tool-result-cache - #8981",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var reqId = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.variables.set('cursorToolResultCacheBedrockFiveRequestId', reqId);",
+                  "pm.request.headers.upsert({ key: 'x-request-id', value: reqId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock cursor tool-result cache: request succeeds (five cachePoints would be a 400)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var reqId = pm.variables.get('cursorToolResultCacheBedrockFiveRequestId');",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      var points = function (o) { if (!o || typeof o !== 'object') { return 0; } var n = (!Array.isArray(o) && o.cachePoint) ? 1 : 0; Object.keys(o).forEach(function (k) { if (k !== 'cachePoint') { n += points(o[k]); } }); return n; };",
+                  "      var turn = (rr.messages || []).filter(function (m) { return (m.content || []).some(function (b) { return !!b.toolResult; }); })[0];",
+                  "      pm.test('bedrock cursor tool-result cache: five marked tool results reach Converse with a cachePoint after each of the last four toolResults, four in total (Bedrock rejects five)', function () {",
+                  "        pm.expect(turn, 'no toolResult message in raw_request: ' + JSON.stringify(rr).slice(0, 600)).to.not.equal(undefined);",
+                  "        var shape = turn.content.map(function (b) { return b.toolResult ? b.toolResult.toolUseId : (b.cachePoint ? 'cachePoint' : 'other'); });",
+                  "        var want = [];",
+                  "        [\"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\"].forEach(function (id, i) { want.push(id); if (i > 0) { want.push('cachePoint'); } });",
+                  "        pm.expect(shape, 'raw turn=' + JSON.stringify(turn)).to.eql(want);",
+                  "        pm.expect(points(rr), 'cachePoints in raw_request: ' + JSON.stringify(rr).slice(0, 900)).to.eql(4);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('bedrock cursor tool-result cache: log row carries the forwarded raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris, Berlin, Rome, Madrid and Vienna?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Berlin\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Rome\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Madrid\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Vienna\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"14C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"15C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"16C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01D4E5F6G7H8J9K0L1M2N3P4\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"17C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01E5F6G7H8J9K0L1M2N3P4Q5\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, cloudy\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
