@@ -5354,3 +5354,30 @@ func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
 		t.Errorf("tracestate stored with no traceparent: %q", got)
 	}
 }
+
+// TestLogRequestTargetRedactsAPIKeyQuery pins that a key sent in the query string never reaches the access log,
+// including under a percent-encoded name.
+func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=sk-bf-secret": "/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=REDACTED",
+		"/v1/chat/completions?stream=true":                                  "/v1/chat/completions?stream=true",
+		"/voice-live/realtime?%61pi-key=sk-bf-secret&model=gpt-realtime-vl": "/voice-live/realtime?api-key=REDACTED&model=gpt-realtime-vl",
+		"/azure/voice-live/realtime?api%2Dkey=sk-bf-secret":                 "/azure/voice-live/realtime?api-key=REDACTED",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
+// BenchmarkLogRequestTarget measures the access log target on a request without a query string, the common case.
+func BenchmarkLogRequestTarget(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}

@@ -6420,6 +6420,76 @@ func TestDecisionPricing_KeepsRowLevelFee(t *testing.T) {
 	assert.InDelta(t, 1000*lunaDecisionInput+50*lunaDecisionOutput+0.01, lunaDecisionCost(s, 1000, 50), decisionTestEpsilon)
 }
 
+// Prompt-cache rates for the decision cache tests, gpt-6-luna's: cached input
+// at a tenth of the input rate and a 30-minute write at 1.25 times it.
+const (
+	lunaCacheRead  = 1e-8
+	lunaCacheWrite = 1.25e-7
+)
+
+// lunaDecisionCacheCost prices a decision on openai/gpt-6-luna whose prompt
+// includes the given cached reads and writes, and returns the whole cost.
+func lunaDecisionCacheCost(s *Store, prompt, cachedRead, cachedWrite int) *schemas.BifrostCost {
+	return s.CalculateCostBreakdown(makeDecisionResponse(schemas.OpenAI, "gpt-6-luna", &schemas.BifrostLLMUsage{
+		PromptTokens: prompt, TotalTokens: prompt,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: cachedRead, CachedWriteTokens: cachedWrite},
+	}), nil)
+}
+
+// TestDecisionPricing_CachedTokensUseCacheRates pins how OpenAI bills a
+// decision's prompt cache, using the token counts of a live gpt-6-luna call: a
+// row without decision rates prices cache reads and writes at its cache rates,
+// as chat does, and reports each in the breakdown. Before cache pricing, both
+// calls cost the full input rate on every token.
+func TestDecisionPricing_CachedTokensUseCacheRates(t *testing.T) {
+	row := lunaChatRow(false)
+	row.CacheReadInputTokenCost = bifrost.Ptr(lunaCacheRead)
+	row.CacheCreationInputTokenCost = bifrost.Ptr(lunaCacheWrite)
+	s := lunaStore(row)
+
+	write := lunaDecisionCacheCost(s, 3293, 0, 3130)
+	require.NotNil(t, write)
+	require.NotNil(t, write.InputCostDetails)
+	assert.InDelta(t, 163*lunaChatInput, write.InputCostDetails.TextCost, decisionTestEpsilon)
+	assert.InDelta(t, 3130*lunaCacheWrite, write.InputCostDetails.CachedWriteCost, decisionTestEpsilon)
+	assert.InDelta(t, 163*lunaChatInput+3130*lunaCacheWrite, write.TotalCost, decisionTestEpsilon)
+
+	read := lunaDecisionCacheCost(s, 3293, 3130, 0)
+	require.NotNil(t, read)
+	assert.InDelta(t, 3130*lunaCacheRead, read.InputCostDetails.CachedReadCost, decisionTestEpsilon)
+	assert.InDelta(t, 163*lunaChatInput+3130*lunaCacheRead, read.TotalCost, decisionTestEpsilon)
+}
+
+// TestDecisionPricing_CacheRatesBesideDecisionRateAreFlat pins the cache rates
+// billed beside a decision rate: the row's flat ones, even past a long-context
+// cache tier, and the decision rate itself when the row has no cache rate,
+// never the chat input rate.
+func TestDecisionPricing_CacheRatesBesideDecisionRateAreFlat(t *testing.T) {
+	withCacheRates := lunaChatRow(true)
+	withCacheRates.CacheReadInputTokenCost = bifrost.Ptr(lunaCacheRead)
+	withCacheRates.CacheReadInputTokenCostAbove272kTokens = bifrost.Ptr(1.0)
+	cost := lunaDecisionCacheCost(lunaStore(withCacheRates), 300000, 200000, 0)
+	require.NotNil(t, cost)
+	assert.InDelta(t, 100000*lunaDecisionInput+200000*lunaCacheRead, cost.TotalCost, decisionTestEpsilon)
+
+	withoutCacheRates := lunaDecisionCacheCost(lunaStore(lunaChatRow(true)), 3293, 3130, 0)
+	require.NotNil(t, withoutCacheRates)
+	assert.InDelta(t, 3293*lunaDecisionInput, withoutCacheRates.TotalCost, decisionTestEpsilon)
+}
+
+// TestDecisionPricing_WithoutCachedTokensIsUnchanged pins that a decision
+// without cached tokens, every decision but a cached OpenAI one, costs and
+// reports exactly what it did before cache pricing: the input-rate total and
+// no input breakdown.
+func TestDecisionPricing_WithoutCachedTokensIsUnchanged(t *testing.T) {
+	row := lunaChatRow(true)
+	row.CacheReadInputTokenCost = bifrost.Ptr(lunaCacheRead)
+	cost := lunaDecisionCacheCost(lunaStore(row), 3293, 0, 0)
+	require.NotNil(t, cost)
+	assert.InDelta(t, 3293*lunaDecisionInput, cost.TotalCost, decisionTestEpsilon)
+	assert.Nil(t, cost.InputCostDetails)
+}
+
 // TestComputeDecisionCost_NegativeRateIsUnpriced pins the guard directly.
 func TestComputeDecisionCost_NegativeRateIsUnpriced(t *testing.T) {
 	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 10, TotalTokens: 1010}

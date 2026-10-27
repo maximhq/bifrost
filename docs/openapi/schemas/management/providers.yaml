@@ -94,6 +94,14 @@ AzureKeyConfig:
       items:
         type: string
       description: List of scopes to use for authentication
+    use_speech_endpoints:
+      type: boolean
+      default: false
+      description: Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI. An alias can override it with its own use_speech_endpoints.
+    use_voice_live_endpoints:
+      type: boolean
+      default: false
+      description: Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it. An alias can override it with its own use_voice_live_endpoints.
 
 VertexKeyConfig:
   type: object

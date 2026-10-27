@@ -21,7 +21,7 @@ func (provider *OpenAIProvider) SupportsRealtimeAPI() bool {
 }
 
 // RealtimeWebSocketURL returns the WSS URL for the OpenAI Realtime API.
-func (provider *OpenAIProvider) RealtimeWebSocketURL(_ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
+func (provider *OpenAIProvider) RealtimeWebSocketURL(_ *schemas.BifrostContext, _ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
 	base := provider.networkConfig.BaseURL
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
@@ -534,17 +534,17 @@ type openAIRealtimeEvent struct {
 
 // openAIRealtimeSession is the session object within an OpenAI Realtime event.
 type openAIRealtimeSession struct {
-	ID               string          `json:"id,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	Modalities       []string        `json:"modalities,omitempty"`
-	Instructions     string          `json:"instructions,omitempty"`
-	Voice            string          `json:"voice,omitempty"`
-	Temperature      *float64        `json:"temperature,omitempty"`
-	MaxOutputTokens  json.RawMessage `json:"max_output_tokens,omitempty"`
-	TurnDetection    json.RawMessage `json:"turn_detection,omitempty"`
-	InputAudioFormat string          `json:"input_audio_format,omitempty"`
-	OutputAudioType  string          `json:"output_audio_type,omitempty"`
-	Tools            json.RawMessage `json:"tools,omitempty"`
+	ID               string                 `json:"id,omitempty"`
+	Model            string                 `json:"model,omitempty"`
+	Modalities       []string               `json:"modalities,omitempty"`
+	Instructions     string                 `json:"instructions,omitempty"`
+	Voice            *schemas.RealtimeVoice `json:"voice,omitempty"`
+	Temperature      *float64               `json:"temperature,omitempty"`
+	MaxOutputTokens  json.RawMessage        `json:"max_output_tokens,omitempty"`
+	TurnDetection    json.RawMessage        `json:"turn_detection,omitempty"`
+	InputAudioFormat string                 `json:"input_audio_format,omitempty"`
+	OutputAudioType  string                 `json:"output_audio_type,omitempty"`
+	Tools            json.RawMessage        `json:"tools,omitempty"`
 }
 
 // openAIRealtimeItem is the item object within an OpenAI Realtime event.
@@ -691,7 +691,7 @@ func (provider *OpenAIProvider) ToProviderRealtimeEvent(bifrostEvent *schemas.Bi
 		if bifrostEvent.Session.Instructions != "" {
 			sess["instructions"] = bifrostEvent.Session.Instructions
 		}
-		if bifrostEvent.Session.Voice != "" {
+		if bifrostEvent.Session.Voice != nil {
 			sess["voice"] = bifrostEvent.Session.Voice
 		}
 		if bifrostEvent.Session.Temperature != nil {
@@ -1082,15 +1082,15 @@ func isRealtimeDeltaEvent(eventType string) bool {
 	return false
 }
 
-// ExtractNestedVoice digs into the new session.audio.output.voice path.
+// ExtractNestedVoice digs into the new session.audio.output.voice path, a name or a custom {"id"}.
 func ExtractNestedVoice(audioRaw json.RawMessage) string {
 	var audio struct {
 		Output struct {
-			Voice string `json:"voice"`
+			Voice schemas.RealtimeVoice `json:"voice"`
 		} `json:"output"`
 	}
-	if err := json.Unmarshal(audioRaw, &audio); err == nil && audio.Output.Voice != "" {
-		return audio.Output.Voice
+	if err := json.Unmarshal(audioRaw, &audio); err == nil {
+		return audio.Output.Voice.GetName()
 	}
 	return ""
 }

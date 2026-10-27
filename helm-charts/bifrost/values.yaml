@@ -498,6 +498,8 @@ bifrost:
   #         gpt-4o: "my-gpt4o-deployment"
   #       azure_key_config:
   #         endpoint: "https://your-resource.openai.azure.com"
+  #         use_speech_endpoints: false  # true sends speech and transcription to Azure AI Speech; an alias can override it
+  #         use_voice_live_endpoints: false  # true sends realtime WebSocket sessions to Azure Voice Live; an alias can override it
   #
   # # Google Vertex AI example (requires vertex_key_config)
   # vertex:

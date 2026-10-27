@@ -76,6 +76,15 @@ const (
 	topicsMinClusterSize = 2
 	topicsSmallCorpus    = 10
 	topicsLabelSamples   = 4
+	// topicsLabelDrawn is how many members drawn at random a topic is named
+	// from beside its samples. The samples sit at the centre, and the centre
+	// of a broad topic is its most generic request: named from those alone,
+	// a topic of fifteen thousand coding sessions took the name of one
+	// session summary that happened to sit in the middle of them.
+	topicsLabelDrawn = 6
+	// topicsDuplicateSimilarity is how alike two requests' vectors are when
+	// they are the same text: one prompt fanned out to several providers.
+	topicsDuplicateSimilarity = 0.98
 	// topicsLabelWorkers is how many naming calls run at once. Enough to stop
 	// naming from being the slowest part of a run, few enough not to look
 	// like a burst to the provider's rate limiter.
@@ -399,7 +408,9 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		if label, ok := themeLabel[row.ParentID]; ok {
 			topic.ThemeID, topic.Theme = row.ParentID, label
 		}
-		topic.SampleLogIDs = row.ExampleLogIDs()
+		// Linked: the first few, which mix the centre with the members drawn.
+		examples := row.ExampleLogIDs()
+		topic.SampleLogIDs = examples[:min(len(examples), topicsLabelSamples)]
 		topics = append(topics, topic)
 	}
 	sortTopics(topics)
@@ -948,11 +959,19 @@ func listTopicsTool() Tool {
 	}
 }
 
-// RegisterTopics binds the clustering and discovery jobs to the shared Sidekiq
-// runner. Only clustering pages vectors out of the vector store; discovery
-// reads the pool from the log store, so it is registered without one.
+// RegisterTopics binds the clustering, discovery and upkeep jobs to the shared
+// Sidekiq runner. Only clustering pages vectors out of the vector store;
+// discovery and upkeep read the log store, so they are registered without one.
+// An upkeep that finished is routine, and is kept out of the jobs listing
+// unless it failed.
+//
+// They are bound whether or not there is a log reader yet: a deployment that
+// turns logging on after startup gets its reader later, through SetLogReader,
+// and without a queue by then its node would skip upkeep until restart. Each
+// job finds the topic store when it runs and does nothing without one, and the
+// timer queues nothing while there is none.
 func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
-	if runner == nil || s.logs == nil || s.store == nil {
+	if runner == nil || s.store == nil {
 		return
 	}
 	if s.vectorStore != nil {
@@ -960,6 +979,9 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 	}
 	runner.Register(TopicDiscoveryJobKind, s.RunDiscoveryJob)
 	runner.RegisterSummarizer(TopicDiscoveryJobKind, SummarizeBackfillMeta)
+	runner.Register(TopicUpkeepJobKind, s.RunTopicUpkeepJob)
+	runner.RegisterSummarizer(TopicUpkeepJobKind, SummarizeTopicUpkeepMeta)
+	runner.RegisterQuietOnSuccess(TopicUpkeepJobKind)
 	s.mu.Lock()
 	s.topicJobs = runner
 	s.mu.Unlock()
@@ -1539,7 +1561,7 @@ func (w *topicWriter) activate(ctx context.Context, clusters []topicCluster) err
 		topic := byID[cluster.id]
 		topic.Label, topic.Centroid, topic.Cohesion = cluster.label, logstore.EncodeWarpVector(cluster.centroid()), cluster.cohesion()
 		topic.Status = logstore.WarpTopicStatusActive
-		if err := topic.SetExampleLogIDs(cluster.sampleIDs); err != nil {
+		if err := topic.SetExampleLogIDs(cluster.exampleIDs()); err != nil {
 			return fmt.Errorf("encode topic examples: %w", err)
 		}
 		active = append(active, topic)
@@ -1625,12 +1647,7 @@ func labelTopics(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig,
 				<-slots
 				group.Done()
 			}()
-			samples := make([]string, 0, len(cluster.sampleIDs))
-			for _, id := range cluster.sampleIDs {
-				if text := texts[id]; text != "" {
-					samples = append(samples, text)
-				}
-			}
+			samples := labelTexts(texts, cluster.sampleIDs, cluster.drawn)
 			label, err := labelTopic(ctx, chat, config, samples)
 			if err != nil {
 				mu.Lock()
@@ -1646,14 +1663,47 @@ func labelTopics(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig,
 	return failed, lastError
 }
 
-// topicSampleTexts hydrates every cluster's sample logs, a batch at a time,
-// and returns what the users asked, by log id. Content-hidden rows are left out:
-// a label must never be derived from text the operator asked not to keep.
-func (s *Service) topicSampleTexts(ctx context.Context, clusters []topicCluster) map[string]string {
-	ids := make([]string, 0, len(clusters)*topicsLabelSamples)
-	for _, cluster := range clusters {
-		ids = append(ids, cluster.sampleIDs...)
+// labelTexts is what a topic is named from: the texts of the given ids, in
+// order, each text once. A prompt sent to several providers is several
+// requests with one text, and showing it to the model more than once would
+// weigh it as more than one request's worth of the topic.
+func labelTexts(texts map[string]string, groups ...[]string) []string {
+	var samples []string
+	seen := map[string]struct{}{}
+	for _, ids := range groups {
+		for _, id := range ids {
+			text := texts[id]
+			if _, repeat := seen[text]; text == "" || repeat {
+				continue
+			}
+			seen[text] = struct{}{}
+			samples = append(samples, text)
+		}
 	}
+	return samples
+}
+
+// topicSampleTexts hydrates every cluster's sample and drawn logs, a batch at
+// a time, and returns what the users asked, by log id.
+func (s *Service) topicSampleTexts(ctx context.Context, clusters []topicCluster) map[string]string {
+	ids := make([]string, 0, len(clusters)*(topicsLabelSamples+topicsLabelDrawn))
+	seen := make(map[string]struct{}, cap(ids))
+	for _, cluster := range clusters {
+		// A member can be both a sample and drawn; it is read once.
+		for _, id := range slices.Concat(cluster.sampleIDs, cluster.drawn) {
+			if _, repeat := seen[id]; !repeat {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	}
+	return s.logTexts(ctx, ids)
+}
+
+// logTexts hydrates logs, a batch at a time, and returns what the users
+// asked, by log id. Content-hidden rows are left out: a label must never be
+// derived from text the operator asked not to keep.
+func (s *Service) logTexts(ctx context.Context, ids []string) map[string]string {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -1697,14 +1747,36 @@ func logUserText(entry *logstore.Log) string {
 
 const topicLabelInstructions = "You name topics for a dashboard. Given a few user messages from one cluster of requests, " +
 	"reply with a short topic name of two to five words that a product manager would recognise, in title case, " +
-	"with no punctuation, no quotes and no explanation. Name the subject, not the wording."
+	"with no punctuation, no quotes and no explanation. Name the subject, not the wording. " +
+	"Name what most of the messages share; a subject only one message mentions is not the topic."
 
-// labelTopic asks the Warp model for a name. No model means the fallback.
+// labelTopic asks the Warp model for a name, and falls back to one made from
+// the texts' own words when there is no model or its answer holds no name.
 func labelTopic(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig, texts []string) (string, error) {
 	if chat == nil || len(texts) == 0 {
 		return fallbackTopicLabel(texts), nil
 	}
+	label, err := askTopicLabel(ctx, chat, config, texts, nil)
+	if err != nil {
+		return "", err
+	}
+	if label == "" {
+		return fallbackTopicLabel(texts), nil
+	}
+	return label, nil
+}
+
+// askTopicLabel asks the Warp model for a name and returns it cleaned, or ""
+// when the answer holds no name. formerNames are the names of topics that
+// were merged to make this one, for the model to name what they share; nil
+// for a topic named the first time.
+func askTopicLabel(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig, texts, formerNames []string) (string, error) {
 	var prompt strings.Builder
+	if len(formerNames) > 0 {
+		prompt.WriteString("These requests were filed under topics since merged into one, named: ")
+		prompt.WriteString(strings.Join(formerNames, "; "))
+		prompt.WriteString(". Name what they have in common, not any one of them.\n\n")
+	}
 	prompt.WriteString("User messages:\n")
 	for _, text := range texts {
 		prompt.WriteString("- ")
@@ -1733,11 +1805,7 @@ func labelTopic(ctx context.Context, chat ChatFunc, config *schemas.WarpConfig, 
 	if response == nil {
 		return "", fmt.Errorf("label topic: the model returned no output")
 	}
-	label := cleanTopicLabel(responsesText(response.Output))
-	if label == "" {
-		return fallbackTopicLabel(texts), nil
-	}
-	return label, nil
+	return cleanTopicLabel(responsesText(response.Output)), nil
 }
 
 // cleanTopicLabel trims a model's answer down to a label: first line, no

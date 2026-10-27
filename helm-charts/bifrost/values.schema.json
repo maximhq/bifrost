@@ -7394,6 +7394,16 @@
             "api_version": {
               "type": "string",
               "description": "Azure API version"
+            },
+            "use_speech_endpoints": {
+              "type": "boolean",
+              "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+              "default": false
+            },
+            "use_voice_live_endpoints": {
+              "type": "boolean",
+              "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+              "default": false
             }
           },
           "required": ["endpoint"],
@@ -7941,6 +7951,14 @@
                   "endpoint": {
                     "type": "string",
                     "description": "Per-alias Azure endpoint override (can use env. prefix)."
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_speech_endpoints: send this alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_voice_live_endpoints: send this alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI."
                   },
                   "project_id": {
                     "type": "string",
@@ -8956,6 +8974,16 @@
                   "api_version": {
                     "type": "string",
                     "description": "Azure API version"
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+                    "default": false
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+                    "default": false
                   }
                 },
                 "dependentRequired": {

@@ -351,6 +351,48 @@ func topicTestNaming(_ context.Context, req *schemas.BifrostResponsesRequest) (*
 	return TextTurn("Password resets"), nil
 }
 
+// A topic is named from each text once, the samples first, so a prompt sent
+// to several providers is shown to the model as one request.
+func TestLabelTextsShowsEachTextOnce(t *testing.T) {
+	texts := map[string]string{"a": "graviton summary", "b": "graviton summary", "c": "fix the docs", "d": "", "e": "cut a release"}
+	require.Equal(t, []string{"graviton summary", "fix the docs", "cut a release"},
+		labelTexts(texts, []string{"a", "b", "c"}, []string{"d", "c", "e", "missing"}))
+}
+
+// Names written after a merge are told the names merged, so the model names
+// what they share rather than picking one of them again.
+func TestLabelTopicOffersFormerNames(t *testing.T) {
+	var prompt string
+	chat := func(_ context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		prompt = responsesInputText(req.Input)
+		return TextTurn("Coding Agent Work"), nil
+	}
+	label, err := askTopicLabel(context.Background(), chat, configFromRow(validWarpConfigRow()), []string{"fix the docs"}, []string{"Documentation Updates", "Release Delay Management"})
+	require.NoError(t, err)
+	require.Equal(t, "Coding Agent Work", label)
+	require.Contains(t, prompt, "Documentation Updates; Release Delay Management")
+
+	_, err = labelTopic(context.Background(), chat, configFromRow(validWarpConfigRow()), []string{"fix the docs"})
+	require.NoError(t, err)
+	require.NotContains(t, prompt, "merged", "a topic named the first time has no former names")
+}
+
+// An answer with no name in it is no name to askTopicLabel, so a caller with
+// a name already keeps it; labelTopic, naming a topic the first time, falls
+// back to the texts' own words.
+func TestAskTopicLabelReportsAnAnswerWithNoName(t *testing.T) {
+	chat := func(context.Context, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		return TextTurn(" \"\" "), nil
+	}
+	config := configFromRow(validWarpConfigRow())
+	label, err := askTopicLabel(context.Background(), chat, config, []string{"refund please"}, nil)
+	require.NoError(t, err)
+	require.Empty(t, label)
+	label, err = labelTopic(context.Background(), chat, config, []string{"refund please"})
+	require.NoError(t, err)
+	require.Equal(t, fallbackTopicLabel([]string{"refund please"}), label)
+}
+
 // countingHydrator counts the log store round trips labelling makes.
 type countingHydrator struct {
 	*semanticLogReader
@@ -2114,7 +2156,7 @@ func TestWarpTopicsJobJoinsClustersGivenTheSameName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, topics, 1)
 	require.Equal(t, "refund Requests", topics[0].Label)
-	require.Len(t, topics[0].ExampleLogIDs(), topicsLabelSamples)
+	require.Len(t, topics[0].ExampleLogIDs(), 6, "a topic of six keeps all six, as samples or drawn")
 	centroid, err := logstore.DecodeWarpVector(topics[0].Centroid)
 	require.NoError(t, err)
 	require.InDelta(t, 1, float64(dot(centroid, centroid)), 1e-5, "the centre is recomputed from every member")

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -710,6 +711,10 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 
 // Speech is not supported by the Azure provider.
 func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	if useSpeechEndpoints(ctx, key) {
+		return provider.speechSynthesis(ctx, key, request)
+	}
+
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -823,6 +828,10 @@ func (provider *AzureProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key,
 // SpeechStream handles streaming for speech synthesis with Azure.
 // Azure sends raw binary audio bytes in SSE format, unlike OpenAI which sends JSON.
 func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if useSpeechEndpoints(ctx, key) {
+		return provider.speechSynthesisStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1130,6 +1139,13 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	if useSpeechEndpoints(ctx, key) {
+		if request.Model == azureSpeechShortAudioModel {
+			return provider.speechShortAudioTranscription(ctx, key, request)
+		}
+		return provider.speechTranscription(ctx, key, request)
+	}
+
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1141,11 +1157,30 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 
 	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", endpoint, request.Model, resolveAPIVersion(ctx, DefaultAzureAPIVersion))
 
+	// Azure Whisper returns no usage, so json is fetched as verbose_json for the billed duration.
+	whisper := strings.Contains(schemas.ResolveCanonicalModel(ctx, request.Model), "whisper")
+	format := ""
+	if request.Params != nil && request.Params.ResponseFormat != nil {
+		format = *request.Params.ResponseFormat
+	}
+	// A large upload streams to Azure as sent, so its response_format cannot be switched.
+	upstreamRequest := request
+	if whisper && !providerUtils.IsLargePayloadPassthroughEnabled(ctx) && (format == "" || format == "json") {
+		params := schemas.TranscriptionParameters{}
+		if request.Params != nil {
+			params = *request.Params
+		}
+		params.ResponseFormat = new("verbose_json")
+		copied := *request
+		copied.Params = &params
+		upstreamRequest = &copied
+	}
+
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
 		url,
-		request,
+		upstreamRequest,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		authHeader,
@@ -1158,6 +1193,15 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
+	if whisper {
+		if response.Usage == nil && response.Duration != nil {
+			response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: new(math.Ceil(*response.Duration))}
+		}
+		// A json caller gets the text alone, as OpenAI's json response carries.
+		if upstreamRequest != request {
+			response.Duration, response.Language, response.Task, response.Segments, response.Words = nil, nil, nil, nil, nil
+		}
+	}
 	return response, err
 }
 

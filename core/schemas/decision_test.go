@@ -163,7 +163,7 @@ func TestDecisionInputPartTextAndAssets(t *testing.T) {
 	assert.Equal(t, []any{"a", "b"}, parts[2].Text.Value())
 	assert.True(t, parts[3].IsAsset())
 	assert.Equal(t, "door", *parts[3].Name)
-	assert.Equal(t, []byte("AAAA"), parts[3].Data, "data is base64 on the wire")
+	assert.Equal(t, []byte("AAAA"), parts[3].Data.File, "data is base64 on the wire")
 	assert.False(t, parts[4].IsAsset(), "an image without an ID is inline evidence")
 	assert.True(t, input.HasAssetParts())
 	assert.False(t, DecisionInput{Messages: []DecisionInputMessage{{Role: "user", Content: DecisionInputContent{Parts: parts[4:]}}}}.HasAssetParts())
@@ -206,6 +206,57 @@ func TestDecisionInputMessagesKeepOpenAIFields(t *testing.T) {
 	out, err := Marshal(messages)
 	require.NoError(t, err)
 	assert.JSONEq(t, body, string(out))
+}
+
+// TestDecisionInputWireUnchanged pins that messages and parts that existed
+// before conversation items and JSON parts are written byte for byte as they
+// were, so a request that already worked reaches every provider unchanged: a
+// message's type, role, and content in that order, an image's detail, and a
+// Typesafe asset's base64 data between its id and name.
+func TestDecisionInputWireUnchanged(t *testing.T) {
+	for _, body := range []string{
+		`[{"role":"user","content":"I was charged twice."}]`,
+		`[{"type":"message","role":"user","content":[{"type":"input_text","text":"Inspect the box."},{"type":"input_image","image_url":"https://example.com/box.png","detail":"high"},{"type":"input_image","id":"r-cam","data":"QUFBQQ==","name":"door"}]}]`,
+	} {
+		var input DecisionInput
+		require.NoError(t, Unmarshal([]byte(body), &input))
+		out, err := Marshal(input)
+		require.NoError(t, err)
+		assert.Equal(t, body, string(out))
+	}
+	built, err := Marshal(DecisionInputMessage{Role: "user", Content: DecisionInputContent{Text: Ptr("hi")}})
+	require.NoError(t, err)
+	assert.Equal(t, `{"role":"user","content":"hi"}`, string(built), "a message built in Go, as the routing plugin builds one")
+}
+
+// TestDecisionDataJSON pins a part's data, which two part types send under one
+// key: a Typesafe asset's base64 file reads into File and is written back as
+// the same base64, and an input_json object or array reads into Structured,
+// keeps every number exactly (an ID above 2^53 is not rounded), and is written
+// with sorted keys so the same value is always sent as the same bytes. Data of
+// any other kind is rejected.
+func TestDecisionDataJSON(t *testing.T) {
+	for name, tc := range map[string]struct{ in, out, file string }{
+		"asset file":       {in: `"QUFBQQ=="`, out: `"QUFBQQ=="`, file: "AAAA"},
+		"object":           {in: `{"order":"A-1","charges":[49,49]}`, out: `{"charges":[49,49],"order":"A-1"}`},
+		"array of objects": {in: `[{"sku":"B","qty":0},{"sku":"A","qty":2}]`, out: `[{"qty":0,"sku":"B"},{"qty":2,"sku":"A"}]`},
+		"big integer":      {in: `{"order_id":12345678901234567890}`, out: `{"order_id":12345678901234567890}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var data DecisionData
+			require.NoError(t, Unmarshal([]byte(tc.in), &data))
+			assert.Equal(t, tc.file, string(data.File))
+			assert.Equal(t, tc.file == "", data.Structured != nil)
+			out, err := Marshal(data)
+			require.NoError(t, err)
+			assert.Equal(t, tc.out, string(out))
+		})
+	}
+
+	var number DecisionData
+	assert.Error(t, Unmarshal([]byte(`7`), &number))
+	_, err := Marshal(DecisionData{File: []byte("x"), Structured: map[string]any{}})
+	assert.Error(t, err, "at most one member is set")
 }
 
 // TestDecisionQuestionNames pins the names map-shaped providers send questions
@@ -293,4 +344,25 @@ func TestSupportsDecisions(t *testing.T) {
 	assert.True(t, ResolveModelCaps(OpenAI, "gpt-7-decider").SupportsDecisions(DefaultSupportsDecisions("gpt-7-decider")))
 	assert.False(t, ResolveModelCaps(OpenAI, "gpt-6-luna").SupportsDecisions(DefaultSupportsDecisions("gpt-6-luna")))
 	assert.True(t, ResolveModelCaps(OpenAI, "gpt-6-luna-2026-09-01").SupportsDecisions(DefaultSupportsDecisions("gpt-6-luna-2026-09-01")), "no row: the fallback decides")
+}
+
+// BenchmarkDecisionInputMessagesJSON measures decoding and encoding a typical
+// message input (a user message with text and an image, and an assistant's
+// reply), which every decision request with messages pays on the route and
+// again on the provider's wire.
+func BenchmarkDecisionInputMessagesJSON(b *testing.B) {
+	data := []byte(`[
+		{"role":"user","content":[{"type":"input_text","text":"Is the box in this photo damaged?"},{"type":"input_image","image_url":"https://example.com/box.png","detail":"high"}]},
+		{"role":"assistant","content":"The corner looks dented."}
+	]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var input DecisionInput
+		if err := Unmarshal(data, &input); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := Marshal(input); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -60,7 +60,7 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 		"metadata": {
 			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
 			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
-			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version")},
+			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
 			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
 			BedrockAliasCfg:   &BedrockAliasCfg{},
 			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
@@ -122,7 +122,8 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
             "model_name": "claude-3-5-sonnet",
             "model_family": "anthropic",
             "description": "prod",
-            "api_version": "2024-08-01-preview"
+            "api_version": "2024-08-01-preview",
+            "use_speech_endpoints": true
         }
     }`)
 	var ka KeyAliases
@@ -144,6 +145,9 @@ func TestKeyAliasesUnmarshalRichShape(t *testing.T) {
 	}
 	if got.AzureAliasCfg == nil || got.APIVersion == nil || *got.APIVersion != "2024-08-01-preview" {
 		t.Fatalf("AzureAliasCfg.APIVersion mismatch: %+v", got.AzureAliasCfg)
+	}
+	if got.UseSpeechEndpoints == nil || !*got.UseSpeechEndpoints {
+		t.Fatalf("AzureAliasCfg.UseSpeechEndpoints mismatch: %+v", got.AzureAliasCfg)
 	}
 }
 
@@ -293,6 +297,7 @@ func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
 		"with_description":  {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
 		"with_azure_subcfg": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
+		"with_azure_speech": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
