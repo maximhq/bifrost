@@ -335,9 +335,9 @@ Browser-based MCP clients send an `Origin` header, and Bifrost checks it on ever
 **Fix:** Confirm the client stores its credentials; check the **OAuth Grants** page to see whether the grant was revoked.
 
 ### Token rejected after issuer change
-**Symptom:** Previously issued tokens fail validation after changing `issuer_url`.
-**Cause:** The `iss` claim in existing tokens no longer matches the configured issuer.
-**Fix:** Clients reconnect to obtain tokens with the new issuer.
+**Symptom:** Previously issued tokens fail validation after changing `issuer_url`, and refreshing them returns `400` `invalid_grant`.
+**Cause:** The `iss` claim in existing tokens no longer matches the configured issuer, and their grants are bound to the `/mcp` resource at the old address, so they cannot refresh.
+**Fix:** Clients reconnect, authorizing again, to obtain tokens with the new issuer.
 
 ### Save rejected with "issuer_url must be set"
 **Symptom:** Switching `mcp_server_auth_mode` to `both` or `oauth` is rejected with a 400 mentioning `issuer_url`.

@@ -727,6 +727,39 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 	})
 }
 
+// TestHandleToken_RefreshAfterIssuerChange pins that a grant bound to a resource this server no longer
+// serves cannot refresh. Changing issuer_url moves the /mcp resource, and the refresh carried the old one
+// forward, minting access tokens that /mcp then rejected for their audience.
+func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
+	refresh := func(t *testing.T, resource string) *fasthttp.RequestCtx {
+		t.Helper()
+		store := newRealOAuth2Store(t)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
+			ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
+		}))
+		seedConsentedRequest(t, store, "fam-vk", "client-1", "auth-code-vk", pkceChallenge("v"), "vk", "vk-1", time.Now().Add(time.Minute))
+		require.NoError(t, store.ConsumeOAuth2AuthorizeRequest(context.Background(), "fam-vk", &configtables.TableOAuth2RefreshToken{
+			ID: "rt-vk", TokenHash: hashSHA256Hex("refresh-vk-1"), FamilyID: "fam-vk", ClientID: "client-1",
+			BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: resource, CreatedAt: time.Now(),
+		}))
+		ctx := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {"client-1"},
+		}.Encode())
+		h.handleToken(ctx)
+		return ctx
+	}
+
+	moved := refresh(t, "https://old-issuer.example/mcp")
+	assert.Equal(t, fasthttp.StatusBadRequest, moved.Response.StatusCode())
+	assert.Contains(t, string(moved.Response.Body()), "invalid_grant")
+	assert.Contains(t, string(moved.Response.Body()), "the grant was issued for a resource this server no longer serves")
+
+	current := refresh(t, testMCPResource)
+	assert.Equal(t, fasthttp.StatusOK, current.Response.StatusCode(), "control: a grant for the current resource refreshes: %s", current.Response.Body())
+}
+
 func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 	seedUserRefresh := func(t *testing.T, store configstore.ConfigStore, plain string) {
 		t.Helper()
