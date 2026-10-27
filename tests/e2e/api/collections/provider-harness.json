@@ -329,7 +329,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus', 'kimchi'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -298480,6 +298480,142 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "297. Kimchi provider (kimchi provider)",
+      "description": "Kimchi is reached through its OpenAI-compatible API for chat completions and embeddings. Responses requests are served through chat completions, and Kimchi does not serve text completions, so there is no case for them. Reasoning models return thinking in reasoning_content, which Bifrost maps to reasoning. During long waits Kimchi sends SSE keep-alive comments, which Bifrost skips. These cases pin that a plain chat call, a chat stream and an embedding call come back in OpenAI shape from the kimchi provider.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - answer through the Kimchi chat API - kimchi/glm-5.3-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by kimchi with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices[0].message.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('kimchi');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"kimchi/glm-5.3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - kimchi/glm-5.3-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no SSE data lines').to.include('data:');",
+                  "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"kimchi/glm-5.3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/embeddings - one input returns one vector - kimchi/bge-m3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one vector served by kimchi', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.length, 'wrong vector count: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(j.data[0].embedding, 'empty embedding').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('kimchi');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"kimchi/bge-m3\",\n  \"input\": \"a small red square\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
         }
       ]
     }
