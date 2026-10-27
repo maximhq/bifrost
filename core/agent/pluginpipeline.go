@@ -19,6 +19,16 @@ type PluginPipeline interface {
 	ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent, runThrough int)
 }
 
+// a2aEventBodyDemandPipeline is an optional streaming capability. A false
+// declaration must cover every observer dispatched by this pipeline for the
+// operation and cannot depend on live configuration or individual events.
+// Observers that change shared content policy during the operation require bodies.
+// Returning the receiving instance prevents an embedding wrapper
+// from inheriting an opt-out while overriding ObserveA2AEvent to consume bodies.
+type a2aEventBodyDemandPipeline interface {
+	A2AEventBodyDemand(ctx *schemas.BifrostContext, runThrough int) (owner any, required bool)
+}
+
 // A2AOpFunc is the closure each call site hands to RunWithPluginPipeline. It
 // receives the (possibly mutated) request that flowed through the pre-hooks and
 // performs the actual work, returning a typed response. The plain Go error it
@@ -346,22 +356,25 @@ func (m *Manager) runWithPluginPipeline(
 	return runPost(resp, bErr)
 }
 
-// a2aEventBodyRequired preserves legacy custom pipelines and retains bodies on
-// optional demand-query panics, just like observation-only callback failures.
+// a2aEventBodyRequired retains bodies for undeclared pipelines, inherited
+// declarations on wrappers, and failed queries. Demand is queried once after
+// pre-hooks, never per event or for public/unary operations.
 func (m *Manager) a2aEventBodyRequired(ctx *schemas.BifrostContext, pipeline PluginPipeline, runThrough int) (required bool) {
-	demand, ok := pipeline.(interface {
-		A2AEventBodyRequired(*schemas.BifrostContext, int) bool
-	})
+	demand, ok := pipeline.(a2aEventBodyDemandPipeline)
 	if !ok {
 		return true
 	}
 	required = true
 	defer func() {
-		if recovered := recover(); recovered != nil && m.logger != nil {
-			m.logger.Warn("panic in A2A pipeline body demand: %v", recovered)
+		if recovered := recover(); recovered != nil {
+			required = true
+			if m.logger != nil {
+				m.logger.Warn("panic in A2A pipeline body demand: %v", recovered)
+			}
 		}
 	}()
-	return demand.A2AEventBodyRequired(ctx, runThrough)
+	owner, needsBody := demand.A2AEventBodyDemand(ctx, runThrough)
+	return owner != pipeline || needsBody
 }
 
 // a2aErrorType classifies a failed A2A operation for the error.type span

@@ -241,12 +241,15 @@ type A2AEventObserver interface {
 // for the entire operation, after its pre-hook has run. A false result must be
 // based on immutable request state: live configuration, retention settings, or
 // event-dependent requirements must conservatively return true.
+// Observers that change shared content-policy state during the operation must
+// also require bodies, even if they do not read the body themselves.
 //
 // The returned observer must be the same instance that receives ObserveA2AEvent
 // (normally the receiver itself). This prevents a wrapper overriding observation
 // from silently opting out through a promoted method. Unknown or mismatched
-// observers retain the complete body. The method must not mutate context, retain
-// its scoped context, or otherwise affect forwarding.
+// observers retain the complete body. This is a read-only query receiving the
+// operation context, not a plugin-scoped hook context. It must not mutate or
+// retain the context, append plugin logs, or otherwise affect forwarding.
 type A2AEventBodyDemandProvider interface {
 	A2AEventObserver
 	A2AEventBodyDemand(ctx *BifrostContext) (observer A2AEventObserver, required bool)

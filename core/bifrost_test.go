@@ -37,6 +37,7 @@ type a2aBodyDemandTestPlugin struct {
 	panicDemand  bool
 	invalidOwner bool
 	foreignOwner bool
+	onDemand     func(*schemas.BifrostContext)
 	demandCalls  int
 	bodies       []*string
 }
@@ -52,8 +53,11 @@ func (p *a2aBodyDemandTestPlugin) PostA2AHook(_ *schemas.BifrostContext, resp *s
 func (p *a2aBodyDemandTestPlugin) ObserveA2AEvent(_ *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
 	p.bodies = append(p.bodies, event.Body)
 }
-func (p *a2aBodyDemandTestPlugin) A2AEventBodyDemand(_ *schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
+func (p *a2aBodyDemandTestPlugin) A2AEventBodyDemand(ctx *schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
 	p.demandCalls++
+	if p.onDemand != nil {
+		p.onDemand(ctx)
+	}
 	if p.panicDemand {
 		panic("demand failed")
 	}
@@ -127,7 +131,7 @@ func TestA2AEventBodyDemandPreservesUnknownAndWrappedObservers(t *testing.T) {
 			}
 			pipeline := &PluginPipeline{a2aPlugins: []schemas.A2APlugin{plugin}, logger: NewDefaultLogger(schemas.LogLevelError)}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			if got := pipeline.A2AEventBodyRequired(ctx, 1); got != test.required {
+			if owner, got := pipeline.A2AEventBodyDemand(ctx, 1); owner != pipeline || got != test.required {
 				t.Fatalf("body required = %t, want %t", got, test.required)
 			}
 			body := `{"messageId":"complete"}`
@@ -148,7 +152,7 @@ func TestA2AEventBodyDemandOnlyIncludesEnteredObservers(t *testing.T) {
 	pipeline := &PluginPipeline{a2aPlugins: []schemas.A2APlugin{metadata, full}, logger: NewDefaultLogger(schemas.LogLevelError)}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	for _, count := range []int{-1, 0, 1} {
-		if pipeline.A2AEventBodyRequired(ctx, count) {
+		if _, required := pipeline.A2AEventBodyDemand(ctx, count); required {
 			t.Fatalf("unentered full observer affected demand with count %d", count)
 		}
 	}
@@ -156,12 +160,59 @@ func TestA2AEventBodyDemandOnlyIncludesEnteredObservers(t *testing.T) {
 		t.Fatal("queried unentered observer")
 	}
 	for _, count := range []int{2, 10} {
-		if !pipeline.A2AEventBodyRequired(ctx, count) {
+		if _, required := pipeline.A2AEventBodyDemand(ctx, count); !required {
 			t.Fatalf("lost entered full observer with count %d", count)
 		}
 	}
-	if !pipeline.A2AEventBodyRequired(nil, 2) {
+	if _, required := pipeline.A2AEventBodyDemand(nil, 2); !required {
 		t.Fatal("missing context must stay conservative")
+	}
+}
+
+func TestA2AEventBodyDemandUsesOperationContext(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	queried := false
+	observer := &a2aBodyDemandTestPlugin{name: "metadata", onDemand: func(received *schemas.BifrostContext) {
+		queried = true
+		if received != ctx {
+			t.Fatal("read-only demand query must not allocate a plugin scope")
+		}
+	}}
+	pipeline := &PluginPipeline{a2aPlugins: []schemas.A2APlugin{observer}}
+	owner, required := pipeline.A2AEventBodyDemand(ctx, 1)
+	if owner != pipeline || required || !queried {
+		t.Fatal("unexpected metadata-only demand")
+	}
+}
+
+// BenchmarkA2AEventBodyDemand measures the real pipeline's preparation cost once
+// per stream, separately from event encoding and forwarding.
+func BenchmarkA2AEventBodyDemand(b *testing.B) {
+	for _, mode := range []string{"empty", "metadata", "full", "legacy"} {
+		b.Run(mode, func(b *testing.B) {
+			observer := &a2aBodyDemandTestPlugin{name: "benchmark", required: mode == "full"}
+			var plugins []schemas.A2APlugin
+			if mode != "empty" {
+				var plugin schemas.A2APlugin = observer
+				if mode == "legacy" {
+					plugin = &legacyA2ABodyObserver{A2APlugin: observer, observer: observer}
+				}
+				plugins = []schemas.A2APlugin{plugin}
+			}
+			pipeline := &PluginPipeline{a2aPlugins: plugins, logger: NewDefaultLogger(schemas.LogLevelError)}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			wantBody := mode == "full" || mode == "legacy"
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_, required := pipeline.A2AEventBodyDemand(ctx, len(plugins))
+				if required != wantBody {
+					b.Fatal("unexpected body demand")
+				}
+			}
+		})
 	}
 }
 

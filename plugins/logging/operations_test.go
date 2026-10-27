@@ -4681,8 +4681,10 @@ func (u *a2aObservationUpstream) SubscribeToTask(context.Context, *a2a.Subscribe
 }
 
 type a2aObservationRecorder struct {
-	mu     sync.Mutex
-	events []schemas.BifrostA2AEvent
+	mu       sync.Mutex
+	events   []schemas.BifrostA2AEvent
+	required bool
+	onEvent  func(*schemas.BifrostContext, *schemas.BifrostA2AEvent)
 }
 
 func (p *a2aObservationRecorder) GetName() string { return "a2a-observation-recorder" }
@@ -4694,11 +4696,14 @@ func (p *a2aObservationRecorder) PostA2AHook(_ *schemas.BifrostContext, resp *sc
 	return resp, err, nil
 }
 func (p *a2aObservationRecorder) A2AEventBodyDemand(*schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
-	return p, false
+	return p, p.required
 }
-func (p *a2aObservationRecorder) ObserveA2AEvent(_ *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+func (p *a2aObservationRecorder) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.onEvent != nil {
+		p.onEvent(ctx, event)
+	}
 	p.events = append(p.events, *event)
 }
 
@@ -4709,6 +4714,18 @@ type a2aLegacyObservationRecorder struct {
 
 func (p *a2aLegacyObservationRecorder) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
 	p.recorder.ObserveA2AEvent(ctx, event)
+}
+
+// A pipeline wrapper may add its own observer outside the core plugin list.
+// Its inherited declaration must not suppress bodies that observer consumes.
+type a2aWrappedObservationPipeline struct {
+	*bifrost.PluginPipeline
+	observer schemas.A2AEventObserver
+}
+
+func (p *a2aWrappedObservationPipeline) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent, runThrough int) {
+	p.PluginPipeline.ObserveA2AEvent(ctx, event, runThrough)
+	p.observer.ObserveA2AEvent(ctx, event)
 }
 
 type a2aWrappedLoggerObserver struct {
@@ -4744,19 +4761,22 @@ func (p *a2aObservationTraceExporter) Inject(ctx context.Context, trace *schemas
 func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
 	for _, method := range []string{"send", "subscribe"} {
 		for _, test := range []struct {
-			name         string
-			global       bool
-			vkSuppressed bool
-			header       bool
-			object       bool
-			retain       bool
-			traceContent bool
-			legacy       bool
-			wrapped      bool
-			failedTask   bool
-			wantBody     bool
-			wantLogBody  bool
-			wantTrace    bool
+			name            string
+			global          bool
+			vkSuppressed    bool
+			header          bool
+			object          bool
+			retain          bool
+			traceContent    bool
+			legacy          bool
+			wrapped         bool
+			wrappedPipeline bool
+			loggerExporter  bool
+			dynamicPolicy   bool
+			failedTask      bool
+			wantBody        bool
+			wantLogBody     bool
+			wantTrace       bool
 		}{
 			{name: "VK metadata only", vkSuppressed: true},
 			{name: "request metadata only", header: true},
@@ -4766,6 +4786,11 @@ func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
 			{name: "full trace dominates logger suppression", header: true, traceContent: true, wantBody: true, wantTrace: true},
 			{name: "legacy observer keeps body", vkSuppressed: true, legacy: true, wantBody: true},
 			{name: "wrapped logger keeps body", vkSuppressed: true, wrapped: true, wantBody: true},
+			{name: "wrapped pipeline keeps body", header: true, wrappedPipeline: true, wantBody: true},
+			{name: "default logger exporter with header remains eager", header: true, loggerExporter: true, wantBody: true, wantTrace: true},
+			{name: "default logger exporter with VK suppression", vkSuppressed: true, loggerExporter: true},
+			{name: "legacy observer can reenable logging midstream", header: true, legacy: true, dynamicPolicy: true, wantBody: true},
+			{name: "declared dynamic observer requires bodies", header: true, dynamicPolicy: true, wantBody: true},
 			{name: "metadata preserves failed task", vkSuppressed: true, failedTask: true},
 		} {
 			t.Run(method+"/"+test.name, func(t *testing.T) {
@@ -4779,8 +4804,19 @@ func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
 				tracer := tracing.NewTracer(traceStore, nil, testLogger{})
 				t.Cleanup(tracer.Stop)
 				exporter := &a2aObservationTraceExporter{logger: logger, content: test.traceContent, traces: make(chan *schemas.Trace, 1)}
-				tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{exporter}, nil)
-				recorder := &a2aObservationRecorder{}
+				observabilityPlugins := []schemas.ObservabilityPlugin{exporter}
+				if test.loggerExporter {
+					observabilityPlugins = append(observabilityPlugins, logger)
+				}
+				tracer.SetObservabilityPlugins(observabilityPlugins, nil)
+				recorder := &a2aObservationRecorder{required: test.dynamicPolicy}
+				if test.dynamicPolicy {
+					recorder.onEvent = func(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+						if event.Sequence == 1 {
+							ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, false)
+						}
+					}
+				}
 				var logObserver schemas.A2APlugin = logger
 				wrapped := &a2aWrappedLoggerObserver{LoggerPlugin: logger}
 				if test.wrapped {
@@ -4790,7 +4826,11 @@ func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
 				if test.legacy {
 					recordObserver = &a2aLegacyObservationRecorder{A2APlugin: recorder, recorder: recorder}
 				}
-				core, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: a2aObservationAccount{}, Logger: testLogger{}, Tracer: tracer, A2APlugins: []schemas.A2APlugin{logObserver, recordObserver}, InitialPoolSize: 2})
+				a2aPlugins := []schemas.A2APlugin{logObserver}
+				if !test.wrappedPipeline {
+					a2aPlugins = append(a2aPlugins, recordObserver)
+				}
+				core, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: a2aObservationAccount{}, Logger: testLogger{}, Tracer: tracer, A2APlugins: a2aPlugins, InitialPoolSize: 2})
 				require.NoError(t, err)
 				t.Cleanup(core.Shutdown)
 				message := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("quotes \" and Unicode ☃\n"))
@@ -4813,7 +4853,23 @@ func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
 				card := &a2a.AgentCard{Name: "observation-fixture", Version: "1", Capabilities: a2a.AgentCapabilities{Streaming: true}, SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(up.URL+"/rpc", a2a.TransportProtocolJSONRPC)}}
 				mux.Handle("/card", a2asrv.NewStaticAgentCardHandler(card))
 				mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(upstream))
-				manager, err := agent.NewManager(context.Background(), &a2aObservationRegistrations{}, testLogger{}, "http://gateway", nil, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, PluginPipelineAcquire: func() agent.PluginPipeline { return core.AcquirePluginPipeline() }, PluginPipelineRelease: func(p agent.PluginPipeline) { core.ReleasePluginPipeline(p.(*bifrost.PluginPipeline)) }})
+				manager, err := agent.NewManager(context.Background(), &a2aObservationRegistrations{}, testLogger{}, "http://gateway", nil, agent.ManagerConfig{
+					PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} },
+					PluginPipelineAcquire: func() agent.PluginPipeline {
+						pipeline := core.AcquirePluginPipeline()
+						if test.wrappedPipeline {
+							return &a2aWrappedObservationPipeline{PluginPipeline: pipeline, observer: recorder}
+						}
+						return pipeline
+					},
+					PluginPipelineRelease: func(p agent.PluginPipeline) {
+						if wrapped, ok := p.(*a2aWrappedObservationPipeline); ok {
+							core.ReleasePluginPipeline(wrapped.PluginPipeline)
+						} else {
+							core.ReleasePluginPipeline(p.(*bifrost.PluginPipeline))
+						}
+					},
+				})
 				require.NoError(t, err)
 				t.Cleanup(manager.Close)
 				_, err = manager.Create(context.Background(), agent.CreateRequest{Name: "observation-fixture", AgentCardURL: up.URL + "/card"})
@@ -4938,7 +4994,11 @@ func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
 					require.NotNil(t, entry.ContextID)
 					require.Equal(t, "task-1", *entry.TaskID)
 					require.Equal(t, "context-1", *entry.ContextID)
-					require.Equal(t, test.wantLogBody, entry.EventBody != nil)
+					wantLogBody := test.wantLogBody
+					if test.dynamicPolicy {
+						wantLogBody = *entry.EventSequence > 1
+					}
+					require.Equal(t, wantLogBody, entry.EventBody != nil)
 					require.Equal(t, test.object && test.retain, entry.ContentHidden)
 					if entry.EventBody != nil {
 						body, err := json.Marshal(events[*entry.EventSequence-1])

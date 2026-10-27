@@ -155,13 +155,15 @@ func streamingGateway(t testing.TB, plugins ...*recordingA2APlugin) (*streamingU
 // streamBodyDemandPipeline declares operation-wide demand without changing the
 // legacy PluginPipeline interface. Unknown pipelines must stay body-inclusive.
 type streamBodyDemandPipeline struct {
-	required    bool
-	panicDemand bool
-	demandCalls int
-	postCalls   int
-	postError   *schemas.BifrostError
-	observed    []*schemas.BifrostA2AEvent
-	onEvent     func(*schemas.BifrostA2AEvent)
+	required     bool
+	panicDemand  bool
+	invalidOwner bool
+	foreignOwner bool
+	demandCalls  int
+	postCalls    int
+	postError    *schemas.BifrostError
+	observed     []*schemas.BifrostA2AEvent
+	onEvent      func(*schemas.BifrostA2AEvent)
 }
 
 func (p *streamBodyDemandPipeline) RunA2APreHooks(_ *schemas.BifrostContext, req *schemas.BifrostA2ARequest, entered func(int)) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, int) {
@@ -184,15 +186,37 @@ func (p *streamBodyDemandPipeline) ObserveA2AEvent(_ *schemas.BifrostContext, ev
 	p.observed = append(p.observed, &copy)
 }
 
-func (p *streamBodyDemandPipeline) A2AEventBodyRequired(_ *schemas.BifrostContext, _ int) bool {
+func (p *streamBodyDemandPipeline) A2AEventBodyDemand(_ *schemas.BifrostContext, _ int) (any, bool) {
 	p.demandCalls++
 	if p.panicDemand {
 		panic("body demand failed")
 	}
-	return p.required
+	if p.invalidOwner {
+		return nil, false
+	}
+	if p.foreignOwner {
+		return &streamBodyDemandPipeline{}, false
+	}
+	return p, p.required
 }
 
 type legacyStreamBodyPipeline struct{ PluginPipeline }
+type wrappedStreamBodyPipeline struct{ *streamBodyDemandPipeline }
+
+func (p *wrappedStreamBodyPipeline) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent, runThrough int) {
+	p.streamBodyDemandPipeline.ObserveA2AEvent(ctx, event, runThrough)
+}
+
+type nonComparableStreamBodyPipeline struct {
+	*streamBodyDemandPipeline
+	state []byte
+}
+
+func (p nonComparableStreamBodyPipeline) A2AEventBodyDemand(*schemas.BifrostContext, int) (any, bool) {
+	p.demandCalls++
+	return p, false
+}
+
 type legacyStreamContentTracer struct{ schemas.Tracer }
 
 type observationMarshalProbe struct{ calls *atomic.Int64 }
@@ -208,7 +232,11 @@ func TestStreamObservationSerializesOnlyRequiredBodies(t *testing.T) {
 		pipeline        bool
 		required        bool
 		legacy          bool
+		wrapped         bool
+		nonComparable   bool
 		panicDemand     bool
+		invalidOwner    bool
+		foreignOwner    bool
 		traced          bool
 		traceContent    bool
 		traceRaw        bool
@@ -220,6 +248,10 @@ func TestStreamObservationSerializesOnlyRequiredBodies(t *testing.T) {
 		{name: "metadata pipeline", pipeline: true, wantDemandCalls: 1},
 		{name: "full pipeline", pipeline: true, required: true, wantEncodes: 3, wantDemandCalls: 1},
 		{name: "unknown pipeline", pipeline: true, legacy: true, wantEncodes: 3},
+		{name: "promoted pipeline declaration", pipeline: true, wrapped: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "invalid pipeline owner", pipeline: true, invalidOwner: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "different pipeline owner", pipeline: true, foreignOwner: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "non-comparable pipeline", pipeline: true, nonComparable: true, wantEncodes: 3, wantDemandCalls: 1},
 		{name: "panic falls back to full body", pipeline: true, panicDemand: true, wantEncodes: 3, wantDemandCalls: 1},
 		{name: "metadata trace", traced: true},
 		{name: "raw trace does not need observation body", traced: true, traceRaw: true},
@@ -230,11 +262,17 @@ func TestStreamObservationSerializesOnlyRequiredBodies(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, _, manager := streamingGateway(t)
-			pipeline := &streamBodyDemandPipeline{required: test.required, panicDemand: test.panicDemand}
+			pipeline := &streamBodyDemandPipeline{required: test.required, panicDemand: test.panicDemand, invalidOwner: test.invalidOwner, foreignOwner: test.foreignOwner}
 			if test.pipeline {
 				var active PluginPipeline = pipeline
 				if test.legacy {
 					active = legacyStreamBodyPipeline{active}
+				}
+				if test.wrapped {
+					active = &wrappedStreamBodyPipeline{pipeline}
+				}
+				if test.nonComparable {
+					active = nonComparableStreamBodyPipeline{streamBodyDemandPipeline: pipeline, state: []byte("state")}
 				}
 				manager.SetPluginPipeline(func() PluginPipeline { return active }, nil)
 			}

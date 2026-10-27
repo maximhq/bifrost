@@ -9931,43 +9931,46 @@ func (p *PluginPipeline) RunA2APostHooks(ctx *schemas.BifrostContext, a2aResp *s
 	return a2aResp, nil
 }
 
-// A2AEventBodyRequired conservatively unions the entered observers' stable body
-// demand. Unknown consumers, promoted declarations on wrappers, and failures
-// retain complete bodies. It is queried once per stream, not for unary requests.
-func (p *PluginPipeline) A2AEventBodyRequired(ctx *schemas.BifrostContext, runThrough int) bool {
+// A2AEventBodyDemand unions the entered observers' operation-wide body demand.
+// It returns the receiving pipeline along with the decision so a custom pipeline
+// wrapper cannot inherit an opt-out while overriding event observation. Unknown
+// consumers and failed declarations require complete bodies. The Agent Gateway
+// queries this once after pre-hooks, only for its internal streaming path.
+func (p *PluginPipeline) A2AEventBodyDemand(ctx *schemas.BifrostContext, runThrough int) (owner any, required bool) {
 	if runThrough > len(p.a2aPlugins) {
 		runThrough = len(p.a2aPlugins)
 	}
 	for i := 0; i < runThrough; i++ {
-		observer, ok := p.a2aPlugins[i].(schemas.A2AEventObserver)
-		if !ok {
-			continue
-		}
-		demand, ok := observer.(schemas.A2AEventBodyDemandProvider)
-		if !ok || ctx == nil {
-			return true
-		}
-		required := true
-		func() {
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					required = true
-					p.logger.Warn("panic in A2A event body demand: %v", recovered)
-				}
-			}()
-			pluginName := p.a2aPlugins[i].GetName()
-			pluginCtx := ctx.WithPluginScope(&pluginName)
-			defer pluginCtx.ReleasePluginScope()
-			owner, needsBody := demand.A2AEventBodyDemand(pluginCtx)
-			if owner == observer {
-				required = needsBody
-			}
-		}()
-		if required {
-			return true
+		if p.a2aPluginRequiresEventBody(ctx, p.a2aPlugins[i]) {
+			return p, true
 		}
 	}
-	return false
+	return p, false
+}
+
+// a2aPluginRequiresEventBody validates one observer's opt-out. Plugins without
+// event observation consume no body; observers without a valid declaration do.
+// This is a read-only query, not a hook: no plugin scope or log store is needed.
+func (p *PluginPipeline) a2aPluginRequiresEventBody(ctx *schemas.BifrostContext, plugin schemas.A2APlugin) (required bool) {
+	observer, ok := plugin.(schemas.A2AEventObserver)
+	if !ok {
+		return false
+	}
+	demand, ok := observer.(schemas.A2AEventBodyDemandProvider)
+	if !ok || ctx == nil {
+		return true
+	}
+	required = true
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			required = true
+			if p.logger != nil {
+				p.logger.Warn("panic in A2A event body demand: %v", recovered)
+			}
+		}
+	}()
+	owner, needsBody := demand.A2AEventBodyDemand(ctx)
+	return owner != observer || needsBody
 }
 
 // ObserveA2AEvent dispatches an immutable event observation only to optional
