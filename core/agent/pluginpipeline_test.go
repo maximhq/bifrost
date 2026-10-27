@@ -531,3 +531,27 @@ func TestA2AGateOpSpanErrorAndShortCircuit(t *testing.T) {
 	require.NotNil(t, bErr)
 	require.Empty(t, blocked.spans, "a short-circuited operation must open no op span")
 }
+
+func TestA2AGatePublicOperationsDoNotQueryBodyDemand(t *testing.T) {
+	for _, requestType := range []schemas.A2ARequestType{
+		schemas.A2ARequestTypeSendMessage,
+		schemas.A2ARequestTypeSendStreamingMessage,
+		schemas.A2ARequestTypeSubscribeToTask,
+	} {
+		t.Run(string(requestType), func(t *testing.T) {
+			pipeline := &streamBodyDemandPipeline{panicDemand: true}
+			manager := &Manager{}
+			manager.SetPluginPipeline(func() PluginPipeline { return pipeline }, nil)
+			body := `{"messageId":"provided"}`
+			_, err := manager.RunWithPluginPipeline(gateCtxForTest(), &schemas.BifrostA2ARequest{RequestType: requestType}, func(_ *schemas.BifrostA2ARequest, observe func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
+				require.NotNil(t, observe)
+				observe(&schemas.BifrostA2AEvent{Body: &body})
+				return &schemas.BifrostA2AResponse{}, nil
+			})
+			require.Nil(t, err)
+			require.Zero(t, pipeline.demandCalls)
+			require.Len(t, pipeline.observed, 1)
+			require.Equal(t, body, *pipeline.observed[0].Body)
+		})
+	}
+}

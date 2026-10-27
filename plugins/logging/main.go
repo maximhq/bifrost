@@ -3368,6 +3368,25 @@ func (p *LoggerPlugin) injectAgentEntries(trace *schemas.Trace, joinKey string) 
 	}
 }
 
+// A2AEventBodyDemand declines bodies only for a stable request-level suppression.
+// Global settings are live, and an object store can enable hidden retention even
+// when content is disabled. Those uncertain cases must keep the complete body.
+// This declares logging demand only; a tracing consumer can still require bodies.
+func (p *LoggerPlugin) A2AEventBodyDemand(ctx *schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
+	if ctx == nil || p.objectStorageEnabled {
+		return p, true
+	}
+	if allowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); allowed {
+		if disabled, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			return p, !disabled
+		}
+	}
+	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
+		return p, !disabled
+	}
+	return p, true
+}
+
 func (p *LoggerPlugin) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
 	if ctx == nil || event == nil {
 		return

@@ -5,13 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
@@ -4858,6 +4866,395 @@ func TestObserveA2AEventAppliesContentPolicy(t *testing.T) {
 	entry := (<-plugin.writeQueue).agentLog
 	require.Nil(t, entry.EventBody)
 	require.False(t, entry.ContentHidden)
+}
+
+type a2aObservationAccount struct{}
+
+func (a2aObservationAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return nil, nil
+}
+func (a2aObservationAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return nil, nil
+}
+func (a2aObservationAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return nil, nil
+}
+
+type a2aObservationRegistrations struct {
+	agent.Store
+	registration *schemas.AgentRegistration
+}
+
+func (s *a2aObservationRegistrations) ListAgentRegistrations(context.Context) ([]schemas.AgentRegistration, error) {
+	if s.registration == nil {
+		return nil, nil
+	}
+	return []schemas.AgentRegistration{*s.registration}, nil
+}
+func (s *a2aObservationRegistrations) GetAgentRegistration(context.Context, string) (*schemas.AgentRegistration, error) {
+	if s.registration == nil {
+		return nil, agent.ErrNotFound
+	}
+	copy := *s.registration
+	return &copy, nil
+}
+func (s *a2aObservationRegistrations) CreateAgentRegistration(_ context.Context, registration *schemas.AgentRegistration) error {
+	copy := *registration
+	s.registration = &copy
+	return nil
+}
+
+// No executor or mocked serialization: both SDK clients speak real JSON-RPC/SSE.
+type a2aObservationUpstream struct {
+	a2asrv.RequestHandler
+	events []a2a.Event
+}
+
+func (u *a2aObservationUpstream) stream() iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		for _, event := range u.events {
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+func (u *a2aObservationUpstream) SendStreamingMessage(context.Context, *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+	return u.stream()
+}
+func (u *a2aObservationUpstream) SubscribeToTask(context.Context, *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
+	return u.stream()
+}
+
+type a2aObservationRecorder struct {
+	mu       sync.Mutex
+	events   []schemas.BifrostA2AEvent
+	required bool
+	onEvent  func(*schemas.BifrostContext, *schemas.BifrostA2AEvent)
+}
+
+func (p *a2aObservationRecorder) GetName() string { return "a2a-observation-recorder" }
+func (p *a2aObservationRecorder) Cleanup() error  { return nil }
+func (p *a2aObservationRecorder) PreA2AHook(_ *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *a2aObservationRecorder) PostA2AHook(_ *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, err *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+func (p *a2aObservationRecorder) A2AEventBodyDemand(*schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
+	return p, p.required
+}
+func (p *a2aObservationRecorder) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.onEvent != nil {
+		p.onEvent(ctx, event)
+	}
+	p.events = append(p.events, *event)
+}
+
+type a2aLegacyObservationRecorder struct {
+	schemas.A2APlugin
+	recorder *a2aObservationRecorder
+}
+
+func (p *a2aLegacyObservationRecorder) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	p.recorder.ObserveA2AEvent(ctx, event)
+}
+
+// A pipeline wrapper may add its own observer outside the core plugin list.
+// Its inherited declaration must not suppress bodies that observer consumes.
+type a2aWrappedObservationPipeline struct {
+	*bifrost.PluginPipeline
+	observer schemas.A2AEventObserver
+}
+
+func (p *a2aWrappedObservationPipeline) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent, runThrough int) {
+	p.PluginPipeline.ObserveA2AEvent(ctx, event, runThrough)
+	p.observer.ObserveA2AEvent(ctx, event)
+}
+
+type a2aWrappedLoggerObserver struct {
+	*LoggerPlugin
+	calls atomic.Int64
+}
+
+func (p *a2aWrappedLoggerObserver) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	p.calls.Add(1)
+	p.LoggerPlugin.ObserveA2AEvent(ctx, event)
+}
+
+// Explicitly declares exporter demand, then exercises normal trace injection and
+// the logger's latency/correlation backfill. No pooled trace is retained.
+type a2aObservationTraceExporter struct {
+	logger  *LoggerPlugin
+	content bool
+	traces  chan *schemas.Trace
+}
+
+func (p *a2aObservationTraceExporter) GetName() string           { return "a2a-observation-exporter" }
+func (p *a2aObservationTraceExporter) Cleanup() error            { return nil }
+func (p *a2aObservationTraceExporter) ConsumesContent() bool     { return p.content }
+func (p *a2aObservationTraceExporter) ConsumesPluginSpans() bool { return false }
+func (p *a2aObservationTraceExporter) Inject(ctx context.Context, trace *schemas.Trace) error {
+	if err := p.logger.Inject(ctx, trace); err != nil {
+		return err
+	}
+	p.traces <- trace.SnapshotForExport()
+	return nil
+}
+
+func TestA2AStreamObservationWithLoggingPipeline(t *testing.T) {
+	for _, method := range []string{"send", "subscribe"} {
+		for _, test := range []struct {
+			name            string
+			global          bool
+			vkSuppressed    bool
+			header          bool
+			object          bool
+			retain          bool
+			traceContent    bool
+			legacy          bool
+			wrapped         bool
+			wrappedPipeline bool
+			loggerExporter  bool
+			dynamicPolicy   bool
+			failedTask      bool
+			wantBody        bool
+			wantLogBody     bool
+			wantTrace       bool
+		}{
+			{name: "VK metadata only", vkSuppressed: true},
+			{name: "request metadata only", header: true},
+			{name: "visible logging", wantBody: true, wantLogBody: true},
+			{name: "global disable remains eager", global: true, wantBody: true},
+			{name: "hidden retention keeps body", vkSuppressed: true, object: true, retain: true, wantBody: true, wantLogBody: true},
+			{name: "full trace dominates logger suppression", header: true, traceContent: true, wantBody: true, wantTrace: true},
+			{name: "legacy observer keeps body", vkSuppressed: true, legacy: true, wantBody: true},
+			{name: "wrapped logger keeps body", vkSuppressed: true, wrapped: true, wantBody: true},
+			{name: "wrapped pipeline keeps body", header: true, wrappedPipeline: true, wantBody: true},
+			{name: "default logger exporter with header remains eager", header: true, loggerExporter: true, wantBody: true, wantTrace: true},
+			{name: "default logger exporter with VK suppression", vkSuppressed: true, loggerExporter: true},
+			{name: "legacy observer can reenable logging midstream", header: true, legacy: true, dynamicPolicy: true, wantBody: true},
+			{name: "declared dynamic observer requires bodies", header: true, dynamicPolicy: true, wantBody: true},
+			{name: "metadata preserves failed task", vkSuppressed: true, failedTask: true},
+		} {
+			t.Run(method+"/"+test.name, func(t *testing.T) {
+				store := newTestStore(t)
+				t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+				logger, err := Init(context.Background(), &Config{DisableContentLogging: &test.global, RetainContentInObjectStorage: &test.retain, ObjectStorageEnabled: test.object, Writer: &logstore.WriterConfig{BatchInterval: "5ms"}}, testLogger{}, store, nil, nil, nil)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, logger.Cleanup()) })
+				traceStore := tracing.NewTraceStore(time.Minute, testLogger{})
+				t.Cleanup(traceStore.Stop)
+				tracer := tracing.NewTracer(traceStore, nil, testLogger{})
+				t.Cleanup(tracer.Stop)
+				exporter := &a2aObservationTraceExporter{logger: logger, content: test.traceContent, traces: make(chan *schemas.Trace, 1)}
+				observabilityPlugins := []schemas.ObservabilityPlugin{exporter}
+				if test.loggerExporter {
+					observabilityPlugins = append(observabilityPlugins, logger)
+				}
+				tracer.SetObservabilityPlugins(observabilityPlugins, nil)
+				recorder := &a2aObservationRecorder{required: test.dynamicPolicy}
+				if test.dynamicPolicy {
+					recorder.onEvent = func(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+						if event.Sequence == 1 {
+							ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, false)
+						}
+					}
+				}
+				var logObserver schemas.A2APlugin = logger
+				wrapped := &a2aWrappedLoggerObserver{LoggerPlugin: logger}
+				if test.wrapped {
+					logObserver = wrapped
+				}
+				var recordObserver schemas.A2APlugin = recorder
+				if test.legacy {
+					recordObserver = &a2aLegacyObservationRecorder{A2APlugin: recorder, recorder: recorder}
+				}
+				a2aPlugins := []schemas.A2APlugin{logObserver}
+				if !test.wrappedPipeline {
+					a2aPlugins = append(a2aPlugins, recordObserver)
+				}
+				core, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: a2aObservationAccount{}, Logger: testLogger{}, Tracer: tracer, A2APlugins: a2aPlugins, InitialPoolSize: 2})
+				require.NoError(t, err)
+				t.Cleanup(core.Shutdown)
+				message := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("quotes \" and Unicode ☃\n"))
+				message.ID, message.TaskID, message.ContextID = "message-1", "task-1", "context-1"
+				message.Metadata = map[string]any{"token": "fixture-secret"}
+				state := a2a.TaskStateCompleted
+				if test.failedTask {
+					state = a2a.TaskStateFailed
+				}
+				events := []a2a.Event{
+					&a2a.Task{ID: "task-1", ContextID: "context-1", Status: a2a.TaskStatus{State: a2a.TaskStateWorking}},
+					&a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "context-1", Append: true, Artifact: &a2a.Artifact{ID: "artifact-1", Parts: a2a.ContentParts{a2a.NewTextPart(strings.Repeat("x", 64<<10))}}},
+					message,
+					&a2a.TaskStatusUpdateEvent{TaskID: "task-1", ContextID: "context-1", Status: a2a.TaskStatus{State: state}},
+				}
+				upstream := &a2aObservationUpstream{events: events}
+				mux := http.NewServeMux()
+				up := httptest.NewServer(mux)
+				t.Cleanup(up.Close)
+				card := &a2a.AgentCard{Name: "observation-fixture", Version: "1", Capabilities: a2a.AgentCapabilities{Streaming: true}, SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(up.URL+"/rpc", a2a.TransportProtocolJSONRPC)}}
+				mux.Handle("/card", a2asrv.NewStaticAgentCardHandler(card))
+				mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(upstream))
+				manager, err := agent.NewManager(context.Background(), &a2aObservationRegistrations{}, testLogger{}, "http://gateway", nil, agent.ManagerConfig{
+					PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} },
+					PluginPipelineAcquire: func() agent.PluginPipeline {
+						pipeline := core.AcquirePluginPipeline()
+						if test.wrappedPipeline {
+							return &a2aWrappedObservationPipeline{PluginPipeline: pipeline, observer: recorder}
+						}
+						return pipeline
+					},
+					PluginPipelineRelease: func(p agent.PluginPipeline) {
+						if wrapped, ok := p.(*a2aWrappedObservationPipeline); ok {
+							core.ReleasePluginPipeline(wrapped.PluginPipeline)
+						} else {
+							core.ReleasePluginPipeline(p.(*bifrost.PluginPipeline))
+						}
+					},
+				})
+				require.NoError(t, err)
+				t.Cleanup(manager.Close)
+				_, err = manager.Create(context.Background(), agent.CreateRequest{Name: "observation-fixture", AgentCardURL: up.URL + "/card"})
+				require.NoError(t, err)
+				protocol, ok := manager.ProtocolHandler("observation-fixture")
+				require.True(t, ok)
+				gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					ctx := schemas.NewBifrostContext(r.Context(), schemas.NoDeadline)
+					defer ctx.Cancel()
+					ctx.SetValue(schemas.BifrostContextKeyRequestID, "observation-request")
+					// Seed the immutable policy normally resolved by governance or
+					// transport conversion; no live virtual key/service is required.
+					if test.vkSuppressed {
+						ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+					}
+					if test.header {
+						ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+						ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true)
+					}
+					traceID := tracer.CreateTrace("")
+					ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+					ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+					id, root := tracer.StartSpanID(ctx, "a2a.dispatch", schemas.SpanKindInternal)
+					ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+					protocol.ServeHTTP(w, r.WithContext(ctx))
+					tracer.EndSpan(root, schemas.SpanStatusOk, "")
+					tracer.CompleteAndFlushTrace(traceID)
+				}))
+				t.Cleanup(gateway.Close)
+				client, err := a2aclient.NewFromEndpoints(context.Background(), []*a2a.AgentInterface{a2a.NewAgentInterface(gateway.URL, a2a.TransportProtocolJSONRPC)}, a2aclient.WithJSONRPCTransport(http.DefaultClient))
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, client.Destroy()) })
+				var stream iter.Seq2[a2a.Event, error]
+				requestType := schemas.A2ARequestTypeSendStreamingMessage
+				if method == "send" {
+					stream = client.SendStreamingMessage(t.Context(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("observe"))})
+				} else {
+					requestType = schemas.A2ARequestTypeSubscribeToTask
+					stream = client.SubscribeToTask(t.Context(), &a2a.SubscribeToTaskRequest{ID: "task-1"})
+				}
+				var forwarded []a2a.Event
+				for event, err := range stream {
+					require.NoError(t, err)
+					forwarded = append(forwarded, event)
+				}
+				require.Len(t, forwarded, len(events))
+				for i, expected := range events {
+					want, err := json.Marshal(expected)
+					require.NoError(t, err)
+					got, err := json.Marshal(forwarded[i])
+					require.NoError(t, err)
+					require.JSONEq(t, string(want), string(got), "wire event %d changed", i)
+				}
+				var trace *schemas.Trace
+				select {
+				case trace = <-exporter.traces:
+				case <-time.After(3 * time.Second):
+					t.Fatal("completed trace was not exported")
+				}
+				recorder.mu.Lock()
+				observed := append([]schemas.BifrostA2AEvent(nil), recorder.events...)
+				recorder.mu.Unlock()
+				require.Len(t, observed, len(events))
+				for i, event := range observed {
+					require.Equal(t, int64(i+1), event.Sequence)
+					require.Equal(t, requestType, event.RequestType)
+					require.Equal(t, "observation-fixture", event.AgentName)
+					require.Equal(t, "task-1", event.TaskID)
+					require.Equal(t, "context-1", event.ContextID)
+					if test.wantBody {
+						body, err := json.Marshal(events[i])
+						require.NoError(t, err)
+						require.NotNil(t, event.Body)
+						require.JSONEq(t, string(body), *event.Body)
+					} else {
+						require.Nil(t, event.Body)
+					}
+				}
+				if test.wrapped {
+					require.Equal(t, int64(len(events)), wrapped.calls.Load())
+				}
+				var operation *schemas.Span
+				for _, span := range trace.Spans {
+					if span.Kind == schemas.SpanKindA2AOperation {
+						operation = span
+					}
+				}
+				require.NotNil(t, operation)
+				require.Len(t, operation.Events, len(events))
+				require.Equal(t, string(state), operation.Attributes[schemas.AttrA2ATaskState])
+				if test.failedTask {
+					require.Equal(t, schemas.SpanStatusError, operation.Status)
+				}
+				for i, event := range operation.Events {
+					require.EqualValues(t, i+1, event.Attributes["a2a.event.sequence"])
+					body, present := event.Attributes[schemas.AttrOutputMessages]
+					require.Equal(t, test.wantTrace, present)
+					if present {
+						require.NotContains(t, body, "fixture-secret")
+					}
+				}
+				var rows *logstore.AgentLogHistoryResult
+				require.Eventually(t, func() bool {
+					var err error
+					rows, err = store.ListAgentLogHistory(context.Background(), logstore.AgentLogHistoryFilter{AgentName: []string{"observation-fixture"}, RequestID: "observation-request", RecordKind: []string{"event"}}, logstore.PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "asc"})
+					return err == nil && len(rows.Logs) == len(events)
+				}, 3*time.Second, 5*time.Millisecond)
+				seenSequences := make(map[int64]bool, len(events))
+				for _, row := range rows.Logs {
+					entry, err := store.FindAgentLog(context.Background(), row.ID)
+					require.NoError(t, err)
+					require.Equal(t, "observation-request", entry.RequestID)
+					require.Equal(t, requestType.OperationName(), entry.Operation)
+					require.NotNil(t, entry.TraceID)
+					require.Equal(t, trace.TraceID, *entry.TraceID)
+					require.NotNil(t, entry.EventSequence)
+					require.GreaterOrEqual(t, *entry.EventSequence, int64(1))
+					require.LessOrEqual(t, *entry.EventSequence, int64(len(events)))
+					require.False(t, seenSequences[*entry.EventSequence], "event sequence must not be duplicated")
+					seenSequences[*entry.EventSequence] = true
+					require.NotNil(t, entry.TaskID)
+					require.NotNil(t, entry.ContextID)
+					require.Equal(t, "task-1", *entry.TaskID)
+					require.Equal(t, "context-1", *entry.ContextID)
+					wantLogBody := test.wantLogBody
+					if test.dynamicPolicy {
+						wantLogBody = *entry.EventSequence > 1
+					}
+					require.Equal(t, wantLogBody, entry.EventBody != nil)
+					require.Equal(t, test.object && test.retain, entry.ContentHidden)
+					if entry.EventBody != nil {
+						body, err := json.Marshal(events[*entry.EventSequence-1])
+						require.NoError(t, err)
+						require.JSONEq(t, string(body), *entry.EventBody)
+					}
+				}
+			})
+		}
+	}
 }
 
 // TestA2ASubscriptionLogOwnsRESTTaskID reproduces reuse of the adaptor's borrowed URL buffer before the queued log is written.

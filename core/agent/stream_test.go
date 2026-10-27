@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -117,7 +118,7 @@ func (u *streamingUpstream) GetTask(_ context.Context, req *a2a.GetTaskRequest) 
 // non-streaming taskUpstreamGatewayManager fixture. The upstream card advertises
 // streaming, without which the SDK client the gateway builds would silently
 // downgrade every stream to a unary send.
-func streamingGateway(t *testing.T, plugins ...*recordingA2APlugin) (*streamingUpstream, *a2aclient.Client, *Manager) {
+func streamingGateway(t testing.TB, plugins ...*recordingA2APlugin) (*streamingUpstream, *a2aclient.Client, *Manager) {
 	t.Helper()
 	upstreamHandler := newStreamingUpstream()
 	mux := http.NewServeMux()
@@ -149,6 +150,241 @@ func streamingGateway(t *testing.T, plugins ...*recordingA2APlugin) (*streamingU
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Destroy() })
 	return upstreamHandler, client, m
+}
+
+// streamBodyDemandPipeline declares operation-wide demand without changing the
+// legacy PluginPipeline interface. Unknown pipelines must stay body-inclusive.
+type streamBodyDemandPipeline struct {
+	required     bool
+	panicDemand  bool
+	invalidOwner bool
+	foreignOwner bool
+	demandCalls  int
+	postCalls    int
+	postError    *schemas.BifrostError
+	observed     []*schemas.BifrostA2AEvent
+	onEvent      func(*schemas.BifrostA2AEvent)
+}
+
+func (p *streamBodyDemandPipeline) RunA2APreHooks(_ *schemas.BifrostContext, req *schemas.BifrostA2ARequest, entered func(int)) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, int) {
+	entered(1)
+	return req, nil, 1
+}
+
+func (p *streamBodyDemandPipeline) RunA2APostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, err *schemas.BifrostError, _ int) (*schemas.BifrostA2AResponse, *schemas.BifrostError) {
+	p.postCalls++
+	p.postError = err
+	return resp, err
+}
+
+func (p *streamBodyDemandPipeline) ObserveA2AEvent(_ *schemas.BifrostContext, event *schemas.BifrostA2AEvent, _ int) {
+	if p.onEvent != nil {
+		p.onEvent(event)
+		return
+	}
+	copy := *event
+	p.observed = append(p.observed, &copy)
+}
+
+func (p *streamBodyDemandPipeline) A2AEventBodyDemand(_ *schemas.BifrostContext, _ int) (any, bool) {
+	p.demandCalls++
+	if p.panicDemand {
+		panic("body demand failed")
+	}
+	if p.invalidOwner {
+		return nil, false
+	}
+	if p.foreignOwner {
+		return &streamBodyDemandPipeline{}, false
+	}
+	return p, p.required
+}
+
+type legacyStreamBodyPipeline struct{ PluginPipeline }
+type wrappedStreamBodyPipeline struct{ *streamBodyDemandPipeline }
+
+func (p *wrappedStreamBodyPipeline) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent, runThrough int) {
+	p.streamBodyDemandPipeline.ObserveA2AEvent(ctx, event, runThrough)
+}
+
+type nonComparableStreamBodyPipeline struct {
+	*streamBodyDemandPipeline
+	state []byte
+}
+
+func (p nonComparableStreamBodyPipeline) A2AEventBodyDemand(*schemas.BifrostContext, int) (any, bool) {
+	p.demandCalls++
+	return p, false
+}
+
+type legacyStreamContentTracer struct{ schemas.Tracer }
+
+type observationMarshalProbe struct{ calls *atomic.Int64 }
+
+func (p observationMarshalProbe) MarshalJSON() ([]byte, error) {
+	p.calls.Add(1)
+	return []byte(`"observed"`), nil
+}
+
+func TestStreamObservationSerializesOnlyRequiredBodies(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		pipeline        bool
+		required        bool
+		legacy          bool
+		wrapped         bool
+		nonComparable   bool
+		panicDemand     bool
+		invalidOwner    bool
+		foreignOwner    bool
+		traced          bool
+		traceContent    bool
+		traceRaw        bool
+		legacyTracer    bool
+		wantEncodes     int64
+		wantDemandCalls int
+	}{
+		{name: "no observers"},
+		{name: "metadata pipeline", pipeline: true, wantDemandCalls: 1},
+		{name: "full pipeline", pipeline: true, required: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "unknown pipeline", pipeline: true, legacy: true, wantEncodes: 3},
+		{name: "promoted pipeline declaration", pipeline: true, wrapped: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "invalid pipeline owner", pipeline: true, invalidOwner: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "different pipeline owner", pipeline: true, foreignOwner: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "non-comparable pipeline", pipeline: true, nonComparable: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "panic falls back to full body", pipeline: true, panicDemand: true, wantEncodes: 3, wantDemandCalls: 1},
+		{name: "metadata trace", traced: true},
+		{name: "raw trace does not need observation body", traced: true, traceRaw: true},
+		{name: "full trace", traced: true, traceContent: true, wantEncodes: 3},
+		{name: "unknown tracer", traced: true, legacyTracer: true, wantEncodes: 3},
+		{name: "metadata trace and pipeline", pipeline: true, traced: true, wantDemandCalls: 1},
+		{name: "full trace dominates metadata pipeline", pipeline: true, traced: true, traceContent: true, wantEncodes: 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, manager := streamingGateway(t)
+			pipeline := &streamBodyDemandPipeline{required: test.required, panicDemand: test.panicDemand, invalidOwner: test.invalidOwner, foreignOwner: test.foreignOwner}
+			if test.pipeline {
+				var active PluginPipeline = pipeline
+				if test.legacy {
+					active = legacyStreamBodyPipeline{active}
+				}
+				if test.wrapped {
+					active = &wrappedStreamBodyPipeline{pipeline}
+				}
+				if test.nonComparable {
+					active = nonComparableStreamBodyPipeline{streamBodyDemandPipeline: pipeline, state: []byte("state")}
+				}
+				manager.SetPluginPipeline(func() PluginPipeline { return active }, nil)
+			}
+			ctx := context.Background()
+			var tracer *a2aContentTracer
+			if test.traced {
+				tracer = &a2aContentTracer{content: test.traceContent, raw: test.traceRaw}
+				traced := tracedGateCtx(tracer)
+				if test.legacyTracer {
+					traced.SetValue(schemas.BifrostContextKeyTracer, legacyStreamContentTracer{tracer})
+				}
+				ctx = traced
+			}
+			runtime, ok := manager.runtimes.load("tasks")
+			require.True(t, ok)
+			handler := &proxyRequestHandler{runtime: runtime, manager: manager, config: runtime.config}
+			var encodes atomic.Int64
+			event := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("payload"))
+			event.ID, event.TaskID, event.ContextID = "message-1", "task-1", "context-1"
+			event.Metadata = map[string]any{"probe": observationMarshalProbe{&encodes}}
+			call := func(context.Context, sdkClient) iter.Seq2[a2a.Event, error] {
+				return func(yield func(a2a.Event, error) bool) {
+					for range 3 {
+						if !yield(event, nil) {
+							return
+						}
+					}
+				}
+			}
+			accepted := 0
+			for forwarded, err := range forwardUpstreamStream(ctx, handler, handler.envelope(schemas.A2ARequestTypeSendStreamingMessage), call) {
+				require.NoError(t, err)
+				require.Same(t, event, forwarded)
+				accepted++
+			}
+			require.Equal(t, 3, accepted)
+			require.Equal(t, test.wantEncodes, encodes.Load())
+			require.Equal(t, test.wantDemandCalls, pipeline.demandCalls)
+			if test.pipeline {
+				require.Len(t, pipeline.observed, 3)
+				for i, observed := range pipeline.observed {
+					require.Equal(t, int64(i+1), observed.Sequence)
+					require.Equal(t, "tasks", observed.AgentName)
+					require.Equal(t, schemas.A2AEventTypeMessage, observed.EventType)
+					require.Equal(t, "task-1", observed.TaskID)
+					require.Equal(t, "context-1", observed.ContextID)
+					require.Equal(t, "message-1", observed.MessageID)
+					if test.wantEncodes == 0 {
+						require.Nil(t, observed.Body)
+					} else {
+						require.NotNil(t, observed.Body)
+						require.Contains(t, *observed.Body, `"messageId":"message-1"`)
+					}
+				}
+			}
+			if tracer != nil {
+				require.Len(t, tracer.span.Events, 3)
+				require.Equal(t, "task-1", tracer.span.Attributes[schemas.AttrA2ATaskID])
+			}
+			// Iterator rejection must not describe the abandoned event.
+			encodes.Store(0)
+			forwardUpstreamStream(ctx, handler, handler.envelope(schemas.A2ARequestTypeSendStreamingMessage), call)(func(a2a.Event, error) bool { return false })
+			require.Zero(t, encodes.Load())
+		})
+	}
+}
+
+func TestStreamObservationMetadataErrorsDoNotSerialize(t *testing.T) {
+	for _, requestType := range []schemas.A2ARequestType{schemas.A2ARequestTypeSendStreamingMessage, schemas.A2ARequestTypeSubscribeToTask} {
+		for _, acceptedBeforeError := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/accepted_%d", requestType, acceptedBeforeError), func(t *testing.T) {
+				_, _, manager := streamingGateway(t)
+				pipeline := &streamBodyDemandPipeline{}
+				manager.SetPluginPipeline(func() PluginPipeline { return pipeline }, nil)
+				runtime, ok := manager.runtimes.load("tasks")
+				require.True(t, ok)
+				handler := &proxyRequestHandler{runtime: runtime, manager: manager, config: runtime.config}
+				var encodes atomic.Int64
+				event := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("accepted"))
+				event.Metadata = map[string]any{"probe": observationMarshalProbe{&encodes}}
+				upstreamError := context.DeadlineExceeded
+				call := func(context.Context, sdkClient) iter.Seq2[a2a.Event, error] {
+					return func(yield func(a2a.Event, error) bool) {
+						if acceptedBeforeError > 0 && !yield(event, nil) {
+							return
+						}
+						yield(nil, upstreamError)
+					}
+				}
+				accepted, failures := 0, 0
+				for forwarded, err := range forwardUpstreamStream(context.Background(), handler, handler.envelope(requestType), call) {
+					if err != nil {
+						require.ErrorIs(t, err, upstreamError)
+						require.Nil(t, forwarded)
+						failures++
+					} else {
+						require.Same(t, event, forwarded)
+						accepted++
+					}
+				}
+				require.Equal(t, acceptedBeforeError, accepted)
+				require.Equal(t, 1, failures, "upstream error must not be duplicated at gate completion")
+				require.Zero(t, encodes.Load())
+				require.Len(t, pipeline.observed, acceptedBeforeError, "error yields must not create event observations")
+				require.Equal(t, 1, pipeline.demandCalls)
+				require.Equal(t, 1, pipeline.postCalls)
+				require.NotNil(t, pipeline.postError)
+				require.Equal(t, requestType, pipeline.postError.ExtraFields.A2ARequestType)
+				require.Zero(t, leaseCount(t, manager, "tasks"))
+			})
+		}
+	}
 }
 
 // downstreamStream is a consumer of the gateway's SSE stream running on its own
