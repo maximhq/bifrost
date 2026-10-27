@@ -101,4 +101,54 @@ Qdrant uses port 6334 for gRPC and port 6333 for REST. Bifrost uses the gRPC por
 Qdrant requires all IDs to be valid UUIDs. Use `uuid.New().String()` to generate IDs.
 </Warning>
 
+### Payload Indexes
+
+When a namespace schema includes any property with `Filterable: true`, Bifrost
+creates payload indexes only for those filterable properties. Schemas without
+any filterable annotations retain index-all behavior for compatibility with
+legacy callers. This policy runs during namespace initialization, not on each
+request, and does not change the stored payload or vector configuration.
+
+The semantic cache marks `cache_key`, `provider`, `model`, `params_hash`, and
+`from_bifrost_semantic_cache_plugin` as filterable. Its `response`, `stream_chunks`,
+and `expires_at` fields remain payload-only. Expiry is checked after retrieval,
+so Bifrost does not need an index on `expires_at`.
+
+Payload-index memory is separate from payload storage. Setting
+`on_disk_payload: true` alone does not move payload indexes to disk; indexing
+full serialized responses can therefore consume substantial RAM unnecessarily.
+
+#### Existing Semantic-Cache Collections
+
+Bifrost does not automatically delete existing indexes, because operators may
+manage them for queries outside Bifrost. Upgrading stops unnecessary index
+creation but does not reclaim indexes that already exist.
+
+**Upgrade every Bifrost replica before removing old indexes.** Older replicas
+can recreate them when initializing the plugin. Then delete the unused response
+and streaming-chunk indexes once, using your Qdrant REST endpoint and configured
+`vector_store_namespace`:
+
+```bash
+QDRANT_URL=http://localhost:6333
+COLLECTION=BifrostSemanticCachePlugin
+
+curl --fail --silent --show-error --request DELETE \
+  --header "api-key: ${QDRANT_API_KEY:-}" \
+  "$QDRANT_URL/collections/$COLLECTION/index/response?wait=true"
+curl --fail --silent --show-error --request DELETE \
+  --header "api-key: ${QDRANT_API_KEY:-}" \
+  "$QDRANT_URL/collections/$COLLECTION/index/stream_chunks?wait=true"
+```
+
+These operations remove only indexes, not cached points or their payloads. Set
+`QDRANT_API_KEY` for authenticated deployments and use an HTTPS endpoint when
+required. Check the collection's `payload_schema` afterward and after a Bifrost
+restart to verify that the removed indexes stay absent.
+
+An existing integer index on `expires_at` may be retained for external
+range-filtered expiry cleanup. If nothing uses it, it can also be removed with
+the same index-delete endpoint; Bifrost will not recreate it for the semantic
+cache. Do not remove any of the five filterable indexes listed above.
+
 For the VectorStore interface API and usage examples, see [Vector Store Architecture](/architecture/framework/vector-store). For semantic caching setup, see [Semantic Caching](/features/semantic-caching).
