@@ -1273,10 +1273,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, request)
-			if err == nil {
-				applyHeaderRequestMetadata(ctx, bedrockReq)
-			}
-			return bedrockReq, err
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1476,10 +1473,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			bedrockReq, err := ToBedrockChatCompletionRequest(ctx, request)
-			if err == nil {
-				applyHeaderRequestMetadata(ctx, bedrockReq)
-			}
-			return bedrockReq, err
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1814,10 +1808,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			bedrockReq, err := ToBedrockResponsesRequest(ctx, request)
-			if err == nil {
-				applyHeaderRequestMetadata(ctx, bedrockReq)
-			}
-			return bedrockReq, err
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1911,10 +1902,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			bedrockReq, err := ToBedrockResponsesRequest(ctx, request)
-			if err == nil {
-				applyHeaderRequestMetadata(ctx, bedrockReq)
-			}
-			return bedrockReq, err
+			return withHeaderRequestMetadata(ctx, bedrockReq, err)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4454,6 +4442,14 @@ func extraParamsHasSafeguards(extraParams map[string]interface{}) bool {
 	default:
 		return true
 	}
+}
+
+// withHeaderRequestMetadata applies x-bf-bedrock-metadata-* headers to a built Converse request.
+func withHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, err error) (providerUtils.RequestBodyWithExtraParams, error) {
+	if err == nil {
+		applyHeaderRequestMetadata(ctx, bedrockReq)
+	}
+	return bedrockReq, err
 }
 
 func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) bool {
