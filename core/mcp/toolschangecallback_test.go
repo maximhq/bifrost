@@ -13,9 +13,8 @@ import (
 
 // toolsChangeCall records one invocation of a registered SetDiscoveryChangeCallback.
 type toolsChangeCall struct {
-	clientID, name  string
-	tools           map[string]schemas.ChatTool
-	toolNameMapping map[string]string
+	clientID, name string
+	tools          map[string]schemas.ChatTool
 }
 
 // TestSetClientDiscovery_FiresToolsChangeCallback pins the funnel's simplest
@@ -32,19 +31,16 @@ func TestSetClientDiscovery_FiresToolsChangeCallback(t *testing.T) {
 
 	var calls []toolsChangeCall
 	m.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
-		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
+		calls = append(calls, toolsChangeCall{clientID, name, discovery.Tools})
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo-server"}
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools})
 
 	require.Len(t, calls, 1)
 	assert.Equal(t, config.ID, calls[0].clientID)
 	assert.Equal(t, config.Name, calls[0].name)
 	assert.Equal(t, tools, calls[0].tools)
-	assert.Equal(t, mapping, calls[0].toolNameMapping)
 }
 
 // TestSetClientDiscovery_UnknownClient_DoesNotFireCallback confirms the callback
@@ -84,7 +80,7 @@ func TestSetClientDiscovery_UnknownClient_DoesNotFireCallback(t *testing.T) {
 		fired = true
 	})
 
-	m.SetClientDiscovery("does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}})
+	m.SetClientDiscovery("does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}})
 
 	assert.False(t, fired)
 }
@@ -104,8 +100,7 @@ func TestConnectToMCPClient_SuccessfulDial_FiresToolsChangeCallback(t *testing.T
 
 	var calls []toolsChangeCall
 	m.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
-		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
+		calls = append(calls, toolsChangeCall{clientID, name, discovery.Tools})
 	})
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
@@ -137,8 +132,7 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 
 	var calls []toolsChangeCall
 	manager.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
-		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
+		calls = append(calls, toolsChangeCall{clientID, name, discovery.Tools})
 	})
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})

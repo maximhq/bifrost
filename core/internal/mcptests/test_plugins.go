@@ -837,7 +837,7 @@ type TestListToolsPlugin struct {
 	shortCircuitError    *schemas.BifrostError
 
 	// PostHook mutation knob: optional filter applied to the Tools map. If non-nil,
-	// only keys returned true are kept; ToolNameMapping is filtered to match.
+	// only keys returned true are kept.
 	postHookFilter func(toolName string) bool
 }
 
@@ -866,8 +866,7 @@ func (p *TestListToolsPlugin) SetShortCircuitError(err *schemas.BifrostError) {
 }
 
 // SetPostHookFilter configures a PostHook tool-name predicate. Tools whose prefixed
-// name passes (returns true) are kept; others are removed from both Tools and
-// ToolNameMapping (matching the sanitized->original lookup).
+// name passes (returns true) are kept; others are removed from Tools.
 func (p *TestListToolsPlugin) SetPostHookFilter(filter func(toolName string) bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -908,33 +907,15 @@ func (p *TestListToolsPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *sch
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Apply filter if configured. Tools are keyed by prefixed name; ToolNameMapping
-	// is keyed by sanitized name — we filter by prefixed name and drop the matching
-	// sanitized entry too (sanitized = stripped client prefix, with '-'→'_').
+	// Apply filter if configured. Tools are keyed by prefixed name.
 	if p.postHookFilter != nil {
 		filteredTools := make(map[string]schemas.ChatTool, len(resp.Tools))
-		keep := make(map[string]bool, len(resp.Tools))
 		for name, tool := range resp.Tools {
 			if p.postHookFilter(name) {
 				filteredTools[name] = tool
-				keep[name] = true
-			}
-		}
-		// Filter ToolNameMapping: keep mapping entries whose original value still
-		// corresponds to a tool that survived.
-		filteredMapping := make(map[string]string, len(resp.ToolNameMapping))
-		for sanitized, original := range resp.ToolNameMapping {
-			// Find the prefixed key that would have been used for `original`.
-			for prefixed := range keep {
-				// prefixed == "<client>-<original>"; check suffix match.
-				if len(prefixed) > len(original) && prefixed[len(prefixed)-len(original):] == original {
-					filteredMapping[sanitized] = original
-					break
-				}
 			}
 		}
 		resp.Tools = filteredTools
-		resp.ToolNameMapping = filteredMapping
 	}
 
 	p.postHookCalls = append(p.postHookCalls, MCPLogEntry{

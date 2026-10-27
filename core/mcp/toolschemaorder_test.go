@@ -129,12 +129,11 @@ func TestConvertMCPToolToBifrostSchema_SortsPropertiesAndDefs(t *testing.T) {
 // hashes the serialized tools. Rediscovering the same server tools must hash
 // the same.
 func TestComputeToolsHash_StableAcrossRediscovery(t *testing.T) {
-	mapping := map[string]string{"search": "search"}
 	var want string
 	for i := 0; i < 200; i++ {
 		mcpTool := decodeSchemaOrderTool(t, "search", schemaOrderInputSchema)
 		tools := map[string]schemas.ChatTool{"search": convertMCPToolToBifrostSchema(&mcpTool, defaultLogger)}
-		got := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping})
+		got := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: tools})
 		if i == 0 {
 			want = got
 			continue

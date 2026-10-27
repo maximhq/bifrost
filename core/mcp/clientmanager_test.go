@@ -329,7 +329,6 @@ func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronous
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 	}
 	m.mu.Unlock()
 
@@ -361,18 +360,16 @@ func TestSetClientDiscovery_ReplacesStaleTools(t *testing.T) {
 		ToolMap: map[string]schemas.ChatTool{
 			"replace-tools-client-removed": {},
 		},
-		ToolNameMapping: map[string]string{"replace-tools-client-removed": "removed"},
 	}
 	m.mu.Unlock()
 
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"replace-tools-client-kept": {}}, ToolNameMapping: map[string]string{"replace-tools-client-kept": "kept"}})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"replace-tools-client-kept": {}}})
 
 	m.mu.RLock()
 	state := *m.clientMap[config.ID]
 	m.mu.RUnlock()
 	assert.Contains(t, state.ToolMap, "replace-tools-client-kept")
 	assert.NotContains(t, state.ToolMap, "replace-tools-client-removed", "a tool absent from the fresh discovery result must not survive in memory")
-	assert.Equal(t, map[string]string{"replace-tools-client-kept": "kept"}, state.ToolNameMapping)
 }
 
 // TestUpdateClientCredentials_PerCallSharedOAuth_DiscoveryFailureFailsUpdate
@@ -490,7 +487,6 @@ func TestUpdateClientCredentials_PerCallSharedOAuth_PendingVerification_Transiti
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 	}
 	m.mu.Unlock()
 
@@ -551,7 +547,6 @@ func TestUpdateClientCredentials_PerCallSharedType_PendingVerification_Discovers
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStatePendingVerification,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 	}
 	m.mu.Unlock()
 
@@ -1036,7 +1031,7 @@ func TestSetClientDiscoveryRecordsInstructionsForRestart(t *testing.T) {
 	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
 	m.mu.Unlock()
 
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"t": {Type: "function"}}, ToolNameMapping: map[string]string{"t": "t"}, Instructions: "Use me carefully."})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"t": {Type: "function"}}, Instructions: "Use me carefully."})
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1061,9 +1056,8 @@ func TestInstructionsOnlyChangeStillFiresToolsChangeCallback(t *testing.T) {
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo"}
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping, Instructions: "v1"})
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo"}, Instructions: "v2"})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, Instructions: "v1"})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, Instructions: "v2"})
 
 	assert.Equal(t, []string{"v1", "v2"}, seen)
 }
@@ -1080,7 +1074,7 @@ func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing
 	}
 	m.mu.Unlock()
 
-	require.True(t, m.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"a": {Type: "function"}}, ToolNameMapping: map[string]string{"a": "a"}}, false))
+	require.True(t, m.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"a": {Type: "function"}}}, false))
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()

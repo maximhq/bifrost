@@ -1791,39 +1791,38 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 			for i, dbClient := range dbMCPClients {
 				clientConfigs[i] = &schemas.MCPClientConfig{
-					ID:                        dbClient.ClientID,
-					Name:                      dbClient.Name,
-					EndpointSlug:              dbClient.EndpointSlug,
-					IsCodeModeClient:          dbClient.IsCodeModeClient,
-					ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
-					ConnectionString:          dbClient.ConnectionString,
-					StdioConfig:               dbClient.StdioConfig,
-					TLSConfig:                 dbClient.TLSConfig,
-					AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
-					OauthConfigID:             dbClient.OauthConfigID,
-					ToolsToExecute:            dbClient.ToolsToExecute,
-					ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
-					PromptsToExpose:           dbClient.PromptsToExpose,
-					ResourcesToExpose:         dbClient.ResourcesToExpose,
-					Headers:                   dbClient.Headers,
-					AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
-					IsPingAvailable:           dbClient.IsPingAvailable,
-					NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
-					RequirePublicTarget:       dbClient.RequirePublicTarget,
-					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
-					MaxProtocolVersion:        dbClient.MaxProtocolVersion,
-					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-					MaxInstructionsLength:     dbClient.MaxInstructionsLength,
-					ToolPricing:               dbClient.ToolPricing,
-					AllowByDefault:            dbClient.AllowByDefault,
-					Disabled:                  dbClient.Disabled,
-					DiscoveredTools:           dbClient.DiscoveredTools,
-					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
-					DiscoveredInstructions:    dbClient.DiscoveredInstructions,
-					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
-					TokenExchange:             dbClient.TokenExchange,
-					PendingOAuthConfig:        dbClient.PendingOAuthConfig,
-					OpenAPIConfig:             dbClient.OpenAPIConfig,
+					ID:                     dbClient.ClientID,
+					Name:                   dbClient.Name,
+					EndpointSlug:           dbClient.EndpointSlug,
+					IsCodeModeClient:       dbClient.IsCodeModeClient,
+					ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
+					ConnectionString:       dbClient.ConnectionString,
+					StdioConfig:            dbClient.StdioConfig,
+					TLSConfig:              dbClient.TLSConfig,
+					AuthType:               schemas.MCPAuthType(dbClient.AuthType),
+					OauthConfigID:          dbClient.OauthConfigID,
+					ToolsToExecute:         dbClient.ToolsToExecute,
+					ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+					PromptsToExpose:        dbClient.PromptsToExpose,
+					ResourcesToExpose:      dbClient.ResourcesToExpose,
+					Headers:                dbClient.Headers,
+					AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
+					IsPingAvailable:        dbClient.IsPingAvailable,
+					NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
+					RequirePublicTarget:    dbClient.RequirePublicTarget,
+					ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+					MaxProtocolVersion:     dbClient.MaxProtocolVersion,
+					ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+					MaxInstructionsLength:  dbClient.MaxInstructionsLength,
+					ToolPricing:            dbClient.ToolPricing,
+					AllowByDefault:         dbClient.AllowByDefault,
+					Disabled:               dbClient.Disabled,
+					DiscoveredTools:        dbClient.DiscoveredTools,
+					DiscoveredInstructions: dbClient.DiscoveredInstructions,
+					PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
+					TokenExchange:          dbClient.TokenExchange,
+					PendingOAuthConfig:     dbClient.PendingOAuthConfig,
+					OpenAPIConfig:          dbClient.OpenAPIConfig,
 					// ConfigHash must round-trip so config-file reconciliation
 					// can compare the stored hash against the file hash; an
 					// empty hash reads as "changed" and re-syncs every client
@@ -1858,39 +1857,38 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {
 		clientConfigs[i] = &schemas.MCPClientConfig{
-			ID:                        dbClient.ClientID,
-			Name:                      dbClient.Name,
-			EndpointSlug:              dbClient.EndpointSlug,
-			IsCodeModeClient:          dbClient.IsCodeModeClient,
-			ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString:          dbClient.ConnectionString,
-			StdioConfig:               dbClient.StdioConfig,
-			TLSConfig:                 dbClient.TLSConfig,
-			AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
-			OauthConfigID:             dbClient.OauthConfigID,
-			ToolsToExecute:            dbClient.ToolsToExecute,
-			ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
-			PromptsToExpose:           dbClient.PromptsToExpose,
-			ResourcesToExpose:         dbClient.ResourcesToExpose,
-			Headers:                   dbClient.Headers,
-			AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
-			IsPingAvailable:           dbClient.IsPingAvailable,
-			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
-			RequirePublicTarget:       dbClient.RequirePublicTarget,
-			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
-			MaxProtocolVersion:        dbClient.MaxProtocolVersion,
-			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-			MaxInstructionsLength:     dbClient.MaxInstructionsLength,
-			AllowByDefault:            dbClient.AllowByDefault,
-			Disabled:                  dbClient.Disabled,
-			ToolPricing:               dbClient.ToolPricing,
-			DiscoveredTools:           dbClient.DiscoveredTools,
-			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
-			DiscoveredInstructions:    dbClient.DiscoveredInstructions,
-			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
-			TokenExchange:             dbClient.TokenExchange,
-			PendingOAuthConfig:        dbClient.PendingOAuthConfig,
-			OpenAPIConfig:             dbClient.OpenAPIConfig,
+			ID:                     dbClient.ClientID,
+			Name:                   dbClient.Name,
+			EndpointSlug:           dbClient.EndpointSlug,
+			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:       dbClient.ConnectionString,
+			StdioConfig:            dbClient.StdioConfig,
+			TLSConfig:              dbClient.TLSConfig,
+			AuthType:               schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:          dbClient.OauthConfigID,
+			ToolsToExecute:         dbClient.ToolsToExecute,
+			ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+			PromptsToExpose:        dbClient.PromptsToExpose,
+			ResourcesToExpose:      dbClient.ResourcesToExpose,
+			Headers:                dbClient.Headers,
+			AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
+			IsPingAvailable:        dbClient.IsPingAvailable,
+			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
+			RequirePublicTarget:    dbClient.RequirePublicTarget,
+			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			MaxProtocolVersion:     dbClient.MaxProtocolVersion,
+			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+			MaxInstructionsLength:  dbClient.MaxInstructionsLength,
+			AllowByDefault:         dbClient.AllowByDefault,
+			Disabled:               dbClient.Disabled,
+			ToolPricing:            dbClient.ToolPricing,
+			DiscoveredTools:        dbClient.DiscoveredTools,
+			DiscoveredInstructions: dbClient.DiscoveredInstructions,
+			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
+			TokenExchange:          dbClient.TokenExchange,
+			PendingOAuthConfig:     dbClient.PendingOAuthConfig,
+			OpenAPIConfig:          dbClient.OpenAPIConfig,
 			// ConfigHash must round-trip so config-file reconciliation can
 			// compare the stored hash against the file hash; an empty hash
 			// reads as "changed" and re-syncs every client on every boot,
@@ -2301,46 +2299,45 @@ func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tabl
 }
 
 // GetMCPClientConfigByID retrieves an MCP client by ID and converts it to a schemas.MCPClientConfig.
-// Unlike GetMCPClientByID, this includes DiscoveredTools and DiscoveredToolNameMapping.
+// Unlike GetMCPClientByID, this includes DiscoveredTools.
 func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
 	dbClient, err := s.GetMCPClientByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return &schemas.MCPClientConfig{
-		ID:                        dbClient.ClientID,
-		Name:                      dbClient.Name,
-		EndpointSlug:              dbClient.EndpointSlug,
-		IsCodeModeClient:          dbClient.IsCodeModeClient,
-		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
-		ConnectionString:          dbClient.ConnectionString,
-		StdioConfig:               dbClient.StdioConfig,
-		TLSConfig:                 dbClient.TLSConfig,
-		AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
-		OauthConfigID:             dbClient.OauthConfigID,
-		ToolsToExecute:            dbClient.ToolsToExecute,
-		ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
-		PromptsToExpose:           dbClient.PromptsToExpose,
-		ResourcesToExpose:         dbClient.ResourcesToExpose,
-		Headers:                   dbClient.Headers,
-		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
-		IsPingAvailable:           dbClient.IsPingAvailable,
-		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
-		RequirePublicTarget:       dbClient.RequirePublicTarget,
-		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
-		MaxProtocolVersion:        dbClient.MaxProtocolVersion,
-		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-		MaxInstructionsLength:     dbClient.MaxInstructionsLength,
-		AllowByDefault:            dbClient.AllowByDefault,
-		Disabled:                  dbClient.Disabled,
-		ToolPricing:               dbClient.ToolPricing,
-		DiscoveredTools:           dbClient.DiscoveredTools,
-		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
-		DiscoveredInstructions:    dbClient.DiscoveredInstructions,
-		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
-		TokenExchange:             dbClient.TokenExchange,
-		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
-		OpenAPIConfig:             dbClient.OpenAPIConfig,
+		ID:                     dbClient.ClientID,
+		Name:                   dbClient.Name,
+		EndpointSlug:           dbClient.EndpointSlug,
+		IsCodeModeClient:       dbClient.IsCodeModeClient,
+		ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
+		ConnectionString:       dbClient.ConnectionString,
+		StdioConfig:            dbClient.StdioConfig,
+		TLSConfig:              dbClient.TLSConfig,
+		AuthType:               schemas.MCPAuthType(dbClient.AuthType),
+		OauthConfigID:          dbClient.OauthConfigID,
+		ToolsToExecute:         dbClient.ToolsToExecute,
+		ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+		PromptsToExpose:        dbClient.PromptsToExpose,
+		ResourcesToExpose:      dbClient.ResourcesToExpose,
+		Headers:                dbClient.Headers,
+		AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
+		IsPingAvailable:        dbClient.IsPingAvailable,
+		NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
+		RequirePublicTarget:    dbClient.RequirePublicTarget,
+		ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+		MaxProtocolVersion:     dbClient.MaxProtocolVersion,
+		ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+		MaxInstructionsLength:  dbClient.MaxInstructionsLength,
+		AllowByDefault:         dbClient.AllowByDefault,
+		Disabled:               dbClient.Disabled,
+		ToolPricing:            dbClient.ToolPricing,
+		DiscoveredTools:        dbClient.DiscoveredTools,
+		DiscoveredInstructions: dbClient.DiscoveredInstructions,
+		PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
+		TokenExchange:          dbClient.TokenExchange,
+		PendingOAuthConfig:     dbClient.PendingOAuthConfig,
+		OpenAPIConfig:          dbClient.OpenAPIConfig,
 
 		DiscoveredResources:         dbClient.DiscoveredResources,
 		DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
@@ -2406,10 +2403,6 @@ func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID 
 	if err != nil {
 		return fmt.Errorf("failed to marshal discovered_tools: %w", err)
 	}
-	mappingJSON, err := json.Marshal(discovery.ToolNameMapping)
-	if err != nil {
-		return fmt.Errorf("failed to marshal tool_name_mapping: %w", err)
-	}
 	detailsJSON, err := tables.EncodeToolDetails(discovery.Tools)
 	if err != nil {
 		return fmt.Errorf("failed to marshal discovered tool details: %w", err)
@@ -2428,7 +2421,6 @@ func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID 
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
 			"discovered_tools_json":   string(toolsJSON),
-			"tool_name_mapping_json":  string(mappingJSON),
 			"discovered_instructions": discovery.Instructions,
 			"updated_at":              time.Now(),
 
@@ -2528,9 +2520,8 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			MaxInstructionsLength:  clientConfigCopy.MaxInstructionsLength,
 			AllowByDefault:         clientConfigCopy.AllowByDefault,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
-			DiscoveredTools:           clientConfig.DiscoveredTools,
-			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
-			DiscoveredInstructions:    clientConfig.DiscoveredInstructions,
+			DiscoveredTools:        clientConfig.DiscoveredTools,
+			DiscoveredInstructions: clientConfig.DiscoveredInstructions,
 			// PerUserHeaderKeys is the admin-declared schema for
 			// MCPAuthTypePerUserHeaders. Without this copy the BeforeSave
 			// hook persists an empty column, and on restart AddClient's
@@ -2702,14 +2693,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 				return fmt.Errorf("failed to marshal discovered tool details: %w", marshalErr)
 			}
 		}
-		toolNameMappingJSON := ""
-		if clientConfig.DiscoveredToolNameMapping != nil {
-			data, marshalErr := json.Marshal(clientConfig.DiscoveredToolNameMapping)
-			if marshalErr != nil {
-				return fmt.Errorf("failed to marshal tool_name_mapping: %w", marshalErr)
-			}
-			toolNameMappingJSON = string(data)
-		}
 		// Mirror BeforeSave for PerUserHeaderKeys — same map-based update
 		// path that bypasses GORM hooks for the other virtual fields.
 		perUserHeaderKeysJSON := ""
@@ -2770,9 +2753,6 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if discoveredToolsJSON != "" {
 			updates["discovered_tools_json"] = discoveredToolsJSON
 			updates["discovered_tool_details_json"] = discoveredToolDetailsJSON
-		}
-		if toolNameMappingJSON != "" {
-			updates["tool_name_mapping_json"] = toolNameMappingJSON
 		}
 		// Always persist PerUserHeaderKeys (empty string clears when the
 		// caller is dropping all keys). Treat absent (nil) as "preserve" by

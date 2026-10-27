@@ -1974,10 +1974,9 @@ type BifrostMCPPingResponse struct {
 }
 
 type BifrostMCPListToolsResponse struct {
-	Tools           map[string]ChatTool // Discovered tools keyed by client-prefixed name
-	ToolNameMapping map[string]string   // sanitized_name -> original_mcp_name
-	RawToolCount    int                 // Count returned by the MCP server before Bifrost-side filtering
-	SkippedTools    []SkippedMCPTool    // Tools Bifrost dropped during conversion + reason
+	Tools        map[string]ChatTool // Discovered tools keyed by client-prefixed name
+	RawToolCount int                 // Count returned by the MCP server before Bifrost-side filtering
+	SkippedTools []SkippedMCPTool    // Tools Bifrost dropped during conversion + reason
 }
 
 type BifrostMCPListResourcesResponse struct {
