@@ -657,7 +657,7 @@ func testStreamNonSSEBilledByBodyBytes(t *testing.T) {
 		w.(http.Flusher).Flush()
 		_, _ = w.Write([]byte("ary-tail"))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{
 		CostPerRequest: schemas.Ptr(0.5), UnitsSource: schemas.GenericUnitsFromResponse, UnitsMeasure: schemas.GenericUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.001),
 	}})
 
@@ -682,7 +682,7 @@ func testStreamSSEBilledByBodyChars(t *testing.T) {
 		w.(http.Flusher).Flush()
 		_, _ = w.Write([]byte(second))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{
 		InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens",
 		UnitsSource: schemas.GenericUnitsFromResponse, UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(0.01),
 	}})
