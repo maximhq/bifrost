@@ -34,6 +34,8 @@ Use an absolute HTTP or HTTPS callback URL without credentials embedded in the U
 <Accordion title="What happens during registration?">
   Bifrost replaces your callback URL and credentials with its own callback URL and a separate notification token before calling the upstream agent. It stores your original callback configuration so it can deliver updates to your application.
 
+  Local push configurations are identified by agent, tenant, task ID, and configuration ID. Identical task/configuration IDs in different tenants remain separate, including dashboard deletion.
+
   An explicit create operation registers the upstream configuration first, then saves the local configuration. If local storage fails, Bifrost attempts to remove the upstream registration and returns an error.
 
   Get and list operations read Bifrost's stored configuration without calling the upstream agent. They return your original callback URL, omit the notification token, and include only the authentication scheme. Callback credentials are write-only.

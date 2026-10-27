@@ -88,6 +88,14 @@ func (s *agentPushStore) ListAgentPushConfigAgentNames(context.Context) ([]strin
 }
 
 func (s *agentPushStore) DeleteAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, config := range s.configs {
+		if config.AgentName == agentName && config.Tenant == tenant && config.TaskID == taskID && config.ConfigID == configID {
+			s.configs = append(s.configs[:i], s.configs[i+1:]...)
+			return true, nil
+		}
+	}
 	return false, nil
 }
 
@@ -205,4 +213,26 @@ func TestAgentGatewayPushIngressRoute(t *testing.T) {
 	deliveryCount := len(store.deliveries)
 	store.mu.Unlock()
 	require.Equal(t, 1, deliveryCount)
+}
+
+func TestAgentGatewayPushConfigDeletionIsTenantScoped(t *testing.T) {
+	store := &agentPushStore{}
+	for _, tenant := range []string{"", "tenant-a", "tenant-b"} {
+		store.configs = append(store.configs, schemas.AgentPushConfig{AgentName: "agent", Tenant: tenant, TaskID: "task", ConfigID: "config"})
+	}
+	manager, err := agent.NewManager(t.Context(), store, nil, "", http.DefaultClient)
+	require.NoError(t, err)
+	defer manager.Close()
+	h := NewAgentGatewayHandler(manager, nil, &lib.Config{}, nil)
+	r := router.New()
+	h.RegisterManagementRoutes(r)
+	for _, query := range []string{"?tenant=tenant-b", ""} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+		ctx.Request.SetRequestURI("/api/agents/push-configs/agent/task/config" + query)
+		r.Handler(&ctx)
+		require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+	}
+	require.Len(t, store.configs, 1)
+	require.Equal(t, "tenant-a", store.configs[0].Tenant)
 }

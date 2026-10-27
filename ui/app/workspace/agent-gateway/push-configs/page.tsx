@@ -349,7 +349,7 @@ export default function PushConfigsPage() {
 										) : (
 											configs.map((config) => (
 												<TableRow
-													key={`${config.agent_name}:${config.task_id}:${config.config_id}`}
+													key={JSON.stringify([config.agent_name, config.tenant ?? "", config.task_id, config.config_id])}
 													className="hover:bg-muted/50 transition-colors"
 												>
 													<TableCell>

@@ -130,3 +130,53 @@ test.describe("Agent log context grouping", () => {
   });
 
 });
+// Push configurations may share every protocol identifier except their tenant.
+test("push configurations retain distinct tenant rows and delete the selected tenant", async ({
+  page,
+}) => {
+  const common = {
+    agent_name: "shared-agent",
+    task_id: "shared-task",
+    config_id: "shared-config",
+    url: "https://callback.example/events",
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+  };
+  let configs = [
+    { ...common, tenant: "tenant-a" },
+    { ...common, tenant: "tenant-b" },
+  ];
+  const deletedTenants: string[] = [];
+  await page.route("**/api/agents/push-configs**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "DELETE") {
+      expect(url.pathname).toBe("/api/agents/push-configs/shared-agent/shared-task/shared-config");
+      const tenant = url.searchParams.get("tenant");
+      expect(tenant).toBe("tenant-b");
+      deletedTenants.push(tenant!);
+      configs = configs.filter((config) => config.tenant !== tenant);
+      return route.fulfill({ status: 204 });
+    }
+    await route.fulfill({
+      json: {
+        push_configs: configs,
+        agent_names: ["shared-agent"],
+        count: configs.length,
+        total_count: configs.length,
+        limit: 25,
+        offset: 0,
+      },
+    });
+  });
+  await page.goto("/workspace/agent-gateway/push-configs");
+  const rows = page.getByRole("row").filter({ hasText: "shared-config" });
+  await expect(rows).toHaveCount(2);
+  await rows
+    .filter({ hasText: "tenant-b" })
+    .getByRole("button", { name: "Delete push configuration" })
+    .click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("tenant-a");
+  expect(deletedTenants).toEqual(["tenant-b"]);
+});

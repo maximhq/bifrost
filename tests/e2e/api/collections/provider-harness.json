@@ -276965,6 +276965,78 @@
           }
         }
       ]
+    },
+    {
+      "name": "A2A tenant-storage (local fixture)",
+      "description": "Fixture-only scoped dashboard deletion: register identical task/config IDs for two tenants through the gateway first. Provide a2aPushAdminToken and the agent/task/config/tenant variables. This removes only local callback data, not upstream registration. Run FEATURE=a2a-tenant-storage INCLUDE_SKIP=1 without a provider filter.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "[\"a2aPushAdminToken\", \"a2aPushAgent\", \"a2aPushTaskId\", \"a2aPushConfigId\", \"a2aPushTenant\", \"a2aPushOtherTenant\"].forEach(function (key) { if (!pm.variables.get(key)) { throw new Error(\"Missing local fixture variable: \" + key); } });"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "[SKIP] [EXPECT-204] [NO-CONTENT] A2A-tenant-storage: delete only the selected tenant callback",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"scoped deletion succeeds\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "token={{a2aPushAdminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/agents/push-configs/{{a2aPushAgent}}/{{a2aPushTaskId}}/{{a2aPushConfigId}}?tenant={{a2aPushTenant}}"
+          },
+          "response": []
+        },
+        {
+          "name": "[SKIP] A2A-tenant-storage: another tenant with the same identifiers survives",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP success\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"only the selected tenant was removed\", function () {",
+                  "  var rows = pm.response.json().push_configs.filter(function (row) { return row.agent_name === pm.variables.get(\"a2aPushAgent\") && row.task_id === pm.variables.get(\"a2aPushTaskId\") && row.config_id === pm.variables.get(\"a2aPushConfigId\"); });",
+                  "  pm.expect(rows).to.have.lengthOf(1);",
+                  "  pm.expect(rows[0].tenant).to.equal(pm.variables.get(\"a2aPushOtherTenant\"));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "token={{a2aPushAdminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/agents/push-configs?agent_names={{a2aPushAgent}}&task_id={{a2aPushTaskId}}&config_id={{a2aPushConfigId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
