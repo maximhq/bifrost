@@ -105,10 +105,11 @@ During the consent step, Bifrost shows the user how they can identify themselves
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Open **Config** and go to the **MCP** settings.
-2. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
-3. When using `both` or `oauth`, set the **OAuth Server** settings: an **Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header), and the **Authorization Code** and **Access Token** lifetimes.
-4. Click **Save**.
+1. When using `both` or `oauth`, first open **Config → Security** and set the **OAuth Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header). It lives under Security because Cross App Access uses the same issuer. Click **Save Changes**.
+2. Open **Config** and go to the **MCP** settings.
+3. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
+4. When using `both` or `oauth`, set the **Authorization Code** and **Access Token** lifetimes. The issuer is shown read-only, with a link back to Security.
+5. Click **Save**.
 
 ![MCP server auth mode and OAuth server settings](/media/ui-mcp-server-auth-mode.png)
 

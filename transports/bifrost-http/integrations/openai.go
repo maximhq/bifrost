@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -52,10 +53,11 @@ var azureEndpointStarters = map[string]bool{
 }
 
 // isAzureSDKRequest reports whether the request originates from the Azure OpenAI
-// SDK by inspecting the User-Agent header directly from the HTTP request.
+// SDK by inspecting the User-Agent header directly from the HTTP request, or arrives
+// on the /azure resource mount, whose URL already names Azure.
 // This avoids any ordering dependency on AzureEndpointPreHook.
 func isAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
-	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI")
+	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI") || bytes.HasPrefix(ctx.Path(), azureOpenAIMountPrefix)
 }
 
 func hydrateOpenAIRequestFromLargePayloadMetadata(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) {

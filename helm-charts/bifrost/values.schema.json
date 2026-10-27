@@ -470,6 +470,163 @@
           },
           "additionalProperties": false
         },
+        "warp": {
+          "type": "object",
+          "description": "Warp, the dashboard's log-analysis agent (Settings > Warp): its models, limits, log search and topics. Renders into config.json's top-level warp and goes through the same validation as PUT /api/warp/config. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additionalModels is replaced whole. Also needs the warp feature flag (featureFlags.warp) and a vector store.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Show Warp in the dashboard. Requires a connected vector store, provider, model, embeddingProvider, embeddingModel and embeddingDimension."
+            },
+            "provider": {
+              "type": "string",
+              "description": "Provider of the default model that runs Warp's agent loop. Required when enabled."
+            },
+            "model": {
+              "type": "string",
+              "description": "Default model that runs Warp's agent loop. Required when enabled."
+            },
+            "apiKeyId": {
+              "type": "string",
+              "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys."
+            },
+            "additionalModels": {
+              "type": "array",
+              "maxItems": 20,
+              "description": "Other models people can switch to in the chat panel. Replaced whole: omitting it removes every additional model.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "apiKeyId": {
+                    "type": "string",
+                    "description": "ID of one of the provider's configured keys to pin this model to"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "maxIterations": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20,
+              "not": {
+                "const": 1
+              },
+              "default": 8,
+              "description": "Tool-call rounds Warp may run before it must answer. 0 means the default; 1 is rejected because the last round is reserved for answering."
+            },
+            "requestTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 120,
+              "description": "Deadline for each call to Warp's model. 0 means the default."
+            },
+            "historyRetentionDays": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 30,
+              "description": "How long a saved chat is kept after its last turn. 0 means the default."
+            },
+            "systemPromptSuffix": {
+              "type": "string",
+              "description": "Text appended to Warp's built-in system prompt"
+            },
+            "temperature": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2,
+              "description": "Sampling temperature. Omit to use the provider's default; 0 is fully deterministic."
+            },
+            "reasoningEffort": {
+              "type": "string",
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "description": "Effort level for reasoning models. Omit for models that are not reasoning models."
+            },
+            "embeddingProvider": {
+              "type": "string",
+              "description": "Provider of the model used to index and search logs. Required when enabled."
+            },
+            "embeddingModel": {
+              "type": "string",
+              "description": "Model used to index and search logs. Required when enabled."
+            },
+            "embeddingApiKeyId": {
+              "type": "string",
+              "description": "ID of one of the embedding provider's configured keys to pin embedding calls to"
+            },
+            "embeddingDimension": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Vector size the embedding model returns, e.g. 1536 for text-embedding-3-small. Required when enabled."
+            },
+            "logVectorStoreNamespace": {
+              "type": "string",
+              "default": "BifrostWarpLogs",
+              "description": "Vector store namespace holding Warp's log index. Must change whenever embeddingProvider, embeddingModel or embeddingDimension changes."
+            },
+            "semanticSearchThreshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.5,
+              "description": "Minimum similarity for a semantic log search match. 0 resets it to the default; omitting it keeps the stored value."
+            },
+            "semanticSearchLimit": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 25,
+              "default": 10,
+              "description": "Most matches one semantic log search returns. 0 resets it to the default; omitting it keeps the stored value."
+            },
+            "topicDiscoveryMinRequests": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20000,
+              "not": {
+                "minimum": 1,
+                "maximum": 9
+              },
+              "default": 100,
+              "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
+            }
+          },
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "provider",
+              "model"
+            ]
+          },
+          "additionalProperties": false
+        },
         "encryptionKey": {
           "type": "string",
           "description": "Encryption key for sensitive data. If not set, encryption is disabled and data is stored in plaintext."
@@ -5286,16 +5443,19 @@
             },
             "objectStorage": {
               "type": "object",
-              "description": "Optional object storage for archiving audit events to S3/GCS. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
+              "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"],
+                  "enum": ["s3", "gcs", "azure"],
                   "description": "Object storage backend type"
                 },
                 "bucket": {
-                  "type": "string",
-                  "description": "Bucket name"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string",
@@ -5312,8 +5472,15 @@
                   "description": "AWS region (S3 only)"
                 },
                 "endpoint": {
-                  "type": "string",
-                  "description": "Custom S3-compatible endpoint for MinIO/R2 (S3 only)"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint. Supports env var and structured secret references"
                 },
                 "accessKeyId": {
                   "type": "string",
@@ -5345,7 +5512,37 @@
                   "description": "GCP service account credentials JSON or file path; omit for Application Default Credentials (GCS only)"
                 }
               },
-              "required": ["type", "bucket"]
+              "required": ["type", "bucket"],
+              "allOf": [
+                {
+                  "if": { "properties": { "type": { "const": "azure" } }, "required": ["type"] },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "required": ["connectionString"] } },
+                      { "required": ["connectionString"], "not": { "required": ["endpoint"] } }
+                    ]
+                  },
+                  "else": {
+                    "properties": {
+                      "bucket": { "type": "string" },
+                      "endpoint": { "type": "string" },
+                      "connectionString": false
+                    }
+                  }
+                }
+              ]
             }
           }
         },
@@ -5964,10 +6161,14 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"]
+                  "enum": ["s3", "gcs", "azure"]
                 },
                 "bucket": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string"
@@ -5975,11 +6176,35 @@
                 "compress": {
                   "type": "boolean"
                 },
+                "format": {
+                  "type": "string",
+                  "enum": ["json", "parquet"],
+                  "default": "json",
+                  "description": "Encoding of offloaded log payload objects; parquet is supported on s3 and azure"
+                },
+                "compression": {
+                  "type": "string",
+                  "enum": ["none", "gzip", "snappy", "zstd"],
+                  "description": "JSON whole-object compression (none/gzip), or Parquet page codec (none/gzip/snappy/zstd); defaults to none for JSON (gzip when compress is true), snappy for Parquet"
+                },
                 "region": {
                   "type": "string"
                 },
                 "endpoint": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint and existingSecret"
+                },
+                "connectionStringKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Kubernetes Secret key containing the Azure Storage connection string (default: connection-string)"
                 },
                 "accessKeyId": {
                   "type": "string"
@@ -6021,6 +6246,53 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": { "type": { "const": "azure" }, "enabled": { "const": true } },
+                    "required": ["type", "enabled"]
+                  },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" },
+                      "existingSecret": { "type": "string", "minLength": 1 }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "anyOf": [{ "required": ["connectionString"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["connectionString"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["existingSecret"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["connectionString"] }] } }
+                    ]
+                  }
+                },
+                {
+                  "if": { "properties": { "type": { "enum": ["s3", "gcs"] } }, "required": ["type"] },
+                  "then": {
+                    "properties": { "bucket": { "type": "string" }, "endpoint": { "type": "string" }, "connectionString": false, "connectionStringKey": false }
+                  }
+                },
+                {
+                  "if": {
+                    "anyOf": [
+                      { "not": { "required": ["format"] } },
+                      { "properties": { "format": { "const": "json" } }, "required": ["format"] }
+                    ]
+                  },
+                  "then": { "properties": { "compression": { "enum": ["none", "gzip"] } } }
+                },
+                {
+                  "if": { "properties": { "type": { "const": "gcs" } }, "required": ["type"] },
+                  "then": { "properties": { "format": { "const": "json" } } }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {
@@ -6201,11 +6473,29 @@
                 },
                 "size": {
                   "type": "string"
+                },
+                "annotations": {
+                  "type": "object",
+                  "description": "Annotations for the bundled PostgreSQL PVC",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "volumeAttributesClassName": {
+                  "type": "string",
+                  "description": "VolumeAttributesClass for the bundled PostgreSQL PVC; requires cluster and CSI driver support"
                 }
               }
             },
             "resources": {
               "type": "object"
+            },
+            "extraArgs": {
+              "type": "array",
+              "description": "Arguments passed to the bundled PostgreSQL image entrypoint",
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -6641,6 +6931,38 @@
     }
   },
   "$defs": {
+    "azureStorageSecret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "otelEndpoint": {
       "type": "string",
       "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
@@ -7247,6 +7569,16 @@
             "api_version": {
               "type": "string",
               "description": "Azure API version"
+            },
+            "use_speech_endpoints": {
+              "type": "boolean",
+              "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+              "default": false
+            },
+            "use_voice_live_endpoints": {
+              "type": "boolean",
+              "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+              "default": false
             }
           },
           "required": ["endpoint"],
@@ -7482,6 +7814,54 @@
                   "type": "string",
                   "pattern": "\\.",
                   "description": "Host for the bedrock-mantle service (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["region"],
+          "additionalProperties": false
+        },
+        "sagemaker_key_config": {
+          "type": "object",
+          "description": "AWS credentials and routing for SageMaker real-time endpoints. Leave access_key and secret_key empty to use the default AWS credential chain.",
+          "properties": {
+            "access_key": {
+              "type": "string",
+              "description": "AWS access key used to mint bearer tokens (can use env. prefix)"
+            },
+            "secret_key": {
+              "type": "string",
+              "description": "AWS secret key (can use env. prefix)"
+            },
+            "session_token": {
+              "type": "string",
+              "description": "AWS session token for temporary credentials (can use env. prefix)"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region of the endpoints; a model id may override it with a region prefix"
+            },
+            "role_arn": {
+              "type": "string",
+              "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+            },
+            "external_id": {
+              "type": "string",
+              "description": "External ID for AssumeRole (can use env. prefix)"
+            },
+            "session_name": {
+              "type": "string",
+              "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Runtime host override, e.g. an interface VPC endpoint, FIPS or dual-stack host. Region is still required.",
+              "properties": {
+                "runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the SageMaker runtime (can use env. prefix)"
                 }
               },
               "additionalProperties": false
@@ -7737,6 +8117,14 @@
                   "endpoint": {
                     "type": "string",
                     "description": "Per-alias Azure endpoint override (can use env. prefix)."
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_speech_endpoints: send this alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_voice_live_endpoints: send this alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI."
                   },
                   "project_id": {
                     "type": "string",
@@ -8129,11 +8517,11 @@
             },
             "useIdpCredentials": {
               "type": "boolean",
-              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Renders into use_idp_credentials."
+              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Always on for profile id_jag. Renders into use_idp_credentials."
             },
             "clientId": {
               "type": "string",
-              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true. Can use env./vault. prefix. Renders into client_id."
+              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true or profile is id_jag. Can use env./vault. prefix. Renders into client_id."
             },
             "clientSecret": {
               "type": "string",
@@ -8141,7 +8529,7 @@
             },
             "authorizationServerUrl": {
               "type": "string",
-              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). Renders into authorization_server_url."
+              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). An issuer URL, from which the token endpoint is derived, or a full token endpoint URL ending in /token, which is used as is. Renders into authorization_server_url."
             },
             "scopes": {
               "type": "array",
@@ -8149,9 +8537,96 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where supported so exchanges issue refresh tokens."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty (default): the identity provider issues the upstream token directly. 'id_jag' (Enterprise): Cross App Access (Okta XAA), where the identity provider issues an ID-JAG for audience from the user's SSO session and the upstream authorization server redeems it with the jwt-bearer grant. Renders into profile."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider; set only when the IdP connection defines one. Renders into resource."
+            },
+            "resourceTokenEndpoint": {
+              "type": "string",
+              "description": "id_jag only: the upstream authorization server's token endpoint; when empty, discovered from the audience's own metadata, whose issuer must equal the audience. Renders into resource_token_endpoint."
+            },
+            "resourceClientId": {
+              "type": "string",
+              "description": "id_jag only, required: Bifrost's client ID at the upstream authorization server. Can use env./vault. prefix. Renders into resource_client_id."
+            },
+            "resourceClientSecret": {
+              "type": "string",
+              "description": "id_jag only: secret for resourceClientId; omit for a public client or with resourcePrivateKey. Can use env./vault. prefix. Renders into resource_client_secret."
+            },
+            "resourcePrivateKey": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC key for private_key_jwt at the upstream authorization server, instead of a secret. Can use env./vault. prefix. Renders into resource_private_key."
+            },
+            "resourceKeyId": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion. Requires resourcePrivateKey. Renders into resource_key_id."
+            },
+            "resourceSigningAlgorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion algorithm; empty (default) means RS256. Requires resourcePrivateKey. Renders into resource_signing_algorithm."
+            },
+            "resourceAssertionAudience": {
+              "type": "string",
+              "description": "id_jag only: aud of the client assertion; default the upstream token endpoint. Requires resourcePrivateKey. Renders into resource_assertion_audience."
+            },
+            "resourceClientAuthMethod": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resourceClientSecret is sent; empty follows discovery, else HTTP Basic. Renders into resource_client_auth_method."
             }
           },
           "required": ["audience"],
+          "allOf": [
+            {
+              "$comment": "A client secret or a private key, not both; a blank value counts as unset, as at runtime.",
+              "not": {
+                "properties": {
+                  "resourceClientSecret": { "pattern": "\\S" },
+                  "resourcePrivateKey": { "pattern": "\\S" }
+                },
+                "required": ["resourceClientSecret", "resourcePrivateKey"]
+              }
+            },
+            {
+              "if": { "properties": { "profile": { "const": "id_jag" } }, "required": ["profile"] },
+              "then": {
+                "properties": { "resourceClientId": { "pattern": "\\S" } },
+                "required": ["resourceClientId"]
+              }
+            },
+            {
+              "$comment": "resourceKeyId, resourceSigningAlgorithm and resourceAssertionAudience configure the private key's client assertion.",
+              "if": {
+                "anyOf": [
+                  { "properties": { "resourceKeyId": { "pattern": "\\S" } }, "required": ["resourceKeyId"] },
+                  { "properties": { "resourceSigningAlgorithm": { "minLength": 1 } }, "required": ["resourceSigningAlgorithm"] },
+                  { "properties": { "resourceAssertionAudience": { "pattern": "\\S" } }, "required": ["resourceAssertionAudience"] }
+                ]
+              },
+              "then": {
+                "properties": { "resourcePrivateKey": { "pattern": "\\S" } },
+                "required": ["resourcePrivateKey"]
+              }
+            },
+            {
+              "$comment": "resourceClientAuthMethod says how resourceClientSecret is sent.",
+              "if": {
+                "properties": { "resourceClientAuthMethod": { "minLength": 1 } },
+                "required": ["resourceClientAuthMethod"]
+              },
+              "then": {
+                "properties": { "resourceClientSecret": { "pattern": "\\S" } },
+                "required": ["resourceClientSecret"]
+              }
+            }
+          ],
           "additionalProperties": false
         },
         "oauthConfigId": {
@@ -8665,6 +9140,16 @@
                   "api_version": {
                     "type": "string",
                     "description": "Azure API version"
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+                    "default": false
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+                    "default": false
                   }
                 },
                 "dependentRequired": {

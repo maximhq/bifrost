@@ -2,7 +2,7 @@
 
 OpenAIDecisionRequest:
   type: object
-  description: OpenAI's Decisions request. A field OpenAI's question, choice, or level does not define (such as Typesafe's `criteria`), a top-level `state`, and a structured or null `input` are rejected with a 400; any other top-level field is forwarded to the provider unchanged, so a field a newer SDK sends still reaches it.
+  description: OpenAI's Decisions request. A field OpenAI's question, choice, or level does not define (such as Typesafe's `criteria`), instructions that are neither a string nor a list of parts, a top-level `state`, and a structured or null `input` are rejected with a 400; any other top-level field is forwarded to the provider unchanged, so a field a newer SDK sends still reaches it.
   required:
     - model
     - input
@@ -13,12 +13,12 @@ OpenAIDecisionRequest:
       description: Model in provider/model format; a model without a provider prefix is OpenAI's
       example: gpt-6-luna
     input:
-      description: A string of text, or user messages with text and image parts
+      description: A string of text, or a conversation of messages (with text, JSON, and image parts), function and custom tool calls, and their outputs
       oneOf:
         - type: string
         - type: array
           items:
-            $ref: '../../inference/decisions.yaml#/DecisionInputMessage'
+            $ref: '../../inference/decisions.yaml#/DecisionInputItem'
     questions:
       type: array
       minItems: 1
@@ -28,6 +28,11 @@ OpenAIDecisionRequest:
     safety_identifier:
       type: [string, 'null']
       description: Stable end-user identifier, forwarded to OpenAI
+    prompt_cache_key:
+      type: [string, 'null']
+      description: Partitions prompt-cache reuse by a caller-chosen key, forwarded to OpenAI
+    prompt_cache_options:
+      $ref: '../../inference/decisions.yaml#/DecisionPromptCacheOptions'
     fallbacks:
       type: array
       items:
@@ -47,7 +52,13 @@ OpenAIDecisionQuestion:
     name:
       type: string
     instructions:
-      type: string
+      description: A string, or a list of text, image, and JSON parts that give the question its own images
+      oneOf:
+        - type: string
+        - type: array
+          minItems: 1
+          items:
+            $ref: '../../inference/decisions.yaml#/DecisionInstructionPart'
     choices:
       type: array
       description: Choice only

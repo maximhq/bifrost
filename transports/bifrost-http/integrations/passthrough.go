@@ -9,6 +9,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -144,22 +145,31 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// chatGPTUpstreamURL is the ChatGPT backend, the only OpenAI upstream that accepts a caller's ChatGPT sign-in token.
+const chatGPTUpstreamURL = "https://chatgpt.com"
+
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
-// Restricted to the Codex responses endpoint only — this is not a general-purpose
+// Restricted to the Codex model list and responses endpoints, the two routes Codex calls
+// through a gateway when users sign in with ChatGPT; this is not a general-purpose
 // ChatGPT backend proxy.
 func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
-		UpstreamURL: "https://chatgpt.com",
+		UpstreamURL: chatGPTUpstreamURL,
 		// The Codex endpoint owns an event stream even when a WebSocket bridge
 		// omits the HTTP stream flag. Relay incrementally without changing its body.
 		StreamingPath: func(method, path string) bool {
 			return method == fasthttp.MethodPost && path == "/backend-api/codex/responses"
 		},
+		// The model list names and runs no model; each responses turn is still checked against the model allowlist.
+		ModelFreePath: func(method, path string) bool {
+			return method == fasthttp.MethodGet && path == "/backend-api/codex/models"
+		},
 		StripPrefix: []string{
 			"/chatgpt_passthrough",
 		},
 		AllowedRoutes: []PassthroughRoute{
+			{Method: fasthttp.MethodGet, Path: "/chatgpt_passthrough/backend-api/codex/models"},
 			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
 		},
 	})
@@ -187,6 +197,20 @@ func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		},
 		// InvokeAgent answers with an event stream; nothing in its path or body says so.
 		StreamingPath: bedrock.IsPassthroughStreamPath,
+	})
+}
+
+// NewSageMakerPassthroughRouter creates a passthrough router for /sagemaker_passthrough. It forwards only
+// InvokeEndpoint and InvokeEndpointWithResponseStream, for containers Bifrost has no native route for
+// (TEI, LMI's own format, custom images); the endpoint in the path is the model keys and virtual keys allow.
+func NewSageMakerPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.SageMaker,
+		StripPrefix: []string{
+			"/sagemaker_passthrough",
+		},
+		StreamingPath: sagemaker.IsPassthroughStreamPath,
+		PathModel:     sagemaker.PassthroughModel,
 	})
 }
 

@@ -189,7 +189,7 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 				// deferred to the end of the retry loop.
 				initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 				defer initCancel()
-				initResult, err = tempClient.Initialize(initCtx, initRequest)
+				initResult, err = initializeClient(initCtx, tempClient, initRequest)
 				return err
 			},
 			PerCallConnectRetryConfig,
@@ -1106,7 +1106,7 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 				},
 			},
 		}
-		initResult, initErr := tempClient.Initialize(verifyCtx, initRequest)
+		initResult, initErr := initializeClient(verifyCtx, tempClient, initRequest)
 		if initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
 		}
@@ -1282,7 +1282,7 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 				},
 			},
 		}
-		initResult, initErr := tempClient.Initialize(verifyCtx, initRequest)
+		initResult, initErr := initializeClient(verifyCtx, tempClient, initRequest)
 		if initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
 		}
@@ -2896,7 +2896,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					initCtx = ctx
 				}
 				var initErr error
-				initResult, initErr = externalClient.Initialize(initCtx, extInitRequest)
+				initResult, initErr = initializeClient(initCtx, externalClient, extInitRequest)
 				return initErr
 			},
 			initRetryConfig,
@@ -3841,7 +3841,7 @@ func (m *MCPManager) startLocalMCPServer() error {
 		},
 	}
 
-	_, err = inProcessClient.Initialize(ctx, initRequest)
+	_, err = initializeClient(ctx, inProcessClient, initRequest)
 	if err != nil {
 		return fmt.Errorf("failed to initialize MCP client: %w", err)
 	}

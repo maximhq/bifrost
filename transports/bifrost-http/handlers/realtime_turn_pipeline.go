@@ -239,8 +239,8 @@ func updateRealtimeSessionFromEvent(session *bfws.Session, event *schemas.Bifros
 		if event.Session.Tools != nil {
 			session.SetRealtimeSessionTools(event.Session.Tools)
 		}
-		if event.Session.Voice != "" {
-			session.SetRealtimeVoice(event.Session.Voice)
+		if voice := event.Session.Voice.GetName(); voice != "" {
+			session.SetRealtimeVoice(voice)
 		} else if audioRaw, ok := event.Session.ExtraParams["audio"]; ok {
 			// New API format nests voice under session.audio.output.voice
 			// instead of the legacy top-level session.voice.

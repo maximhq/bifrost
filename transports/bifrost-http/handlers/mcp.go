@@ -400,8 +400,8 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 // or was abandoned, the linked oauth_configs row may still exist with a
 // non-authorized status. We always create a fresh row on every click —
 // once oauth_config_id is repointed the previous row is unreferenced and
-// inert (its status can never become authorized), it is just not cleaned
-// up automatically.
+// inert (its status can never become authorized), and the OAuth sweep
+// worker removes it (DeleteAbandonedOauthConfigs).
 func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
@@ -2091,6 +2091,27 @@ func rejectStdioMCPClientIfAuthBypassed(ctx *fasthttp.RequestCtx, connType strin
 	return true
 }
 
+// resourceCredentialResendRequired refuses an update that changes where the
+// id_jag resource credential is sent (the audience it is discovered from,
+// resource_token_endpoint, or the client assertion's audience) while keeping
+// the stored secret or key through a masked
+// placeholder: the stored credential was never paired with the new target.
+// Mirrors oauth_config's rule for client_secret.
+func resourceCredentialResendRequired(existing, req *schemas.MCPTokenExchangeConfig) error {
+	if existing == nil || req == nil {
+		return nil
+	}
+	// The audience counts too: without resource_token_endpoint the token
+	// endpoint is discovered from it, so it decides where the secret goes.
+	targetChanged := req.ResourceTokenEndpointURL() != existing.ResourceTokenEndpointURL() ||
+		strings.TrimSpace(req.ResourceAssertionAudience) != strings.TrimSpace(existing.ResourceAssertionAudience) ||
+		strings.TrimSpace(req.Audience) != strings.TrimSpace(existing.Audience)
+	if targetChanged && (req.ResourceClientSecret.IsMaskedPlaceholder() || req.ResourcePrivateKey.IsMaskedPlaceholder()) {
+		return fmt.Errorf("token_exchange.resource_client_secret and resource_private_key must be resent explicitly when audience, resource_token_endpoint or resource_assertion_audience changes")
+	}
+	return nil
+}
+
 // mcpClientSecretReferences lists the credential-bearing fields of an MCP
 // client request whose value is an env./vault. reference rather than a literal.
 // Keys are wire field names so a refusal can name what to change.
@@ -2120,6 +2141,15 @@ func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionS
 		}
 		if isRef(tokenExchange.ClientSecret) {
 			refs = append(refs, "token_exchange.client_secret")
+		}
+		if isRef(tokenExchange.ResourceClientID) {
+			refs = append(refs, "token_exchange.resource_client_id")
+		}
+		if isRef(tokenExchange.ResourceClientSecret) {
+			refs = append(refs, "token_exchange.resource_client_secret")
+		}
+		if isRef(tokenExchange.ResourcePrivateKey) {
+			refs = append(refs, "token_exchange.resource_private_key")
 		}
 	}
 	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
@@ -2468,8 +2498,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange.audience is required when auth_type is 'token_exchange'")
 			return
 		}
-		if !req.TokenExchange.UseIdPCredentials && strings.TrimSpace(req.TokenExchange.ClientID.GetValue()) == "" && !req.TokenExchange.ClientID.IsFromSecret() {
+		if !req.TokenExchange.ExchangesAsSSOApplication() && strings.TrimSpace(req.TokenExchange.ClientID.GetValue()) == "" && !req.TokenExchange.ClientID.IsFromSecret() {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange.client_id is required when auth_type is 'token_exchange' and use_idp_credentials is not set")
+			return
+		}
+		if err := req.TokenExchange.ValidateProfile(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		// Token-exchange clients rely on requests that may carry both an
@@ -3159,6 +3193,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange.audience must be non-empty")
 			return
 		}
+		if err := resourceCredentialResendRequired(existingConfig.TokenExchange, req.TokenExchange); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		// The GET response redacts the exchange credentials; a round-tripped
 		// masked value means "keep the stored one", mirroring the header
 		// and TLS redacted-merge behavior above. An env/vault reference is
@@ -3170,9 +3208,22 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			if req.TokenExchange.ClientSecret.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientSecret = existingConfig.TokenExchange.ClientSecret
 			}
+			if req.TokenExchange.ResourceClientID.IsMaskedPlaceholder() {
+				req.TokenExchange.ResourceClientID = existingConfig.TokenExchange.ResourceClientID
+			}
+			if req.TokenExchange.ResourceClientSecret.IsMaskedPlaceholder() {
+				req.TokenExchange.ResourceClientSecret = existingConfig.TokenExchange.ResourceClientSecret
+			}
+			if req.TokenExchange.ResourcePrivateKey.IsMaskedPlaceholder() {
+				req.TokenExchange.ResourcePrivateKey = existingConfig.TokenExchange.ResourcePrivateKey
+			}
 		}
-		if !req.TokenExchange.UseIdPCredentials && strings.TrimSpace(req.TokenExchange.ClientID.GetValue()) == "" && !req.TokenExchange.ClientID.IsFromSecret() {
+		if !req.TokenExchange.ExchangesAsSSOApplication() && strings.TrimSpace(req.TokenExchange.ClientID.GetValue()) == "" && !req.TokenExchange.ClientID.IsFromSecret() {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange.client_id must be non-empty unless use_idp_credentials is set")
+			return
+		}
+		if err := req.TokenExchange.ValidateProfile(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 	}

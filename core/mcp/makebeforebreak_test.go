@@ -81,6 +81,7 @@ func (g *dialGate) releaseAll() {
 
 // buildGatedMCPServer starts a streamable-HTTP MCP server (one "echo" tool)
 // whose middleware routes new-connection requests through the given dialGate.
+// Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildGatedMCPServer(t *testing.T, gate *dialGate) *httptest.Server {
 	t.Helper()
 
@@ -94,7 +95,7 @@ func buildGatedMCPServer(t *testing.T, gate *dialGate) *httptest.Server {
 		return mcpgo.NewToolResultText(msg), nil
 	})
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if gate != nil {
 			gate.maybeBlock(r)

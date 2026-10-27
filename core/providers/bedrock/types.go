@@ -1645,3 +1645,183 @@ type BedrockInvokeCohereTypedEmbeddingResp struct {
 	Embeddings   BedrockCohereEmbeddingsByType `json:"embeddings"`
 	ResponseType string                        `json:"response_type"`
 }
+
+// ==================== NOVA SONIC BIDIRECTIONAL STREAM TYPES ====================
+
+// BedrockSonicInputEvent is one client event on a Nova Sonic bidirectional stream.
+type BedrockSonicInputEvent struct {
+	Event BedrockSonicInputEventBody `json:"event"`
+}
+
+// BedrockSonicInputEventBody holds exactly one Nova Sonic input event.
+type BedrockSonicInputEventBody struct {
+	SessionStart *BedrockSonicSessionStart `json:"sessionStart,omitempty"`
+	PromptStart  *BedrockSonicPromptStart  `json:"promptStart,omitempty"`
+	ContentStart *BedrockSonicContentStart `json:"contentStart,omitempty"`
+	TextInput    *BedrockSonicContentInput `json:"textInput,omitempty"`
+	AudioInput   *BedrockSonicContentInput `json:"audioInput,omitempty"`
+	ToolResult   *BedrockSonicContentInput `json:"toolResult,omitempty"`
+	ContentEnd   *BedrockSonicContentRef   `json:"contentEnd,omitempty"`
+	PromptEnd    *BedrockSonicPromptRef    `json:"promptEnd,omitempty"`
+	SessionEnd   *struct{}                 `json:"sessionEnd,omitempty"`
+}
+
+// BedrockSonicSessionStart opens a Nova Sonic session.
+type BedrockSonicSessionStart struct {
+	InferenceConfiguration     BedrockSonicInferenceConfig      `json:"inferenceConfiguration"`
+	TurnDetectionConfiguration *BedrockSonicTurnDetectionConfig `json:"turnDetectionConfiguration,omitempty"`
+}
+
+// BedrockSonicInferenceConfig carries sampling limits for a Nova Sonic session.
+type BedrockSonicInferenceConfig struct {
+	MaxTokens   int      `json:"maxTokens"`
+	TopP        *float64 `json:"topP,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+}
+
+// BedrockSonicTurnDetectionConfig tunes Nova 2 Sonic end-of-speech detection.
+type BedrockSonicTurnDetectionConfig struct {
+	EndpointingSensitivity string `json:"endpointingSensitivity"` // HIGH, MEDIUM or LOW
+}
+
+// BedrockSonicPromptStart configures the output formats, voice and tools of a prompt.
+type BedrockSonicPromptStart struct {
+	PromptName                 string                  `json:"promptName"`
+	TextOutputConfiguration    BedrockSonicMediaType   `json:"textOutputConfiguration"`
+	AudioOutputConfiguration   BedrockSonicAudioConfig `json:"audioOutputConfiguration"`
+	ToolUseOutputConfiguration *BedrockSonicMediaType  `json:"toolUseOutputConfiguration,omitempty"`
+	ToolConfiguration          *BedrockSonicToolConfig `json:"toolConfiguration,omitempty"`
+}
+
+// BedrockSonicMediaType names the media type of a text or tool content block.
+type BedrockSonicMediaType struct {
+	MediaType string `json:"mediaType"`
+}
+
+// BedrockSonicAudioConfig describes base64 LPCM audio in either direction.
+type BedrockSonicAudioConfig struct {
+	MediaType       string `json:"mediaType"`
+	SampleRateHertz int    `json:"sampleRateHertz"`
+	SampleSizeBits  int    `json:"sampleSizeBits"`
+	ChannelCount    int    `json:"channelCount"`
+	VoiceID         string `json:"voiceId,omitempty"` // output only
+	Encoding        string `json:"encoding"`
+	AudioType       string `json:"audioType"`
+}
+
+// BedrockSonicToolConfig lists the tools the model may call.
+type BedrockSonicToolConfig struct {
+	Tools []BedrockSonicTool `json:"tools"`
+}
+
+// BedrockSonicTool is one Nova Sonic tool definition.
+type BedrockSonicTool struct {
+	ToolSpec BedrockSonicToolSpec `json:"toolSpec"`
+}
+
+// BedrockSonicToolSpec carries a tool's name, description and stringified JSON schema.
+type BedrockSonicToolSpec struct {
+	Name        string                    `json:"name"`
+	Description string                    `json:"description,omitempty"`
+	InputSchema BedrockSonicToolInputJSON `json:"inputSchema"`
+}
+
+// BedrockSonicToolInputJSON wraps a JSON schema serialized as a string.
+type BedrockSonicToolInputJSON struct {
+	JSON string `json:"json"`
+}
+
+// BedrockSonicContentStart opens a text, audio or tool-result content block.
+type BedrockSonicContentStart struct {
+	PromptName                   string                        `json:"promptName"`
+	ContentName                  string                        `json:"contentName"`
+	Type                         string                        `json:"type"`
+	Interactive                  bool                          `json:"interactive"`
+	Role                         string                        `json:"role"`
+	TextInputConfiguration       *BedrockSonicMediaType        `json:"textInputConfiguration,omitempty"`
+	AudioInputConfiguration      *BedrockSonicAudioConfig      `json:"audioInputConfiguration,omitempty"`
+	ToolResultInputConfiguration *BedrockSonicToolResultConfig `json:"toolResultInputConfiguration,omitempty"`
+}
+
+// BedrockSonicToolResultConfig binds a tool-result block to the tool use it answers.
+type BedrockSonicToolResultConfig struct {
+	ToolUseID              string                `json:"toolUseId"`
+	Type                   string                `json:"type"`
+	TextInputConfiguration BedrockSonicMediaType `json:"textInputConfiguration"`
+}
+
+// BedrockSonicContentInput carries text, base64 audio or a tool result for an open block.
+type BedrockSonicContentInput struct {
+	PromptName  string `json:"promptName"`
+	ContentName string `json:"contentName"`
+	Content     string `json:"content"`
+}
+
+// BedrockSonicContentRef closes a content block.
+type BedrockSonicContentRef struct {
+	PromptName  string `json:"promptName"`
+	ContentName string `json:"contentName"`
+}
+
+// BedrockSonicPromptRef closes a prompt.
+type BedrockSonicPromptRef struct {
+	PromptName string `json:"promptName"`
+}
+
+// BedrockSonicOutputEvent is one model event on a Nova Sonic bidirectional stream.
+type BedrockSonicOutputEvent struct {
+	Event struct {
+		CompletionStart *BedrockSonicOutputContent `json:"completionStart,omitempty"`
+		ContentStart    *BedrockSonicOutputContent `json:"contentStart,omitempty"`
+		TextOutput      *BedrockSonicOutputContent `json:"textOutput,omitempty"`
+		AudioOutput     *BedrockSonicOutputContent `json:"audioOutput,omitempty"`
+		ToolUse         *BedrockSonicOutputContent `json:"toolUse,omitempty"`
+		ContentEnd      *BedrockSonicOutputContent `json:"contentEnd,omitempty"`
+		CompletionEnd   *BedrockSonicOutputContent `json:"completionEnd,omitempty"`
+		UsageEvent      *BedrockSonicUsageEvent    `json:"usageEvent,omitempty"`
+	} `json:"event"`
+}
+
+// BedrockSonicAudioDelta is the response.output_audio.delta sent for every audio frame.
+type BedrockSonicAudioDelta struct {
+	ContentIndex int    `json:"content_index"`
+	Delta        string `json:"delta"`
+	EventID      string `json:"event_id"`
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	ResponseID   string `json:"response_id"`
+	Type         string `json:"type"`
+}
+
+// BedrockSonicOutputContent is the shared shape of Nova Sonic content output events.
+type BedrockSonicOutputContent struct {
+	SessionID             string `json:"sessionId,omitempty"`
+	CompletionID          string `json:"completionId,omitempty"`
+	ContentID             string `json:"contentId,omitempty"`
+	Type                  string `json:"type,omitempty"`
+	Role                  string `json:"role,omitempty"`
+	AdditionalModelFields string `json:"additionalModelFields,omitempty"` // JSON string carrying generationStage
+	Content               string `json:"content,omitempty"`
+	ToolName              string `json:"toolName,omitempty"`
+	ToolUseID             string `json:"toolUseId,omitempty"`
+	StopReason            string `json:"stopReason,omitempty"`
+}
+
+// BedrockSonicUsageEvent reports cumulative Nova Sonic token usage.
+type BedrockSonicUsageEvent struct {
+	Details struct {
+		Total BedrockSonicUsageDirection `json:"total"`
+	} `json:"details"`
+}
+
+// BedrockSonicUsageDirection splits usage into input and output token counts.
+type BedrockSonicUsageDirection struct {
+	Input  BedrockSonicUsageCounts `json:"input"`
+	Output BedrockSonicUsageCounts `json:"output"`
+}
+
+// BedrockSonicUsageCounts splits tokens into speech and text.
+type BedrockSonicUsageCounts struct {
+	SpeechTokens int `json:"speechTokens"`
+	TextTokens   int `json:"textTokens"`
+}

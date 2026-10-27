@@ -307,7 +307,8 @@ provider-keys:
       digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
-      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and
+      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,
+      sagemaker_key_config.endpoints.runtime, and
       aliases.<name>.endpoint.
     tags:
       - Providers
@@ -433,7 +434,8 @@ provider-key-by-id:
       digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
-      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and
+      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,
+      sagemaker_key_config.endpoints.runtime, and
       aliases.<name>.endpoint.
     tags:
       - Providers

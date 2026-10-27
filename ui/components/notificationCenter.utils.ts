@@ -61,6 +61,7 @@ const SIDEKIQ_JOB_LABELS: Record<string, string> = {
 	warp_log_embedding_backfill: "Indexing logs for Warp",
 	warp_topic_clustering: "Computing Warp topics",
 	warp_topic_discovery: "Discovering new Warp topics",
+	warp_topic_upkeep: "Maintaining Warp topics",
 	vk_expiry_cleanup: "Virtual key expiry cleanup",
 };
 

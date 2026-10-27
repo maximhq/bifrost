@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -1832,4 +1834,158 @@ func TestUnmatchedToolSelections(t *testing.T) {
 	assert.Equal(t, []string{"a_very_long_operation_name_cut"}, unmatchedToolSelections(schemas.WhiteList{"listPets", "a_very_long_operation_name_cut"}, tools, "zoo"))
 	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"*"}, tools, "zoo"))
 	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"listPets", "createPet"}, tools, "zoo"))
+}
+
+// These make the test binary serve newMatrixUpstream instead of running tests, so an upstream on the
+// vendored mcp-go needs no separate build: over stdio, or over Streamable HTTP at an address pinned to
+// one protocol version (out of process, so benchmarks count only Bifrost's side).
+const (
+	stdioServerEnv       = "BIFROST_MCP_TEST_STDIO_SERVER"
+	httpServerEnv        = "BIFROST_MCP_TEST_HTTP_SERVER"
+	httpServerVersionEnv = "BIFROST_MCP_TEST_HTTP_SERVER_VERSION"
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv(stdioServerEnv) == "1" {
+		_ = server.ServeStdio(newMatrixUpstream())
+		os.Exit(0)
+	}
+	if os.Getenv(httpServerEnv) == "1" {
+		// The parent passes its bound listener as fd 3, so the port is never free for another process.
+		if l, err := net.FileListener(os.NewFile(3, "upstream-listener")); err == nil {
+			_ = http.Serve(l, server.NewStreamableHTTPServer(newMatrixUpstream(),
+				server.WithStreamableHTTPProtocolVersions(os.Getenv(httpServerVersionEnv))))
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// startHTTPUpstreamProcess runs newMatrixUpstream in a child process pinned to version and returns its URL.
+// The port stays bound throughout: the child inherits this listener rather than binding the address again.
+func startHTTPUpstreamProcess(tb testing.TB, version string) string {
+	tb.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(tb, err)
+	defer l.Close()
+	f, err := l.(*net.TCPListener).File()
+	require.NoError(tb, err)
+	defer f.Close()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), httpServerEnv+"=1", httpServerVersionEnv+"="+version)
+	cmd.ExtraFiles = []*os.File{f}
+	require.NoError(tb, cmd.Start())
+	tb.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	// Requests queue on the already bound socket until the child serves it.
+	return "http://" + l.Addr().String()
+}
+
+func newMatrixUpstream() *server.MCPServer {
+	s := server.NewMCPServer("matrix-upstream", "1.0.0",
+		server.WithToolCapabilities(true),
+		server.WithInstructions("matrix instructions"),
+	)
+	s.AddTool(
+		mcpgo.NewTool("echo", mcpgo.WithString("message", mcpgo.Required())),
+		func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			msg, _ := req.GetArguments()["message"].(string)
+			return mcpgo.NewToolResultText(msg), nil
+		},
+	)
+	return s
+}
+
+// TestConnectToMCPClient_ProtocolVersionMatrix pins that an upstream speaking any supported protocol
+// revision connects, negotiates that revision, and serves instructions, discovery, calls and health
+// checks. 2026-07-28 is reached via server/discover; the others via initialize.
+func TestConnectToMCPClient_ProtocolVersionMatrix(t *testing.T) {
+	type upstream struct {
+		name    string
+		version string
+		config  func(t *testing.T) *schemas.MCPClientConfig
+	}
+	httpUpstream := func(version string) func(t *testing.T) *schemas.MCPClientConfig {
+		return func(t *testing.T) *schemas.MCPClientConfig {
+			ts := httptest.NewServer(server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(version)))
+			t.Cleanup(ts.Close)
+			return &schemas.MCPClientConfig{ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL)}
+		}
+	}
+	upstreams := []upstream{
+		{"http", mcpgo.ProtocolVersion20250618, httpUpstream(mcpgo.ProtocolVersion20250618)},
+		{"http", mcpgo.ProtocolVersion20251125, httpUpstream(mcpgo.ProtocolVersion20251125)},
+		{"http", mcpgo.ProtocolVersion20260728, httpUpstream(mcpgo.ProtocolVersion20260728)},
+		// Legacy stdio is covered by the prebuilt example servers in internal/mcptests.
+		{"stdio", mcpgo.ProtocolVersion20260728, func(t *testing.T) *schemas.MCPClientConfig {
+			return &schemas.MCPClientConfig{
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig:    &schemas.MCPStdioConfig{Command: os.Args[0], Envs: []string{stdioServerEnv + "=1"}},
+			}
+		}},
+	}
+	for _, u := range upstreams {
+		t.Run(u.name+"/"+u.version, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := u.config(t)
+			config.ID = "matrix-" + u.name + "-" + u.version
+			config.Name = "matrix"
+			config.ToolsToExecute = []string{"*"}
+			require.NoError(t, m.connectToMCPClient(context.Background(), config))
+			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+			state, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok)
+			require.NotNil(t, state.Conn)
+			assert.Equal(t, u.version, state.Conn.ProtocolVersion(), "negotiated protocol version")
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
+			assert.Equal(t, "matrix instructions", state.ServerInstructions)
+			require.Contains(t, state.ToolMap, "matrix-echo")
+
+			msg, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+			})
+			require.Nil(t, bErr)
+			require.NotNil(t, msg.Content)
+			require.NotNil(t, msg.Content.ContentStr)
+			assert.Equal(t, "hi", *msg.Content.ContentStr)
+
+			checker := NewClientConnectionChecker(m, config.ID, time.Minute, true, &MockLogger{})
+			checker.performCheck()
+			after, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok)
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, after.State, "health check over the negotiated revision")
+		})
+	}
+}
+
+// BenchmarkExecuteChatTool_HTTPUpstream measures one tool call through Bifrost to a Streamable HTTP
+// upstream in another process, per negotiated protocol revision.
+func BenchmarkExecuteChatTool_HTTPUpstream(b *testing.B) {
+	for _, version := range []string{mcpgo.ProtocolVersion20251125, mcpgo.ProtocolVersion20260728} {
+		b.Run(version, func(b *testing.B) {
+			url := startHTTPUpstreamProcess(b, version)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID:               "bench-" + version,
+				Name:             "matrix",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(url),
+				ToolsToExecute:   []string{"*"},
+			}
+			require.NoError(b, m.connectToMCPClient(context.Background(), config))
+			b.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+			call := &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), call); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
+	}
 }
