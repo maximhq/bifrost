@@ -120,12 +120,12 @@ type PushStore interface {
 	// config identified by its ingress token hash and exact internal pending
 	// task id. It must not touch rows that have already been bound.
 	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
-	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error)
 	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
-	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error)
 	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
 	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
-	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (bool, error)
 	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
 	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
 	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)
@@ -163,6 +163,11 @@ func mintPushIngressToken() (token, hash string, err error) {
 
 func hashPushIngressToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func pushDeliveryID(agentName string, config *schemas.AgentPushConfig, payload string) string {
+	sum := sha256.Sum256([]byte(agentName + "\x00" + config.Tenant + "\x00" + config.TaskID + "\x00" + config.ConfigID + "\x00" + payload))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -498,7 +503,7 @@ func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.Ge
 	}
 	envelope := h.pushEnvelope(schemas.A2ARequestTypeGetTaskPushConfig, req.TaskID, req.ID, req)
 	return runPushLocal(ctx, h, envelope, func(ctx context.Context) (*a2a.PushConfig, error) {
-		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
+		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, req.Tenant, string(req.TaskID), req.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -525,7 +530,7 @@ func (h *proxyRequestHandler) ListTaskPushConfigs(ctx context.Context, req *a2a.
 	envelope.BifrostA2ATaskRequest = &schemas.BifrostA2ATaskRequest{TaskID: string(req.TaskID)}
 	setA2ARequestBody(envelope, req)
 	return runPushLocal(ctx, h, envelope, func(ctx context.Context) (*a2a.ListTaskPushConfigResponse, error) {
-		stored, err := m.pushStore.ListAgentPushConfigs(ctx, h.config.name, string(req.TaskID))
+		stored, err := m.pushStore.ListAgentPushConfigs(ctx, h.config.name, req.Tenant, string(req.TaskID))
 		if err != nil {
 			return nil, err
 		}
@@ -551,6 +556,8 @@ func (h *proxyRequestHandler) DeleteTaskPushConfig(ctx context.Context, req *a2a
 		return err
 	}
 	envelope := h.pushEnvelope(schemas.A2ARequestTypeDeleteTaskPushConfig, req.TaskID, req.ID, req)
+	// The SDK may fill its upstream default; cleanup still uses the local request namespace.
+	tenant := req.Tenant
 	_, err := forwardUpstream(ctx, h, envelope, func(ctx context.Context, client sdkClient) (struct{}, error) {
 		callStart := time.Now()
 		callErr := client.DeleteTaskPushConfig(ctx, req)
@@ -559,7 +566,7 @@ func (h *proxyRequestHandler) DeleteTaskPushConfig(ctx context.Context, req *a2a
 			return struct{}{}, err
 		}
 		phase := startPhaseSpan(schemas.NewBifrostContext(ctx, schemas.NoDeadline), "a2a.push.db.delete")
-		_, err := m.pushStore.DeleteAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
+		_, err := m.pushStore.DeleteAgentPushConfig(ctx, h.config.name, tenant, string(req.TaskID), req.ID)
 		endPhaseSpan(phase)
 		if err != nil {
 			return struct{}{}, err
@@ -627,11 +634,8 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	}
 
 	payload := string(body)
-	// The delivery ID is a content digest scoped to the Agent and config, so an
-	// upstream retransmission of the same event deduplicates without colliding
-	// with an identical config ID and payload from another Agent.
-	sum := sha256.Sum256([]byte(agentName + "\x00" + config.ConfigID + "\x00" + payload))
-	deliveryID := hex.EncodeToString(sum[:])
+	// Retransmissions deduplicate within one agent/tenant/task/config namespace.
+	deliveryID := pushDeliveryID(agentName, config, payload)
 
 	envelope := &schemas.BifrostA2ARequest{
 		RequestType:           schemas.A2ARequestTypePushNotification,
@@ -653,6 +657,7 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 		_, err := m.pushStore.CreateAgentPushDeliveryIfNotExists(gateCtx, &schemas.AgentPushDelivery{
 			ID:            deliveryID,
 			AgentName:     agentName,
+			Tenant:        config.Tenant,
 			TaskID:        config.TaskID,
 			ConfigID:      config.ConfigID,
 			Payload:       payload,
@@ -732,11 +737,11 @@ func (m *Manager) ListStoredPushConfigAgentNames(ctx context.Context) ([]string,
 	return m.pushStore.ListAgentPushConfigAgentNames(ctx)
 }
 
-func (m *Manager) DeleteStoredPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error) {
+func (m *Manager) DeleteStoredPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (bool, error) {
 	if m.pushStore == nil {
 		return false, nil
 	}
-	return m.pushStore.DeleteAgentPushConfig(ctx, agentName, taskID, configID)
+	return m.pushStore.DeleteAgentPushConfig(ctx, agentName, tenant, taskID, configID)
 }
 
 type pushRelay struct {
@@ -864,7 +869,7 @@ func (r *pushRelay) deliver(delivery *schemas.AgentPushDelivery, leaseUntil time
 	var opErr error
 	_, gateErr := m.RunWithPluginPipeline(gateCtx, envelope, func(*schemas.BifrostA2ARequest, func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
 		lookup := startPhaseSpan(gateCtx, "a2a.push.db.config")
-		config, err := m.pushStore.GetAgentPushConfig(gateCtx, delivery.AgentName, delivery.TaskID, delivery.ConfigID)
+		config, err := m.pushStore.GetAgentPushConfig(gateCtx, delivery.AgentName, delivery.Tenant, delivery.TaskID, delivery.ConfigID)
 		endPhaseSpan(lookup)
 		if err == nil && config == nil {
 			err = errPushConfigMissing

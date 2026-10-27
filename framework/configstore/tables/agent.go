@@ -135,11 +135,11 @@ func (TableVirtualKeyAgentGrant) TableName() string { return "governance_virtual
 // encryption is enabled and are never returned by any read API.
 type TableAgentPushConfig struct {
 	AgentName string `gorm:"primaryKey;type:varchar(255);not null"`
+	Tenant    string `gorm:"primaryKey;type:varchar(255);not null;default:''"`
 	TaskID    string `gorm:"primaryKey;type:varchar(255);not null"`
 	ConfigID  string `gorm:"primaryKey;type:varchar(255);not null"`
 
 	URL             string             `gorm:"type:text;not null"`
-	Tenant          string             `gorm:"type:varchar(255)"`
 	Token           *schemas.SecretVar `gorm:"type:text"`
 	AuthScheme      string             `gorm:"type:varchar(64)"`
 	AuthCredentials *schemas.SecretVar `gorm:"type:text"`
@@ -207,6 +207,7 @@ func (c *TableAgentPushConfig) AfterFind(*gorm.DB) error {
 type TableAgentPushDelivery struct {
 	ID        string `gorm:"primaryKey;type:varchar(64)"`
 	AgentName string `gorm:"type:varchar(255);not null;index:idx_agent_push_deliveries_agent"`
+	Tenant    string `gorm:"type:varchar(255);not null;default:''"`
 	TaskID    string `gorm:"type:varchar(255);not null"`
 	ConfigID  string `gorm:"type:varchar(255);not null"`
 

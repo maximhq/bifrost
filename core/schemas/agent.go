@@ -163,9 +163,7 @@ type AgentPushConfig struct {
 	AgentName string `json:"agent_name"`
 	TaskID    string `json:"task_id"`
 	ConfigID  string `json:"config_id"`
-	// Tenant is the downstream client's logical Agent-interface tenant. It is
-	// preserved for local reads; the selected upstream SDK transport supplies its
-	// own interface tenant independently.
+	// Tenant is part of the push configuration's local identity.
 	Tenant string `json:"tenant,omitempty"`
 	// URL is the downstream client's callback endpoint.
 	URL string `json:"url"`
@@ -228,6 +226,7 @@ const (
 type AgentPushDelivery struct {
 	ID            string    `json:"id"`
 	AgentName     string    `json:"agent_name"`
+	Tenant        string    `json:"tenant,omitempty"`
 	TaskID        string    `json:"task_id"`
 	ConfigID      string    `json:"config_id"`
 	Payload       string    `json:"payload,omitempty"`

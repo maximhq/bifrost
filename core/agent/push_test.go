@@ -307,14 +307,14 @@ func newMemoryPushStore() *memoryPushStore {
 	}
 }
 
-func pushConfigKey(agentName, taskID, configID string) string {
-	return agentName + "\x00" + taskID + "\x00" + configID
+func pushConfigKey(agentName, tenant, taskID, configID string) string {
+	return agentName + "\x00" + tenant + "\x00" + taskID + "\x00" + configID
 }
 
 func (s *memoryPushStore) SaveAgentPushConfig(_ context.Context, config *schemas.AgentPushConfig) error {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
-	s.configs[pushConfigKey(config.AgentName, config.TaskID, config.ConfigID)] = *config
+	s.configs[pushConfigKey(config.AgentName, config.Tenant, config.TaskID, config.ConfigID)] = *config
 	return nil
 }
 
@@ -325,16 +325,16 @@ func (s *memoryPushStore) BindAgentPushConfigTask(_ context.Context, agentName, 
 		if config.AgentName == agentName && config.IngressTokenHash == ingressTokenHash && config.TaskID == pendingTaskID {
 			config.TaskID = taskID
 			delete(s.configs, key)
-			s.configs[pushConfigKey(config.AgentName, config.TaskID, config.ConfigID)] = config
+			s.configs[pushConfigKey(config.AgentName, config.Tenant, config.TaskID, config.ConfigID)] = config
 		}
 	}
 	return nil
 }
 
-func (s *memoryPushStore) GetAgentPushConfig(_ context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+func (s *memoryPushStore) GetAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
-	if config, ok := s.configs[pushConfigKey(agentName, taskID, configID)]; ok {
+	if config, ok := s.configs[pushConfigKey(agentName, tenant, taskID, configID)]; ok {
 		return &config, nil
 	}
 	return nil, nil
@@ -352,12 +352,12 @@ func (s *memoryPushStore) GetAgentPushConfigByIngressTokenHash(_ context.Context
 	return nil, nil
 }
 
-func (s *memoryPushStore) ListAgentPushConfigs(_ context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+func (s *memoryPushStore) ListAgentPushConfigs(_ context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
 	var result []schemas.AgentPushConfig
 	for _, config := range s.configs {
-		if config.AgentName == agentName && config.TaskID == taskID {
+		if config.AgentName == agentName && config.Tenant == tenant && config.TaskID == taskID {
 			result = append(result, config)
 		}
 	}
@@ -384,10 +384,10 @@ func (s *memoryPushStore) ListAgentPushConfigAgentNames(_ context.Context) ([]st
 	return names, nil
 }
 
-func (s *memoryPushStore) DeleteAgentPushConfig(_ context.Context, agentName, taskID, configID string) (bool, error) {
+func (s *memoryPushStore) DeleteAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (bool, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
-	key := pushConfigKey(agentName, taskID, configID)
+	key := pushConfigKey(agentName, tenant, taskID, configID)
 	if _, ok := s.configs[key]; !ok {
 		return false, nil
 	}
@@ -580,6 +580,9 @@ type pushUpstreamClient struct {
 	deleted []*a2a.DeleteTaskPushConfigRequest
 }
 
+
+
+
 func (c *pushUpstreamClient) CreateTaskPushConfig(_ context.Context, config *a2a.PushConfig) (*a2a.PushConfig, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -698,7 +701,7 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	require.Equal(t, "Bearer", result.Auth.Scheme)
 	require.Empty(t, result.Auth.Credentials)
 
-	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "downstream-tenant", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, hashPushIngressToken(created.Token), stored.IngressTokenHash)
@@ -707,18 +710,18 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	require.Equal(t, "downstream-tenant", stored.Tenant)
 
 	// Reads are served from the gateway store and stay redacted.
-	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1", ID: "cfg-1"})
 	require.NoError(t, err)
 	require.Empty(t, got.Token)
 	require.Equal(t, "downstream-tenant", got.Tenant)
 	require.Equal(t, "http://client.example/callback", got.URL)
-	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1"})
 	require.NoError(t, err)
 	require.Len(t, listed.Configs, 1)
 	require.Equal(t, "downstream-tenant", listed.Configs[0].Tenant)
 	require.Empty(t, listed.Configs[0].Token)
 
-	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "missing"})
+	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1", ID: "missing"})
 	require.ErrorIs(t, err, push.ErrPushConfigNotFound)
 
 	// A callback that is not an absolute HTTP(S) URL is refused before any hop.
@@ -825,7 +828,7 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 		return &a2a.Task{ID: "task-emb", ContextID: "ctx-1", Status: a2a.TaskStatus{State: a2a.TaskStateCompleted}}, nil
 	}
 
-	result, err := handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
+	result, err := handler.SendMessage(context.Background(), &a2a.SendMessageRequest{Tenant: "downstream-tenant",
 		Message: &a2a.Message{ID: "m1", Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}},
 		Config: &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{
 			Tenant: "downstream-tenant",
@@ -851,7 +854,7 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 
 	// The client's real callback was durably stored and bound to the born
 	// task id (the config id is minted, so look it up by task).
-	storedList, err := store.ListAgentPushConfigs(context.Background(), "fixture", "task-emb")
+	storedList, err := store.ListAgentPushConfigs(context.Background(), "fixture", "downstream-tenant", "task-emb")
 	require.NoError(t, err)
 	require.Len(t, storedList, 1)
 	stored := &storedList[0]
@@ -863,13 +866,13 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 	require.Equal(t, "client-credential", stored.AuthCredentials.GetValue())
 
 	// An invalid embedded callback is refused before any upstream hop.
-	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
+	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{Tenant: "downstream-tenant",
 		Message: &a2a.Message{ID: "m2", Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}},
 		Config:  &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{URL: "ftp://client.example"}},
 	})
 	require.ErrorIs(t, err, a2a.ErrInvalidParams)
 
-	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
+	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{Tenant: "downstream-tenant",
 		Message: &a2a.Message{ID: "m3", Role: a2a.MessageRoleUser, Parts: []*a2a.Part{a2a.NewTextPart("hi")}},
 		Config: &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{
 			URL:  "https://client.example/callback",
@@ -897,7 +900,7 @@ func TestSendMessageBindsEmbeddedPushConfigFromMessageTaskID(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, a2a.TaskID("task-existing"), message.TaskID)
 
-	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-existing", "message-config")
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "", "task-existing", "message-config")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, "http://client.example/embedded", stored.URL)
@@ -1004,7 +1007,7 @@ func TestConcurrentSendMessagesKeepEmbeddedPushConfigsIndependent(t *testing.T) 
 	task, ok := succeeded.result.(*a2a.Task)
 	require.True(t, ok)
 	require.Equal(t, a2a.TaskID("task-concurrent"), task.ID)
-	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-concurrent", "shared-config")
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "", "task-concurrent", "shared-config")
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	require.Equal(t, secondHash, stored.IngressTokenHash)
@@ -1046,7 +1049,7 @@ func TestSendMessageRetryKeepsEmbeddedPushConfigUntilFinalOutcome(t *testing.T) 
 	require.Len(t, attempts, 2)
 	require.Equal(t, attempts[0], attempts[1], "every candidate must receive the same rewritten push configuration")
 
-	stored, err := store.ListAgentPushConfigs(context.Background(), "fixture", "task-retry")
+	stored, err := store.ListAgentPushConfigs(context.Background(), "fixture", "", "task-retry")
 	require.NoError(t, err)
 	require.Len(t, stored, 1)
 	require.Equal(t, attempts[0].ID, stored[0].ConfigID)
@@ -1063,7 +1066,7 @@ func TestDeleteTaskPushConfigRemovesBothHops(t *testing.T) {
 	require.Len(t, upstream.deleted, 1)
 	require.Equal(t, "cfg-1", upstream.deleted[0].ID)
 	upstream.mu.Unlock()
-	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.Nil(t, stored)
 
@@ -1279,7 +1282,7 @@ func TestPushRelayRetriesThenDeadLetters(t *testing.T) {
 
 	// Once the push configuration disappears the delivery dead-letters
 	// immediately instead of retrying forever.
-	_, err = store.DeleteAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	_, err = store.DeleteAgentPushConfig(context.Background(), "fixture", "", "task-1", "cfg-1")
 	require.NoError(t, err)
 	store.rescheduleNow(deliveryID)
 	m.pushRelay.notify()
@@ -1468,7 +1471,7 @@ func TestPushDeliveryNativeProtocolLifecycle(t *testing.T) {
 	}
 	store.pushMu.Unlock()
 	require.NoError(t, client.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"}))
-	stored, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	stored, err := store.GetAgentPushConfig(ctx, "fixture", "", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.Nil(t, stored)
 	upstream.mu.Lock()
@@ -1513,4 +1516,50 @@ func TestPushRelayReleasesOperationContexts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPushConfigDeletionWithSDKDefaultTenant(t *testing.T) {
+	token := "upstream-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var rpc struct {
+			ID     json.RawMessage
+			Method string
+			Params a2a.PushConfig
+		}
+		if err := json.NewDecoder(req.Body).Decode(&rpc); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if rpc.Params.Tenant != "upstream-default" {
+			t.Errorf("SDK tenant = %q, want upstream-default", rpc.Params.Tenant)
+		}
+		var result any
+		switch rpc.Method {
+		case "GetTaskPushNotificationConfig":
+			result = &a2a.PushConfig{TaskID: "task", ID: "config", Token: token}
+		case "DeleteTaskPushNotificationConfig":
+		default:
+			t.Errorf("unexpected SDK method: %s", rpc.Method)
+		}
+		if err := json.NewEncoder(w).Encode(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Result  any             `json:"result"`
+		}{"2.0", rpc.ID, result}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	iface := a2a.NewAgentInterface(server.URL, a2a.TransportProtocolJSONRPC)
+	iface.Tenant = "upstream-default"
+	client, err := a2aclient.NewFromEndpoints(t.Context(), []*a2a.AgentInterface{iface}, a2aclient.WithJSONRPCTransport(server.Client()))
+	require.NoError(t, err)
+	_, handler, store, _ := pushGateway(t)
+	require.NoError(t, handler.runtime.replaceGeneration(newClientGeneration(&a2a.AgentCard{}, client, string(a2a.TransportProtocolJSONRPC))))
+	require.NoError(t, store.SaveAgentPushConfig(t.Context(), &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task", ConfigID: "config", URL: "https://callback.example", IngressTokenHash: hashPushIngressToken(token)}))
+	require.NoError(t, handler.DeleteTaskPushConfig(t.Context(), &a2a.DeleteTaskPushConfigRequest{TaskID: "task", ID: "config"}))
+	stored, err := store.GetAgentPushConfig(t.Context(), "fixture", "", "task", "config")
+	require.NoError(t, err)
+	require.Nil(t, stored, "SDK tenant mutation must not leave the gateway callback behind")
 }

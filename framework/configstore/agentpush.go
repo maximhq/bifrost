@@ -54,11 +54,11 @@ func tableToPushConfig(row tables.TableAgentPushConfig) *schemas.AgentPushConfig
 
 // SaveAgentPushConfig upserts one push callback registration. Upsert semantics
 // match the A2A contract for setting a push configuration: re-registering the
-// same (agent, task, config) key replaces the callback wholesale.
+// same (agent, tenant, task, config) key replaces the callback wholesale.
 func (s *RDBConfigStore) SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error {
 	row := pushConfigToTable(config)
 	return s.DB().WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "agent_name"}, {Name: "task_id"}, {Name: "config_id"}},
+		Columns:   []clause.Column{{Name: "agent_name"}, {Name: "tenant"}, {Name: "task_id"}, {Name: "config_id"}},
 		UpdateAll: true,
 	}).Create(&row).Error
 }
@@ -74,9 +74,9 @@ func (s *RDBConfigStore) BindAgentPushConfigTask(ctx context.Context, agentName,
 
 // GetAgentPushConfig loads one push config; a missing row is reported as
 // (nil, nil) so callers outside this module need no error sentinel.
-func (s *RDBConfigStore) GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+func (s *RDBConfigStore) GetAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error) {
 	var row tables.TableAgentPushConfig
-	err := s.DB().WithContext(ctx).First(&row, "agent_name = ? AND task_id = ? AND config_id = ?", agentName, taskID, configID).Error
+	err := s.DB().WithContext(ctx).First(&row, "agent_name = ? AND tenant = ? AND task_id = ? AND config_id = ?", agentName, tenant, taskID, configID).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
@@ -103,9 +103,9 @@ func (s *RDBConfigStore) GetAgentPushConfigByIngressTokenHash(ctx context.Contex
 
 // ListAgentPushConfigs returns every push config stored for one task in stable
 // order.
-func (s *RDBConfigStore) ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+func (s *RDBConfigStore) ListAgentPushConfigs(ctx context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error) {
 	var rows []tables.TableAgentPushConfig
-	if err := s.DB().WithContext(ctx).Order("config_id ASC").Find(&rows, "agent_name = ? AND task_id = ?", agentName, taskID).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Order("config_id ASC").Find(&rows, "agent_name = ? AND tenant = ? AND task_id = ?", agentName, tenant, taskID).Error; err != nil {
 		return nil, err
 	}
 	result := make([]schemas.AgentPushConfig, 0, len(rows))
@@ -132,7 +132,7 @@ func (s *RDBConfigStore) ListAgentPushConfigsPaginated(ctx context.Context, para
 		return nil, 0, err
 	}
 	var rows []tables.TableAgentPushConfig
-	if err := query.Order("updated_at DESC, agent_name ASC, task_id ASC, config_id ASC").Offset(params.Offset).Limit(params.Limit).Find(&rows).Error; err != nil {
+	if err := query.Order("updated_at DESC, agent_name ASC, tenant ASC, task_id ASC, config_id ASC").Offset(params.Offset).Limit(params.Limit).Find(&rows).Error; err != nil {
 		return nil, 0, err
 	}
 	result := make([]schemas.AgentPushConfig, 0, len(rows))
@@ -154,8 +154,8 @@ func (s *RDBConfigStore) ListAgentPushConfigAgentNames(ctx context.Context) ([]s
 
 // DeleteAgentPushConfig removes one push config, reporting whether a row
 // existed. Deletion is idempotent so a repeated protocol delete is not an error.
-func (s *RDBConfigStore) DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error) {
-	result := s.DB().WithContext(ctx).Delete(&tables.TableAgentPushConfig{}, "agent_name = ? AND task_id = ? AND config_id = ?", agentName, taskID, configID)
+func (s *RDBConfigStore) DeleteAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (bool, error) {
+	result := s.DB().WithContext(ctx).Delete(&tables.TableAgentPushConfig{}, "agent_name = ? AND tenant = ? AND task_id = ? AND config_id = ?", agentName, tenant, taskID, configID)
 	if result.Error != nil {
 		return false, result.Error
 	}
@@ -180,6 +180,7 @@ func (s *RDBConfigStore) CreateAgentPushDeliveryIfNotExists(ctx context.Context,
 	row := tables.TableAgentPushDelivery{
 		ID:            delivery.ID,
 		AgentName:     delivery.AgentName,
+		Tenant:        delivery.Tenant,
 		TaskID:        delivery.TaskID,
 		ConfigID:      delivery.ConfigID,
 		Payload:       delivery.Payload,
@@ -215,6 +216,7 @@ func (s *RDBConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now tim
 		result = append(result, schemas.AgentPushDelivery{
 			ID:            row.ID,
 			AgentName:     row.AgentName,
+			Tenant:        row.Tenant,
 			TaskID:        row.TaskID,
 			ConfigID:      row.ConfigID,
 			Payload:       row.Payload,
@@ -257,6 +259,7 @@ func (s *RDBConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerI
 	return &schemas.AgentPushDelivery{
 		ID:            row.ID,
 		AgentName:     row.AgentName,
+		Tenant:        row.Tenant,
 		TaskID:        row.TaskID,
 		ConfigID:      row.ConfigID,
 		Payload:       row.Payload,

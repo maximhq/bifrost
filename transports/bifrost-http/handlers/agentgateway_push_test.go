@@ -51,11 +51,11 @@ func (s *agentPushStore) BindAgentPushConfigTask(_ context.Context, agentName, i
 	return nil
 }
 
-func (s *agentPushStore) GetAgentPushConfig(_ context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+func (s *agentPushStore) GetAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, config := range s.configs {
-		if config.AgentName == agentName && config.TaskID == taskID && config.ConfigID == configID {
+		if config.AgentName == agentName && config.Tenant == tenant && config.TaskID == taskID && config.ConfigID == configID {
 			result := config
 			return &result, nil
 		}
@@ -75,7 +75,7 @@ func (s *agentPushStore) GetAgentPushConfigByIngressTokenHash(_ context.Context,
 	return nil, nil
 }
 
-func (s *agentPushStore) ListAgentPushConfigs(_ context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+func (s *agentPushStore) ListAgentPushConfigs(_ context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error) {
 	return nil, nil
 }
 
@@ -87,7 +87,7 @@ func (s *agentPushStore) ListAgentPushConfigAgentNames(context.Context) ([]strin
 	return nil, nil
 }
 
-func (s *agentPushStore) DeleteAgentPushConfig(_ context.Context, agentName, taskID, configID string) (bool, error) {
+func (s *agentPushStore) DeleteAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (bool, error) {
 	return false, nil
 }
 
