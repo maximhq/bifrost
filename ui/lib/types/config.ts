@@ -220,6 +220,36 @@ export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
 	endpoints: undefined as unknown as BedrockEndpoints,
 } as const satisfies Required<BedrockMantleKeyConfig>;
 
+// SageMakerEndpoints matching Go's schemas.SageMakerEndpoints: a runtime host override
+// (interface VPC endpoint, FIPS or dual-stack) dialled instead of the public regional host.
+export interface SageMakerEndpoints {
+	runtime?: SecretVar;
+}
+
+// SageMakerKeyConfig matching Go's schemas.SageMakerKeyConfig
+export interface SageMakerKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+	endpoints?: SageMakerEndpoints;
+}
+
+// Default SageMakerKeyConfig
+export const DefaultSageMakerKeyConfig: SageMakerKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+	endpoints: undefined as unknown as SageMakerEndpoints,
+} as const satisfies Required<SageMakerKeyConfig>;
+
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
 	url: SecretVar;
@@ -383,6 +413,7 @@ export interface ModelProviderKey {
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
 	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
+	sagemaker_key_config?: SageMakerKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;

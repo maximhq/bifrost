@@ -146,6 +146,7 @@ type Key struct {
 	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
 	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
 	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
+	SageMakerKeyConfig     *SageMakerKeyConfig     `json:"sagemaker_key_config,omitempty"`      // AWS SageMaker-specific key configuration
 	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
@@ -1005,6 +1006,34 @@ type BedrockMantleKeyConfig struct {
 
 // NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty
 // strings. To use Bedrock Mantle API Key authentication, set Value in the Key struct instead.
+
+// SageMakerKeyConfig holds the AWS credentials and routing options for SageMaker real-time
+// endpoints. Empty AccessKey and SecretKey use the default AWS credential chain.
+type SageMakerKeyConfig struct {
+	AccessKey       SecretVar  `json:"access_key,omitempty"`    // AWS access key used to mint bearer tokens
+	SecretKey       SecretVar  `json:"secret_key,omitempty"`    // AWS secret access key
+	SessionToken    *SecretVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region          *SecretVar `json:"region,omitempty"`        // Endpoint region (required); a model id region prefix overrides it per request
+	RoleARN         *SecretVar `json:"role_arn,omitempty"`      // IAM role for STS AssumeRole
+	ExternalID      *SecretVar `json:"external_id,omitempty"`
+	RoleSessionName *SecretVar `json:"session_name,omitempty"`
+
+	Endpoints *SageMakerEndpoints `json:"endpoints,omitempty"` // Runtime host override (VPC endpoint, FIPS, dual-stack)
+}
+
+// SageMakerEndpoints overrides the SageMaker runtime host.
+type SageMakerEndpoints struct {
+	Runtime *SecretVar `json:"runtime,omitempty"` // e.g. vpce-....runtime.sagemaker.{region}.vpce.amazonaws.com
+}
+
+// Redacted copies the endpoints, preserving a literal host while masking a resolved env/vault
+// value. A nil endpoint configuration stays nil.
+func (e *SageMakerEndpoints) Redacted() *SageMakerEndpoints {
+	if e == nil {
+		return nil
+	}
+	return &SageMakerEndpoints{Runtime: e.Runtime.RedactedIfSecret()}
+}
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,

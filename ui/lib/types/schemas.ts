@@ -323,6 +323,41 @@ export const bedrockMantleKeyConfigSchema = z
 		},
 	);
 
+// SageMaker key config schema: AWS credentials Bifrost mints the endpoint bearer token from,
+// or a pre-minted token in the key value (api_key auth).
+export const sageMakerKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		endpoints: z.object({ runtime: secretVarSchema.optional() }).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// Default-chain path: both keys empty is valid, but a lone session token cannot mint a token.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
 // VLLM key config schema
 export const vllmKeyConfigSchema = z
 	.object({
@@ -718,6 +753,7 @@ export const modelProviderKeySchema = z
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
+		sagemaker_key_config: sageMakerKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -767,6 +803,14 @@ export const modelProviderKeySchema = z
 			// a top-level API key when the user explicitly chose the api_key auth method.
 			if (data.bedrock_mantle_key_config) {
 				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
+			// SageMaker mints a bearer token from AWS credentials; a key value (a pre-minted
+			// token) is only required when the user chose the api_key auth method.
+			if (data.sagemaker_key_config) {
+				if (data.sagemaker_key_config._auth_type === "api_key") {
 					return isSecretVarSet(data.value);
 				}
 				return true;
