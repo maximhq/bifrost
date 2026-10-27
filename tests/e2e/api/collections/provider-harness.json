@@ -284423,6 +284423,378 @@
           }
         }
       ]
+    },
+    {
+      "name": "280. Custom OpenAI profiles use base sampling rules (custom-profile-sampling)",
+      "description": "Existing openai_pc_auto profile targets OpenAI while retaining an opaque provider name. Both Chat ingress routes, unary/stream, must apply existing reasoning sampling gates and preserve schema/output bound; Responses is an unchanged control. Run with COMPAT=off so the catalog allowlist cannot mask the converter bug. No status-code skips. Cases are structurally qualified only; paid live runs remain operator-triggered.",
+      "item": [
+        {
+          "name": "openai gpt-5.5 /v1/chat/completions nonstreaming - custom-profile-sampling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var response = pm.response.json();",
+                  "pm.test('chat completion returned', function () { pm.expect(response.choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "var rr = (response.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('custom OpenAI sampling wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('gpt-5.5');",
+                  "  pm.expect(rr.temperature, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.top_p, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.max_completion_tokens).to.eql(256);",
+                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "  pm.expect(rr.response_format.json_schema.schema).to.deep.eql({\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return an answer of OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"temperature\": 0.2,\n  \"top_p\": 0.8,\n  \"max_completion_tokens\": 256,\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.5 /v1/chat/completions streaming - custom-profile-sampling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var rr; var finished = false;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk = JSON.parse(payload);",
+                  "  if (chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "  if (chunk.choices && chunk.choices[0] && chunk.choices[0].finish_reason) { finished = true; }",
+                  "});",
+                  "pm.test('terminal stream completion', function () { pm.expect(finished, pm.response.text()).to.eql(true); pm.expect(pm.response.text()).to.include('[DONE]'); });",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('custom OpenAI sampling wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('gpt-5.5');",
+                  "  pm.expect(rr.temperature, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.top_p, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.max_completion_tokens).to.eql(256);",
+                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "  pm.expect(rr.response_format.json_schema.schema).to.deep.eql({\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return an answer of OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"temperature\": 0.2,\n  \"top_p\": 0.8,\n  \"max_completion_tokens\": 256,\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.5 /openai/v1/chat/completions nonstreaming - custom-profile-sampling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var response = pm.response.json();",
+                  "pm.test('chat completion returned', function () { pm.expect(response.choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "var rr = (response.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('custom OpenAI sampling wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('gpt-5.5');",
+                  "  pm.expect(rr.temperature, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.top_p, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.max_completion_tokens).to.eql(256);",
+                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "  pm.expect(rr.response_format.json_schema.schema).to.deep.eql({\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return an answer of OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"temperature\": 0.2,\n  \"top_p\": 0.8,\n  \"max_completion_tokens\": 256,\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.5 /openai/v1/chat/completions streaming - custom-profile-sampling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var rr; var finished = false;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var chunk = JSON.parse(payload);",
+                  "  if (chunk.extra_fields && chunk.extra_fields.raw_request) { rr = chunk.extra_fields.raw_request; }",
+                  "  if (chunk.choices && chunk.choices[0] && chunk.choices[0].finish_reason) { finished = true; }",
+                  "});",
+                  "pm.test('terminal stream completion', function () { pm.expect(finished, pm.response.text()).to.eql(true); pm.expect(pm.response.text()).to.include('[DONE]'); });",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('custom OpenAI sampling wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('gpt-5.5');",
+                  "  pm.expect(rr.temperature, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.top_p, JSON.stringify(rr)).to.eql(undefined);",
+                  "  pm.expect(rr.max_completion_tokens).to.eql(256);",
+                  "  pm.expect(rr.reasoning_effort).to.eql('low');",
+                  "  pm.expect(rr.response_format.json_schema.schema).to.deep.eql({\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},\"required\":[\"answer\"],\"additionalProperties\":false});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Return an answer of OK.\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"temperature\": 0.2,\n  \"top_p\": 0.8,\n  \"max_completion_tokens\": 256,\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"answer\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"answer\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.5 /v1/responses unchanged control - custom-profile-sampling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var response = pm.response.json();",
+                  "var rr = (response.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('Responses compatibility stays intact', function () { pm.expect(response.object).to.eql('response'); pm.expect(rr).to.be.an('object'); pm.expect(rr.temperature).to.eql(undefined); pm.expect(rr.top_p).to.eql(undefined); pm.expect(rr.max_output_tokens).to.eql(256); pm.expect(rr.reasoning.effort).to.eql('low'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5.5\",\n  \"input\": \"Reply OK.\",\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"temperature\": 0.2,\n  \"top_p\": 0.8,\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "281. Custom OpenAI budget-only reasoning uses base bounds (custom-profile-budget)",
+      "description": "Requires the synced OpenAI gpt-5-mini capability row max_output_tokens=128000. The existing openai_pc_auto profile has no provider-matching row. A 4096-token reasoning budget maps to low under the OpenAI bound, but the opaque-profile miss previously used 4096 and mapped to high. Omitting both max_tokens and max_completion_tokens is essential: either explicit bound bypasses the catalog bound and masks this bug. One neutral unary request only. No completion cap is supplied, so paid execution requires an operator decision; this case is structurally qualified only and has not been executed against a provider. Run with COMPAT=off; exact 200 and raw outbound field assertions have no status skips.",
+      "item": [
+        {
+          "name": "openai gpt-5-mini /v1/chat/completions budget-only no output cap - custom-profile-budget",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact success status', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var response = pm.response.json();",
+                  "pm.test('chat completion returned', function () { pm.expect(response.choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "var rr = (response.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('budget normalization uses configured OpenAI capability bound', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('gpt-5-mini');",
+                  "  pm.expect(rr.reasoning_effort, JSON.stringify(rr)).to.eql('low');",
+                  "  pm.expect(rr.reasoning_max_tokens).to.eql(undefined);",
+                  "  pm.expect(rr.reasoning).to.eql(undefined);",
+                  "  pm.expect(rr.max_completion_tokens).to.eql(undefined);",
+                  "  pm.expect(rr.max_tokens).to.eql(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_pc_auto/gpt-5-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with only OK.\"\n    }\n  ],\n  \"reasoning_max_tokens\": 4096,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
