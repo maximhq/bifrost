@@ -244,6 +244,8 @@ The **OAuth Grants** page lists credentials Bifrost **issued to clients** for in
 
 - **Access tokens** are JWTs valid for `access_token_ttl` (default 600s). On every `/mcp` request Bifrost validates the JWT (signature, expiry, issuer, and audience) and confirms the bound identity still exists: a user-mode token is rejected with `401` when the user is gone, and a vk-mode token resolves to its key, which governance refuses with `403` when it is inactive or expired, the same way the inference endpoints refuse it. The identity check reads an in-memory cache, so in the common case it adds no database round-trip (vk-mode falls back to a single store lookup only on a cache miss).
 - **Refresh tokens** rotate on each use and have no fixed expiry. A token is invalidated by rotation, by the bound virtual key becoming inactive, expiring or being deleted, by the bound user becoming inactive or deleted, or by an explicit revoke. An expired virtual key also cannot consent to a new grant.
+- **Refreshing needs the `refresh_token` grant.** A client that registered without it in `grant_types`, or whose Client ID Metadata Document does not list it (both default to `authorization_code` only), gets `400` `unauthorized_client` when it tries to refresh, and must authorize again once its access token expires.
+- **Authorization codes are single-use.** Exchanging a code a second time returns `400` `invalid_grant` and revokes the refresh token its first exchange issued, since a replayed code may have been stolen. The access token from that first exchange keeps working until it expires.
 - **Rotating a virtual key** (`POST /api/governance/virtual-keys/{id}/rotate`, bulk rotation, or a scheduled rotation) revokes every vk-mode grant that key minted: their refresh tokens return `invalid_grant` on the next refresh, and authorization codes consented to with the key but not yet exchanged can no longer be exchanged. The revocation and the new key value are saved together, so a rotation that fails changes neither. Clients connected through the key must complete the OAuth flow again with the new value. The rotation cooldown keeps the old key value working for direct use; it does not keep grants alive.
 - An explicit revoke marks the grant's refresh-token row revoked, so renewals stop immediately — but it does **not** remove the bound identity, so the identity check still passes and the already-issued access token keeps working until it expires. Lower `access_token_ttl` to shorten that window.
 - **Deleting** the bound virtual key or user is stronger than revoking a grant: it revokes the grant immediately *and* the identity check rejects the grant's already-issued access token on its next `/mcp` request, instead of letting it live out its TTL.
@@ -331,8 +333,8 @@ Browser-based MCP clients send an `Origin` header, and Bifrost checks it on ever
 
 ### Client keeps re-opening the browser
 **Symptom:** The consent flow runs on every connection.
-**Cause:** The client isn't persisting its tokens, or its refresh token was revoked.
-**Fix:** Confirm the client stores its credentials; check the **OAuth Grants** page to see whether the grant was revoked.
+**Cause:** The client isn't persisting its tokens, its refresh token was revoked (refreshing then returns `400` `invalid_grant`), or it registered without the `refresh_token` grant (refreshing then returns `400` `unauthorized_client`).
+**Fix:** Confirm the client stores its credentials and registers `grant_types` with `refresh_token`; check the **OAuth Grants** page to see whether the grant was revoked.
 
 ### Token rejected after issuer change
 **Symptom:** Previously issued tokens fail validation after changing `issuer_url`, and refreshing them returns `400` `invalid_grant`.

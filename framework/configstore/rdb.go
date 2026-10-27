@@ -10227,12 +10227,17 @@ func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id s
 	return &req, nil
 }
 
-// GetOAuth2AuthorizeRequestByCodeHash finds a consented authorize request by
-// the hash of the auth code. Used by the token endpoint.
+// GetOAuth2AuthorizeRequestByCodeHash finds the authorize request an auth code
+// was minted for, while the code is consented or after it was exchanged. The
+// token endpoint exchanges a consented code and treats an exchanged one as a
+// replay, so a revoked code (never exchanged) is not returned.
 func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	var req tables.TableOAuth2AuthorizeRequest
 	err := s.DB().WithContext(ctx).
-		Where("code_hash = ? AND status = ?", codeHash, tables.OAuth2AuthorizeRequestStatusConsented).
+		Where("code_hash = ? AND status IN ?", codeHash, []tables.OAuth2AuthorizeRequestStatus{
+			tables.OAuth2AuthorizeRequestStatusConsented,
+			tables.OAuth2AuthorizeRequestStatusCodeIssued,
+		}).
 		First(&req).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound

@@ -1403,7 +1403,7 @@ const OAS25 = folder("OAS-25 Token request rejections", `Setup: ${GRANT_TEXT}; $
   ...fleetGrantTeardown("OAS-25"),
 ]);
 
-const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; a second registered client.`, [
+const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; a second registered client; a third client registered with grant_types authorization_code only, with one grant.`, [
   ...fleetGrantSetup("OAS-27"), oauthConfig("OAS-27", "both"),
   register("OAS-27", "oas27_client", LOOPBACK_CB, undefined, REFRESHABLE),
   register("OAS-27", "oas27_other", LOOPBACK_CB, "OAS-27 other client"),
@@ -1425,6 +1425,9 @@ const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, tem
   tokenReq("OAS-27", "another client's client_id", refreshParams("oas27_r_rt", "oas27_other"), [A.status(400), O.descEquals("client_id mismatch")]),
   tokenReq("OAS-27", "no refresh_token", refreshParams("oas27_r_rt", "oas27_client", { refresh_token: undefined }), [A.status(400), O.descEquals("refresh_token and client_id are required")]),
   tokenReq("OAS-27", "no client_id", refreshParams("oas27_r_rt", "oas27_client", { client_id: undefined }), [A.status(400), O.descEquals("refresh_token and client_id are required")]),
+  register("OAS-27", "oas27_noref", LOOPBACK_CB, "OAS-27 client without refresh_token"),
+  ...vkGrant("OAS-27", "oas27_noref", "oas27_n", "the grant of the client registered without refresh_token"),
+  tokenReq("OAS-27", "refresh by a client registered without refresh_token", refreshParams("oas27_n_rt", "oas27_noref"), [A.status(400), O.error("unauthorized_client"), O.descEquals("client is not registered for the refresh_token grant")]),
   ...fleetGrantTeardown("OAS-27"),
 ]);
 
