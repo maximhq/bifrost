@@ -152,6 +152,7 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
+		const governChatGPTSignInChanged = (localConfig.govern_chatgpt_sign_in ?? false) !== (config.govern_chatgpt_sign_in ?? false);
 		const skipAccessProfileUserVirtualKeyCreationChanged =
 			IS_ENTERPRISE &&
 			(localConfig.skip_access_profile_user_virtual_key_creation ?? false) !==
@@ -175,6 +176,7 @@ export default function SecurityView() {
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
+			governChatGPTSignInChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
 			skipAccessProfileUserVirtualKeyDeletionChanged ||
 			dualCredentialConflictBehaviorChanged ||
@@ -683,6 +685,26 @@ export default function SecurityView() {
 						data-testid="security-enforce-vk-object-ownership-switch"
 						checked={localConfig.enforce_vk_object_ownership ?? true}
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
+					/>
+				</div>
+				{/* Govern Codex Traffic Signed In With ChatGPT */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="govern-chatgpt-sign-in" className="text-sm font-medium">
+							Govern Codex Traffic Signed In With ChatGPT
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Codex users who sign in with ChatGPT are billed and rate limited by their ChatGPT plan. By default Bifrost only logs this
+							traffic: a signed-in user needs no access profile, and no model allowlist, budget or rate limit applies. When enabled, it is
+							governed like any other inference request.
+						</p>
+					</div>
+					<Switch
+						id="govern-chatgpt-sign-in"
+						data-testid="security-govern-chatgpt-sign-in-switch"
+						checked={localConfig.govern_chatgpt_sign_in ?? false}
+						disabled={isConfigLoading}
+						onCheckedChange={(checked) => handleConfigChange("govern_chatgpt_sign_in", checked)}
 					/>
 				</div>
 				{/* Access profiles creating and deleting users' virtual keys, each switched separately */}

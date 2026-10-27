@@ -234,6 +234,9 @@ test.describe("Inference auth setup defaults", () => {
     await expect(
       page.getByTestId("enforce-auth-on-inference-switch"),
     ).toBeDisabled();
+    await expect(
+      page.getByTestId("security-govern-chatgpt-sign-in-switch"),
+    ).toBeDisabled();
   });
 });
 
@@ -322,6 +325,32 @@ test.describe("Security Settings", () => {
       (await coreConfigApi.get(request)).client_config
         .enforce_vk_object_ownership,
     ).toBe(!initial);
+  });
+
+  test("should persist the govern ChatGPT sign-in switch both ways", async ({
+    configSettingsPage,
+    request,
+  }) => {
+    // The generic afterEach restore puts the switch back to the operator's value.
+    await configSettingsPage.dismissOnboardingWidget();
+    const initial = await configSettingsPage.getSwitchState(
+      configSettingsPage.governChatGPTSignInSwitch,
+    );
+
+    for (const expected of [!initial, initial]) {
+      await configSettingsPage.governChatGPTSignInSwitch.click();
+      await configSettingsPage.saveSettings();
+      await configSettingsPage.goto("security");
+      expect(
+        await configSettingsPage.getSwitchState(
+          configSettingsPage.governChatGPTSignInSwitch,
+        ),
+      ).toBe(expected);
+      expect(
+        (await coreConfigApi.get(request)).client_config
+          .govern_chatgpt_sign_in ?? false,
+      ).toBe(expected);
+    }
   });
 
   for (const { name, switchOf, field } of [
