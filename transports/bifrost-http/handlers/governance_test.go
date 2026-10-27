@@ -5706,3 +5706,70 @@ func TestGetVirtualKeysMetadataFilter(t *testing.T) {
 	status, _ = list(t, "from_memory=true&metadata_=x")
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
 }
+
+// TestVirtualKeyMCPConfigCallerErrorsAre400 pins that naming an MCP client that does not exist, or
+// another key's config id, is the caller's error. Both came back as 500s: the client lookup's not-found
+// and the ownership check were returned as plain errors, which the handler reports as server faults.
+func TestVirtualKeyMCPConfigCallerErrorsAre400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "client-alpha",
+		Name:             "alpha",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+		ToolsToExecute:   []string{"*"},
+	}))
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	create := func(body string) *fasthttp.RequestCtx {
+		c := newTestRequestCtx(body)
+		handler.createVirtualKey(c)
+		return c
+	}
+	update := func(vkID, body string) *fasthttp.RequestCtx {
+		c := newTestRequestCtx(body)
+		c.SetUserValue("vk_id", vkID)
+		handler.updateVirtualKey(c)
+		return c
+	}
+	created := func(name string) *configstoreTables.TableVirtualKey {
+		c := create(`{"name":"` + name + `","mcp_configs":[{"mcp_client_name":"alpha","tools_to_execute":["echo"]}],"provider_configs":[{"provider":"openai","allowed_models":["*"],"key_ids":["*"]}]}`)
+		require.Equal(t, fasthttp.StatusOK, c.Response.StatusCode(), "create %s: %s", name, c.Response.Body())
+		var resp struct {
+			VirtualKey struct {
+				ID string `json:"id"`
+			} `json:"virtual_key"`
+		}
+		require.NoError(t, json.Unmarshal(c.Response.Body(), &resp))
+		vk, err := store.GetVirtualKey(ctx, resp.VirtualKey.ID)
+		require.NoError(t, err)
+		require.Len(t, vk.MCPConfigs, 1)
+		require.Len(t, vk.ProviderConfigs, 1)
+		return vk
+	}
+	assertBadRequest := func(t *testing.T, c *fasthttp.RequestCtx, message string) {
+		t.Helper()
+		assert.Equal(t, fasthttp.StatusBadRequest, c.Response.StatusCode(), "body: %s", c.Response.Body())
+		assert.Contains(t, string(c.Response.Body()), message)
+	}
+
+	assertBadRequest(t, create(`{"name":"unknown-client","mcp_configs":[{"mcp_client_name":"no-such","tools_to_execute":["*"]}]}`), "unknown mcp_client_name: no-such")
+
+	a := created("vk-a")
+	b := created("vk-b")
+	assertBadRequest(t, update(a.ID, `{"mcp_configs":[{"mcp_client_name":"no-such","tools_to_execute":["*"]}]}`), "unknown mcp_client_name: no-such")
+	assertBadRequest(t, update(a.ID, fmt.Sprintf(`{"mcp_configs":[{"id":%d,"mcp_client_name":"alpha","tools_to_execute":["*"]}]}`, b.MCPConfigs[0].ID)),
+		fmt.Sprintf("MCP config %d does not belong to this virtual key", b.MCPConfigs[0].ID))
+	assertBadRequest(t, update(a.ID, fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"key_ids":["*"]}]}`, b.ProviderConfigs[0].ID)),
+		fmt.Sprintf("provider config %d does not belong to this virtual key", b.ProviderConfigs[0].ID))
+
+	// The refused updates changed nothing.
+	unchanged, err := store.GetVirtualKey(ctx, a.ID)
+	require.NoError(t, err)
+	require.Len(t, unchanged.MCPConfigs, 1)
+	assert.Equal(t, a.MCPConfigs[0].ID, unchanged.MCPConfigs[0].ID)
+	assert.Equal(t, []string{"echo"}, []string(unchanged.MCPConfigs[0].ToolsToExecute))
+}

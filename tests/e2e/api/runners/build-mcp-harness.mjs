@@ -7236,6 +7236,51 @@ const GOV26 = folder("GOV-26 Code mode bills nested calls, not the meta call", `
   cmTeardown("GOV-26"),
 ]);
 
+// vkPost sends a VK create body and expects the given asserts; it creates nothing a later step relies on.
+const vkPost = (id, title, body, asserts) => request(id, title, "POST", "/api/governance/virtual-keys", { body, asserts });
+const GOV09 = folder("GOV-09 VK create validation", `Setup: ${ALPHA_GREET_TEXT}. Each create names alpha twice, mixes "*" with a tool name, or names an MCP client that does not exist.`, [
+  ...alphaGreetSetup("GOV-09"),
+  vkPost("GOV-09", "alpha twice", { name: "GOV-09 twice", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }, { mcp_client_name: "alpha", tools_to_execute: ["add"] }] }, [A.status(400), A.msgEquals("duplicate mcp_client_name: alpha")]),
+  vkPost("GOV-09", "[\"*\", \"echo\"]", { name: "GOV-09 wildcard", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*", "echo"] }] }, [A.status(400), A.msgContains("wildcard '*' cannot be used with other values")]),
+  vkPost("GOV-09", "an unknown client", { name: "GOV-09 unknown", mcp_configs: [{ mcp_client_name: "gov09-no-such-client", tools_to_execute: ["echo"] }] }, [A.status(400), A.msgEquals("unknown mcp_client_name: gov09-no-such-client")]),
+  alphaGreetTeardown("GOV-09"),
+]);
+
+const GOV10 = folder("GOV-10 VK update replaces grants live", `Setup: ${ALPHA_GREET_TEXT}; a VK with mcp_configs alpha ["echo"], switched to ["add"] by its config id (as the dashboard sends it) and then to []; a second VK with mcp_configs alpha ["echo"], whose config id the first VK's update then names.`, [
+  ...alphaGreetSetup("GOV-10"),
+  govKey("GOV-10", "gov10_vk", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
+  execTool("GOV-10", "control: alpha-echo with the VK", "alpha-echo", [A.status(200)], vkUse("gov10_vk")),
+  request("GOV-10", "setup: read the VK's MCP config id", "GET", "/api/governance/virtual-keys/{{gov10_vk_id}}", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('gov10_cfg', pm.response.json().virtual_key.mcp_configs[0].id);"] }),
+  request("GOV-10", "switch the grant to [\"add\"]", "PUT", "/api/governance/virtual-keys/{{gov10_vk_id}}", { raw: '{"mcp_configs": [{"id": {{gov10_cfg}}, "mcp_client_name": "alpha", "tools_to_execute": ["add"]}]}', asserts: [A.status(200)] }),
+  execTool("GOV-10", "alpha-add with the VK", "alpha-add", [A.status(200)], vkUse("gov10_vk")),
+  execTool("GOV-10", "alpha-echo with the VK", "alpha-echo", [A.status(403)], vkUse("gov10_vk")),
+  request("GOV-10", "switch the grant to []", "PUT", "/api/governance/virtual-keys/{{gov10_vk_id}}", { body: { mcp_configs: [] }, asserts: [A.status(200)] }),
+  execTool("GOV-10", "alpha-add with the VK after []", "alpha-add", [A.status(403)], vkUse("gov10_vk")),
+  vkCreate("GOV-10", "setup: create the second VK", { name: "GOV-10 other key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }] }, "gov10_other"),
+  request("GOV-10", "setup: read the second VK's MCP config id", "GET", "/api/governance/virtual-keys/{{gov10_other_id}}", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('gov10_other_cfg', pm.response.json().virtual_key.mcp_configs[0].id);"] }),
+  request("GOV-10", "update with the second VK's config id", "PUT", "/api/governance/virtual-keys/{{gov10_vk_id}}", { raw: '{"mcp_configs": [{"id": {{gov10_other_cfg}}, "mcp_client_name": "alpha", "tools_to_execute": ["*"]}]}', asserts: [A.status(400), A.msgContains("does not belong to this virtual key")] }),
+  execTool("GOV-10", "control: the second VK still runs alpha-echo", "alpha-echo", [A.status(200)], vkUse("gov10_other")),
+  vkDelete("GOV-10", "teardown: delete the second VK", "gov10_other"),
+  vkDelete("GOV-10", "teardown: delete the VK", "gov10_vk"),
+  alphaGreetTeardown("GOV-10"),
+]);
+
+const GOV30 = folder("GOV-30 Virtual MCP conflicts", `Setup: ${ALPHA_GREET_TEXT}; ${V_TEXT}. Creates then take the slug tools-a, the slug alpha (client alpha's), V's name with a new slug, and the name "!!!", which yields no slug.`, [
+  ...alphaGreetSetup("GOV-30"), createV("GOV-30", "gov30_vmcp_id"),
+  request("GOV-30", "slug tools-a", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-30 b", endpoint_slug: "tools-a", tools: V_BODY("GOV-30").tools }, asserts: [A.status(409), A.msgEquals("an MCP endpoint with this slug already exists")] }),
+  request("GOV-30", "slug alpha", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-30 c", endpoint_slug: "alpha", tools: V_BODY("GOV-30").tools }, asserts: [A.status(409), A.msgEquals("an MCP endpoint with this slug already exists")] }),
+  request("GOV-30", "V's name with a new slug", "POST", "/api/mcp/virtual-mcps", { body: { name: "Tools A", endpoint_slug: "gov30-new", tools: V_BODY("GOV-30").tools }, asserts: [A.status(409)] }),
+  request("GOV-30", "name \"!!!\"", "POST", "/api/mcp/virtual-mcps", { body: { name: "!!!", tools: V_BODY("GOV-30").tools }, asserts: [A.status(400)] }),
+  deleteV("GOV-30", "gov30_vmcp_id"),
+  alphaGreetTeardown("GOV-30"),
+]);
+
+const GOV37 = folder("GOV-37 Virtual MCP that names a client by name", `Setup: ${ALPHA_GREET_TEXT} (client_id gov-37-alpha). A virtual MCP is created with tools [{mcp_client_id "alpha"}], the client's name.`, [
+  ...alphaGreetSetup("GOV-37"),
+  request("GOV-37", "create with the client's name as mcp_client_id", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-37 by name", tools: [{ mcp_client_id: "alpha", tool_names: ["echo"] }] }, asserts: [A.status(400), A.msgEquals("invalid MCP client IDs: alpha")] }),
+  alphaGreetTeardown("GOV-37"),
+]);
+
 const GOV18 = folder("GOV-18 Code-mode meta tools are gated", `Setup: ${CM_TEXT}; an inactive VK with mcp_configs cm ["*"]; then enforce_auth_on_inference true and no credential. listToolFiles is executed each way.`, [
   ...cmSetup("GOV-18"),
   vkCreate("GOV-18", "setup: create the inactive VK", { name: "GOV-18 key", mcp_configs: [{ mcp_client_name: "cm", tools_to_execute: ["*"] }], is_active: false }, "gov18_vk"),
@@ -7500,7 +7545,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
