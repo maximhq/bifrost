@@ -20,7 +20,7 @@ import (
 )
 
 // dialLiveTestUpstream returns Bifrost's upstream connection and the fake OpenAI end of it.
-func dialLiveTestUpstream(t *testing.T) (*bfws.UpstreamConn, *ws.Conn) {
+func dialLiveTestUpstream(t testing.TB) (*bfws.UpstreamConn, *ws.Conn) {
 	t.Helper()
 	upgrader := ws.FastHTTPUpgrader{CheckOrigin: func(*fasthttp.RequestCtx) bool { return true }}
 	serverConns := make(chan *ws.Conn, 1)

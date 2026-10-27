@@ -63,6 +63,9 @@ type Session struct {
 	realtimeTurnHooks *RealtimeTurnPluginState
 	realtimeTurnBusy  bool
 
+	realtimeTranslator   schemas.RealtimeTranslator // nil when the provider's frames map event by event
+	realtimeTranslatorMu sync.Mutex                 // orders translation and the provider writes it produces
+
 	closed bool
 }
 
@@ -260,6 +263,31 @@ func (s *Session) RealtimeVoiceType() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.realtimeVoiceType
+}
+
+// SetRealtimeTranslator pins the provider's translator to this session. Call it before the relays start.
+func (s *Session) SetRealtimeTranslator(translator schemas.RealtimeTranslator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.realtimeTranslator = translator
+}
+
+// RealtimeTranslator returns the session's translator, or nil when the provider's frames map event by event.
+func (s *Session) RealtimeTranslator() schemas.RealtimeTranslator {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeTranslator
+}
+
+// LockRealtimeTranslator starts one translation step. Hold it from the translate call until the frames
+// it produced for the provider are written, so both relay directions keep the translator's frame order.
+func (s *Session) LockRealtimeTranslator() {
+	s.realtimeTranslatorMu.Lock()
+}
+
+// UnlockRealtimeTranslator ends the step started by LockRealtimeTranslator.
+func (s *Session) UnlockRealtimeTranslator() {
+	s.realtimeTranslatorMu.Unlock()
 }
 
 // AppendRealtimeOutputText appends provider output content for the current realtime turn.

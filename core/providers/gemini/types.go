@@ -3679,3 +3679,157 @@ type GeminiFileUploadHandlerReq struct {
 	UploadID string `json:"-"`
 	FileData []byte `json:"-"`
 }
+
+// ==================== LIVE API (BidiGenerateContent) TYPES ====================
+
+// GeminiLiveClientMessage is one frame sent to the Live API. Exactly one field is set.
+type GeminiLiveClientMessage struct {
+	Setup         *GeminiLiveSetup         `json:"setup,omitempty"`
+	ClientContent *GeminiLiveClientContent `json:"clientContent,omitempty"`
+	RealtimeInput *GeminiLiveRealtimeInput `json:"realtimeInput,omitempty"`
+	ToolResponse  *GeminiLiveToolResponse  `json:"toolResponse,omitempty"`
+}
+
+// GeminiLiveSetup is the first and only configuration frame of a Live session.
+type GeminiLiveSetup struct {
+	Model                    string                         `json:"model"`
+	GenerationConfig         *GeminiLiveGenerationConfig    `json:"generationConfig,omitempty"`
+	SystemInstruction        *Content                       `json:"systemInstruction,omitempty"`
+	Tools                    []Tool                         `json:"tools,omitempty"`
+	RealtimeInputConfig      *GeminiLiveRealtimeInputConfig `json:"realtimeInputConfig,omitempty"`
+	InputAudioTranscription  *GeminiLiveAudioTranscription  `json:"inputAudioTranscription,omitempty"`
+	OutputAudioTranscription *GeminiLiveAudioTranscription  `json:"outputAudioTranscription,omitempty"`
+}
+
+// GeminiLiveGenerationConfig holds the generation settings a Live session accepts. The Live API
+// rejects names it does not know, so this deliberately carries only what it supports.
+type GeminiLiveGenerationConfig struct {
+	ResponseModalities []string                        `json:"responseModalities,omitempty"`
+	Temperature        *float64                        `json:"temperature,omitempty"`
+	MaxOutputTokens    *int                            `json:"maxOutputTokens,omitempty"`
+	SpeechConfig       *SpeechConfig                   `json:"speechConfig,omitempty"`
+	ThinkingConfig     *GenerationConfigThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// GeminiLiveRealtimeInputConfig configures how the session detects and reacts to speech.
+type GeminiLiveRealtimeInputConfig struct {
+	AutomaticActivityDetection *GeminiLiveActivityDetection `json:"automaticActivityDetection,omitempty"`
+	ActivityHandling           string                       `json:"activityHandling,omitempty"`
+}
+
+// GeminiLiveActivityDetection configures server-side voice activity detection. Disabled hands
+// turn boundaries to the client through activityStart and activityEnd.
+type GeminiLiveActivityDetection struct {
+	Disabled          bool `json:"disabled,omitempty"`
+	PrefixPaddingMs   *int `json:"prefixPaddingMs,omitempty"`
+	SilenceDurationMs *int `json:"silenceDurationMs,omitempty"`
+}
+
+// GeminiLiveAudioTranscription turns on transcription of one audio direction. It has no options
+// here; its presence is the switch.
+type GeminiLiveAudioTranscription struct{}
+
+// GeminiLiveClientContent adds turns to the conversation. TurnComplete asks the model to answer.
+type GeminiLiveClientContent struct {
+	Turns        []*Content `json:"turns,omitempty"`
+	TurnComplete bool       `json:"turnComplete,omitempty"`
+}
+
+// GeminiLiveRealtimeInput streams audio to the model. With automatic detection on, AudioStreamEnd
+// flushes the audio; with it off, ActivityStart and ActivityEnd bracket each utterance.
+type GeminiLiveRealtimeInput struct {
+	Audio          *GeminiLiveBlob     `json:"audio,omitempty"`
+	AudioStreamEnd bool                `json:"audioStreamEnd,omitempty"`
+	ActivityStart  *GeminiLiveActivity `json:"activityStart,omitempty"`
+	ActivityEnd    *GeminiLiveActivity `json:"activityEnd,omitempty"`
+}
+
+// GeminiLiveActivity marks the start or end of a client-detected utterance. It has no fields.
+type GeminiLiveActivity struct{}
+
+// GeminiLiveToolResponse answers function calls from one toolCall frame. Answer every pending call
+// in one frame: a partial answer makes the model ask again for the rest under new ids.
+type GeminiLiveToolResponse struct {
+	FunctionResponses []*FunctionResponse `json:"functionResponses"`
+}
+
+// GeminiLiveBlob is base64 media with its MIME type. Unlike Blob it is never normalized, so audio
+// chunks pass through unchanged.
+type GeminiLiveBlob struct {
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
+
+// GeminiLiveServerMessage is one frame received from the Live API. A frame can carry several of
+// these at once, such as serverContent with usageMetadata.
+type GeminiLiveServerMessage struct {
+	SetupComplete        *GeminiLiveSetupComplete        `json:"setupComplete,omitempty"`
+	ServerContent        *GeminiLiveServerContent        `json:"serverContent,omitempty"`
+	ToolCall             *GeminiLiveToolCall             `json:"toolCall,omitempty"`
+	ToolCallCancellation *GeminiLiveToolCallCancellation `json:"toolCallCancellation,omitempty"`
+	VoiceActivity        *GeminiLiveVoiceActivity        `json:"voiceActivity,omitempty"`
+	UsageMetadata        *GeminiLiveUsageMetadata        `json:"usageMetadata,omitempty"`
+}
+
+// GeminiLiveSetupComplete acknowledges the setup frame. It has no fields.
+type GeminiLiveSetupComplete struct{}
+
+// GeminiLiveServerContent carries the model's output and the turn boundaries around it.
+// InteractionStatus is IN_PROGRESS while an extended-thinking model still has an answer to give
+// after a TurnComplete, and IDLE once it is done.
+type GeminiLiveServerContent struct {
+	ModelTurn           *GeminiLiveModelTurn  `json:"modelTurn,omitempty"`
+	InputTranscription  *GeminiLiveTranscript `json:"inputTranscription,omitempty"`
+	OutputTranscription *GeminiLiveTranscript `json:"outputTranscription,omitempty"`
+	GenerationComplete  bool                  `json:"generationComplete,omitempty"`
+	TurnComplete        bool                  `json:"turnComplete,omitempty"`
+	Interrupted         bool                  `json:"interrupted,omitempty"`
+	InteractionStatus   string                `json:"interactionStatus,omitempty"`
+}
+
+// GeminiLiveModelTurn holds the model's output parts for one chunk of a turn.
+type GeminiLiveModelTurn struct {
+	Parts []*GeminiLiveModelPart `json:"parts,omitempty"`
+}
+
+// GeminiLiveModelPart is text or audio from the model. Thought parts are the model's reasoning.
+type GeminiLiveModelPart struct {
+	Text       string          `json:"text,omitempty"`
+	Thought    bool            `json:"thought,omitempty"`
+	InlineData *GeminiLiveBlob `json:"inlineData,omitempty"`
+}
+
+// GeminiLiveTranscript is a transcription fragment of one audio direction.
+type GeminiLiveTranscript struct {
+	Text string `json:"text,omitempty"`
+}
+
+// GeminiLiveToolCall asks the client to run functions. Parallel calls share one frame.
+type GeminiLiveToolCall struct {
+	FunctionCalls []*FunctionCall `json:"functionCalls,omitempty"`
+}
+
+// GeminiLiveToolCallCancellation withdraws pending function calls, for example after an interruption.
+type GeminiLiveToolCallCancellation struct {
+	IDs []string `json:"ids,omitempty"`
+}
+
+// GeminiLiveVoiceActivity reports where the server heard speech start or end. AudioOffset is a
+// protobuf duration such as "1.366125s".
+type GeminiLiveVoiceActivity struct {
+	Type        string `json:"type,omitempty"`
+	AudioOffset string `json:"audioOffset,omitempty"`
+}
+
+// GeminiLiveUsageMetadata reports token usage. It arrives only on the frame that ends a turn, and
+// the prompt count is the whole context re-sent for that generation, not a delta. The response
+// count excludes thinking tokens.
+type GeminiLiveUsageMetadata struct {
+	PromptTokenCount        int                   `json:"promptTokenCount,omitempty"`
+	ResponseTokenCount      int                   `json:"responseTokenCount,omitempty"`
+	ThoughtsTokenCount      int                   `json:"thoughtsTokenCount,omitempty"`
+	CachedContentTokenCount int                   `json:"cachedContentTokenCount,omitempty"`
+	TotalTokenCount         int                   `json:"totalTokenCount,omitempty"`
+	PromptTokensDetails     []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	ResponseTokensDetails   []*ModalityTokenCount `json:"responseTokensDetails,omitempty"`
+}

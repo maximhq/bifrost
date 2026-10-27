@@ -4738,7 +4738,7 @@ class TestOpenAIIntegration:
     @pytest.mark.parametrize(
         "provider,_model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "simple_chat", include_providers=["openai"]
+            "simple_chat", include_providers=["openai", "gemini"]
         ),
     )
     def test_62_ws_realtime_base_path(self, test_config, provider, _model, vk_enabled):
