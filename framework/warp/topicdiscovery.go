@@ -36,14 +36,18 @@ import (
 // larger, with the requests filed under the smaller still counting through
 // merged_into.
 //
-// Both run on a timer, discovery through Sidekiq because it spends model
-// calls on names and should be visible and cancellable like any other run,
-// upkeep in-process because it is a few row updates.
+// Both are started on a timer and run as Sidekiq jobs in TopicsJobPartition,
+// beside the runs that seed topics. That partition runs its jobs one at a
+// time across every instance, and every write to a topic row is made by one
+// of its jobs, so no two instances rewrite a topic at once: a whole-row write
+// cannot put back what another instance's job changed while it was working.
 
 const (
 	// TopicDiscoveryJobKind is the Sidekiq job that clusters the pool of
 	// requests that matched no topic.
 	TopicDiscoveryJobKind = "warp_topic_discovery"
+	// TopicUpkeepJobKind is the Sidekiq job that retires and merges topics.
+	TopicUpkeepJobKind = "warp_topic_upkeep"
 	// TopicsJobPartition serialises every job that writes topics: a run and a
 	// discovery must not interleave their writes.
 	TopicsJobPartition = "warp_log_topics"
@@ -851,13 +855,13 @@ type topicRename struct {
 // saveTopicRenames writes each new name and its examples over the survivor's
 // row as it is now, and only while that row is still the one the pass wrote.
 //
-// Naming waits on the model, and upkeep runs on every instance: another can
-// merge or retire the survivor, or name it, in the meantime. Writing the copy
-// taken before naming would put back what it changed - a merged topic would
-// come back active. So the row is read again, compared on what this pass
-// wrote, and only its name and examples are changed. A row that moved on keeps
-// what the other instance gave it. Between the read and the write the window
-// is the one every whole-row write in upkeep has.
+// Upkeep runs as a job in TopicsJobPartition, so no other topics job writes
+// while it waits on the model. The check is for the one way two can overlap:
+// a job whose heartbeat lapsed is claimed again elsewhere before its first
+// owner notices. Writing the copy taken before naming would then put back
+// what the newer job changed - a merged topic would come back active - so the
+// row is read again, compared on what this pass wrote, and only its name and
+// examples are changed.
 func saveTopicRenames(ctx context.Context, store logstore.WarpTopicStore, renames []topicRename) error {
 	ids := make([]string, 0, len(renames))
 	byID := make(map[string]topicRename, len(renames))
@@ -1153,7 +1157,7 @@ func countTopicRequests(ctx context.Context, store logstore.WarpTopicStore, ids 
 	return counts, nil
 }
 
-// StartTopicUpkeep runs upkeep on a timer until Shutdown, and starts a
+// StartTopicUpkeep starts upkeep on a timer until Shutdown, and starts a
 // discovery whenever enough requests are pooled and no topics job is in
 // flight. Calling it twice is a no-op.
 func (s *Service) StartTopicUpkeep() {
@@ -1210,37 +1214,37 @@ func (s *Service) stopTopicUpkeep() {
 	})
 }
 
-// topicUpkeepTick is one pass: upkeep, then discovery if it is due. A run or
-// discovery in flight rewrites topic rows whole, as upkeep does, so the pass
-// stands aside for one - and when it cannot tell, rather than guess.
+// topicUpkeepTick is one pass of the timer: the vector housekeeping that
+// touches no topic row, upkeep, and discovery if it is due.
 func (s *Service) topicUpkeepTick(ctx context.Context) {
 	if s.topicStore() == nil {
 		return
 	}
-	// Before the check for a topics job: a retried vector delete touches no
-	// topic row, so a long run is no reason to leave deleted logs' vectors.
+	// A retried vector delete and an expired vector touch no topic row, so a
+	// long topics job is no reason to leave either.
 	if retried, err := s.retryVectorDeletes(ctx); err != nil {
 		s.warnf("failed to remove the vectors of deleted logs on retry (%d removed this pass): %v", retried, err)
 	} else if retried > 0 {
 		s.infof("warp: removed %d vector(s) of deleted logs on retry", retried)
 	}
-	busy, err := s.topicsJobInFlight(ctx)
-	if err != nil {
-		s.warnf("failed to check for a running Warp topics job; skipping topic upkeep: %v", err)
-		return
-	}
-	if busy {
-		return
-	}
-	done, err := s.MaintainTopics(ctx)
+	// One mode for every node that shares a job store: upkeep goes through the
+	// queue, where TopicsJobPartition runs one pass at a time. Inline upkeep
+	// holds no lock - another node could start a queued pass the moment after
+	// it looked - so a node that can see the job store but has no runner leaves
+	// upkeep to the nodes that do. Only a node with no job store, which has
+	// nothing to coordinate through, keeps topics in this process.
+	s.mu.RLock()
+	queue, jobs := s.topicJobs, s.backfillJobs
+	s.mu.RUnlock()
 	switch {
-	case errors.Is(err, ErrUnavailable):
-		// Warp is off or unset: no topics to keep, but expired logs' vectors
-		// still go, and discovery sees for itself that it is not due.
-	case err != nil:
-		s.warnf("failed to maintain Warp topics: %v", err)
-	case done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0:
-		s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+	case queue != nil:
+		if err := s.enqueueTopicUpkeep(ctx, queue, time.Now().UTC()); err != nil {
+			s.warnf("failed to queue Warp topic upkeep: %v", err)
+		}
+	case jobs != nil:
+		s.warnf("Warp topic upkeep skipped on this node: it shares a job store but has no job runner, so upkeep is left to the nodes that queue it")
+	default:
+		s.maintainTopicsInline(ctx)
 	}
 	if swept, err := s.sweepExpiredVectors(ctx, time.Now().UTC()); err != nil {
 		s.warnf("failed to sweep expired Warp vectors: %v", err)
@@ -1255,7 +1259,89 @@ func (s *Service) topicUpkeepTick(ctx context.Context) {
 	}
 }
 
-// TopicsJobKinds are the jobs queued in TopicsJobPartition.
+// enqueueTopicUpkeep queues an upkeep job in TopicsJobPartition, behind any
+// topics job already there, unless one is waiting or running.
+//
+// Every instance's timer calls it. The job's id is the hour it was queued
+// in, so two instances queuing in the same hour make one job: the second is
+// refused as a duplicate, which is the mechanism working, not a failure.
+// Without a job store to ask, that id is the only guard: the job is still
+// queued, since a service with a queue never runs upkeep inline.
+func (s *Service) enqueueTopicUpkeep(ctx context.Context, queue TopicJobQueue, now time.Time) error {
+	if busy, err := s.jobInFlight(ctx, TopicUpkeepJobKind); err != nil || busy {
+		return err
+	}
+	id := fmt.Sprintf("%s-%d", TopicUpkeepJobKind, now.Truncate(topicsDiscoveryInterval).Unix())
+	if err := queue.EnqueuePartitioned(ctx, id, TopicUpkeepJobKind, TopicsJobPartition, "{}", ""); err != nil && !sidekiq.IsDuplicateJobError(err) {
+		return err
+	}
+	return nil
+}
+
+// topicUpkeepJobMeta is what an upkeep job reports when it ends.
+type topicUpkeepJobMeta struct {
+	Retired int    `json:"retired"`
+	Merged  int    `json:"merged"`
+	Themes  int    `json:"themes"`
+	Pruned  int    `json:"pruned"`
+	Dropped int64  `json:"dropped"`
+	Message string `json:"message,omitempty"`
+}
+
+// RunTopicUpkeepJob is the Sidekiq handler for one upkeep pass. Warp being
+// off or unset is not a failure: there is nothing to keep.
+func (s *Service) RunTopicUpkeepJob(ctx context.Context, job tables.TableSidekiqJob, _ sidekiq.ProgressFunc) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, topicsUpkeepTimeout)
+	defer cancel()
+	done, err := s.MaintainTopics(ctx)
+	meta := topicUpkeepJobMeta{Retired: done.Retired, Merged: done.Merged, Themes: done.Themes, Pruned: done.Pruned, Dropped: done.Dropped}
+	switch {
+	case errors.Is(err, ErrUnavailable):
+		meta.Message, err = "Warp topics are not available; nothing to keep.", nil
+	case err != nil:
+		meta.Message = "Topic upkeep failed; the topics are as the last pass left them."
+	default:
+		meta.Message = fmt.Sprintf("Retired %d topic(s), merged %d, pruned %d row(s), dropped %d pooled request(s).", done.Retired, done.Merged, done.Pruned, done.Dropped)
+		if done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0 {
+			s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+		}
+	}
+	encoded, encodeErr := sonic.MarshalString(meta)
+	if encodeErr != nil {
+		encoded = job.Metadata
+	}
+	return encoded, err
+}
+
+// SummarizeTopicUpkeepMeta reports an upkeep job's outcome for generic job
+// views.
+func SummarizeTopicUpkeepMeta(metadata string) sidekiq.JobSummary {
+	var meta topicUpkeepJobMeta
+	if sonic.UnmarshalString(metadata, &meta) != nil {
+		return sidekiq.JobSummary{}
+	}
+	return sidekiq.JobSummary{Message: meta.Message}
+}
+
+// maintainTopicsInline runs upkeep in this process, for a node with no job
+// store: with none, there are no topics jobs it could stand aside for, and no
+// node it could coordinate with.
+func (s *Service) maintainTopicsInline(ctx context.Context) {
+	done, err := s.MaintainTopics(ctx)
+	switch {
+	case errors.Is(err, ErrUnavailable):
+		// Warp is off or unset: no topics to keep.
+	case err != nil:
+		s.warnf("failed to maintain Warp topics: %v", err)
+	case done.Retired > 0 || done.Merged > 0 || done.Pruned > 0 || done.Dropped > 0:
+		s.infof("warp topics: retired %d, merged %d, pruned %d, dropped %d pooled", done.Retired, done.Merged, done.Pruned, done.Dropped)
+	}
+}
+
+// TopicsJobKinds are the jobs in TopicsJobPartition that hold one another
+// back: a run or discovery waiting or running refuses another. Upkeep runs in
+// the same partition but holds nothing back - it takes its turn - so it is not
+// one of them.
 var TopicsJobKinds = []string{TopicsJobKind, TopicDiscoveryJobKind}
 
 // LockTopicsJobAdmission takes the lock a job is admitted to
@@ -1280,15 +1366,27 @@ func (s *Service) topicsJobInFlight(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	for _, kind := range TopicsJobKinds {
-		inFlight, err := jobs.GetInFlightSidekiqJobByKind(ctx, kind)
-		if err != nil {
-			return false, fmt.Errorf("check for a running %s job: %w", kind, err)
-		}
-		if inFlight != nil {
-			return true, nil
+		if busy, err := s.jobInFlight(ctx, kind); err != nil || busy {
+			return busy, err
 		}
 	}
 	return false, nil
+}
+
+// jobInFlight reports whether a job of kind is pending or running. Without a
+// job store there are no jobs to wait for.
+func (s *Service) jobInFlight(ctx context.Context, kind string) (bool, error) {
+	s.mu.RLock()
+	jobs := s.backfillJobs
+	s.mu.RUnlock()
+	if jobs == nil {
+		return false, nil
+	}
+	inFlight, err := jobs.GetInFlightSidekiqJobByKind(ctx, kind)
+	if err != nil {
+		return false, fmt.Errorf("check for a running %s job: %w", kind, err)
+	}
+	return inFlight != nil, nil
 }
 
 // StartDiscoveryIfDue enqueues a discovery when the pool holds enough

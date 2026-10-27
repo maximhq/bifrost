@@ -959,11 +959,19 @@ func listTopicsTool() Tool {
 	}
 }
 
-// RegisterTopics binds the clustering and discovery jobs to the shared Sidekiq
-// runner. Only clustering pages vectors out of the vector store; discovery
-// reads the pool from the log store, so it is registered without one.
+// RegisterTopics binds the clustering, discovery and upkeep jobs to the shared
+// Sidekiq runner. Only clustering pages vectors out of the vector store;
+// discovery and upkeep read the log store, so they are registered without one.
+// An upkeep that finished is routine, and is kept out of the jobs listing
+// unless it failed.
+//
+// They are bound whether or not there is a log reader yet: a deployment that
+// turns logging on after startup gets its reader later, through SetLogReader,
+// and without a queue by then its node would skip upkeep until restart. Each
+// job finds the topic store when it runs and does nothing without one, and the
+// timer queues nothing while there is none.
 func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
-	if runner == nil || s.logs == nil || s.store == nil {
+	if runner == nil || s.store == nil {
 		return
 	}
 	if s.vectorStore != nil {
@@ -971,6 +979,9 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 	}
 	runner.Register(TopicDiscoveryJobKind, s.RunDiscoveryJob)
 	runner.RegisterSummarizer(TopicDiscoveryJobKind, SummarizeBackfillMeta)
+	runner.Register(TopicUpkeepJobKind, s.RunTopicUpkeepJob)
+	runner.RegisterSummarizer(TopicUpkeepJobKind, SummarizeTopicUpkeepMeta)
+	runner.RegisterQuietOnSuccess(TopicUpkeepJobKind)
 	s.mu.Lock()
 	s.topicJobs = runner
 	s.mu.Unlock()
