@@ -4630,6 +4630,102 @@ func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
 	}
 }
 
+// zai.glm-5.3 on Bedrock answers Claude Code's ArtifactData tool with "The task request
+// was rejected by the target" over the `(?:...)` pattern on its top-level collection, so
+// its row drops tool-schema patterns on both dispatch paths. There is no name fallback:
+// GLM-5 and 4.7 accept patterns and keep their exact tool bytes.
+func TestToolSchemaPolicy_DropsPatternsOnlyWhenTheRowSaysSo(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "us.zai.glm-5.3" {
+			return &schemas.ModelCapabilities{SupportsSchemaPattern: new(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	if glm := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5.3")); !glm.DropPattern {
+		t.Fatalf("the glm-5.3 row did not turn pattern dropping on: %+v", glm)
+	}
+	for _, model := range []string{"us.zai.glm-5", "us.zai.glm-4.7", "us.moonshotai.kimi-k3"} {
+		if p := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, model)); p.DropPattern {
+			t.Fatalf("%s must keep its patterns without a row: %+v", model, p)
+		}
+	}
+
+	raw := `{"type":"object","properties":{` +
+		`"collection":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}(?:\\/[A-Za-z0-9_\\-.~:@+]{1,200}){0,14}$"},` +
+		`"doc_id":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}$"}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertDropped := func(t *testing.T, sent *schemas.ToolFunctionParameters) {
+		t.Helper()
+		out, err := json.Marshal(sent)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "pattern") || !strings.Contains(string(out), `"collection"`) {
+			t.Fatalf("patterns reached the provider or the property was lost: %s", out)
+		}
+		if before, _ := json.Marshal(&params); !strings.Contains(string(before), `(?:`) {
+			t.Fatalf("caller's schema was mutated in place: %s", before)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	t.Run("responses", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  new("ArtifactData"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &params},
+			}}},
+		}
+		prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+		if bifrostErr != nil {
+			t.Fatalf("prepare failed: %v", bifrostErr.Error)
+		}
+		assertDropped(t, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+	})
+	t.Run("chat", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+			}}},
+		}
+		assertDropped(t, prepareChatRequest(ctx, nil, schemas.Bedrock, req).Params.Tools[0].Function.Parameters)
+	})
+
+	unrestricted := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.zai.glm-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, unrestricted); out != unrestricted {
+		t.Fatal("a model without the row must be returned as-is")
+	}
+}
+
+// A model with no row (the common case) builds the zero policy; the drop-pattern lookup adds nothing to it.
+func BenchmarkToolSchemaPolicy_NoRow(b *testing.B) {
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5")
+	b.ReportAllocs()
+	for b.Loop() {
+		if !toolSchemaPolicy(caps).IsZero() {
+			b.Fatal("a model with no row must get the zero policy")
+		}
+	}
+}
+
 // chatCapturingProvider records the Chat request dispatch hands the provider.
 type chatCapturingProvider struct {
 	stubProvider

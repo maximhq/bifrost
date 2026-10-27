@@ -801,9 +801,9 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	// The config row and its flow row are created in one transaction: before
 	// PKCE/state moved onto a separate flow row, this was a single INSERT and
 	// therefore atomic by construction. A partial failure here (config
-	// committed, flow row not) would otherwise leak a permanently orphaned
-	// 'pending' oauth_configs row — nothing sweeps stale configs the way
-	// DeleteExpiredOauthUserSessions sweeps stale flows.
+	// committed, flow row not) would otherwise leave a 'pending'
+	// oauth_configs row that no flow can ever complete, lingering until
+	// DeleteAbandonedOauthConfigs sweeps it.
 	flowRow := &tables.TableMCPOauthFlow{
 		ID:            uuid.New().String(),
 		OauthConfigID: oauthConfigID,

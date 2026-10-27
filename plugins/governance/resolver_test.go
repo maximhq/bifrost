@@ -832,6 +832,25 @@ func TestPreLLMHookChecksEveryModelAPassthroughBodyNames(t *testing.T) {
 		{"vertex body naming the allowed model as a publisher resource", geminiKey, genai(schemas.Vertex, "gemini-embedding-001", `{"model":"projects/p/locations/l/publishers/google/models/gemini-embedding-001"}`), DecisionAllow},
 		{"genai body naming another model as a resource", geminiKey, genai(schemas.Gemini, "gemini-embedding-001", `{"model":"models/gemini-2.5-pro"}`), DecisionModelBlocked},
 	}...)
+	// SageMaker names the model in the path (the endpoint); a body "model" is the container's own
+	// served name, not a Bifrost model, so only the endpoint is checked.
+	sageMakerKey := buildVirtualKeyWithProviders("vk-pt", "sk-bf-pt", "Passthrough VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("sagemaker", []string{"my-ep"}),
+	})
+	sageMaker := func(endpoint, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.SageMaker, Model: endpoint, Method: "POST", Path: "/endpoints/" + endpoint + "/invocations", Body: []byte(body),
+		}}
+	}
+	cases = append(cases, []struct {
+		name string
+		vk   *configstoreTables.TableVirtualKey
+		req  *schemas.BifrostRequest
+		want Decision
+	}{
+		{"sagemaker allowed endpoint, body naming the served model", sageMakerKey, sageMaker("my-ep", `{"model":"qwen2.5-0.5b","messages":[]}`), DecisionAllow},
+		{"sagemaker disallowed endpoint, body naming an allowed name", sageMakerKey, sageMaker("other-ep", `{"model":"my-ep"}`), DecisionModelBlocked},
+	}...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin := newAccessTestPlugin(t, tc.vk, nil)

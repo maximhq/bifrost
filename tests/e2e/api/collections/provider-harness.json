@@ -285859,6 +285859,757 @@
           ]
         }
       ]
+    },
+    {
+      "name": "280. Signature-only reasoning deltas carry a string delta (#8536) (reasoning-signature-delta)",
+      "description": "Anthropic and Bedrock carry a Claude thinking block's signature on a response.reasoning_summary_text.delta of its own, with\nno text. That event was serialized with no `delta` field at all (Delta is omitempty) on both /v1/responses and\n/openai/v1/responses. The OpenAI Responses spec makes `delta` a required string on this event, so strict clients abort the\nstream: openai-java throws \"`delta` is not set\". The fix sends \"delta\": \"\" on that event when it is serialized; the\nin-process event is unchanged, because the /anthropic, /bedrock and /genai egress converters rebuild signature_delta from it.\n\nWhat each case pins:\n  1-4  anthropic and bedrock, on /v1/responses and /openai/v1/responses: the stream really emitted a signature-bearing delta\n       (else the case tests nothing), every reasoning_summary_text.delta carries a string delta, the empty delta leaves\n       reasoning_summary_text.done unchanged, and the reasoning item on output_item.done carries the same signature\n       (encrypted_content on Bedrock, content[].signature on Anthropic), so clients that read it from the item lose nothing.\n  5    the /anthropic route over bedrock still closes the thinking block with signature_delta and does not turn the signature\n       into a redacted_thinking block - the guard against fixing this by dropping the event inside the providers.",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses streaming: signature-only reasoning delta carries a string delta - reasoning-signature-delta - #8536",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var deltas = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var signed = deltas.filter(function (f) { return typeof f.signature === 'string' && f.signature.length > 0; });",
+                  "pm.test('anthropic /v1/responses: the stream emitted a signature-bearing reasoning delta', function () {",
+                  "  pm.expect(signed, 'no reasoning_summary_text.delta carried a signature, so the model did not think and every assertion below would pass having tested nothing: ' + pm.response.text().slice(0, 500)).to.not.be.empty;",
+                  "});",
+                  "if (signed.length === 0) { return; }",
+                  "pm.test('anthropic /v1/responses: every reasoning_summary_text.delta carries a string delta', function () {",
+                  "  deltas.forEach(function (f) {",
+                  "    pm.expect(f.delta, 'reasoning_summary_text.delta seq ' + f.sequence_number + ' has no string delta (required by the Responses spec; openai-java aborts with \"`delta` is not set\"): ' + JSON.stringify(f).slice(0, 300)).to.be.a('string');",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic /v1/responses: reasoning_summary_text.done text equals its deltas', function () {",
+                  "  var acc = {};",
+                  "  deltas.forEach(function (f) {",
+                  "    if (typeof f.delta !== 'string') { return; }",
+                  "    acc[f.item_id] = (acc[f.item_id] || '') + f.delta;",
+                  "  });",
+                  "  var done = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'done text for ' + f.item_id + ' does not match its deltas, so the signature event changed the summary').to.eql(acc[f.item_id] || '');",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic /v1/responses: the reasoning item on output_item.done carries the signature streamed on its delta', function () {",
+                  "  var streamed = {};",
+                  "  signed.forEach(function (f) { streamed[f.item_id] = (streamed[f.item_id] || '') + f.signature; });",
+                  "  var onItem = {};",
+                  "  frames.forEach(function (f) {",
+                  "    if (!f || f.type !== 'response.output_item.done' || !f.item || f.item.type !== 'reasoning') { return; }",
+                  "    var sig = f.item.encrypted_content || '';",
+                  "    if (!sig && Array.isArray(f.item.content)) {",
+                  "      f.item.content.forEach(function (c) { if (c && typeof c.signature === 'string') { sig += c.signature; } });",
+                  "    }",
+                  "    onItem[f.item.id] = sig;",
+                  "  });",
+                  "  Object.keys(streamed).forEach(function (id) {",
+                  "    pm.expect(onItem[id], 'output_item.done for reasoning item ' + id + ' does not carry the signature streamed on its delta, so the turn cannot be replayed').to.equal(streamed[id]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses streaming: signature-only reasoning delta carries a string delta - reasoning-signature-delta - #8536",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var deltas = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var signed = deltas.filter(function (f) { return typeof f.signature === 'string' && f.signature.length > 0; });",
+                  "pm.test('anthropic /openai/v1/responses: the stream emitted a signature-bearing reasoning delta', function () {",
+                  "  pm.expect(signed, 'no reasoning_summary_text.delta carried a signature, so the model did not think and every assertion below would pass having tested nothing: ' + pm.response.text().slice(0, 500)).to.not.be.empty;",
+                  "});",
+                  "if (signed.length === 0) { return; }",
+                  "pm.test('anthropic /openai/v1/responses: every reasoning_summary_text.delta carries a string delta', function () {",
+                  "  deltas.forEach(function (f) {",
+                  "    pm.expect(f.delta, 'reasoning_summary_text.delta seq ' + f.sequence_number + ' has no string delta (required by the Responses spec; openai-java aborts with \"`delta` is not set\"): ' + JSON.stringify(f).slice(0, 300)).to.be.a('string');",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic /openai/v1/responses: reasoning_summary_text.done text equals its deltas', function () {",
+                  "  var acc = {};",
+                  "  deltas.forEach(function (f) {",
+                  "    if (typeof f.delta !== 'string') { return; }",
+                  "    acc[f.item_id] = (acc[f.item_id] || '') + f.delta;",
+                  "  });",
+                  "  var done = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'done text for ' + f.item_id + ' does not match its deltas, so the signature event changed the summary').to.eql(acc[f.item_id] || '');",
+                  "  });",
+                  "});",
+                  "pm.test('anthropic /openai/v1/responses: the reasoning item on output_item.done carries the signature streamed on its delta', function () {",
+                  "  var streamed = {};",
+                  "  signed.forEach(function (f) { streamed[f.item_id] = (streamed[f.item_id] || '') + f.signature; });",
+                  "  var onItem = {};",
+                  "  frames.forEach(function (f) {",
+                  "    if (!f || f.type !== 'response.output_item.done' || !f.item || f.item.type !== 'reasoning') { return; }",
+                  "    var sig = f.item.encrypted_content || '';",
+                  "    if (!sig && Array.isArray(f.item.content)) {",
+                  "      f.item.content.forEach(function (c) { if (c && typeof c.signature === 'string') { sig += c.signature; } });",
+                  "    }",
+                  "    onItem[f.item.id] = sig;",
+                  "  });",
+                  "  Object.keys(streamed).forEach(function (id) {",
+                  "    pm.expect(onItem[id], 'output_item.done for reasoning item ' + id + ' does not carry the signature streamed on its delta, so the turn cannot be replayed').to.equal(streamed[id]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses streaming: signature-only reasoning delta carries a string delta - reasoning-signature-delta - #8536",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var deltas = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var signed = deltas.filter(function (f) { return typeof f.signature === 'string' && f.signature.length > 0; });",
+                  "pm.test('bedrock /v1/responses: the stream emitted a signature-bearing reasoning delta', function () {",
+                  "  pm.expect(signed, 'no reasoning_summary_text.delta carried a signature, so the model did not think and every assertion below would pass having tested nothing: ' + pm.response.text().slice(0, 500)).to.not.be.empty;",
+                  "});",
+                  "if (signed.length === 0) { return; }",
+                  "pm.test('bedrock /v1/responses: every reasoning_summary_text.delta carries a string delta', function () {",
+                  "  deltas.forEach(function (f) {",
+                  "    pm.expect(f.delta, 'reasoning_summary_text.delta seq ' + f.sequence_number + ' has no string delta (required by the Responses spec; openai-java aborts with \"`delta` is not set\"): ' + JSON.stringify(f).slice(0, 300)).to.be.a('string');",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock /v1/responses: reasoning_summary_text.done text equals its deltas', function () {",
+                  "  var acc = {};",
+                  "  deltas.forEach(function (f) {",
+                  "    if (typeof f.delta !== 'string') { return; }",
+                  "    acc[f.item_id] = (acc[f.item_id] || '') + f.delta;",
+                  "  });",
+                  "  var done = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'done text for ' + f.item_id + ' does not match its deltas, so the signature event changed the summary').to.eql(acc[f.item_id] || '');",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock /v1/responses: the reasoning item on output_item.done carries the signature streamed on its delta', function () {",
+                  "  var streamed = {};",
+                  "  signed.forEach(function (f) { streamed[f.item_id] = (streamed[f.item_id] || '') + f.signature; });",
+                  "  var onItem = {};",
+                  "  frames.forEach(function (f) {",
+                  "    if (!f || f.type !== 'response.output_item.done' || !f.item || f.item.type !== 'reasoning') { return; }",
+                  "    var sig = f.item.encrypted_content || '';",
+                  "    if (!sig && Array.isArray(f.item.content)) {",
+                  "      f.item.content.forEach(function (c) { if (c && typeof c.signature === 'string') { sig += c.signature; } });",
+                  "    }",
+                  "    onItem[f.item.id] = sig;",
+                  "  });",
+                  "  Object.keys(streamed).forEach(function (id) {",
+                  "    pm.expect(onItem[id], 'output_item.done for reasoning item ' + id + ' does not carry the signature streamed on its delta, so the turn cannot be replayed').to.equal(streamed[id]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0 /openai/v1/responses streaming: signature-only reasoning delta carries a string delta - reasoning-signature-delta - #8536",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var frames = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var deltas = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.delta'; });",
+                  "var signed = deltas.filter(function (f) { return typeof f.signature === 'string' && f.signature.length > 0; });",
+                  "pm.test('bedrock /openai/v1/responses: the stream emitted a signature-bearing reasoning delta', function () {",
+                  "  pm.expect(signed, 'no reasoning_summary_text.delta carried a signature, so the model did not think and every assertion below would pass having tested nothing: ' + pm.response.text().slice(0, 500)).to.not.be.empty;",
+                  "});",
+                  "if (signed.length === 0) { return; }",
+                  "pm.test('bedrock /openai/v1/responses: every reasoning_summary_text.delta carries a string delta', function () {",
+                  "  deltas.forEach(function (f) {",
+                  "    pm.expect(f.delta, 'reasoning_summary_text.delta seq ' + f.sequence_number + ' has no string delta (required by the Responses spec; openai-java aborts with \"`delta` is not set\"): ' + JSON.stringify(f).slice(0, 300)).to.be.a('string');",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock /openai/v1/responses: reasoning_summary_text.done text equals its deltas', function () {",
+                  "  var acc = {};",
+                  "  deltas.forEach(function (f) {",
+                  "    if (typeof f.delta !== 'string') { return; }",
+                  "    acc[f.item_id] = (acc[f.item_id] || '') + f.delta;",
+                  "  });",
+                  "  var done = frames.filter(function (f) { return f && f.type === 'response.reasoning_summary_text.done'; });",
+                  "  pm.expect(done, 'no reasoning_summary_text.done was emitted').to.not.be.empty;",
+                  "  done.forEach(function (f) {",
+                  "    pm.expect(f.text, 'done text for ' + f.item_id + ' does not match its deltas, so the signature event changed the summary').to.eql(acc[f.item_id] || '');",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock /openai/v1/responses: the reasoning item on output_item.done carries the signature streamed on its delta', function () {",
+                  "  var streamed = {};",
+                  "  signed.forEach(function (f) { streamed[f.item_id] = (streamed[f.item_id] || '') + f.signature; });",
+                  "  var onItem = {};",
+                  "  frames.forEach(function (f) {",
+                  "    if (!f || f.type !== 'response.output_item.done' || !f.item || f.item.type !== 'reasoning') { return; }",
+                  "    var sig = f.item.encrypted_content || '';",
+                  "    if (!sig && Array.isArray(f.item.content)) {",
+                  "      f.item.content.forEach(function (c) { if (c && typeof c.signature === 'string') { sig += c.signature; } });",
+                  "    }",
+                  "    onItem[f.item.id] = sig;",
+                  "  });",
+                  "  Object.keys(streamed).forEach(function (id) {",
+                  "    pm.expect(onItem[id], 'output_item.done for reasoning item ' + id + ' does not carry the signature streamed on its delta, so the turn cannot be replayed').to.equal(streamed[id]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"input\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\",\n  \"reasoning\": {\n    \"effort\": \"medium\",\n    \"summary\": \"auto\"\n  },\n  \"max_output_tokens\": 2048,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0 /anthropic/v1/messages streaming: thinking still closes with signature_delta - reasoning-signature-delta - #8536",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "var events = [];",
+                  "(pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "  var t = line.replace(/\\r$/, '');",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload) { return; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var thinking = {};",
+                  "var redacted = [];",
+                  "events.forEach(function (e) {",
+                  "  if (!e || e.type !== 'content_block_start' || !e.content_block) { return; }",
+                  "  if (e.content_block.type === 'thinking') { thinking[String(e.index)] = true; }",
+                  "  if (e.content_block.type === 'redacted_thinking') { redacted.push(e.index); }",
+                  "});",
+                  "pm.test('bedrock /anthropic/v1/messages: the stream opened a thinking block', function () {",
+                  "  pm.expect(Object.keys(thinking), 'no thinking content_block_start, so every assertion below would pass having tested nothing: ' + pm.response.text().slice(0, 500)).to.not.be.empty;",
+                  "});",
+                  "pm.test('bedrock /anthropic/v1/messages: every thinking block closes with a non-empty signature_delta', function () {",
+                  "  Object.keys(thinking).forEach(function (idx) {",
+                  "    var sigs = events.filter(function (e) { return e && e.type === 'content_block_delta' && String(e.index) === idx && e.delta && e.delta.type === 'signature_delta'; });",
+                  "    pm.expect(sigs, 'thinking block ' + idx + ' got no signature_delta, so the client cannot replay it').to.not.be.empty;",
+                  "    sigs.forEach(function (e) {",
+                  "      pm.expect(e.delta.signature, 'signature_delta on block ' + idx + ' carries no signature').to.be.a('string');",
+                  "      pm.expect(e.delta.signature.length, 'signature_delta on block ' + idx + ' carries an empty signature').to.be.above(0);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.test('bedrock /anthropic/v1/messages: the signature is not re-emitted as a redacted_thinking block', function () {",
+                  "  pm.expect(redacted, 'redacted_thinking block(s) at index ' + redacted.join(',') + ': the reasoning signature was read as an encrypted payload').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 17 sheep and all but 9 run away. Think it through step by step, then answer.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "281. Tool-schema patterns are dropped for models whose datasheet row rejects them (tool-schema-pattern)",
+      "description": "zai.glm-5.3 on Bedrock answers a request whose tools carry Claude Code's ArtifactData collection pattern, a top-level `^…(?:\\/…){0,14}$`, with 400 \"The task request was rejected by the target\" and no detail, so every Claude Code turn failed. The same pattern nested under array items or an object was accepted, and removing only that one pattern let the full 33-tool request through. The construct inside the pattern was never isolated, so the fix drops the keyword outright. zai.glm-5 and 4.7 accept these patterns. core/bifrost.go toolSchemaPolicy now drops the `pattern` keyword from every tool schema when the model's datasheet row sets supports_schema_pattern:false (the us. and global. zai.glm-5.3 rows); there is no name fallback. Rows: 281.1 pins the production Claude Code route (/anthropic/v1/messages), 281.2 and 281.3 the neutral Responses and Chat routes, 281.4 is the control that zai.glm-5 gets every pattern byte-identical. 281.1 to 281.3 need an AWS account with zai.glm-5.3 access. Run: make run-provider-harness-test PROVIDER=bedrock FEATURE=\"tool-schema-pattern\"",
+      "item": [
+        {
+          "name": "281.1 bedrock/us.zai.glm-5.3 /anthropic/v1/messages: no pattern on the wire for the Claude Code ArtifactData tool (was 400) - tool-schema-pattern",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('no pattern reaches the provider, the other constraints stay', function () {",
+                  "  pm.expect(pats, 'want no pattern on the wire, got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql([]);",
+                  "  pm.expect(wire, 'minLength was lost with the pattern: ' + wire.slice(0, 400)).to.contain('\"minLength\":1');",
+                  "  pm.expect(wire, 'the collection property was lost: ' + wire.slice(0, 400)).to.contain('\"collection\"');",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  var out = u.output_tokens || u.completion_tokens;",
+                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.301 (external, cli)"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.zai.glm-5.3\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"ArtifactData\",\n      \"description\": \"Read or write artifact data\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n          },\n          \"doc_id\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n          },\n          \"writes\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"collection\": {\n                  \"type\": \"string\",\n                  \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                }\n              }\n            }\n          }\n        },\n        \"required\": [\n          \"collection\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "281.2 bedrock/global.zai.glm-5.3 /v1/responses: no pattern on the wire (was 400) - tool-schema-pattern",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('no pattern reaches the provider, the other constraints stay', function () {",
+                  "  pm.expect(pats, 'want no pattern on the wire, got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql([]);",
+                  "  pm.expect(wire, 'minLength was lost with the pattern: ' + wire.slice(0, 400)).to.contain('\"minLength\":1');",
+                  "  pm.expect(wire, 'the collection property was lost: ' + wire.slice(0, 400)).to.contain('\"collection\"');",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  var out = u.output_tokens || u.completion_tokens;",
+                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.zai.glm-5.3\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ArtifactData\",\n      \"description\": \"Read or write artifact data\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n          },\n          \"doc_id\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n          },\n          \"writes\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"collection\": {\n                  \"type\": \"string\",\n                  \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                }\n              }\n            }\n          }\n        },\n        \"required\": [\n          \"collection\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "281.3 bedrock/us.zai.glm-5.3 /v1/chat/completions: no pattern on the wire (was 400) - tool-schema-pattern",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "pm.test('no pattern reaches the provider, the other constraints stay', function () {",
+                  "  pm.expect(pats, 'want no pattern on the wire, got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql([]);",
+                  "  pm.expect(wire, 'minLength was lost with the pattern: ' + wire.slice(0, 400)).to.contain('\"minLength\":1');",
+                  "  pm.expect(wire, 'the collection property was lost: ' + wire.slice(0, 400)).to.contain('\"collection\"');",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  var out = u.output_tokens || u.completion_tokens;",
+                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.zai.glm-5.3\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"ArtifactData\",\n        \"description\": \"Read or write artifact data\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"collection\": {\n              \"type\": \"string\",\n              \"minLength\": 1,\n              \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n            },\n            \"doc_id\": {\n              \"type\": \"string\",\n              \"minLength\": 1,\n              \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n            },\n            \"writes\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"collection\": {\n                    \"type\": \"string\",\n                    \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                  }\n                }\n              }\n            }\n          },\n          \"required\": [\n            \"collection\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "281.4 bedrock/zai.glm-5 /v1/responses: the same schema reaches the provider byte-identical - tool-schema-pattern",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// The outbound tool schema, read back via x-bf-send-back-raw-request. toolSchemaPolicy",
+                  "// (core/bifrost.go) builds the policy from the datasheet row of the attempt's model.",
+                  "function collect(node, key, out) {",
+                  "  if (!node || typeof node !== 'object') { return out; }",
+                  "  if (Array.isArray(node)) { node.forEach(function (n) { collect(n, key, out); }); return out; }",
+                  "  Object.keys(node).forEach(function (k) {",
+                  "    if (k === key && typeof node[k] === 'string') { out.push(node[k]); } else { collect(node[k], key, out); }",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "var pats = collect(rr, 'pattern', []);",
+                  "",
+                  "pm.test('request is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "// No row for zai.glm-5 and no name fallback: the policy is zero and the walk is skipped, so",
+                  "// every pattern, look-ahead and non-capturing group included, leaves exactly as the client sent it.",
+                  "var SENT = [\"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\",\"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\",\"^[a-z]+(?:\\\\/[a-z]+)*$\"];",
+                  "pm.test('every pattern reaches the provider byte-identical', function () {",
+                  "  pm.expect(pats, 'want ' + JSON.stringify(SENT) + ', got: ' + JSON.stringify(pats) + ' wire: ' + wire.slice(0, 400)).to.eql(SENT);",
+                  "});",
+                  "pm.test('the model answers', function () {",
+                  "  var u = body.usage || {};",
+                  "  var out = u.output_tokens || u.completion_tokens;",
+                  "  pm.expect(out, 'model produced no output: ' + txt.slice(0, 300)).to.be.above(0);",
+                  "});",
+                  ""
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/zai.glm-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"ArtifactData\",\n      \"description\": \"Read or write artifact data\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"collection\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}(?:\\\\/(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}){0,14}$\"\n          },\n          \"doc_id\": {\n            \"type\": \"string\",\n            \"minLength\": 1,\n            \"pattern\": \"^(?!\\\\.\\\\.?(?:\\\\/|$))[A-Za-z0-9_\\\\-.~:@+]{1,200}$\"\n          },\n          \"writes\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"collection\": {\n                  \"type\": \"string\",\n                  \"pattern\": \"^[a-z]+(?:\\\\/[a-z]+)*$\"\n                }\n              }\n            }\n          }\n        },\n        \"required\": [\n          \"collection\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

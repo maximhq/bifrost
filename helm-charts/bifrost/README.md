@@ -19,6 +19,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `syncAllUsers` to the Okta SCIM provider config (`bifrost.scim.config.syncAllUsers`, `scim_config.config.syncAllUsers`), default `true`. Chooses which Okta users directory sync keeps: every app-assigned user except suspended and deactivated ones, or (`false`) active users only. The chart's values schema and `config.schema.json` previously refused the key.
 - Added Azure Blob configuration to `storage.logsStore.objectStorage` and `bifrost.auditLogs.objectStorage` (`logs_store.object_storage` / `audit_logs.object_storage`). Set `type: azure`, `bucket` to the container, and either `endpoint` for Azure identity or `connectionString`; logs also accept `existingSecret` and `connectionStringKey`. Structured environment and vault references do not require a `value` field.
 - Added logs `objectStorage.format` and `.compression` (`logs_store.object_storage.format` / `.compression`). S3 and Azure support Parquet; GCS remains JSON-only.
+- Added `bifrost.warp` (`warp`), the dashboard's Warp settings: `enabled`, `provider`, `model`, `apiKeyId`, `additionalModels[]`, `maxIterations`, `requestTimeoutSeconds`, `historyRetentionDays`, `systemPromptSuffix`, `temperature`, `reasoningEffort`, the embedding fields (`embeddingProvider`, `embeddingModel`, `embeddingApiKeyId`, `embeddingDimension`, `logVectorStoreNamespace`), log search (`semanticSearchThreshold`, `semanticSearchLimit`) and topics (`topicDiscoveryMinRequests`). They render into the snake_case keys under `warp`; numeric fields render whenever set, since `0` means the default (or a reset). Warp also needs `bifrost.featureFlags.warp.enabled: true` and a vector store.
 
 ### 2.1.45
 
@@ -910,6 +911,38 @@ See `values-examples/separate-logs-postgres.yaml` for a complete example.
 | `postgresql.external.host`           | External PostgreSQL host                                                                                                                                                                                                                         | `""`               |
 | `postgresql.external.existingSecret` | Name of an existing Kubernetes secret containing the password for the external instance                                                                                                                                                          | `""`               |
 | `postgresql.external.passwordKey`    | Key inside the external `existingSecret` that holds the password                                                                                                                                                                                 | `password`         |
+
+#### Tuning Bundled PostgreSQL
+
+Pass PostgreSQL server settings through `postgresql.primary.extraArgs`. These
+arguments go to the image entrypoint; with the default PostgreSQL image, `-c`
+sets a server parameter. Choose limits for your database resources and the total
+connection pools across all gateway replicas, including rolling-update surge.
+Changing these arguments restarts the single bundled PostgreSQL pod, which uses
+`Recreate` and temporarily interrupts database availability.
+
+```yaml
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs:
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+```
+
+Optional `postgresql.primary.persistence.annotations` (a map of string values)
+and `postgresql.primary.persistence.volumeAttributesClassName` (a class name)
+configure storage-controller integrations on the existing PVC. They do not
+change its name or the workload's claim reference. The defaults `{}` and `""`
+omit these fields. A VolumeAttributesClass must already exist, and both the
+cluster and CSI driver must support volume modification. Consult your driver's
+requirements before choosing a class or performance annotations; changing PVC
+metadata alone does not guarantee a backend volume modification succeeded.
+These options apply only to bundled PostgreSQL with persistence enabled.
 
 #### Using an Existing Secret for Hosted PostgreSQL
 

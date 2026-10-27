@@ -314,6 +314,36 @@ bifrost:
   #   enableForInference: false
   #   enableForApi: false
 
+  # Warp, the dashboard's log-analysis agent (Settings > Warp): the models it runs on, its limits,
+  # log search and topics. Renders into config.json's top-level warp. Omit to manage Warp from the
+  # dashboard. Warp also needs the "warp" feature flag (bifrost.featureFlags.warp.enabled: true)
+  # and a vector store (vectorStore.*) for log search and topics. An omitted embedding, search or
+  # topic field keeps its stored value; any other omitted field takes its default, and
+  # additionalModels is replaced whole.
+  # warp:
+  #   enabled: true
+  #   provider: "openai"                  # Required when enabled
+  #   model: "gpt-4o-mini"                # Required when enabled
+  #   apiKeyId: ""                        # Pin to one of the provider's key IDs; omit to load-balance
+  #   additionalModels:                   # Other models the chat panel can switch to (max 20)
+  #     - provider: "anthropic"
+  #       model: "claude-3-5-haiku"
+  #       # apiKeyId: ""
+  #   maxIterations: 8                    # Tool-call rounds before it must answer; 0 = default, 1 is rejected
+  #   requestTimeoutSeconds: 120          # Per model call; 0 = default
+  #   historyRetentionDays: 30            # How long a saved chat is kept; 0 = default
+  #   systemPromptSuffix: ""              # Appended to Warp's built-in system prompt
+  #   temperature: 0.2                    # 0-2; omit for the provider's default
+  #   reasoningEffort: "medium"           # none, minimal, low, medium, high, xhigh, max; omit for non-reasoning models
+  #   embeddingProvider: "openai"         # Indexes and searches logs; required when enabled
+  #   embeddingModel: "text-embedding-3-small"
+  #   embeddingApiKeyId: ""
+  #   embeddingDimension: 1536            # Vector size the embedding model returns
+  #   logVectorStoreNamespace: "BifrostWarpLogs"  # Change whenever the embedding provider, model or dimension changes
+  #   semanticSearchThreshold: 0.5        # Minimum similarity for a log search match; 0 resets to the default
+  #   semanticSearchLimit: 10             # Most matches per search (max 25); 0 resets to the default
+  #   topicDiscoveryMinRequests: 100      # Unmatched requests that start a new-topic discovery (10-20000); 0 resets to the default
+
   # Client configuration
   client:
     dropExcessRequests: false
@@ -534,6 +564,19 @@ bifrost:
   #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"          # Mantle-routed models
   #         #   agent_runtime: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com"  # Rerank
   #         #   s3: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                   # Batch file I/O; needs the bucket. prefix
+  #
+  # # AWS SageMaker real-time endpoints example (requires sagemaker_key_config)
+  # # Models are endpoint names: sagemaker/<endpoint>[/<inference-component>]
+  # sagemaker:
+  #   keys:
+  #     - name: "sagemaker-key"
+  #       models: ["my-qwen3-endpoint"]
+  #       weight: 1
+  #       sagemaker_key_config:
+  #         region: "us-east-1"
+  #         # Leave access_key/secret_key out to use the default AWS credential chain (IRSA, instance role)
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
@@ -2037,9 +2080,18 @@ postgresql:
     passwordKey: "password"
 
   primary:
+    # Arguments passed to the PostgreSQL image entrypoint, e.g.
+    # ["-c", "max_connections=200", "-c", "shared_buffers=256MB"].
+    # Changing these arguments restarts the bundled PostgreSQL pod.
+    extraArgs: []
+
     persistence:
       enabled: true
       size: 8Gi
+      # Optional PVC metadata for storage-controller integrations.
+      annotations: {}
+      # Requires VolumeAttributesClass support in Kubernetes and the CSI driver.
+      volumeAttributesClassName: ""
 
     resources:
       limits:

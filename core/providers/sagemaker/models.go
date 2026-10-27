@@ -1,17 +1,11 @@
 package sagemaker
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/bytedance/sonic"
-	"github.com/maximhq/bifrost/core/providers/bedrock"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -33,7 +27,7 @@ func controlPlaneURL(region string) string {
 
 // listEndpoints returns the names of every InService endpoint the key's credentials can see in its region.
 func (provider *SageMakerProvider) listEndpoints(ctx *schemas.BifrostContext, key schemas.Key, region string) ([]string, *schemas.BifrostError) {
-	creds, bErr := bedrock.ResolveAWSCredentials(ctx, bedrockKeyConfig(key.SageMakerKeyConfig), region)
+	creds, bErr := provider.awsCredentials(ctx, key, region)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -63,16 +57,12 @@ func (provider *SageMakerProvider) listEndpointsPage(ctx *schemas.BifrostContext
 		return nil, providerUtils.NewBifrostOperationError("failed to marshal sagemaker ListEndpoints request", err)
 	}
 	url := controlPlaneURL(region)
-	// Sign a net/http request, then copy its headers onto the fasthttp one so the proxy and TLS settings apply.
-	signReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to build sagemaker ListEndpoints request", err)
-	}
-	signReq.Header.Set("Content-Type", "application/x-amz-json-1.1")
-	signReq.Header.Set("X-Amz-Target", "SageMaker.ListEndpoints")
-	hash := sha256.Sum256(body)
-	if err := v4.NewSigner().SignHTTP(ctx, creds, signReq, hex.EncodeToString(hash[:]), "sagemaker", region, time.Now()); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to sign sagemaker ListEndpoints request", err)
+	signed, bErr := signRequest(ctx, creds, region, http.MethodPost, url, body, map[string]string{
+		"Content-Type": "application/x-amz-json-1.1",
+		"X-Amz-Target": "SageMaker.ListEndpoints",
+	})
+	if bErr != nil {
+		return nil, bErr
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -81,7 +71,7 @@ func (provider *SageMakerProvider) listEndpointsPage(ctx *schemas.BifrostContext
 	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
-	for name, values := range signReq.Header {
+	for name, values := range signed {
 		req.Header.Set(name, values[0])
 	}
 	req.SetBody(body)
