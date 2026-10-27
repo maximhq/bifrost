@@ -543,6 +543,38 @@ func TestUpdateMCPClient_OpenAPI_ToolOnlyEditLeavesLiveConfigAlone(t *testing.T)
 	assert.Empty(t, mgr.refreshed)
 }
 
+// TestUpdateMCPClient_InvalidVKConfigsApplyNothing pins that an update whose vk_configs is invalid is
+// refused before anything is applied. vk_configs was checked only after the client itself had been
+// updated, so the 400 came back with the rest of the request (here a rename) already saved and live.
+func TestUpdateMCPClient_InvalidVKConfigsApplyNothing(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	existing := mgr.added[0]
+	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{existing}
+
+	for name, vkConfigs := range map[string]string{
+		"an empty virtual_key_id":     `[{"virtual_key_id":"","tools_to_execute":["*"]}]`,
+		"a duplicate virtual_key_id":  `[{"virtual_key_id":"vk-1","tools_to_execute":["*"]},{"virtual_key_id":"vk-1","tools_to_execute":["*"]}]`,
+		"an invalid tools_to_execute": `[{"virtual_key_id":"vk-1","tools_to_execute":["*","x"]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore_renamed","vk_configs":`+vkConfigs+`}`, existing.ID, false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Empty(t, mgr.updated, "the runtime client is not touched")
+			assert.Equal(t, "petstore", existing.Name, "the live config keeps its name")
+			stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), existing.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "petstore", stored.Name, "the stored row keeps its name")
+		})
+	}
+}
+
 // TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL: a spec whose every
 // operation declares an absolute server is served without a base URL; for an
 // unauthenticated caller each of those servers passes the public-target gate.

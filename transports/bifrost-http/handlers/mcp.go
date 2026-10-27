@@ -3056,6 +3056,29 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, requestDurationDecodeError(err))
 		return
 	}
+	// vk_configs is checked with the rest of the request's input, before anything is applied: the
+	// client update below is saved and made live before the assignments are written, so a refusal
+	// found then would leave the rest of the request in place.
+	if req.VKConfigs != nil {
+		seen := make(map[string]struct{}, len(*req.VKConfigs))
+		for _, vc := range *req.VKConfigs {
+			if vc.VirtualKeyID == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, "virtual_key_id must not be empty")
+				return
+			}
+			if _, exists := seen[vc.VirtualKeyID]; exists {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("duplicate virtual_key_id in vk_configs: %s", vc.VirtualKeyID))
+				return
+			}
+			seen[vc.VirtualKeyID] = struct{}{}
+		}
+		for _, vc := range *req.VKConfigs {
+			if err := vc.ToolsToExecute.Validate(); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid tools_to_execute for virtual key %s: %v", vc.VirtualKeyID, err))
+				return
+			}
+		}
+	}
 
 	// Fetch existing config first — needed to resolve optional fields before validation.
 	var existingConfig *schemas.MCPClientConfig
@@ -3888,26 +3911,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		currentByVKID := make(map[string]*configstoreTables.TableVirtualKeyMCPConfig, len(current))
 		for i := range current {
 			currentByVKID[current[i].VirtualKeyID] = &current[i]
-		}
-		// Validate and reject empty/duplicate virtual_key_id entries
-		seen := make(map[string]struct{}, len(*req.VKConfigs))
-		for _, vc := range *req.VKConfigs {
-			if vc.VirtualKeyID == "" {
-				SendError(ctx, fasthttp.StatusBadRequest, "virtual_key_id must not be empty")
-				return
-			}
-			if _, exists := seen[vc.VirtualKeyID]; exists {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("duplicate virtual_key_id in vk_configs: %s", vc.VirtualKeyID))
-				return
-			}
-			seen[vc.VirtualKeyID] = struct{}{}
-		}
-		// Validate tools_to_execute before entering the transaction so failures return 400
-		for _, vc := range *req.VKConfigs {
-			if err := vc.ToolsToExecute.Validate(); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid tools_to_execute for virtual key %s: %v", vc.VirtualKeyID, err))
-				return
-			}
 		}
 		// Index requested assignments by VK ID
 		requestedByVKID := make(map[string]MCPVKConfigRequest, len(*req.VKConfigs))
