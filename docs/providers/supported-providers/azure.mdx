@@ -477,6 +477,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `tenant_id`     | No       | -                                                  | Entra ID tenant ID (Service Principal auth)     |
 | `scopes`        | No       | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests                 |
 | `use_speech_endpoints` | No | `false` | Send speech and transcription requests to [Azure AI Speech](#11-azure-ai-speech) |
+| `use_voice_live_endpoints` | No | `false` | Send realtime WebSocket sessions to [Azure Voice Live](#12-azure-voice-live) |
 
 **Key-level fields:**
 
@@ -629,6 +630,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 - `tenant_id` - Azure Entra ID tenant ID (optional, for Service Principal auth)
 - `scopes` - OAuth scopes for token requests (default: `["https://cognitiveservices.azure.com/.default"]`)
 - `use_speech_endpoints` - Send speech and transcription requests to Azure AI Speech (optional, default `false`; an alias can override it)
+- `use_voice_live_endpoints` - Send realtime WebSocket sessions to Azure Voice Live (optional, default `false`; an alias can override it)
 - `aliases` - Map of model names to Azure deployment IDs (optional, set at key level)
 - `allowed_models` - List of allowed models to use from this key (optional)
 
@@ -1160,6 +1162,26 @@ curl http://localhost:8080/v1/audio/transcriptions \
 ```
 
 Until the model catalog lists rates for these model IDs, Bifrost reports their cost as $0 while Azure still bills the usage; add a [pricing override](/providers/custom-pricing) to track it.
+
+---
+
+# 12. Azure Voice Live
+
+`use_voice_live_endpoints` sends realtime WebSocket sessions to [Azure Voice Live](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live) instead of Azure OpenAI, on the same key and endpoint. Set it in `azure_key_config` for every realtime session on the key, or on an alias for one model. An alias value wins over the key's in both directions. Other requests on the key still go to Azure OpenAI.
+
+**Endpoint**: `/v1/realtime` (WebSocket), sent to `{endpoint}/voice-live/realtime?api-version=2026-04-10&model={model ID}` with the key's API key or Entra token. An alias `api_version` replaces the default version.
+
+```json
+"aliases": {
+  "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
+}
+```
+
+The model ID is a Voice Live model such as `gpt-realtime`, `gpt-4.1` or `phi4-mm-realtime`, which needs no deployment. Connect to `ws://localhost:8080/v1/realtime?model=azure/gpt-realtime-vl`. Events pass through as Voice Live sends them, including object voices such as `{"name": "en-US-Ava:DragonHDLatestNeural", "type": "azure-standard"}`, `azure_semantic_vad`, noise suppression, word timestamps, visemes and `session.avatar.connect`.
+
+- WebRTC (`/v1/realtime/calls`) and client secrets (`/v1/realtime/client_secrets`) answer `400`: Voice Live signals WebRTC over its own WebSocket and reports usage on the browser's data channel.
+- A realtime `intent` answers `400`.
+- Turns are priced at the Azure OpenAI rates for the same model name until the model catalog lists Voice Live rates.
 
 ---
 

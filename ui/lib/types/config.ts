@@ -65,6 +65,7 @@ export interface AliasConfig {
 	anthropic_version?: string;
 	endpoint?: SecretVar;
 	use_speech_endpoints?: boolean;
+	use_voice_live_endpoints?: boolean;
 	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
 	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
 	// so the flat project_id key doesn't collide across embedded sub-configs.
@@ -95,6 +96,7 @@ export interface AzureKeyConfig {
 	tenant_id?: SecretVar;
 	scopes?: string[];
 	use_speech_endpoints?: boolean;
+	use_voice_live_endpoints?: boolean;
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
@@ -104,6 +106,7 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	tenant_id: { value: "", ref: "" },
 	scopes: [],
 	use_speech_endpoints: false,
+	use_voice_live_endpoints: false,
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexAWSWorkloadIdentityConfig matching Go's schemas.VertexAWSWorkloadIdentityConfig:

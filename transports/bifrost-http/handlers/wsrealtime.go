@@ -504,8 +504,12 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		}
 	}
 
-	// Resolve model alias so the provider receives the actual model identifier.
-	model = key.Aliases.Resolve(model)
+	// Resolve model alias so the provider receives the actual model identifier, and keep the
+	// alias on the session context for its per-alias overrides, as core does for inference.
+	if aliasConfig := key.Aliases.ResolveConfig(model); aliasConfig != nil {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: aliasConfig})
+		model = aliasConfig.ModelID
+	}
 
 	// Compute raw storage flag from provider config + per-request header overrides.
 	// Normal inference computes this inside bifrost.executeRequest, which is bypassed
@@ -558,7 +562,7 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 		return upstream, func() { _ = upstream.Close() }, nil
 	}
 
-	wsURL, urlErr := rtProvider.RealtimeWebSocketURL(key, model, intent)
+	wsURL, urlErr := rtProvider.RealtimeWebSocketURL(bifrostCtx, key, model, intent)
 	if urlErr != nil {
 		return nil, nil, urlErr
 	}

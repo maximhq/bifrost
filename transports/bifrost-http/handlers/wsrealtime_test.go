@@ -31,7 +31,7 @@ func (p *connectorRealtimeProvider) ConnectRealtime(_ *schemas.BifrostContext, _
 	return p.upstream, nil
 }
 
-func (p *connectorRealtimeProvider) RealtimeWebSocketURL(schemas.Key, string, string) (string, *schemas.BifrostError) {
+func (p *connectorRealtimeProvider) RealtimeWebSocketURL(*schemas.BifrostContext, schemas.Key, string, string) (string, *schemas.BifrostError) {
 	panic("a RealtimeConnector provider must not be dialed as a websocket")
 }
 
