@@ -3950,10 +3950,15 @@ func TestShouldContinueWithFallbacksStopsOnNilError(t *testing.T) {
 // Claude Code OAuth key-selection skip applies only when the attempt resolved to Anthropic. A
 // governance routing rule can rewrite provider/model after the transport set the flag, and every
 // non-Anthropic provider authenticates with its own configured key — so it must still get one.
+// OpenAI passthrough is the exception: a ChatGPT token forwarded to the Codex backend is the
+// credential, and a stored API key in its place is refused upstream (api_key_not_supported).
 func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvider(t *testing.T) {
 	account := NewMockAccount()
 	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
 		{ID: "anthropic-key", Name: "anthropic-key", Value: schemas.SecretVar{Val: "sk-ant"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Name: "openai-key", Value: schemas.SecretVar{Val: "sk-openai"}, Models: []string{"*"}, Weight: 1.0},
 	})
 	account.SetKeysForProvider(schemas.Fireworks, []schemas.Key{
 		{ID: "fireworks-key", Name: "fireworks-key", Value: schemas.SecretVar{Val: "fw-key"}, Models: []string{"*"}, Weight: 1.0, UseAnthropicEndpoints: schemas.Ptr(true)},
@@ -3961,13 +3966,17 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
 
 	tests := []struct {
-		name      string
-		provider  schemas.ModelProvider
-		model     string
-		wantKeyID string // "" means the pool must be empty (key selection skipped)
+		name        string
+		requestType schemas.RequestType
+		provider    schemas.ModelProvider
+		model       string
+		wantKeyID   string // "" means the pool must be empty (key selection skipped)
 	}{
-		{"anthropic keeps the skip", schemas.Anthropic, "claude-opus-4-5", ""},
-		{"fireworks selects its own key", schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"anthropic keeps the skip", schemas.ResponsesRequest, schemas.Anthropic, "claude-opus-4-5", ""},
+		{"fireworks selects its own key", schemas.ResponsesRequest, schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"openai passthrough keeps the skip", schemas.PassthroughRequest, schemas.OpenAI, "", ""},
+		{"openai passthrough stream keeps the skip", schemas.PassthroughStreamRequest, schemas.OpenAI, "gpt-5.5", ""},
+		{"openai inference selects its own key", schemas.ResponsesRequest, schemas.OpenAI, "gpt-5.5", "openai-key"},
 	}
 
 	for _, tt := range tests {
@@ -3975,7 +3984,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 
-			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ResponsesRequest, tt.provider, tt.model, tt.provider)
+			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, tt.requestType, tt.provider, tt.model, tt.provider)
 			if err != nil {
 				t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
 			}
@@ -3993,7 +4002,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			}
 			// The regression: without a key, UseAnthropicEndpoints is unreadable and the request
 			// is built with the OpenAI schema, which Fireworks rejects for missing max_tokens.
-			if keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints {
+			if tt.provider == schemas.Fireworks && (keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints) {
 				t.Error("selected key lost UseAnthropicEndpoints")
 			}
 		})
@@ -4618,6 +4627,102 @@ func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
 	}
 	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, req); out != req {
 		t.Fatal("a chat request for an unrestricted model must be returned as-is")
+	}
+}
+
+// zai.glm-5.3 on Bedrock answers Claude Code's ArtifactData tool with "The task request
+// was rejected by the target" over the `(?:...)` pattern on its top-level collection, so
+// its row drops tool-schema patterns on both dispatch paths. There is no name fallback:
+// GLM-5 and 4.7 accept patterns and keep their exact tool bytes.
+func TestToolSchemaPolicy_DropsPatternsOnlyWhenTheRowSaysSo(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "us.zai.glm-5.3" {
+			return &schemas.ModelCapabilities{SupportsSchemaPattern: new(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	if glm := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5.3")); !glm.DropPattern {
+		t.Fatalf("the glm-5.3 row did not turn pattern dropping on: %+v", glm)
+	}
+	for _, model := range []string{"us.zai.glm-5", "us.zai.glm-4.7", "us.moonshotai.kimi-k3"} {
+		if p := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, model)); p.DropPattern {
+			t.Fatalf("%s must keep its patterns without a row: %+v", model, p)
+		}
+	}
+
+	raw := `{"type":"object","properties":{` +
+		`"collection":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}(?:\\/[A-Za-z0-9_\\-.~:@+]{1,200}){0,14}$"},` +
+		`"doc_id":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}$"}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertDropped := func(t *testing.T, sent *schemas.ToolFunctionParameters) {
+		t.Helper()
+		out, err := json.Marshal(sent)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "pattern") || !strings.Contains(string(out), `"collection"`) {
+			t.Fatalf("patterns reached the provider or the property was lost: %s", out)
+		}
+		if before, _ := json.Marshal(&params); !strings.Contains(string(before), `(?:`) {
+			t.Fatalf("caller's schema was mutated in place: %s", before)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	t.Run("responses", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  new("ArtifactData"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &params},
+			}}},
+		}
+		prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+		if bifrostErr != nil {
+			t.Fatalf("prepare failed: %v", bifrostErr.Error)
+		}
+		assertDropped(t, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+	})
+	t.Run("chat", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+			}}},
+		}
+		assertDropped(t, prepareChatRequest(ctx, nil, schemas.Bedrock, req).Params.Tools[0].Function.Parameters)
+	})
+
+	unrestricted := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.zai.glm-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, unrestricted); out != unrestricted {
+		t.Fatal("a model without the row must be returned as-is")
+	}
+}
+
+// A model with no row (the common case) builds the zero policy; the drop-pattern lookup adds nothing to it.
+func BenchmarkToolSchemaPolicy_NoRow(b *testing.B) {
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5")
+	b.ReportAllocs()
+	for b.Loop() {
+		if !toolSchemaPolicy(caps).IsZero() {
+			b.Fatal("a model with no row must get the zero policy")
+		}
 	}
 }
 

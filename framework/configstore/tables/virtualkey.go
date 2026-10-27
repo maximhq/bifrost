@@ -186,6 +186,17 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockMantleRoleSessionName = nil
 			key.BedrockMantleKeyConfig = nil
 
+			// Clear all SageMaker-related sensitive fields
+			key.SageMakerAccessKey = nil
+			key.SageMakerSecretKey = nil
+			key.SageMakerSessionToken = nil
+			key.SageMakerRegion = nil
+			key.SageMakerRoleARN = nil
+			key.SageMakerExternalID = nil
+			key.SageMakerRoleSessionName = nil
+			key.SageMakerEndpointsJSON = nil
+			key.SageMakerKeyConfig = nil
+
 			pc.Keys[i] = *key
 		}
 	}

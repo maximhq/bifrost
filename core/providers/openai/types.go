@@ -169,16 +169,20 @@ type OpenAIDecisionRequest struct {
 	SafetyIdentifier *string                  `json:"safety_identifier,omitempty"`
 	Fallbacks        []string                 `json:"fallbacks,omitempty"` // Bifrost routing only; never sent upstream
 	ExtraParams      map[string]interface{}   `json:"-"`                   // native extensions, merged onto the wire under the passthrough flag
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 }
 
-// OpenAIDecisionQuestion is one question of OpenAI's decisions request: text
-// instructions and, by type, choices or levels described in text. Unlike the
-// shared question it has no criteria and no structured values, so
-// ToOpenAIDecisionRequest renders both as text.
+// OpenAIDecisionQuestion is one question of OpenAI's decisions request:
+// instructions as text or as a list of text, image, and JSON parts, and, by
+// type, choices or levels described in text. Unlike the shared question it
+// has no criteria and no other structured values, so ToOpenAIDecisionRequest
+// renders both as text.
 type OpenAIDecisionQuestion struct {
 	Type         schemas.DecisionType   `json:"type"`
 	Name         *string                `json:"name,omitempty"`
-	Instructions string                 `json:"instructions"`
+	Instructions *schemas.DecisionText  `json:"instructions"`
 	Choices      []OpenAIDecisionChoice `json:"choices,omitempty"`
 	Levels       []OpenAIDecisionLevel  `json:"levels,omitempty"`
 
@@ -258,6 +262,9 @@ var openAIDecisionRequestKnownFields = map[string]bool{
 	"questions":         true,
 	"safety_identifier": true,
 	"fallbacks":         true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
 }
 
 // UnmarshalJSON decodes the modelled fields and keeps every other top-level

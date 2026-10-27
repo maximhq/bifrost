@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -557,6 +559,142 @@ func TestRealtimeStopHeartbeatIsIdempotent(t *testing.T) {
 
 	client.stopHeartbeat()
 	client.stopHeartbeat()
+}
+
+// fasthttp ignores Close on a hijacked connection, so when the upstream ends the relay reading the
+// client stays blocked; the teardown must release it and tell the client the session is over.
+func TestRunRealtimeRelaysReleasesTheClientWhenTheUpstreamEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		clientAnswer bool // the client reads, so its library answers the close frame
+	}{
+		{name: "client answers the close", clientAnswer: true},
+		{name: "silent client", clientAnswer: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			serverConn, client, cleanup := dialRealtimeTestConn(t)
+			defer cleanup()
+			clientConn := newRealtimeClientConn(serverConn)
+
+			toClient := func() error { return nil } // the upstream ended
+			toProvider := func() error {
+				_, _, err := clientConn.ReadMessage()
+				return err
+			}
+			closeBoth := func() { _ = clientConn.Close() }
+
+			clientClose := make(chan error, 1)
+			if tc.clientAnswer {
+				go func() {
+					_, _, err := client.ReadMessage()
+					clientClose <- err
+				}()
+			}
+			result := make(chan error, 1)
+			go func() { result <- runRealtimeRelays(serverConn, toProvider, toClient, closeBoth) }()
+
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Fatalf("a clean shutdown reported a relay error: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("runRealtimeRelays stayed blocked on the client after the upstream ended")
+			}
+			if tc.clientAnswer {
+				select {
+				case err := <-clientClose:
+					if !ws.IsCloseError(err, ws.CloseNormalClosure) {
+						t.Fatalf("expected the client to receive a normal close frame, got %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("the client never received a close frame")
+				}
+			}
+		})
+	}
+}
+
+// After the upstream ends, a client relay that fails on its own before its read is forced to return
+// (a panic in a hook, say) still ends the session with that error.
+func TestRunRealtimeRelaysReportsAClientFailureAfterTheUpstreamEnds(t *testing.T) {
+	serverConn, _, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	clientConn := newRealtimeClientConn(serverConn)
+
+	tornDown := make(chan struct{})
+	toClient := func() error { return nil } // the upstream ended
+	toProvider := func() error {
+		<-tornDown
+		panic("hook exploded during teardown")
+	}
+	closeBoth := func() {
+		_ = clientConn.Close()
+		close(tornDown)
+	}
+
+	err := runRealtimeRelays(serverConn, toProvider, toClient, closeBoth)
+
+	if err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("expected the client relay's panic to be reported, got %v", err)
+	}
+}
+
+// The forced read deadline only releases the relay reading the client; a timeout from the relay
+// writing to it during teardown is a failed delivery and is reported.
+func TestRunRealtimeRelaysReportsAClientWriteTimeoutDuringTeardown(t *testing.T) {
+	serverConn, _, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	clientConn := newRealtimeClientConn(serverConn)
+
+	tornDown := make(chan struct{})
+	toProvider := func() error { return nil } // the client side ended first
+	toClient := func() error {
+		<-tornDown
+		time.Sleep(realtimeCloseHandshakeGrace + 200*time.Millisecond) // still writing when the deadline is forced
+		return &net.OpError{Op: "write", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	}
+	closeBoth := func() {
+		_ = clientConn.Close()
+		close(tornDown)
+	}
+
+	err := runRealtimeRelays(serverConn, toProvider, toClient, closeBoth)
+
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected the client write timeout to be reported, got %v", err)
+	}
+}
+
+// Only the timeout the teardown sets itself is expected; a client read that timed out first still
+// ended the session and is reported.
+func TestRunRealtimeRelaysReportsAClientReadTimeoutBeforeTeardown(t *testing.T) {
+	serverConn, _, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	clientConn := newRealtimeClientConn(serverConn)
+
+	upstreamClosed := make(chan struct{})
+	toProvider := func() error {
+		_ = serverConn.SetReadDeadline(time.Now().Add(-time.Second))
+		_, _, err := clientConn.ReadMessage()
+		return err
+	}
+	toClient := func() error {
+		<-upstreamClosed
+		return nil
+	}
+	closeBoth := func() {
+		_ = clientConn.Close()
+		close(upstreamClosed)
+	}
+
+	err := runRealtimeRelays(serverConn, toProvider, toClient, closeBoth)
+
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected the client read timeout to be reported, got %v", err)
+	}
 }
 
 // A relay runs on its own goroutine, past the recover deferred by the upgrade callback, so a

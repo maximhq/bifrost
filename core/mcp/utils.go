@@ -1147,11 +1147,14 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
 			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
 		}
-		if !config.TokenExchange.UseIdPCredentials && strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
-			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s' unless use_idp_credentials is set", config.Name)
+		if !config.TokenExchange.ExchangesAsSSOApplication() && strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s' unless use_idp_credentials is set or the profile is id_jag", config.Name)
 		}
 		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
 			return fmt.Errorf("oauth_config_id must not be set for token_exchange auth type in client '%s'", config.Name)
+		}
+		if err := config.TokenExchange.ValidateProfile(); err != nil {
+			return fmt.Errorf("%w in client '%s'", err, config.Name)
 		}
 	}
 	return nil
@@ -1515,4 +1518,21 @@ func FixArraySchemas(properties map[string]interface{}, logger schemas.Logger) {
 			}
 		}
 	}
+}
+
+// initializeClient runs the MCP handshake for any protocol revision. mcp-go gives up when
+// server/discover is refused with only pre-2026-07-28 versions supported, so those are retried
+// through the initialize handshake at the newest version both sides support.
+func initializeClient(ctx context.Context, c *client.Client, request mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	result, err := c.Initialize(ctx, request)
+	var unsupported mcp.UnsupportedProtocolVersionError
+	if err == nil || !errors.As(err, &unsupported) {
+		return result, err
+	}
+	legacy := mcp.NegotiateMutuallySupportedVersion(unsupported.Supported)
+	if legacy == "" || mcp.IsModernProtocol(legacy) {
+		return nil, err
+	}
+	request.Params.ProtocolVersion = legacy
+	return c.Initialize(ctx, request)
 }

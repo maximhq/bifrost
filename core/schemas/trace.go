@@ -1367,7 +1367,9 @@ func IsSensitiveHeader(name string) bool {
 	switch normalized {
 	case "authorization", "proxy-authorization", "cookie", "set-cookie",
 		// Bifrost's own virtual key header: a credential that no generic pattern below names.
-		"x-bf-vk":
+		"x-bf-vk",
+		// Azure AI Speech's key header, which also carries a virtual key.
+		"ocp-apim-subscription-key":
 		return true
 	}
 

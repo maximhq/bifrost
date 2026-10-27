@@ -48,6 +48,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/runway"
+	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/providers/sarvam"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
@@ -5005,6 +5006,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return bedrock.NewBedrockProvider(config, bifrost.logger)
 	case schemas.BedrockMantle:
 		return bedrockmantle.NewBedrockMantleProvider(config, bifrost.logger)
+	case schemas.SageMaker:
+		return sagemaker.NewSageMakerProvider(config, bifrost.logger)
 	case schemas.Cohere:
 		return cohere.NewCohereProvider(config, bifrost.logger)
 	case schemas.Azure:
@@ -8840,7 +8843,9 @@ var moonshotSchemaFormats = []string{"date", "date-time", "time", "duration", "e
 // lookaround and every format; DeepSeek rejects `\0` with a 400; kimi-k3 on Bedrock
 // rejects `\0`, lookaround and non-allowlisted nested string formats with HTTP 200
 // and an empty stream. The fallback checks the model, never the provider: kimi
-// behind an OpenAI-compatible custom provider is still kimi.
+// behind an OpenAI-compatible custom provider is still kimi. Dropping every pattern is
+// row-only (zai.glm-5.3 on Bedrock rejects a top-level `(?:...)` pattern with no usable
+// error), because GLM-5 and 4.7 accept them.
 func toolSchemaPolicy(caps schemas.ModelCaps) providerUtils.ToolSchemaPolicy {
 	moonshot := schemas.IsMoonshotModel(caps.Model())
 	relaxed := moonshot || schemas.IsDeepSeekModel(caps.Model())
@@ -8851,6 +8856,7 @@ func toolSchemaPolicy(caps schemas.ModelCaps) providerUtils.ToolSchemaPolicy {
 	return providerUtils.ToolSchemaPolicy{
 		NormalizeNULEscape: !caps.SupportsRegexNULEscape(!relaxed),
 		StripLookaround:    !caps.SupportsRegexLookaround(!relaxed),
+		DropPattern:        !caps.SupportsSchemaPattern(true),
 		StringFormats:      caps.SupportedSchemaFormats(formats),
 	}
 }
@@ -10763,7 +10769,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 
 	// SkipKeySelection: the caller's OAuth token is the credential — return empty pool, no rotation.
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType, requestType) {
 		return []schemas.Key{}, false, nil
 	}
 

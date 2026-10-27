@@ -2359,10 +2359,6 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"roots_only":     "a display mode of the Logs page (grouped), not a question about traffic",
 		"group_sessions": "a display mode of the Logs page (sessions collapsed), not a question about traffic",
 		"ranking_limit":  "set from each tool's own limit argument",
-		// TODO: Warp does not support the agent filters from #7777 yet; remove
-		// these once FilterSchema and parseFilters accept them.
-		"agent_names":          "not yet supported by Warp",
-		"agent_correlation_id": "not yet supported by Warp",
 	}
 	var schema struct {
 		Properties map[string]any `json:"properties"`
@@ -2371,6 +2367,10 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	fields := reflect.TypeOf(logstore.SearchFilters{})
 	for i := range fields.NumField() {
 		name := strings.Split(fields.Field(i).Tag.Get("json"), ",")[0]
+		if name == "-" {
+			// Internal lookups (RealtimeInputItemID), never sent as a filter.
+			continue
+		}
 		if _, skip := notAnArgument[name]; skip {
 			continue
 		}

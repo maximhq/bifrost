@@ -96,7 +96,8 @@ func TestAdmission_DirectKeyGoesUpstream(t *testing.T) {
 	requireFake(t)
 	t.Parallel()
 	forEachTransport(t, func(t *testing.T, tr transport) {
-		session := sessionFor(t, voiceModel, backendModel, nil)
+		// A direct key names no provider, and a bare voice model may resolve to azure.
+		session := sessionFor(t, "openai/"+voiceModel, backendModel, nil)
 		headers := map[string]string{"x-bf-direct-key": "true", "Authorization": "Bearer sk-direct-live"}
 		c := openLive(t, tr, clientOptions{headers: headers, session: session})
 		s := fake.WaitSession(t, session["instructions"].(string))
@@ -117,6 +118,40 @@ func TestAdmission_OpenAIIntegrationRouteServesSessions(t *testing.T) {
 		s := fake.WaitSession(t, session["instructions"].(string))
 		assert.Equal(t, s.ID(), c.ProviderSessionID)
 		c.CloseSession()
+	})
+}
+
+// An Azure session runs on the key's resource, under the deployment names the key's aliases give
+// both models, and bills both.
+func TestAdmission_AzureSessionRunsOnTheResourceDeployments(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		budget := 10.0
+		vk := createVirtualKey(t, virtualKeySpec{provider: "azure", budgetUSD: &budget})
+		session := sessionFor(t, "azure/"+voiceModel, backendModel, nil)
+		c := openLive(t, tr, clientOptions{headers: vkHeaders(vk), session: session})
+		s := fake.WaitSession(t, session["instructions"].(string))
+		assert.Equal(t, s.ID(), c.ProviderSessionID)
+		assert.Equal(t, "azure", s.Upstream(), "the session is created under /openai/v1/live on the resource")
+		assert.Equal(t, "api-key fake-azure-key", s.Auth(), "the resource's api-key goes upstream")
+		assert.Equal(t, azureVoiceDeployment, s.StartModel())
+		assert.Equal(t, azureBackendDeployment, s.StartBackend(), "a bare backend model is the session provider's deployment")
+
+		s.Play(delegation{ID: "item_1", ResponseID: "resp_1", Model: backendModel, Created: true, Input: 1000, Output: 100, Items: []string{messageItem("msg_1", "Done.")}})
+		c.WaitFor("response.event")
+		s.EmitUsage(42)
+		c.WaitFor("session.usage.updated")
+		settle()
+		c.CloseSession()
+
+		row := findLiveLog(t, s.ID())
+		assert.Equal(t, "azure", row.Get("provider").Str)
+		assert.Equal(t, 42.0, row.Get("live_session.voice_seconds").Float())
+		require.Len(t, row.Get("live_session.delegations").Array(), 1)
+		cost := 42*fakeVoiceCostPerSecond + 1000*fakeInputCostPerToken + 100*fakeOutputCostPerToken
+		assert.InDelta(t, cost, row.Get("cost").Float(), 1e-9)
+		waitBudgetUsage(t, vk.BudgetID, cost)
 	})
 }
 

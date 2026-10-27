@@ -1908,6 +1908,30 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
     DecisionInputImageAsset:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
+    DecisionInputItem:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputItem"
+    DecisionFunctionCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCall"
+    DecisionFunctionCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCallOutput"
+    DecisionCustomToolCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCall"
+    DecisionCustomToolCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCallOutput"
+    DecisionToolOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionToolOutput"
+    DecisionInputJSON:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputJSON"
+    DecisionOutputText:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionOutputText"
+    DecisionRefusal:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRefusal"
+    DecisionInstructionPart:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInstructionPart"
+    DecisionPromptCacheOptions:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheOptions"
+    DecisionPromptCacheBreakpoint:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheBreakpoint"
     DecisionMapFormRequest:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
     DecisionMapFormResponse:

@@ -723,6 +723,137 @@ test.describe("LLM Logs", () => {
     });
   });
 
+  test.describe("Fallback Chain", () => {
+    // A request whose primary hit a rate limit, whose first fallback failed
+    // with a server error, and whose second fallback succeeded. The rows are
+    // mocked so the test does not depend on traffic having produced a chain.
+    const now = Date.now();
+    const attempt = (
+      id: string,
+      offsetMs: number,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      id,
+      object: "chat.completion",
+      timestamp: new Date(now - offsetMs).toISOString(),
+      created_at: new Date(now - offsetMs).toISOString(),
+      model: "chain-model",
+      number_of_retries: 0,
+      stream: false,
+      latency: 120,
+      cost: 0.0001,
+      input_history: [],
+      responses_input_history: [],
+      ...extra,
+    });
+    const primary = attempt("chain-primary", 3_000, {
+      provider: "openai",
+      fallback_index: 0,
+      status: "error",
+      child_count: 2,
+      error_details: {
+        status_code: 429,
+        error: { type: "rate_limit", message: "primary rate limited" },
+      },
+    });
+    const firstFallback = attempt("chain-fallback-1", 2_000, {
+      provider: "anthropic",
+      parent_request_id: primary.id,
+      fallback_index: 1,
+      status: "error",
+      error_details: {
+        status_code: 500,
+        error: { type: "server_error", message: "fallback overloaded" },
+      },
+    });
+    const finalFallback = attempt("chain-fallback-2", 1_000, {
+      provider: "gemini",
+      parent_request_id: primary.id,
+      fallback_index: 2,
+      status: "success",
+    });
+    const rows = [primary, firstFallback, finalFallback];
+
+    test.beforeEach(async ({ page }) => {
+      await page.route(
+        (url) => url.pathname.startsWith("/api/logs"),
+        async (route) => {
+          if (route.request().method() !== "GET") return route.continue();
+          const url = new URL(route.request().url());
+          const byId = rows.find(
+            (candidate) => url.pathname === `/api/logs/${candidate.id}`,
+          );
+          if (byId) return route.fulfill({ json: byId });
+          if (url.pathname !== "/api/logs") return route.continue();
+          const logs =
+            url.searchParams.get("parent_request_id") === primary.id
+              ? [firstFallback, finalFallback]
+              : [primary];
+          await route.fulfill({
+            json: {
+              logs,
+              pagination: {
+                limit: 50,
+                offset: 0,
+                sort_by: "timestamp",
+                order: "desc",
+              },
+              stats: {
+                total_requests: logs.length,
+                success_rate: 0,
+                user_facing_success_rate: 0,
+                user_facing_total_requests: logs.length,
+                average_latency: 120,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          });
+        },
+      );
+    });
+
+    test("should show the whole chain and move between attempts", async ({
+      logsPage,
+      page,
+    }) => {
+      await logsPage.goto();
+      await logsPage.tableRows.filter({ hasText: "chain-model" }).first().click();
+      await expect(logsPage.logDetailSheet).toBeVisible({ timeout: 5000 });
+
+      // Opened from the failed primary, the banner still reports what the
+      // caller got, which the last attempt decides.
+      const banner = page.getByTestId("logdetails-fallback-banner");
+      await expect(banner).toContainText("Request succeeded");
+      await expect(banner).toContainText("Attempt 1 of 3");
+      await expect(page.getByTestId("logdetails-fallback-chip-1")).toContainText("429");
+      await expect(page.getByTestId("logdetails-fallback-chip-2")).toContainText("500");
+
+      await page.getByTestId("logdetails-fallback-open-final").click();
+      await expect(banner).toContainText("Attempt 3 of 3");
+      await expect(page.getByTestId("logdetails-fallback-open-final")).toHaveCount(0);
+
+      // The Routing tab lists one row per attempt; a row opens that attempt,
+      // by click and by keyboard.
+      await page.getByRole("tab", { name: /Routing/ }).click();
+      const timeline = page.getByTestId("logdetails-fallback-timeline");
+      await expect(timeline).toContainText("3 attempts");
+      await expect(page.getByTestId("logdetails-fallback-row-3")).toContainText("Viewing");
+
+      await page.getByTestId("logdetails-fallback-row-2").click();
+      await expect(banner).toContainText("Attempt 2 of 3");
+      await expect(page.getByTestId("logdetails-fallback-row-2")).toContainText("Viewing");
+
+      await page.getByTestId("logdetails-fallback-row-1").focus();
+      await page.keyboard.press("Space");
+      await expect(banner).toContainText("Attempt 1 of 3");
+      await expect(page).toHaveURL(new RegExp(`selected_log=${primary.id}`));
+    });
+  });
+
   test.describe('Decision Logs', () => {
     // Decision logs keep the state as the user message and the answers as the
     // assistant message; the questions live in params, as an array in request

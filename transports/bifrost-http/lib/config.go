@@ -2082,6 +2082,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
 					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					SageMakerKeyConfig:     dbKey.SageMakerKeyConfig,
 					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
 					Aliases:                dbKey.Aliases,
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
@@ -2174,6 +2175,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
 					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					SageMakerKeyConfig:     dbKey.SageMakerKeyConfig,
 					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
 					Aliases:                dbKey.Aliases,
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
@@ -2647,6 +2649,37 @@ func rotateMCPTokenExchangeConfigFromFile(ctx context.Context, store configstore
 	}
 	if len(fileBlock.Scopes) > 0 {
 		resolved.Scopes = fileBlock.Scopes
+	}
+	// The id_jag fields. Like UseIdPCredentials above, the plain ones are
+	// persisted from the file as written, so they are taken as written: an
+	// absent profile is the direct one, and a removed endpoint or resource must
+	// count as a change. The credentials follow client_id/client_secret: one
+	// not declared, or that resolves to nothing, keeps the stored value. A block without id_jag
+	// fields, such as an existing direct-profile deployment's, leaves them all
+	// unchanged and marks nothing.
+	resolved.Profile = fileBlock.Profile
+	resolved.Resource = fileBlock.Resource
+	resolved.ResourceTokenEndpoint = fileBlock.ResourceTokenEndpoint
+	resolved.ResourceKeyID = fileBlock.ResourceKeyID
+	resolved.ResourceSigningAlgorithm = fileBlock.ResourceSigningAlgorithm
+	resolved.ResourceAssertionAudience = fileBlock.ResourceAssertionAudience
+	resolved.ResourceClientAuthMethod = fileBlock.ResourceClientAuthMethod
+	for _, field := range []struct {
+		name         string
+		file, stored **schemas.SecretVar
+	}{
+		{"resource_client_id", &fileBlock.ResourceClientID, &resolved.ResourceClientID},
+		{"resource_client_secret", &fileBlock.ResourceClientSecret, &resolved.ResourceClientSecret},
+		{"resource_private_key", &fileBlock.ResourcePrivateKey, &resolved.ResourcePrivateKey},
+	} {
+		switch {
+		case !(*field.file).IsSet():
+			// Not declared: keep the stored value, as for client_id/client_secret.
+		case (*field.file).GetValue() != "":
+			*field.stored = *field.file
+		default:
+			logger.Warn("token_exchange.%s declared for MCP client %q resolves to an empty value; keeping the stored value", field.name, clientName)
+		}
 	}
 
 	if !existing.DiffersFrom(&resolved) {
@@ -9015,6 +9048,19 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
 				configStoreKey.BedrockMantleKeyConfig = &cfg
 			}
+			if key.SageMakerKeyConfig != nil {
+				cfg := *key.SageMakerKeyConfig // safe copy
+				cfg.AccessKey = *cfg.AccessKey.Redacted()
+				cfg.SecretKey = *cfg.SecretKey.Redacted()
+				cfg.SessionToken = cfg.SessionToken.Redacted()
+				// The region is a public identifier, not a credential — surface it in plaintext.
+				cfg.Region = cfg.Region.RedactedIfSecret()
+				cfg.RoleARN = cfg.RoleARN.Redacted()
+				cfg.ExternalID = cfg.ExternalID.Redacted()
+				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
+				cfg.Endpoints = cfg.Endpoints.Redacted()
+				configStoreKey.SageMakerKeyConfig = &cfg
+			}
 			if key.VertexKeyConfig != nil {
 				cfg := *key.VertexKeyConfig // safe copy
 				cfg.ProjectID = *cfg.ProjectID.Redacted()
@@ -9491,6 +9537,9 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		exchangeCopy := *config.TokenExchange
 		exchangeCopy.ClientID = exchangeCopy.ClientID.Redacted()
 		exchangeCopy.ClientSecret = exchangeCopy.ClientSecret.Redacted()
+		exchangeCopy.ResourceClientID = exchangeCopy.ResourceClientID.Redacted()
+		exchangeCopy.ResourceClientSecret = exchangeCopy.ResourceClientSecret.Redacted()
+		exchangeCopy.ResourcePrivateKey = exchangeCopy.ResourcePrivateKey.Redacted()
 		configCopy.TokenExchange = &exchangeCopy
 	}
 
