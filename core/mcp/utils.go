@@ -800,6 +800,10 @@ type listToolsResult struct {
 // and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
 // than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
 func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
+	// A server offering only prompts or resources has no tools/list to call.
+	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
+		return &listToolsResult{tools: map[string]schemas.ChatTool{}, toolNameMapping: map[string]string{}}, nil
+	}
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{

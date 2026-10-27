@@ -92,6 +92,7 @@ type MCPServerHandler struct {
 	mcpServer *server.MCPServer
 	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer.
 	transport *server.StreamableHTTPServer
+	served    MCPResourcesAndPromptsServer // nil serves tools only
 	// tokenValidator, when set, may refuse a verified Bifrost-issued token.
 	tokenValidator MCPTokenValidator
 }
@@ -159,6 +160,7 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		vkCache:          vkCache,
 	}
 
+	handler.served, _ = toolManager.(MCPResourcesAndPromptsServer)
 	handler.mcpServer = handler.buildServer()
 	handler.transport = newMCPTransport(handler.mcpServer)
 	if err := handler.SyncMCPServer(ctx); err != nil {
@@ -343,6 +345,9 @@ func (h *MCPServerHandler) SyncMCPServer(ctx context.Context) error {
 	availableTools := h.toolManager.GetAvailableMCPTools(ctx)
 	h.mcpServer.SetTools(h.serverTools(availableTools)...)
 	logger.Debug("Synced MCP server with %d tools", len(availableTools))
+	if h.served != nil {
+		h.syncResourcesAndPrompts(ctx)
+	}
 	return nil
 }
 
@@ -385,14 +390,15 @@ func (h *MCPServerHandler) buildServer() *server.MCPServer {
 	hooks.AddAfterInitialize(h.forwardServerInstructions)
 	hooks.AddAfterDiscover(h.forwardDiscoverInstructions)
 
-	return server.NewMCPServer(
-		mcpServerName,
-		version,
+	options := []server.ServerOption{
 		server.WithToolCapabilities(true),
-		server.WithHooks(hooks),
 		// Per-request tool filter so tools/list answers with what this request may see.
 		server.WithToolFilter(h.makeIncludeClientsFilter()),
-	)
+	}
+	if h.served != nil {
+		options = append(options, h.resourcesAndPromptsOptions(hooks)...)
+	}
+	return server.NewMCPServer(mcpServerName, version, append(options, server.WithHooks(hooks))...)
 }
 
 // serverTools turns every available tool into a server tool. A tool's handler reads nothing about
@@ -497,23 +503,15 @@ func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) []serv
 // same key. When the context carries neither the filter is a no-op.
 func (h *MCPServerHandler) makeIncludeClientsFilter() server.ToolFilterFunc {
 	return func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
-		if ctx.Value(schemas.MCPContextKeyIncludeClients) == nil && ctx.Value(schemas.MCPContextKeyIncludeTools) == nil {
+		if !requestNarrowed(ctx) {
 			return tools
 		}
-		allowed := h.toolManager.GetAvailableMCPTools(ctx)
-		allowedNames := make(map[string]bool, len(allowed))
-		for _, t := range allowed {
-			if t.Function != nil {
-				allowedNames[t.Function.Name] = true
+		return keepAllowed(tools, func(t mcp.Tool) string { return t.Name }, h.toolManager.GetAvailableMCPTools(ctx), func(t schemas.ChatTool) string {
+			if t.Function == nil {
+				return ""
 			}
-		}
-		result := make([]mcp.Tool, 0, len(tools))
-		for _, tool := range tools {
-			if allowedNames[tool.Name] {
-				result = append(result, tool)
-			}
-		}
-		return result
+			return t.Function.Name
+		})
 	}
 }
 

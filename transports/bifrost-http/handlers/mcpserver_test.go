@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +19,8 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -572,9 +576,163 @@ func TestMCPGateway_SlugEndpoint(t *testing.T) {
 	}
 }
 
-// BenchmarkMCPGateway drives the /mcp handler in process: admission, transport and the server.
+// servingToolManager adds one prompt, resource and resource template from the "gw" client, visible
+// exactly when gw-echo is.
+type servingToolManager struct {
+	echoToolManager
+}
+
+func (s *servingToolManager) visible(ctx context.Context) bool {
+	return len(s.GetAvailableMCPTools(ctx)) > 0
+}
+
+func (s *servingToolManager) GetAvailableMCPPrompts(ctx context.Context) []mcp.Prompt {
+	if !s.visible(ctx) {
+		return nil
+	}
+	return []mcp.Prompt{mcp.NewPrompt("gw-review", mcp.WithArgument("diff"))}
+}
+
+func (s *servingToolManager) GetAvailableMCPResources(ctx context.Context) []mcp.Resource {
+	if !s.visible(ctx) {
+		return nil
+	}
+	return []mcp.Resource{mcp.NewResource("file:///gw.md", "gw")}
+}
+
+func (s *servingToolManager) GetAvailableMCPResourceTemplates(ctx context.Context) []mcp.ResourceTemplate {
+	if !s.visible(ctx) {
+		return nil
+	}
+	return []mcp.ResourceTemplate{mcp.NewResourceTemplate("gw://notes/{id}", "notes")}
+}
+
+func (s *servingToolManager) GetMCPPrompt(ctx context.Context, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError) {
+	if !s.visible(ctx) || name != "gw-review" {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "prompt not found", Error: coremcp.ErrNotFound}}
+	}
+	return mcp.NewGetPromptResult("review", []mcp.PromptMessage{mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("Review: "+arguments["diff"]))}), nil
+}
+
+func (s *servingToolManager) ReadMCPResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError) {
+	if !s.visible(ctx) {
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "resource not found", Error: coremcp.ErrNotFound}}
+	}
+	return &mcp.ReadResourceResult{Contents: []mcp.ResourceContents{mcp.TextResourceContents{URI: uri, Text: "read " + uri}}}, nil
+}
+
+func (s *servingToolManager) CompleteMCPArgument(ctx context.Context, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError) {
+	ref, _ := params.Ref.(mcp.PromptReference)
+	return &mcp.CompleteResult{Completion: mcp.Completion{Values: []string{ref.Name + ":" + params.Argument.Value}}}, nil
+}
+
+func newServingGatewayHandler(t testing.TB) *MCPServerHandler {
+	t.Helper()
+	tm := &servingToolManager{echoToolManager{fakeInstructionsToolManager{}}}
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	require.NoError(t, err)
+	return h
+}
+
+// Upstream prompts, resources and completions are served on /mcp in every protocol revision.
+func TestMCPGateway_ServesPromptsAndResources(t *testing.T) {
+	baseURL := startGateway(t, newServingGatewayHandler(t))
+	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			ctx := context.Background()
+			tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version))
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			result, err := c.Initialize(ctx, init)
+			require.NoError(t, err)
+			require.NotNil(t, result.Capabilities.Prompts)
+			require.NotNil(t, result.Capabilities.Resources)
+			require.NotNil(t, result.Capabilities.Completions)
+
+			prompts, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+			require.NoError(t, err)
+			require.Len(t, prompts.Prompts, 1)
+			get := mcp.GetPromptRequest{}
+			get.Params.Name = "gw-review"
+			get.Params.Arguments = map[string]string{"diff": "+1"}
+			prompt, err := c.GetPrompt(ctx, get)
+			require.NoError(t, err)
+			assert.Equal(t, "Review: +1", prompt.Messages[0].Content.(mcp.TextContent).Text)
+
+			resources, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+			require.NoError(t, err)
+			require.Len(t, resources.Resources, 1)
+			templates, err := c.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{})
+			require.NoError(t, err)
+			require.Len(t, templates.ResourceTemplates, 1)
+			for _, uri := range []string{"file:///gw.md", "gw://notes/7"} {
+				read := mcp.ReadResourceRequest{}
+				read.Params.URI = uri
+				contents, err := c.ReadResource(ctx, read)
+				require.NoError(t, err, uri)
+				assert.Equal(t, "read "+uri, contents.Contents[0].(mcp.TextResourceContents).Text)
+			}
+
+			complete := mcp.CompleteRequest{}
+			complete.Params.Ref = mcp.PromptReference{Type: "ref/prompt", Name: "gw-review"}
+			complete.Params.Argument = mcp.CompleteArgument{Name: "diff", Value: "+"}
+			completion, err := c.Complete(ctx, complete)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"gw-review:+"}, completion.Completion.Values)
+		})
+	}
+}
+
+// A caller narrowed away from the owning client lists none of its prompts or resources and gets
+// not-found for them.
+func TestMCPGateway_NarrowedCallerCannotReachPromptsOrResources(t *testing.T) {
+	h := newServingGatewayHandler(t)
+	h.admitter = slugAdmitter{vmcps: map[string][]string{"nothing": {"other-tool"}}}
+	baseURL := startGateway(t, h)
+	// The resource not-found code changed in 2026-07-28.
+	for version, notFound := range map[string]error{mcp.ProtocolVersion20251125: mcp.ErrResourceNotFound, mcp.ProtocolVersion20260728: mcp.ErrInvalidParams} {
+		t.Run(version, func(t *testing.T) {
+			ctx := context.Background()
+			tr, err := transport.NewStreamableHTTP(baseURL + "/mcp/nothing")
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version))
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			_, err = c.Initialize(ctx, init)
+			require.NoError(t, err)
+
+			prompts, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+			require.NoError(t, err)
+			assert.Empty(t, prompts.Prompts)
+			resources, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+			require.NoError(t, err)
+			assert.Empty(t, resources.Resources)
+			templates, err := c.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{})
+			require.NoError(t, err)
+			assert.Empty(t, templates.ResourceTemplates)
+
+			get := mcp.GetPromptRequest{}
+			get.Params.Name = "gw-review"
+			_, err = c.GetPrompt(ctx, get)
+			require.ErrorIs(t, err, mcp.ErrInvalidParams)
+			read := mcp.ReadResourceRequest{}
+			read.Params.URI = "gw://notes/7"
+			_, err = c.ReadResource(ctx, read)
+			require.ErrorIs(t, err, notFound)
+		})
+	}
+}
+
+// BenchmarkMCPGateway drives the /mcp handler in process: admission, transport and the server,
+// tools only and with upstream prompts and resources served.
 func BenchmarkMCPGateway(b *testing.B) {
-	h := newGatewayHandler(b)
+	handlers := map[string]*MCPServerHandler{"tools-only": newGatewayHandler(b), "serving": newServingGatewayHandler(b)}
 	legacy := map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
 	modernMeta := `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"bench","version":"0"}}`
 	modern := func(method, name string) map[string]string {
@@ -595,24 +753,71 @@ func BenchmarkMCPGateway(b *testing.B) {
 		{"discover/2026-07-28", modern("server/discover", ""), `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`},
 		{"tools-list/2026-07-28", modern("tools/list", ""), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{` + modernMeta + `}}`},
 		{"tools-call/2026-07-28", modern("tools/call", "gw-echo"), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"},` + modernMeta + `}}`},
+		{"prompts-get/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"gw-review","arguments":{"diff":"+1"}}}`},
+		{"resources-read/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"gw://notes/7"}}`},
 	}
-	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
-			var ctx fasthttp.RequestCtx
-			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
-			ctx.Request.SetRequestURI("/mcp")
-			for k, v := range tc.headers {
-				ctx.Request.Header.Set(k, v)
+	for _, name := range []string{"tools-only", "serving"} {
+		h := handlers[name]
+		for _, tc := range cases {
+			if name == "tools-only" && (strings.HasPrefix(tc.name, "prompts-") || strings.HasPrefix(tc.name, "resources-")) {
+				continue
 			}
-			ctx.Request.SetBodyString(tc.body)
-			b.ReportAllocs()
-			for b.Loop() {
-				ctx.Response.Reset()
-				h.handleMCPServer(&ctx)
-				if ctx.Response.StatusCode() != fasthttp.StatusOK {
-					b.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
-				}
-			}
-		})
+			benchmarkGatewayRequest(b, h, name+"/"+tc.name, tc.headers, tc.body)
+		}
 	}
+}
+
+func benchmarkGatewayRequest(b *testing.B, h *MCPServerHandler, name string, headers map[string]string, body string) {
+	b.Run(name, func(b *testing.B) {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/mcp")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		ctx.Request.SetBodyString(body)
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx.Response.Reset()
+			h.handleMCPServer(&ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusOK {
+				b.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+		}
+	})
+}
+
+// Two upstreams can list the same URI; a narrowed caller is shown its own server's entry, whose read
+// it gets, not whichever entry the gateway registered for that URI.
+func TestKeepCallersEntries_SharedURIShowsCallersEntry(t *testing.T) {
+	registered := []mcp.Resource{mcp.NewResource("file:///readme.md", "a-readme", mcp.WithResourceDescription("server a")), mcp.NewResource("file:///other.md", "other")}
+	callers := []mcp.Resource{mcp.NewResource("file:///readme.md", "b-readme", mcp.WithResourceDescription("server b"))}
+	kept := keepCallersEntries(registered, callers, resourceURI)
+	require.Len(t, kept, 1)
+	assert.Equal(t, "b-readme", kept[0].Name)
+	assert.Equal(t, "server b", kept[0].Description)
+
+	registeredTemplates := []mcp.ResourceTemplate{mcp.NewResourceTemplate("repo://{name}", "a-repo")}
+	callerTemplates := []mcp.ResourceTemplate{mcp.NewResourceTemplate("repo://{name}", "b-repo")}
+	keptTemplates := keepCallersEntries(registeredTemplates, callerTemplates, coremcp.ResourceTemplateURI)
+	require.Len(t, keptTemplates, 1)
+	assert.Equal(t, "b-repo", keptTemplates[0].Name)
+}
+
+// An upstream's invalid-params or resource-not-found answer reaches the caller with its own code, not as an
+// internal error.
+func TestUpstreamError_KeepsUpstreamCodes(t *testing.T) {
+	code := func(err error) int {
+		var provider server.JSONRPCErrorProvider
+		if !errors.As(err, &provider) {
+			return mcp.INTERNAL_ERROR
+		}
+		return provider.JSONRPCError().Error.Code
+	}
+	upstream := func(err error) *schemas.BifrostError {
+		return &schemas.BifrostError{Error: &schemas.ErrorField{Message: err.Error(), Error: err}}
+	}
+	assert.Equal(t, mcp.INVALID_PARAMS, code(upstreamError(upstream(fmt.Errorf("%w: missing diff", mcp.ErrInvalidParams)), mcp.RESOURCE_NOT_FOUND)))
+	assert.Equal(t, mcp.RESOURCE_NOT_FOUND, code(upstreamError(upstream(fmt.Errorf("%w: fixture://notes/999", mcp.ErrResourceNotFound)), mcp.RESOURCE_NOT_FOUND)))
+	assert.Equal(t, mcp.INTERNAL_ERROR, code(upstreamError(upstream(errors.New("backend down")), mcp.RESOURCE_NOT_FOUND)))
 }

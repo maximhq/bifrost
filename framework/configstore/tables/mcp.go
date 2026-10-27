@@ -25,6 +25,8 @@ type TableMCPClient struct {
 	TLSConfigJSON           *string            `gorm:"type:text" json:"-"`                              // JSON serialized schemas.MCPTLSConfig
 	ToolsToExecuteJSON      string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	ToolsToAutoExecuteJSON  string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
+	PromptsToExposeJSON     string             `gorm:"type:text" json:"-"`                              // JSON serialized []string; "" = all
+	ResourcesToExposeJSON   string             `gorm:"type:text" json:"-"`                              // JSON serialized []string; "" = all
 	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
@@ -123,6 +125,8 @@ type TableMCPClient struct {
 	TLSConfig                 *schemas.MCPTLSConfig           `gorm:"-" json:"tls_config,omitempty"`
 	ToolsToExecute            schemas.WhiteList               `gorm:"-" json:"tools_to_execute"`
 	ToolsToAutoExecute        schemas.WhiteList               `gorm:"-" json:"tools_to_auto_execute"`
+	PromptsToExpose           schemas.WhiteList               `gorm:"-" json:"prompts_to_expose"`
+	ResourcesToExpose         schemas.WhiteList               `gorm:"-" json:"resources_to_expose"`
 	Headers                   map[string]schemas.SecretVar    `gorm:"-" json:"headers"`
 	AllowedExtraHeaders       schemas.WhiteList               `gorm:"-" json:"allowed_extra_headers"`
 	ToolPricing               map[string]float64              `gorm:"-" json:"tool_pricing"`
@@ -236,6 +240,21 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ToolsToAutoExecuteJSON = string(data)
 	} else {
 		c.ToolsToAutoExecuteJSON = "[]"
+	}
+
+	for _, list := range []struct {
+		field string
+		value schemas.WhiteList
+		into  *string
+	}{
+		{"prompts_to_expose", c.PromptsToExpose, &c.PromptsToExposeJSON},
+		{"resources_to_expose", c.ResourcesToExpose, &c.ResourcesToExposeJSON},
+	} {
+		encoded, err := EncodeExposeList(list.field, list.value)
+		if err != nil {
+			return err
+		}
+		*list.into = encoded
 	}
 
 	if c.Headers != nil {
@@ -459,6 +478,16 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
+	if c.PromptsToExposeJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.PromptsToExposeJSON), &c.PromptsToExpose); err != nil {
+			return err
+		}
+	}
+	if c.ResourcesToExposeJSON != "" {
+		if err := sonic.Unmarshal([]byte(c.ResourcesToExposeJSON), &c.ResourcesToExpose); err != nil {
+			return err
+		}
+	}
 	if c.HeadersJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.HeadersJSON), &c.Headers); err != nil {
 			return err
@@ -556,4 +585,19 @@ func marshalListJSON[T any](list []T) (string, error) {
 	}
 	data, err := json.Marshal(list)
 	return string(data), err
+}
+
+// EncodeExposeList stores a prompts or resources allow-list; nil (expose all) is stored as "".
+func EncodeExposeList(field string, list schemas.WhiteList) (string, error) {
+	if list == nil {
+		return "", nil
+	}
+	if err := list.Validate(); err != nil {
+		return "", fmt.Errorf("invalid %s: %w", field, err)
+	}
+	data, err := json.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }

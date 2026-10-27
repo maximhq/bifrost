@@ -8704,6 +8704,20 @@
           },
           "description": "Auto-execute list of tools"
         },
+        "promptsToExpose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompts served through the MCP gateway (omit for all, [] for none). Renders into prompts_to_expose."
+        },
+        "resourcesToExpose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource URIs and URI templates served through the MCP gateway (omit for all, [] for none). Renders into resources_to_expose."
+        },
         "toolSyncInterval": {
           "type": "string",
           "description": "Per-client override for tool sync interval"

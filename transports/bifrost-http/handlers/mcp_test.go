@@ -917,6 +917,85 @@ func TestUpdateMCPClient_SettingsEditKeepsSavedSnapshot(t *testing.T) {
 	assert.Equal(t, "Use the handbook first.", row.DiscoveredInstructions)
 }
 
+// A new client exposes every prompt and resource unless the caller lists them; an invalid list is
+// rejected before anything is dialed.
+func TestAddMCPClient_ExposeLists(t *testing.T) {
+	for _, tc := range []struct {
+		name, field        string
+		prompts, resources schemas.WhiteList
+		wantStatus         int
+	}{
+		{"omitted exposes everything", ``, nil, nil, fasthttp.StatusInternalServerError},
+		{"lists are kept", `,"prompts_to_expose":[],"resources_to_expose":["repo://{owner}/{name}"]`, schemas.WhiteList{}, schemas.WhiteList{"repo://{owner}/{name}"}, fasthttp.StatusInternalServerError},
+		{"invalid list rejected", `,"prompts_to_expose":["*","review"]`, nil, nil, fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			manager := &capturingAddMCPManager{}
+			h := &MCPHandler{store: &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.SetBodyString(`{"name":"docs","connection_type":"http","connection_string":"https://mcp.example.com/mcp","auth_type":"headers","headers":{"Authorization":"Bearer x"}` + tc.field + `}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				assert.Nil(t, manager.got, "rejected before dialing")
+				assert.Contains(t, string(ctx.Response.Body()), "prompts_to_expose")
+				return
+			}
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.prompts, manager.got.PromptsToExpose)
+			assert.Equal(t, tc.resources, manager.got.ResourcesToExpose)
+		})
+	}
+}
+
+// An update sets, keeps or rejects the allow-lists, and both the stored row and the live config get the result.
+func TestUpdateMCPClient_ExposeLists(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		want       schemas.WhiteList
+		wantStatus int
+	}{
+		{"set to none", `{"prompts_to_expose":[]}`, schemas.WhiteList{}, fasthttp.StatusOK},
+		{"back to all", `{"prompts_to_expose":["*"]}`, schemas.WhiteList{"*"}, fasthttp.StatusOK},
+		{"omitted keeps the current list", `{"is_code_mode_client":false}`, schemas.WhiteList{"review"}, fasthttp.StatusOK},
+		{"invalid list rejected", `{"resources_to_expose":["file:///a","FILE:///A"]}`, nil, fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			existing := &schemas.MCPClientConfig{
+				ID: "client-1", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
+				PromptsToExpose: schemas.WhiteList{"review"},
+			}
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}}
+			store := &capturingUpdateConfigStore{}
+			cfg.ConfigStore = store
+			manager := &capturingUpdateMCPManager{}
+			h := &MCPHandler{store: cfg, mcpManager: manager}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", existing.ID)
+			ctx.Request.SetBodyString(tc.body)
+			h.updateMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus != fasthttp.StatusOK {
+				assert.Nil(t, store.row, "nothing stored")
+				assert.Nil(t, manager.got, "nothing applied")
+				return
+			}
+			require.NotNil(t, store.row)
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.want, store.row.PromptsToExpose, "stored")
+			assert.Equal(t, tc.want, manager.got.PromptsToExpose, "applied live")
+		})
+	}
+}
+
 // The resources and prompts lists are always arrays on the wire, empty when the server offers none, so clients
 // can iterate them like tools.
 func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {

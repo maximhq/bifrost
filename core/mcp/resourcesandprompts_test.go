@@ -29,6 +29,8 @@ func newResourcesPromptsUpstream() *server.MCPServer {
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(false, true),
 		server.WithPromptCapabilities(true),
+		server.WithCompletions(),
+		server.WithPromptCompletionProvider(diffCompletions{}),
 	)
 	s.AddTool(mcpgo.NewTool("echo", mcpgo.WithString("message", mcpgo.Required())),
 		func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -40,12 +42,23 @@ func newResourcesPromptsUpstream() *server.MCPServer {
 			return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: "file:///handbook.md", Text: "# Handbook"}}, nil
 		})
 	s.AddResourceTemplate(mcpgo.NewResourceTemplate("repo://{owner}/{name}", "repo"),
-		func(context.Context, mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) { return nil, nil })
+		func(_ context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+			return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: req.Params.URI, Text: "repo " + req.Params.URI}}, nil
+		})
 	s.AddPrompt(mcpgo.NewPrompt("review", mcpgo.WithPromptDescription("Review a change"), mcpgo.WithArgument("diff", mcpgo.RequiredArgument())),
-		func(context.Context, mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
-			return mcpgo.NewGetPromptResult("review", nil), nil
+		func(_ context.Context, req mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
+			return mcpgo.NewGetPromptResult("review", []mcpgo.PromptMessage{
+				mcpgo.NewPromptMessage(mcpgo.RoleUser, mcpgo.NewTextContent("Review: "+req.Params.Arguments["diff"])),
+			}), nil
 		})
 	return s
+}
+
+// diffCompletions completes the review prompt's diff argument.
+type diffCompletions struct{}
+
+func (diffCompletions) CompletePromptArgument(_ context.Context, promptName string, argument mcpgo.CompleteArgument, _ mcpgo.CompleteContext) (*mcpgo.Completion, error) {
+	return &mcpgo.Completion{Values: []string{promptName + ":" + argument.Name + ":" + argument.Value + "-done"}}, nil
 }
 
 // discoveryRecorder records the discovery each change callback carries.
@@ -254,17 +267,18 @@ func TestResourcesAndPrompts_RenameReprefixesPrompts(t *testing.T) {
 	requireResourcesAndPrompts(t, installedOf(t, m, config.ID), "handbook")
 }
 
-// listGatePipeline records the request types its pre-hooks see and short-circuits list_prompts.
+// listGatePipeline records the request types its pre-hooks see and, when set, short-circuits list_prompts.
 type listGatePipeline struct {
-	mu   sync.Mutex
-	seen []schemas.MCPRequestType
+	mu                sync.Mutex
+	seen              []schemas.MCPRequestType
+	answerListPrompts bool
 }
 
 func (p *listGatePipeline) RunMCPPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
 	p.mu.Lock()
 	p.seen = append(p.seen, req.RequestType)
 	p.mu.Unlock()
-	if req.RequestType == schemas.MCPRequestTypeListPrompts {
+	if p.answerListPrompts && req.RequestType == schemas.MCPRequestTypeListPrompts {
 		return req, &schemas.MCPPluginShortCircuit{Response: &schemas.BifrostMCPResponse{
 			BifrostMCPListPromptsResponse: &schemas.BifrostMCPListPromptsResponse{Prompts: []mcpgo.Prompt{mcpgo.NewPrompt("docs-synthetic")}},
 		}}, 0
@@ -290,7 +304,7 @@ func TestResourcesAndPrompts_ListsRunThroughPluginGate(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
 	t.Cleanup(ts.Close)
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
-	pipeline := &listGatePipeline{}
+	pipeline := &listGatePipeline{answerListPrompts: true}
 	m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
 	m.releasePluginPipeline = func(PluginPipeline) {}
 	config := &schemas.MCPClientConfig{
@@ -342,6 +356,126 @@ func TestResourcesAndPrompts_PerListBudgetOutlivesSpentDeadline(t *testing.T) {
 	discovery := &schemas.MCPDiscovery{}
 	m.listResourcesAndPrompts(spent, 2*time.Second, state.Conn, config.Name, state.Conn.GetServerCapabilities(), discovery, nil)
 	requireResourcesAndPrompts(t, discovery, "docs")
+}
+
+// A server offering only prompts has no tools/list to probe, so its prompts list is the liveness check:
+// once the upstream dies, the checker marks the client unstable instead of keeping it healthy.
+func TestResourcesAndPrompts_PromptsOnlyServerLivenessFollowsPromptsList(t *testing.T) {
+	upstream := server.NewMCPServer("prompts-only", "1.0.0", server.WithPromptCapabilities(true))
+	upstream.AddPrompt(mcpgo.NewPrompt("review"), func(context.Context, mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
+		return mcpgo.NewGetPromptResult("review", nil), nil
+	})
+	handler := server.NewStreamableHTTPServer(upstream)
+	var dead atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if dead.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID: "prompts-only", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	require.Len(t, installedOf(t, m, config.ID).Prompts, 1)
+
+	dead.Store(true)
+	NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{}).performCheck()
+	state, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State, "a dead prompts-only upstream must not stay healthy")
+}
+
+// newToollessUpstream serves a server without tools, offering a resource and a template, a prompt, or
+// both. A method fail reports answers with a JSON-RPC error.
+func newToollessUpstream(t *testing.T, resources, prompts bool, fail func(method string) bool) *httptest.Server {
+	t.Helper()
+	var opts []server.ServerOption
+	if resources {
+		opts = append(opts, server.WithResourceCapabilities(false, false))
+	}
+	if prompts {
+		opts = append(opts, server.WithPromptCapabilities(false))
+	}
+	upstream := server.NewMCPServer("toolless", "1.0.0", opts...)
+	if resources {
+		upstream.AddResource(mcpgo.NewResource("file:///handbook.md", "handbook"), func(context.Context, mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+			return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: "file:///handbook.md", Text: "# Handbook"}}, nil
+		})
+		upstream.AddResourceTemplate(mcpgo.NewResourceTemplate("repo://{name}", "repo"), func(_ context.Context, req mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+			return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: req.Params.URI, Text: "repo"}}, nil
+		})
+	}
+	if prompts {
+		upstream.AddPrompt(mcpgo.NewPrompt("review"), func(context.Context, mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
+			return mcpgo.NewGetPromptResult("review", nil), nil
+		})
+	}
+	handler := server.NewStreamableHTTPServer(upstream)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			var msg struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			_ = json.Unmarshal(body, &msg)
+			if fail(msg.Method) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(msg.ID) + `,"error":{"code":-32603,"message":"backend down"}}`))
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// A server without tools has no tools/list to prove it works, so when every one of its lists fails it
+// neither verifies nor connects, as a server whose tools/list fails does not.
+func TestResourcesAndPrompts_ToollessServerWithFailingListsIsNotHealthy(t *testing.T) {
+	ts := newToollessUpstream(t, false, true, func(method string) bool { return method == "prompts/list" })
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID: "toolless", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeHeaders,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	_, err := m.VerifyHeadersConnection(context.Background(), config, nil)
+	require.Error(t, err, "verification must fail when nothing the server offers can be listed")
+
+	require.Error(t, m.connectToMCPClient(context.Background(), config), "connecting must fail too")
+	state, ok := snapshotClientState(m, config.ID)
+	if ok {
+		assert.NotEqual(t, schemas.MCPConnectionStateHealthy, state.State)
+	}
+}
+
+// A resources-only server whose resources/list fails but whose templates list answers is alive: the
+// check keeps it connected instead of replacing a working connection.
+func TestResourcesAndPrompts_TemplatesAnsweringKeepsServerHealthy(t *testing.T) {
+	var failResources atomic.Bool
+	ts := newToollessUpstream(t, true, false, func(method string) bool { return failResources.Load() && method == "resources/list" })
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID: "resources-only", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+
+	failResources.Store(true)
+	NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{}).performCheck()
+	state, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "the templates list answered, so the server is alive")
 }
 
 // swallowingPipeline's post-hooks drop a failed call's error without supplying a response.
@@ -405,6 +539,213 @@ func TestResourcesAndPrompts_SetClientDiscoveryCarriesLists(t *testing.T) {
 	assert.Equal(t, stored, recorder.calls[0].Prompts)
 
 	m.SetClientDiscovery("missing", &schemas.MCPDiscovery{Prompts: stored})
+}
+
+// Prompts, resources and completions are served from the client that owns them, over a shared
+// connection and per-call alike, and each call runs through the plugin gate under its own type.
+func TestResourcesAndPrompts_ServedFromOwner(t *testing.T) {
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
+	t.Cleanup(ts.Close)
+	for _, sticky := range []bool{true, false} {
+		t.Run(map[bool]string{true: "shared", false: "per-call"}[sticky], func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			pipeline := &listGatePipeline{}
+			m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
+			m.releasePluginPipeline = func(PluginPipeline) {}
+			config := &schemas.MCPClientConfig{
+				ID: "served", Name: "docs", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(sticky),
+			}
+			require.NoError(t, m.AddClient(context.Background(), config))
+			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			require.Len(t, m.GetAvailablePrompts(ctx), 1)
+			require.Len(t, m.GetAvailableResources(ctx), 1)
+			require.Len(t, m.GetAvailableResourceTemplates(ctx), 1)
+
+			prompt, bErr := m.GetPrompt(ctx, "docs-review", map[string]string{"diff": "+1"})
+			require.Nil(t, bErr)
+			require.Len(t, prompt.Messages, 1)
+			assert.Equal(t, "Review: +1", prompt.Messages[0].Content.(mcpgo.TextContent).Text, "the upstream sees its own prompt name")
+
+			resource, bErr := m.ReadResource(ctx, "file:///handbook.md")
+			require.Nil(t, bErr)
+			assert.Equal(t, "# Handbook", resource.Contents[0].(mcpgo.TextResourceContents).Text)
+
+			fromTemplate, bErr := m.ReadResource(ctx, "repo://acme/widgets")
+			require.Nil(t, bErr)
+			assert.Equal(t, "repo repo://acme/widgets", fromTemplate.Contents[0].(mcpgo.TextResourceContents).Text)
+
+			completion, bErr := m.Complete(ctx, mcpgo.CompleteParams{
+				Ref:      mcpgo.PromptReference{Type: "ref/prompt", Name: "docs-review"},
+				Argument: mcpgo.CompleteArgument{Name: "diff", Value: "+"},
+			})
+			require.Nil(t, bErr)
+			assert.Equal(t, []string{"review:diff:+-done"}, completion.Completion.Values)
+
+			_, bErr = m.GetPrompt(ctx, "docs-missing", nil)
+			require.NotNil(t, bErr)
+			_, bErr = m.ReadResource(ctx, "file:///missing.md")
+			require.NotNil(t, bErr)
+
+			pipeline.mu.Lock()
+			seen := slices.Clone(pipeline.seen)
+			pipeline.mu.Unlock()
+			assert.Subset(t, seen, []schemas.MCPRequestType{schemas.MCPRequestTypeGetPrompt, schemas.MCPRequestTypeReadResource, schemas.MCPRequestTypeComplete})
+		})
+	}
+}
+
+// A caller narrowed away from a client sees none of its prompts or resources and cannot fetch them.
+func TestResourcesAndPrompts_NarrowedCallerCannotReach(t *testing.T) {
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "narrowed", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	for name, ctx := range map[string]*schemas.BifrostContext{
+		"other client": schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(schemas.MCPContextKeyIncludeClients, []string{"other"}),
+		"other tools":  schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(schemas.MCPContextKeyIncludeTools, []string{"other-*"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Empty(t, m.GetAvailablePrompts(ctx))
+			assert.Empty(t, m.GetAvailableResources(ctx))
+			assert.Empty(t, m.GetAvailableResourceTemplates(ctx))
+			_, bErr := m.GetPrompt(ctx, "docs-review", nil)
+			assert.NotNil(t, bErr)
+			_, bErr = m.ReadResource(ctx, "file:///handbook.md")
+			assert.NotNil(t, bErr)
+			completion, bErr := m.Complete(ctx, mcpgo.CompleteParams{Ref: mcpgo.PromptReference{Type: "ref/prompt", Name: "docs-review"}})
+			require.Nil(t, bErr)
+			assert.Empty(t, completion.Completion.Values)
+		})
+	}
+}
+
+// An upstream that offers prompts but not completions completes to nothing instead of failing.
+func TestResourcesAndPrompts_CompleteWithoutUpstreamCompletions(t *testing.T) {
+	upstream := server.NewMCPServer("no-completions", "1.0.0", server.WithToolCapabilities(true), server.WithPromptCapabilities(false))
+	upstream.AddTool(mcpgo.NewTool("echo"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText(""), nil
+	})
+	upstream.AddPrompt(mcpgo.NewPrompt("review"), func(context.Context, mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
+		return mcpgo.NewGetPromptResult("review", nil), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "no-completions", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	completion, bErr := m.Complete(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mcpgo.CompleteParams{
+		Ref:      mcpgo.PromptReference{Type: "ref/prompt", Name: "docs-review"},
+		Argument: mcpgo.CompleteArgument{Name: "diff", Value: "+"},
+	})
+	require.Nil(t, bErr, "%+v", bErr.GetErrorString())
+	assert.Empty(t, completion.Completion.Values)
+}
+
+// A server with prompts and resources but no tools is served to any caller that may reach it.
+func TestResourcesAndPrompts_ServerWithoutToolsIsServed(t *testing.T) {
+	upstream := server.NewMCPServer("no-tools", "1.0.0", server.WithPromptCapabilities(false), server.WithResourceCapabilities(false, false))
+	upstream.AddPrompt(mcpgo.NewPrompt("review"), func(context.Context, mcpgo.GetPromptRequest) (*mcpgo.GetPromptResult, error) {
+		return mcpgo.NewGetPromptResult("review", nil), nil
+	})
+	upstream.AddResource(mcpgo.NewResource("file:///handbook.md", "handbook"), func(context.Context, mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+		return []mcpgo.ResourceContents{mcpgo.TextResourceContents{URI: "file:///handbook.md", Text: "# Handbook"}}, nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "no-tools", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{}, NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	for name, tc := range map[string]struct {
+		ctx     *schemas.BifrostContext
+		reaches bool
+	}{
+		"unrestricted":       {schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), true},
+		"granted the server": {schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(schemas.MCPContextKeyIncludeTools, []string{"docs-*"}), true},
+		"granted another":    {schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(schemas.MCPContextKeyIncludeTools, []string{"other-*"}), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.reaches, len(m.GetAvailablePrompts(tc.ctx)) == 1)
+			assert.Equal(t, tc.reaches, len(m.GetAvailableResources(tc.ctx)) == 1)
+			_, bErr := m.ReadResource(tc.ctx, "file:///handbook.md")
+			assert.Equal(t, tc.reaches, bErr == nil)
+		})
+	}
+}
+
+// The per-server allow-lists decide which prompts, resources and templates are listed and reachable.
+func TestResourcesAndPrompts_AllowListsNarrowWhatIsServed(t *testing.T) {
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(newResourcesPromptsUpstream()))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "allow-lists", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+		PromptsToExpose: schemas.WhiteList{}, ResourcesToExpose: schemas.WhiteList{"repo://{owner}/{name}"},
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	assert.Empty(t, m.GetAvailablePrompts(ctx), "[] exposes no prompts")
+	_, bErr := m.GetPrompt(ctx, "docs-review", nil)
+	assert.NotNil(t, bErr)
+	assert.Empty(t, m.GetAvailableResources(ctx), "the handbook is not on the list")
+	_, bErr = m.ReadResource(ctx, "file:///handbook.md")
+	assert.NotNil(t, bErr)
+	require.Len(t, m.GetAvailableResourceTemplates(ctx), 1)
+	_, bErr = m.ReadResource(ctx, "repo://acme/widgets")
+	assert.Nil(t, bErr, "a listed template is readable")
+	completion, bErr := m.Complete(ctx, mcpgo.CompleteParams{Ref: mcpgo.PromptReference{Type: "ref/prompt", Name: "docs-review"}, Argument: mcpgo.CompleteArgument{Name: "diff"}})
+	require.Nil(t, bErr)
+	assert.Empty(t, completion.Completion.Values, "a hidden prompt completes to nothing")
+}
+
+// A prompt or resource call on a session the upstream abandoned reconnects and is retried, as a tool call is.
+func TestResourcesAndPrompts_DeadSessionIsRecovered(t *testing.T) {
+	streamable := server.NewStreamableHTTPServer(newResourcesPromptsUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
+	invalidator := &sessionInvalidator{dead: map[string]bool{}}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if invalidator.reject(w, r) {
+			return
+		}
+		streamable.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newRecoveryClientConfig("resources-dead-session", "docs", ts.URL)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bErr := m.GetPrompt(ctx, "docs-review", map[string]string{"diff": "+1"})
+	require.Nil(t, bErr, "sanity: the prompt works before the session dies")
+
+	invalidator.expireCurrentSession()
+	_, bErr = m.GetPrompt(ctx, "docs-review", map[string]string{"diff": "+1"})
+	require.Nil(t, bErr, "a dead session must be reconnected and the prompt fetched again")
+
+	invalidator.expireCurrentSession()
+	_, bErr = m.ReadResource(ctx, "file:///handbook.md")
+	require.Nil(t, bErr, "a dead session must be reconnected and the resource read again")
 }
 
 // Catalogs split across pages are followed to the end, for all three lists.

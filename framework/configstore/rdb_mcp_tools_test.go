@@ -278,3 +278,45 @@ func TestUpdateMCPClientConfig_KeepsSavedSnapshot(t *testing.T) {
 	assert.Len(t, row.DiscoveredPrompts, 1)
 	assert.Equal(t, "Use the handbook first.", row.DiscoveredInstructions)
 }
+
+// The prompts and resources allow-lists keep nil (expose all) apart from [] (expose none) through
+// create, update and every read path.
+func TestMCPClientExposeLists_RoundTrip(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "expose-client", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	config, err := s.GetMCPClientConfigByID(ctx, "expose-client")
+	require.NoError(t, err)
+	assert.Nil(t, config.PromptsToExpose, "unset exposes every prompt")
+	assert.Nil(t, config.ResourcesToExpose)
+
+	row, err := s.GetMCPClientByID(ctx, "expose-client")
+	require.NoError(t, err)
+	row.PromptsToExpose = schemas.WhiteList{}
+	row.ResourcesToExpose = schemas.WhiteList{"repo://{owner}/{name}"}
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "expose-client", row))
+
+	config, err = s.GetMCPClientConfigByID(ctx, "expose-client")
+	require.NoError(t, err)
+	require.NotNil(t, config.PromptsToExpose, "[] is kept, not read back as unset")
+	assert.Empty(t, config.PromptsToExpose)
+	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, config.ResourcesToExpose)
+	mcpConfig, err := s.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.Len(t, mcpConfig.ClientConfigs, 1)
+	assert.NotNil(t, mcpConfig.ClientConfigs[0].PromptsToExpose)
+	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, mcpConfig.ClientConfigs[0].ResourcesToExpose)
+
+	row.PromptsToExpose, row.ResourcesToExpose = nil, nil
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "expose-client", row))
+	config, err = s.GetMCPClientConfigByID(ctx, "expose-client")
+	require.NoError(t, err)
+	assert.Nil(t, config.PromptsToExpose)
+	assert.Nil(t, config.ResourcesToExpose)
+
+	row.PromptsToExpose = schemas.WhiteList{"*", "review"}
+	assert.Error(t, s.UpdateMCPClientConfig(ctx, "expose-client", row), "an invalid list is refused")
+}

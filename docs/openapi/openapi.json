@@ -45723,6 +45723,22 @@
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
                           },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
+                          },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
                             "default": false,
@@ -46024,6 +46040,22 @@
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
                           },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
+                          },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
                             "default": false,
@@ -46324,6 +46356,22 @@
                               "type": "string"
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                          },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
                           },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
@@ -46646,6 +46694,22 @@
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
                           },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
+                          },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
                             "default": false,
@@ -46961,6 +47025,22 @@
                       "type": "string"
                     },
                     "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                  },
+                  "prompts_to_expose": {
+                    "type": "array",
+                    "nullable": true,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted or null keeps the current list; [\"*\"] => all prompts; [] => none.\n"
+                  },
+                  "resources_to_expose": {
+                    "type": "array",
+                    "nullable": true,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted or null keeps the current list; [\"*\"] => all; [] => none.\n"
                   },
                   "tool_pricing": {
                     "type": "object",
@@ -130572,6 +130652,22 @@
               "type": "string"
             },
             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+          },
+          "prompts_to_expose": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+          },
+          "resources_to_expose": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
           },
           "tool_pricing": {
             "type": "object",

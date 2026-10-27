@@ -9362,6 +9362,20 @@
           },
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
         },
+        "prompts_to_expose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway. Omit or ['*'] for all, [] for none."
+        },
+        "resources_to_expose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource URIs and URI templates served through Bifrost's MCP gateway. Omit or ['*'] for all, [] for none."
+        },
         "max_protocol_version": {
           "$ref": "#/$defs/mcp_max_protocol_version",
           "description": "Per-client cap on the MCP protocol version Bifrost offers this server. Omit to use the global mcp.max_protocol_version; 'auto' uses the newest version Bifrost supports."
