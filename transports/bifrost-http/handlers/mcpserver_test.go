@@ -100,6 +100,64 @@ func (f *fakeInstructionsToolManager) ExecuteResponsesMCPTool(context.Context, *
 	return nil, nil
 }
 
+// fakeResultToolManager serves one tool and answers every call with the configured message.
+type fakeResultToolManager struct {
+	fakeInstructionsToolManager
+	result *schemas.ChatMessage
+}
+
+// ExecuteChatMCPTool returns the configured tool result.
+func (f *fakeResultToolManager) ExecuteChatMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return f.result, nil
+}
+
+// callToolResult drives a real tools/call for alpha-echo through a server built with that one
+// tool and returns the decoded result.
+func callToolResult(t *testing.T, tm MCPToolManager) map[string]any {
+	t.Helper()
+	h := &MCPServerHandler{
+		toolManager: tm,
+		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+	}
+	h.mcpServer = h.buildServer()
+	h.mcpServer.SetTools(h.serverTools([]schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}})...)
+
+	raw := h.server().HandleMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"alpha-echo","arguments":{}}}`))
+	require.NotNil(t, raw)
+	encoded, err := json.Marshal(raw)
+	require.NoError(t, err)
+	var envelope struct {
+		Result map[string]any `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &envelope))
+	require.NotNil(t, envelope.Result, "tools/call answered with a result: %s", encoded)
+	return envelope.Result
+}
+
+// TestToolsCallCarriesTheToolErrorFlag pins that a tool result marked failed reaches the /mcp
+// caller as isError true, with its text. The handler returned every result as a plain text
+// result, so an upstream's isError was dropped and the call looked successful.
+func TestToolsCallCarriesTheToolErrorFlag(t *testing.T) {
+	text := "upstream refused"
+	failed := callToolResult(t, &fakeResultToolManager{result: &schemas.ChatMessage{
+		Role:            schemas.ChatMessageRoleTool,
+		Content:         &schemas.ChatMessageContent{ContentStr: &text},
+		ChatToolMessage: &schemas.ChatToolMessage{IsError: schemas.Ptr(true)},
+	}})
+	assert.Equal(t, true, failed["isError"])
+	content, _ := failed["content"].([]any)
+	require.Len(t, content, 1)
+	assert.Equal(t, text, content[0].(map[string]any)["text"])
+
+	ok := "18C"
+	succeeded := callToolResult(t, &fakeResultToolManager{result: &schemas.ChatMessage{
+		Role:            schemas.ChatMessageRoleTool,
+		Content:         &schemas.ChatMessageContent{ContentStr: &ok},
+		ChatToolMessage: &schemas.ChatToolMessage{},
+	}})
+	assert.NotEqual(t, true, succeeded["isError"], "a successful result is not marked failed")
+}
+
 // initializeResult drives a real initialize through the built server and returns the decoded
 // result, which is what a connecting MCP client would actually receive.
 func initializeResult(t *testing.T, tm MCPToolManager, ctx context.Context) map[string]any {

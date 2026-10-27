@@ -1083,6 +1083,18 @@ const EP17 = folder("EP-17 Names with \"/\" or \"..\" are not served", `Setup: $
   ...fleetTeardown("EP-17"),
 ]);
 
+// mockToolErrorText is the text the mock's err_kind tool result carries for tool.
+const mockToolErrorText = (tool) => `tool ${JSON.stringify(tool)} reported an error (injected)`;
+const EP19 = folder("EP-19 Upstream returns isError", `Setup: ${FLEET}; alpha fault err_rate 1, err_kind tool.`, [
+  ...fleetSetup("EP-19"),
+  mockPost("EP-19", "alpha", "faults", "setup: alpha answers every call with an isError result", { faults: { err_rate: 1, err_kind: "tool" } }),
+  rpc("EP-19", "tools/call alpha-echo", call("alpha-echo", { text: "hi" }), { asserts: [A.status(200), toolResultError(mockToolErrorText("echo"), null), A.custom("the text is exactly the mock's", [
+    `pm.expect(pm.response.json().result.content[0].text, 'body: ' + pm.response.text()).to.equal(${lit(mockToolErrorText("echo"))});`,
+  ])] }),
+  mockCalls("EP-19", "alpha", "echo", 1),
+  ...fleetTeardown("EP-19"),
+]);
+
 const EP20 = folder("EP-20 Upstream fails the exchange", `Setup: ${FLEET}; alpha fault err_rate 1, err_kind protocol.`, [
   ...fleetSetup("EP-20"),
   mockPost("EP-20", "alpha", "faults", "setup: alpha fails every call with a protocol error", { faults: { err_rate: 1, err_kind: "protocol" } }),
@@ -6678,6 +6690,30 @@ const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha s
   deleteClient("CONN-07", "conn07-c"),
 ]);
 
+const CONN08 = folder("CONN-08 Tool reports isError", "Setup: alpha (echo_tool, add_tool); an HTTP client on alpha named conn08, auth none, per call, tools_to_execute [\"*\"]; alpha answers every tools/call with an isError result (err_rate 1, err_kind tool). The tool is executed in the chat format, in the Responses format and on /mcp.", [
+  ...freshServer("CONN-08", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-08", httpClient("conn08-c", "conn08", "alpha", { tools_to_execute: ["*"] })),
+  mockPost("CONN-08", "alpha", "faults", "setup: alpha answers every tools/call with an isError result", { faults: { err_rate: 1, err_kind: "tool", methods: ["tools/call"] } }),
+  mockPost("CONN-08", "alpha", "counters/reset", "setup: reset alpha's counters"),
+  execTool("CONN-08", "execute in the chat format", "conn08-echo_tool", [A.status(200), toolErrorFlag(true), A.jsonEquals("content", mockToolErrorText("echo_tool"))]),
+  execBody("CONN-08", "execute in the Responses format", { call_id: "conn08-call", name: "conn08-echo_tool", arguments: lit({ text: "hi" }) },
+    [A.status(200), A.jsonEquals("type", "function_call_output"), A.jsonEquals("status", "incomplete")], { query: "?format=responses" }),
+  rpc("CONN-08", "tools/call conn08-echo_tool on /mcp", call("conn08-echo_tool", { text: "hi" }), { asserts: [A.status(200), toolResultError(mockToolErrorText("echo_tool"), null)] }),
+  mockGet("CONN-08", "alpha", "the tool was called 3 times", [callsIs("echo_tool", 3)]),
+  mockPost("CONN-08", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("CONN-08", "conn08-c"),
+]);
+
+const INF28 = folder("INF-28 Tool-reported failure", `Setup: ${ALPHA_GREET_TEXT}; alpha then answers every tools/call with an isError result (err_kind tool).`, [
+  ...alphaGreetSetup("INF-28"),
+  mockPost("INF-28", "alpha", "faults", "setup: alpha answers every tools/call with an isError result", { faults: { err_rate: 1, err_kind: "tool" } }),
+  execBody("INF-28", "execute alpha-echo", ECHO_CALL, [A.status(200), toolErrorFlag(true)]),
+  execBody("INF-28", "execute alpha-echo in the Responses format", { call_id: "inf28-call", name: "alpha-echo", arguments: lit({ text: "hi" }) },
+    [A.status(200), A.jsonEquals("type", "function_call_output"), A.jsonEquals("status", "incomplete")], { query: "?format=responses" }),
+  mockPost("INF-28", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  alphaGreetTeardown("INF-28"),
+]);
+
 const CONN11 = folder("CONN-11 Per-call handshake and the tool timeout", "Setup: alpha (echo_tool, add_tool); a per-call client conn11_c on alpha, auth none, tool_execution_timeout 2, tools_to_execute [\"*\"]; alpha then hangs on initialize only. Each initialize attempt has its own 30s bound and failed attempts are retried, so the call fails after 30s or more.", [
   ...freshServer("CONN-11", "alpha", ["echo_tool", "add_tool"]),
   createClient("CONN-11", httpClient("conn11-c", "conn11_c", "alpha", { tool_execution_timeout: 2, tools_to_execute: ["*"] }), "setup: create the per-call client"),
@@ -7448,12 +7484,12 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
