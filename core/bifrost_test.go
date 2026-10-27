@@ -8260,3 +8260,82 @@ func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
 		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
 	}
 }
+
+// recordingEndpointsPlugin records the order its Relays hooks run in and can
+// short-circuit the call in its pre-hook.
+type recordingEndpointsPlugin struct {
+	name  string
+	order *[]string
+	deny  bool
+}
+
+func (p *recordingEndpointsPlugin) GetName() string { return p.name }
+func (p *recordingEndpointsPlugin) Cleanup() error  { return nil }
+func (p *recordingEndpointsPlugin) PreRelayHook(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	*p.order = append(*p.order, "pre:"+p.name)
+	if p.deny {
+		return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "denied"}}}, nil
+	}
+	return req, nil, nil
+}
+func (p *recordingEndpointsPlugin) PostRelayHook(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+	*p.order = append(*p.order, "post:"+p.name)
+	return resp, bErr, nil
+}
+
+func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	bifrost.tracer.Store(&tracerWrapper{tracer: &schemas.NoOpTracer{}})
+	bifrost.llmPlugins.Store(&[]schemas.LLMPlugin{})
+	bifrost.mcpPlugins.Store(&[]schemas.MCPPlugin{})
+	bifrost.a2aPlugins.Store(&[]schemas.A2APlugin{})
+	bifrost.relayPlugins.Store(&[]schemas.RelayPlugin{})
+	bifrost.pluginPipelinePool = sync.Pool{New: func() any { return &PluginPipeline{} }}
+
+	var order []string
+	first := &recordingEndpointsPlugin{name: "governance", order: &order}
+	second := &recordingEndpointsPlugin{name: "logging", order: &order}
+	for _, p := range []*recordingEndpointsPlugin{first, second} {
+		if err := bifrost.ReloadPlugin(p, []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+			t.Fatalf("ReloadPlugin: %v", err)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	pipeline := bifrost.AcquirePluginPipeline()
+	req := &schemas.BifrostRelayRequest{RelayName: "tavily"}
+	_, shortCircuit, ran := pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit != nil {
+		t.Fatalf("unexpected short-circuit")
+	}
+	pipeline.RunRelayPostHooks(ctx, &schemas.BifrostRelayResponse{}, nil, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if got, want := strings.Join(order, ","), "pre:governance,pre:logging,post:logging,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	// A pre-hook short-circuit stops the chain; only the plugins that entered see the post-hook.
+	order = nil
+	first.deny = true
+	pipeline = bifrost.AcquirePluginPipeline()
+	_, shortCircuit, ran = pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit == nil {
+		t.Fatalf("expected a short-circuit")
+	}
+	_, bErr := pipeline.RunRelayPostHooks(ctx, nil, shortCircuit.Error, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if bErr == nil {
+		t.Fatalf("expected the refusal to reach the caller")
+	}
+	if got, want := strings.Join(order, ","), "pre:governance,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	if err := bifrost.RemovePlugin("logging", []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+		t.Fatalf("RemovePlugin: %v", err)
+	}
+	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
+		t.Fatalf("plugins after remove = %d, want 1", n)
+	}
+}
