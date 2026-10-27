@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -44,6 +45,57 @@ type PassthroughStreamParams struct {
 	// DefaultUsage is attached to the final chunk of a successful stream when Observe produced
 	// nothing (or framing was skipped), so a billable relay with no parseable usage still counts.
 	DefaultUsage *schemas.BifrostPassthroughUsage
+	// FinalUsage, when set, is called once at the end of a successful stream with the number of
+	// body bytes forwarded (and runes, when CountRunes is set) and returns the final usage, so a
+	// relay priced by the size of the reply bills a stream the same as a buffered reply. A nil
+	// result leaves what Observe produced, then DefaultUsage.
+	FinalUsage func(bodyBytes, bodyRunes int64) *schemas.BifrostPassthroughUsage
+	// CountRunes also counts UTF-8 runes for FinalUsage: a linear scan of each chunk, only paid
+	// when a route bills characters.
+	CountRunes bool
+}
+
+// countRunes counts the complete UTF-8 runes in chunk, carrying an unfinished trailing sequence
+// into the next call so a rune split across two chunks is counted once. Invalid bytes count one
+// each, as utf8.RuneCount does, so the total matches a buffered utf8.RuneCount of the same body.
+func countRunes(chunk []byte, carry *[utf8.UTFMax]byte, carryLen *int) int64 {
+	var runes int64
+	if *carryLen > 0 {
+		need := min(utfSeqLen(carry[0])-*carryLen, len(chunk))
+		copy(carry[*carryLen:], chunk[:need])
+		*carryLen += need
+		if !utf8.FullRune(carry[:*carryLen]) {
+			return 0 // the chunk ended inside the same rune
+		}
+		runes += int64(utf8.RuneCount(carry[:*carryLen]))
+		*carryLen = 0
+		chunk = chunk[need:]
+	}
+	end := len(chunk)
+	for k := len(chunk) - 1; k >= 0 && k >= len(chunk)-utf8.UTFMax; k-- {
+		if utf8.RuneStart(chunk[k]) {
+			if !utf8.FullRune(chunk[k:]) {
+				end = k
+			}
+			break
+		}
+	}
+	runes += int64(utf8.RuneCount(chunk[:end]))
+	*carryLen = copy(carry[:], chunk[end:])
+	return runes
+}
+
+// utfSeqLen is the byte length a UTF-8 lead byte announces; an invalid lead is one byte.
+func utfSeqLen(lead byte) int {
+	switch {
+	case lead&0xE0 == 0xC0:
+		return 2
+	case lead&0xF0 == 0xE0:
+		return 3
+	case lead&0xF8 == 0xF0:
+		return 4
+	}
+	return 1
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -195,7 +247,19 @@ func streamPassthrough(
 			return false
 		}
 
+		var bodyBytes, bodyRunes int64
+		var carry [utf8.UTFMax]byte
+		carryLen := 0
 		finalize := func() {
+			if success && params.FinalUsage != nil {
+				if carryLen > 0 {
+					bodyRunes += int64(utf8.RuneCount(carry[:carryLen]))
+					carryLen = 0
+				}
+				if u := params.FinalUsage(bodyBytes, bodyRunes); u != nil {
+					usage = u
+				}
+			}
 			if usage == nil && success {
 				usage = params.DefaultUsage
 			}
@@ -218,6 +282,10 @@ func streamPassthrough(
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				bodyBytes += int64(n)
+				if params.CountRunes {
+					bodyRunes += countRunes(chunk, &carry, &carryLen)
+				}
 				// Forward the raw chunk to the client unchanged.
 				ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{

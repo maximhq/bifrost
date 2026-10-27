@@ -388,13 +388,27 @@ func (u resolvedUsage) collectEventPaths() []string {
 // is billed for both, and an event that carries nothing leaves what was seen alone. initial
 // carries what the request already established (request-side units).
 func (u resolvedUsage) streamObserver(initial usageFields) func(event []byte) *schemas.BifrostPassthroughUsage {
+	observe, _ := u.streamUsage(initial)
+	return observe
+}
+
+// wholeBodyResponse reports a mapping priced by the size of the reply (body_bytes or body_chars
+// read from the response), the one quantity a stream can only know once it has ended.
+func (u resolvedUsage) wholeBodyResponse() bool {
+	return u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse &&
+		(u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars)
+}
+
+// streamUsage returns the per-event observer for one stream and, for a mapping priced by the
+// size of the reply, the end-of-stream builder that bills the bytes (or runes) forwarded. Both
+// share one accumulator, so tokens seen in events and the final size land in the same usage.
+func (u resolvedUsage) streamUsage(initial usageFields) (func(event []byte) *schemas.BifrostPassthroughUsage, func(bodyBytes, bodyRunes int64) *schemas.BifrostPassthroughUsage) {
 	acc := initial
-	return func(event []byte) *schemas.BifrostPassthroughUsage {
+	wholeBody := u.wholeBodyResponse()
+	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		f := u.parse("application/json", event)
-		// A whole-body measure counts a buffered reply, never one SSE event: an event's size is not
-		// the quantity, so a response-side body_bytes or body_chars is left unread on a stream and
-		// the default usage (the fee, any request-side units) stands.
-		if u.unitsSource == schemas.GenericUnitsFromResponse && (u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars) {
+		// An event's size is not the quantity of a whole-body measure; the stream's total is.
+		if wholeBody {
 			f.units, f.hasUnits = 0, false
 		}
 		if !f.any() {
@@ -403,6 +417,18 @@ func (u resolvedUsage) streamObserver(initial usageFields) func(event []byte) *s
 		acc.merge(f)
 		return u.build(acc)
 	}
+	if !wholeBody {
+		return observe, nil
+	}
+	final := func(bodyBytes, bodyRunes int64) *schemas.BifrostPassthroughUsage {
+		quantity := bodyBytes
+		if u.unitsMeasure == schemas.GenericUnitsBodyChars {
+			quantity = bodyRunes
+		}
+		acc.merge(usageFields{units: float64(quantity), hasUnits: true})
+		return u.build(acc)
+	}
+	return observe, final
 }
 
 // defaultUsage is what a billable call reports when nothing could be read from the response:

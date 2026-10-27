@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -150,6 +151,8 @@ func TestGeneric(t *testing.T) {
 		t.Run("ResponseTooLargeIs502", testResponseTooLarge)
 		t.Run("StreamSSEObservesUsage", testStreamSSEObservesUsage)
 		t.Run("StreamNonSSEUsesDefaultUsage", testStreamNonSSEUsesDefaultUsage)
+		t.Run("StreamNonSSEBilledByBodyBytes", testStreamNonSSEBilledByBodyBytes)
+		t.Run("StreamSSEBilledByBodyChars", testStreamSSEBilledByBodyChars)
 		t.Run("UnsupportedOperations", testUnsupportedOperations)
 		t.Run("AllowedRequestsGate", testAllowedRequestsGate)
 		t.Run("SigV4SignsRequest", testSigV4SignsRequest)
@@ -627,6 +630,56 @@ func testStreamNonSSEUsesDefaultUsage(t *testing.T) {
 	require.NotNil(t, usage, "DefaultUsage lands on the final chunk when nothing was observed")
 	require.NotNil(t, usage.Cost)
 	assert.InDelta(t, 0.5, usage.Cost.TotalCost, 1e-9)
+}
+
+// A reply priced by its size bills a stream the same as a buffered reply: the bytes are counted as
+// they are forwarded and charged on the final chunk, on top of the fee.
+func testStreamNonSSEBilledByBodyBytes(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ID3\x00\x00bin"))
+		w.(http.Flusher).Flush()
+		_, _ = w.Write([]byte("ary-tail"))
+	})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+		CostPerRequest: schemas.Ptr(0.5), UnitsSource: schemas.GenericUnitsFromResponse, UnitsMeasure: schemas.GenericUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.001),
+	}})
+
+	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/tts/stream", "", `{"text":"hi"}`, nil))
+	require.Nil(t, bifrostErr)
+	body, usage := drainStream(t, ch)
+	assert.Equal(t, "ID3\x00\x00binary-tail", body)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.Cost)
+	assert.InDelta(t, 0.5+0.001*float64(len(body)), usage.Cost.TotalCost, 1e-9, "fee plus every forwarded byte")
+}
+
+// Characters are counted as runes across chunk boundaries, and tokens an SSE event reports still
+// land in the same usage.
+func testStreamSSEBilledByBodyChars(t *testing.T) {
+	first := "data: {\"delta\":\"h\xc3\xa9llo \xe2\x82"
+	second := "\xac\"}\n\ndata: {\"usage\":{\"input_tokens\":2,\"output_tokens\":5}}\n\ndata: [DONE]\n\n"
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(first))
+		w.(http.Flusher).Flush()
+		_, _ = w.Write([]byte(second))
+	})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+		UnitsSource: schemas.GenericUnitsFromResponse, UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(0.01),
+	}})
+
+	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/chat/stream", "", `{"stream":true}`, nil))
+	require.Nil(t, bifrostErr)
+	body, usage := drainStream(t, ch)
+	assert.Equal(t, first+second, body)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.LLMUsage)
+	assert.Equal(t, 7, usage.LLMUsage.TotalTokens, "tokens from the events are kept")
+	require.NotNil(t, usage.Cost)
+	assert.InDelta(t, 0.01*float64(utf8.RuneCount([]byte(body))), usage.Cost.TotalCost, 1e-9, "runes of the whole stream, split rune counted once")
 }
 
 func testUnsupportedOperations(t *testing.T) {

@@ -383,10 +383,15 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	}
 	if billable {
 		params.DefaultUsage = usageMapping.defaultUsage(requestUnits)
+		observe, final := usageMapping.streamUsage(requestUnits)
 		if !params.SkipFraming {
 			params.HasUsage = usageMapping.hasUsageEvent
-			params.Observe = usageMapping.streamObserver(requestUnits)
+			params.Observe = observe
 		}
+		// A reply priced by its size is counted as it is forwarded, framed or not, so a streamed
+		// reply bills what the buffered relay would bill for the same bytes.
+		params.FinalUsage = final
+		params.CountRunes = final != nil && usageMapping.unitsMeasure == schemas.GenericUnitsBodyChars
 	}
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 	return providerUtils.StreamPassthroughHTTP(ctx, postHookRunner, postHookSpanFinalizer, resp.Body, params), nil

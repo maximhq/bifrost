@@ -188,6 +188,13 @@
           },
           "routes": [
             {
+              "method": "GET",
+              "path": "/stream/*",
+              "stream": true,
+              "billable": true,
+              "usage": { "units_source": "response", "units_measure": "body_bytes", "cost_per_unit": 0.001 }
+            },
+            {
               "method": "PATCH",
               "path": "/patch",
               "billable": true,
