@@ -572,6 +572,49 @@ func isDeadSessionError(err error) bool {
 	return isDeadSessionErrorText(transportErr.Error())
 }
 
+// unfulfilledInputPrefix starts mcp-go's error for an input request it had no handler for; an upstream
+// error that merely mentions "multi round-trip:" is not one.
+const unfulfilledInputPrefix = "multi round-trip: fulfilling input request "
+
+// unservableInputKinds maps mcp-go's wording for an input request it had no handler for (Bifrost
+// registers none, so declares no capability) to what the upstream was asking for.
+var unservableInputKinds = []struct{ marker, what string }{
+	{"no elicitation handler configured", "input from the user (elicitation)"},
+	{"no sampling handler configured", "an LLM completion (sampling)"},
+	{"no roots handler configured", "the client's filesystem roots (roots)"},
+}
+
+// DescribeUnservableInput explains a tool call that failed because the upstream needed something
+// only a user-facing client can provide: input from the user, an LLM completion, or a step in the
+// user's browser. Exported for code mode's nested tool calls. mcp-go reports most of these as typed errors; an input request it could not
+// fulfil (2026-07-28 input_required) only as text.
+func DescribeUnservableInput(err error, serverName string) (string, bool) {
+	var urlNeeded mcp.URLElicitationRequiredError
+	var capability mcp.MissingRequiredClientCapabilityError
+	switch {
+	case errors.As(err, &urlNeeded):
+		steps := make([]string, 0, len(urlNeeded.Elicitations))
+		for _, e := range urlNeeded.Elicitations {
+			steps = append(steps, strings.TrimSpace(e.Message+" "+e.URL))
+		}
+		return fmt.Sprintf("MCP server %q needs a step completed in the browser before this tool can run: %s", serverName, strings.Join(steps, "; ")), true
+	case errors.As(err, &capability):
+		return fmt.Sprintf("MCP server %q needs the client capability %q to run this tool, which Bifrost does not support", serverName, capability.Capability), true
+	case errors.Is(err, client.ErrMaxInputRoundTripsExceeded):
+		return fmt.Sprintf("MCP server %q kept asking Bifrost to retry the call without completing it", serverName), true
+	}
+	text := err.Error()
+	if !strings.Contains(text, unfulfilledInputPrefix) {
+		return "", false
+	}
+	for _, kind := range unservableInputKinds {
+		if strings.Contains(text, kind.marker) {
+			return fmt.Sprintf("MCP server %q asked for %s, which Bifrost cannot provide", serverName, kind.what), true
+		}
+	}
+	return fmt.Sprintf("MCP server %q asked for input Bifrost cannot provide", serverName), true
+}
+
 // hasProtocolSession reports whether conn speaks a revision with protocol-level sessions, which
 // 2026-07-28 removed.
 func hasProtocolSession(conn *client.Client) bool {

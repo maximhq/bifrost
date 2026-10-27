@@ -890,6 +890,9 @@ func (m *ToolsManager) executeToolInternal(
 		if recoveryExhaustedBudget {
 			return nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v: %w", toolName, callErr, ErrMCPToolTimeout)
 		}
+		if explained, ok := DescribeUnservableInput(callErr, executionConfig.Name); ok {
+			return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %s: %w", toolName, explained, ErrMCPToolCallFailed)
+		}
 		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
