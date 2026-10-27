@@ -1362,11 +1362,13 @@ export function relayPathError(pathWithQuery: string): string | undefined {
 		return undefined;
 	};
 	// The preview endpoint decodes the sample once and the relay guard decodes once more, so the
-	// raw, once-decoded and twice-decoded forms are all checked, as they are server-side.
+	// raw, once-decoded and twice-decoded forms are checked, and nothing is decoded a third time:
+	// a twice-decoded /files/100% is a valid path the server accepts.
 	let form = path;
-	for (let pass = 0; pass < 3; pass++) {
+	for (let decodes = 0; ; decodes++) {
 		const message = rules(form);
 		if (message) return message;
+		if (decodes === 2) return undefined;
 		let decoded: string;
 		try {
 			decoded = decodeURIComponent(form);
@@ -1376,7 +1378,6 @@ export function relayPathError(pathWithQuery: string): string | undefined {
 		if (decoded === form) return undefined;
 		form = decoded;
 	}
-	return undefined;
 }
 
 export const genericUsagePreviewSampleSchema = z.object({

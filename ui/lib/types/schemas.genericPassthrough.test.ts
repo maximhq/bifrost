@@ -37,6 +37,7 @@ describe("genericUsagePreviewSampleSchema path", () => {
 			"/v1/chat?stream=true",
 			"/search?url=https%3A%2F%2Fexample.com",
 			"/x?u=http://evil",
+			"/files/100%2525",
 		]) {
 			expect(check(path).success, path).toBe(true);
 		}
@@ -50,6 +51,7 @@ describe("genericUsagePreviewSampleSchema path", () => {
 			["/%2F%2Fhost", "must not start with //"],
 			["/a%5Cb", "backslashes"],
 			["/bad%zz", "percent-escape"],
+			["/files/100%25", "percent-escape"], // once-decoded /files/100% fails the guard's own decode
 			["/tab\there", "control characters"],
 			["/user@host/x", "first path segment must not contain @"],
 			["/a/../b", ".. segments"],
