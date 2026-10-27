@@ -131,7 +131,8 @@ and streaming-chunk indexes once, using your Qdrant REST endpoint and configured
 
 ```bash
 QDRANT_URL=http://localhost:6333
-COLLECTION=BifrostSemanticCachePlugin
+# Set VECTOR_STORE_NAMESPACE to the configured vector_store_namespace value.
+COLLECTION="${VECTOR_STORE_NAMESPACE:-BifrostSemanticCachePlugin}"
 
 curl --fail --silent --show-error --request DELETE \
   --header "api-key: ${QDRANT_API_KEY:-}" \
