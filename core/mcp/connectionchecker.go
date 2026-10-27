@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -350,7 +351,8 @@ func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, c
 // own wall-clock time) off before it ever got to retry — defeating the
 // entire point of adding retry coverage here.
 func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clientName string, connGeneration uint64) bool {
-	if c.isPingAvailable {
+	// 2026-07-28 removed ping; list_tools below is the liveness check there.
+	if c.isPingAvailable && !mcp.IsModernProtocol(conn.ProtocolVersion()) {
 		pingErr := ExecuteWithRetry(context.Background(), func() error {
 			attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 			defer cancel()
