@@ -1810,7 +1810,7 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	ctx.Request.Header.Set("Authorization", jwt)
 	ctx.Request.Header.Set("ChatGPT-Account-ID", "synthetic-workspace")
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-synthetic")
-	ctx.Request.Header.Set("Cookie", "session=synthetic")
+	ctx.Request.Header.Set("Cookie", "session=synthetic; auth-openid=synthetic-gateway-token")
 	r.Handler(&ctx)
 	require.Equal(t, 403, ctx.Response.StatusCode())
 	require.NotNil(t, plugin.request)
