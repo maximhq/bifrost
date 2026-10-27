@@ -1368,6 +1368,30 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("anthropic_provider_merges_overrides_false_item", func(t *testing.T) {
+		headers := []string{
+			AnthropicAdvisorBetaHeader,
+			"custom-beta-2026",
+		}
+		overrides := map[string]bool{"advisor-tool-": false, "custom-beta-": false}
+		result := FilterBetaHeadersForProvider(headers, schemas.Anthropic, overrides)
+		if len(result) != 0 {
+			t.Errorf("expected overridden headers to be dropped, got %v", result)
+		}
+	})
+
+	t.Run("unknown_provider_merges_overrides_false_item", func(t *testing.T) {
+		headers := []string{
+			AnthropicAdvisorBetaHeader,
+			"custom-beta-2026",
+		}
+		overrides := map[string]bool{"advisor-tool-": false, "custom-beta-": false}
+		result := FilterBetaHeadersForProvider(headers, schemas.ModelProvider("anthropic-credits"), overrides)
+		if len(result) != 0 {
+			t.Errorf("expected overridden headers to be dropped, got %v", result)
+		}
+	})
+
 	t.Run("override_enables_unsupported_header", func(t *testing.T) {
 		// redact-thinking is not supported on Vertex by default
 		overrides := map[string]bool{AnthropicRedactThinkingBetaHeaderPrefix: true}
