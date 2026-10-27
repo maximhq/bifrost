@@ -6,6 +6,7 @@ package modelcatalog
 
 import (
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 // UpsertLive caches one (provider, keyID, unfiltered) list-models response.
@@ -22,7 +23,7 @@ func (mc *ModelCatalog) UpsertLiveFromResponse(provider schemas.ModelProvider, k
 	if resp == nil {
 		return
 	}
-	mc.live.Upsert(provider, keyID, unfiltered, extractModelIDs(resp, provider))
+	mc.live.UpsertEntry(provider, keyID, unfiltered, extractLiveEntry(resp, provider))
 }
 
 // LiveGeneration returns the live cache's invalidation counter for the
@@ -42,7 +43,7 @@ func (mc *ModelCatalog) UpsertLiveFromResponseIfCurrent(provider schemas.ModelPr
 	if resp == nil {
 		return false
 	}
-	return mc.live.UpsertIfCurrent(provider, keyID, unfiltered, extractModelIDs(resp, provider), gen)
+	return mc.live.UpsertEntryIfCurrent(provider, keyID, unfiltered, extractLiveEntry(resp, provider), gen)
 }
 
 // InvalidateLive drops both filtered + unfiltered live entries for one key.
@@ -128,11 +129,17 @@ func (mc *ModelCatalog) ConfiguredProviders() []schemas.ModelProvider {
 // identifiers, filtering entries whose ID prefix doesn't match the
 // requested provider.
 func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) []string {
+	return extractLiveEntry(resp, provider).Models
+}
+
+// extractLiveEntry is extractModelIDs plus each model's provider creation
+// time, so the catalog can rank models by recency without polling again.
+func extractLiveEntry(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) live.Entry {
 	if resp == nil {
-		return nil
+		return live.Entry{}
 	}
 	seen := make(map[string]struct{}, len(resp.Data))
-	out := make([]string, 0, len(resp.Data))
+	out := live.Entry{Models: make([]string, 0, len(resp.Data))}
 	for _, m := range resp.Data {
 		parsedProvider, parsedModel := schemas.ParseModelString(m.ID, "")
 		if parsedProvider != "" && parsedProvider != provider {
@@ -142,7 +149,13 @@ func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.M
 			continue
 		}
 		seen[parsedModel] = struct{}{}
-		out = append(out, parsedModel)
+		out.Models = append(out.Models, parsedModel)
+		if m.Created != nil && *m.Created > 0 {
+			if out.Created == nil {
+				out.Created = make(map[string]int64)
+			}
+			out.Created[parsedModel] = *m.Created
+		}
 	}
 	return out
 }
