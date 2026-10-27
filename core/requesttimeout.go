@@ -114,11 +114,16 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 // close(out)/stop() would never run. The leading check also keeps a chunk
 // from being forwarded in the same instant cancellation fires -- select does
 // not otherwise prefer one ready case over another, so without it a chunk
-// could still win the race against an already-closed ctx.Done(). Once
-// cancelled, the goroutine stops trying to forward and instead just drains
-// ch to exhaustion -- discarding chunks instead of leaving the producer
-// blocked writing into ch -- before running its deferred cleanup.
+// could still win the race against an already-closed ctx.Done(). The receive
+// from ch selects on ctx.Done() too, so a source that goes silent without
+// closing cannot keep the timeout from being reported. Once cancelled, the
+// goroutine stops forwarding and drains ch, see drainAfterCancel, before
+// running its deferred cleanup.
 func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool) chan *schemas.BifrostStreamChunk {
+	return wrapStreamWithDrainGrace(ctx, ch, stop, armed, cancelDrainGrace)
+}
+
+func wrapStreamWithDrainGrace(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool, drainGrace time.Duration) chan *schemas.BifrostStreamChunk {
 	if ch == nil {
 		stop()
 		return ch
@@ -130,12 +135,28 @@ func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.B
 	go func() {
 		defer close(out)
 		defer stop()
-		for chunk := range ch {
+		for {
+			var chunk *schemas.BifrostStreamChunk
+			var ok bool
 			select {
 			case <-ctx.Done():
 				forwardTimeoutChunkIfFired(ctx, out)
-				for range ch {
-				}
+				drainAfterCancel(ch, drainGrace)
+				return
+			case chunk, ok = <-ch:
+			}
+			if !ok {
+				// ch closed without either cancellation check observing
+				// ctx.Done(): the deadline can still have fired in the same
+				// instant the producer finished, or the caller sees a
+				// truncated response close like any successful stream.
+				forwardTimeoutChunkIfFired(ctx, out)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				forwardTimeoutChunkIfFired(ctx, out)
+				drainAfterCancel(ch, drainGrace)
 				return
 			default:
 			}
@@ -143,19 +164,43 @@ func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.B
 			case out <- chunk:
 			case <-ctx.Done():
 				forwardTimeoutChunkIfFired(ctx, out)
-				for range ch {
-				}
+				drainAfterCancel(ch, drainGrace)
 				return
 			}
 		}
-		// ch closed naturally without either select above ever observing
-		// ctx.Done(): the deadline can still have fired in the same instant
-		// the producer finished and closed ch on its own, before the loop got
-		// a chance to check again. Catch that race too, or the caller sees a
-		// truncated response close like any successful stream.
-		forwardTimeoutChunkIfFired(ctx, out)
 	}()
 	return out
+}
+
+// cancelDrainGrace bounds how long drainAfterCancel holds the wrapped stream
+// open waiting for the producer to close ch.
+const cancelDrainGrace = 5 * time.Second
+
+// drainAfterCancel discards what is left on ch after cancellation so the
+// producer is never left blocked writing into it. A provider closes ch
+// promptly once ctx is cancelled, so the drain normally finishes in place,
+// before close(out), and the transport still sees the producer's cancellation
+// post-hook and log land before it completes the trace. A source that neither
+// sends nor closes (a plugin short-circuit stream that ignores ctx) must not
+// hold the caller's stream open, so after the grace period the rest of the
+// drain moves to a background goroutine; it ends whenever that source closes.
+func drainAfterCancel(ch chan *schemas.BifrostStreamChunk, grace time.Duration) {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-timer.C:
+			go func() {
+				for range ch {
+				}
+			}()
+			return
+		}
+	}
 }
 
 // requestTimeoutStreamChunk is the terminal chunk forwardTimeoutChunkIfFired

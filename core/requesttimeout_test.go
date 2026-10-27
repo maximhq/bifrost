@@ -488,6 +488,57 @@ func TestWrapStreamForRequestTimeout_FiredDeadlineDeliversToBusyConsumer(t *test
 	}
 }
 
+// TestWrapStreamForRequestTimeout_SilentSourceStillReportsTimeout covers a
+// source that neither sends nor closes, such as a plugin short-circuit stream
+// that ignores ctx. The deadline fires while the wrapper is waiting on the
+// receive: it must still forward the timeout and close out after the drain
+// grace rather than hold the caller's stream open forever, and a
+// producer that sends later must not be left blocked.
+func TestWrapStreamForRequestTimeout_SilentSourceStillReportsTimeout(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	var stopped atomicBool
+	out := wrapStreamWithDrainGrace(ctx, in, func() { stopped.set(true) }, true, 50*time.Millisecond)
+
+	time.Sleep(20 * time.Millisecond) // wrapper is now parked on the receive
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+
+	select {
+	case chunk, ok := <-out:
+		if !ok || chunk.BifrostError == nil || chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Type == nil || *chunk.BifrostError.Error.Type != schemas.RequestTimedOut {
+			t.Fatalf("expected a RequestTimedOut chunk while the source was silent, got %+v (open=%v)", chunk, ok)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout was not reported while the wrapper waited on a silent source")
+	}
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("expected out to close after the timeout chunk")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("out stayed open past the drain grace on a source that never closes")
+	}
+	if !stopped.get() {
+		t.Fatal("stop was not called once out closed")
+	}
+
+	sent := make(chan struct{})
+	go func() {
+		in <- &schemas.BifrostStreamChunk{}
+		close(sent)
+	}()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("a producer sending after the grace period was left blocked")
+	}
+	close(in)
+}
+
 // TestResolveRequestContext_RootPassedExplicitlyIsTreatedAsShared verifies
 // the fix for the case where a caller never actually passes nil: every
 // public entry point (e.g. ChatCompletionRequest) substitutes bifrost.ctx for
