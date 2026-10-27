@@ -1429,6 +1429,44 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 	return nil
 }
 
+// requestMetadataHeaderPrefix marks request headers copied into Converse requestMetadata,
+// e.g. "x-bf-bedrock-metadata-tenant: acme" becomes {"tenant": "acme"}.
+const requestMetadataHeaderPrefix = "x-bf-bedrock-metadata-"
+
+// Bedrock rejects the whole request when requestMetadata breaks these limits.
+const maxRequestMetadataEntries = 16
+
+var requestMetadataPattern = regexp.MustCompile(`^[a-zA-Z0-9\s:_@$#=/+,\-.]{0,256}$`)
+
+// applyHeaderRequestMetadata adds x-bf-bedrock-metadata-* request headers to requestMetadata.
+// Unlike extra_params, the headers reach only Bedrock, so callers that route to other
+// providers first can tag invocation logs without the opt-in passthrough merge. Entries
+// set through extra_params win, and entries Bedrock would reject are skipped so a
+// caller's tag never fails the request.
+func applyHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest) {
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	keys := make([]string, 0)
+	for header := range headers {
+		if key, ok := strings.CutPrefix(header, requestMetadataHeaderPrefix); ok && key != "" {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		if len(bedrockReq.RequestMetadata) >= maxRequestMetadataEntries {
+			return
+		}
+		value := headers[requestMetadataHeaderPrefix+key]
+		if _, exists := bedrockReq.RequestMetadata[key]; exists || !requestMetadataPattern.MatchString(key) || !requestMetadataPattern.MatchString(value) {
+			continue
+		}
+		if bedrockReq.RequestMetadata == nil {
+			bedrockReq.RequestMetadata = make(map[string]string)
+		}
+		bedrockReq.RequestMetadata[key] = value
+	}
+}
+
 func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
 	if fields == nil {
 		return
