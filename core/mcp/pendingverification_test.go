@@ -507,3 +507,167 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestSetClientDiscovery_VerifyingAPendingClientStartsItsChecker pins that a client
+// leaving pending_verification gets the connection checker every other per-call
+// client has. AddClient and EnableClient start none for a pending client, since
+// there is nothing to check until the admin acts, and the verify handlers
+// (verify-headers, verify-exchange, the OAuth bootstrap) only call UpdateClient
+// and SetClientDiscovery. Nothing started one there either, so a verified client
+// served the tools it was verified with and never synced again until a restart.
+func TestSetClientDiscovery_VerifyingAPendingClientStartsItsChecker(t *testing.T) {
+	cases := []struct {
+		name     string
+		authType schemas.MCPAuthType
+		pending  func(*schemas.MCPClientConfig)
+	}{
+		{name: "per_user_headers", authType: schemas.MCPAuthTypePerUserHeaders},
+		{name: "token_exchange", authType: schemas.MCPAuthTypeTokenExchange},
+		{
+			name:     "per_user_oauth",
+			authType: schemas.MCPAuthTypePerUserOauth,
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			defer m.checkerManager.StopAll()
+
+			config := newVerifiedClientConfig("client", tc.authType, nil)
+			config.ToolSyncInterval = 42 * time.Minute
+			if tc.pending != nil {
+				tc.pending(config)
+			}
+			require.True(t, awaitsAdminVerification(config), "fixture check: the client starts out awaiting its admin")
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            config.Name,
+				ExecutionConfig: config,
+				State:           schemas.MCPConnectionStatePendingVerification,
+				ToolMap:         map[string]schemas.ChatTool{},
+				ToolNameMapping: map[string]string{},
+				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+			}
+			m.mu.Unlock()
+			require.Nil(t, registeredChecker(m, config.ID), "fixture check: a pending client has no checker")
+
+			// What the verify handlers do once the admin's credential checks out:
+			// hand UpdateClient the reloaded config carrying the discovered tools,
+			// then install them.
+			tools := map[string]schemas.ChatTool{"verifiedclient-lookup": {}}
+			verified := *config
+			verified.PendingOAuthConfig = nil
+			verified.DiscoveredTools = tools
+			require.NoError(t, m.UpdateClient(config.ID, &verified))
+			m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: map[string]string{"lookup": "lookup"}})
+
+			checker := registeredChecker(m, config.ID)
+			require.NotNil(t, checker, "a verified client must get a checker, or its tools never sync again")
+			assert.True(t, checkerRunning(checker))
+			interval, onSteady := checkerState(checker)
+			assert.Equal(t, 42*time.Minute, interval, "the checker syncs on the client's own tool_sync_interval")
+			assert.True(t, onSteady, "a client verified a moment ago starts on the steady cadence")
+		})
+	}
+}
+
+// TestSetClientDiscovery_VerifiedClientKeepsItsChecker is the other half: a client
+// already past verification keeps the checker it has. SetClientDiscovery also runs
+// for a credential update and for AddClient's first discovery, and replacing a
+// running checker there would restart its timer for nothing.
+func TestSetClientDiscovery_VerifiedClientKeepsItsChecker(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	defer m.checkerManager.StopAll()
+
+	config := newVerifiedClientConfig("client", schemas.MCPAuthTypePerUserHeaders, map[string]schemas.ChatTool{})
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ToolMap:         map[string]schemas.ChatTool{},
+		ToolNameMapping: map[string]string{},
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	}
+	m.mu.Unlock()
+	running := NewClientConnectionChecker(m, config.ID, time.Hour, true, m.logger)
+	m.checkerManager.StartChecking(running)
+
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"verifiedclient-lookup": {}}, ToolNameMapping: map[string]string{"lookup": "lookup"}})
+
+	assert.Same(t, running, registeredChecker(m, config.ID))
+	assert.True(t, checkerRunning(running))
+}
+
+// TestSetClientDiscovery_StartsTheCheckerFromTheClientAsItIsThen: the checker a verified
+// client gets is built when it starts, from the client as it is then. The discovery
+// callback runs between installing the discovery and starting the checker, and it
+// persists, so an edit can land meanwhile: it must not be lost, and a client removed
+// and added again in that window keeps the checker it got.
+func TestSetClientDiscovery_StartsTheCheckerFromTheClientAsItIsThen(t *testing.T) {
+	tools := map[string]schemas.ChatTool{"verifiedclient-lookup": {}}
+	discovery := &schemas.MCPDiscovery{Tools: tools}
+	// setup registers a pending per_user_headers client with a 42 minute sync interval
+	// and hands UpdateClient its verified config, as the verify handlers do.
+	setup := func(t *testing.T) (*MCPManager, *schemas.MCPClientConfig) {
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		t.Cleanup(m.checkerManager.StopAll)
+		config := newVerifiedClientConfig("client", schemas.MCPAuthTypePerUserHeaders, nil)
+		config.ToolSyncInterval = 42 * time.Minute
+		m.mu.Lock()
+		m.clientMap[config.ID] = &schemas.MCPClientState{
+			Name:            config.Name,
+			ExecutionConfig: config,
+			State:           schemas.MCPConnectionStatePendingVerification,
+			ToolMap:         map[string]schemas.ChatTool{},
+			ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+		}
+		m.mu.Unlock()
+		verified := *config
+		verified.DiscoveredTools = tools
+		require.NoError(t, m.UpdateClient(config.ID, &verified))
+		return m, config
+	}
+
+	t.Run("an edit while the discovery is persisted", func(t *testing.T) {
+		m, config := setup(t)
+		m.discoveryChangeCallback = func(string, string, *schemas.MCPDiscovery) {
+			m.mu.RLock()
+			edited := *m.clientMap[config.ID].ExecutionConfig
+			m.mu.RUnlock()
+			edited.ToolSyncInterval = 7 * time.Minute
+			require.NoError(t, m.UpdateClient(config.ID, &edited))
+		}
+		m.SetClientDiscovery(config.ID, discovery)
+
+		checker := registeredChecker(m, config.ID)
+		require.NotNil(t, checker)
+		interval, _ := checkerState(checker)
+		assert.Equal(t, 7*time.Minute, interval, "the checker syncs on the interval the edit set")
+	})
+
+	t.Run("the client replaced while the discovery is persisted", func(t *testing.T) {
+		m, config := setup(t)
+		var replacement *ClientConnectionChecker
+		m.discoveryChangeCallback = func(string, string, *schemas.MCPDiscovery) {
+			m.mu.Lock()
+			current := m.clientMap[config.ID].ExecutionConfig
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            current.Name,
+				ExecutionConfig: current,
+				State:           schemas.MCPConnectionStateHealthy,
+				ToolMap:         map[string]schemas.ChatTool{},
+				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: current.ConnectionType},
+			}
+			m.mu.Unlock()
+			replacement = NewClientConnectionChecker(m, config.ID, time.Hour, true, m.logger)
+			m.checkerManager.StartChecking(replacement)
+		}
+		m.SetClientDiscovery(config.ID, discovery)
+
+		assert.Same(t, replacement, registeredChecker(m, config.ID), "the new client keeps its own checker")
+		assert.True(t, checkerRunning(replacement))
+	})
+}
