@@ -71,6 +71,7 @@ type VectorStoreProperties struct {
 	DataType    VectorStorePropertyType `json:"data_type"`
 	Description string                  `json:"description"`
 	// Filterable marks Query filter fields; stores may index or encode them.
+	// Unannotated schemas retain the backend's default indexing behavior.
 	Filterable bool `json:"filterable,omitempty"`
 }
 

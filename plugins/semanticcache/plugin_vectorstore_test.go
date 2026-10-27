@@ -17,6 +17,144 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Record the semantic cache's definitions and filters while delegating all
+// storage and queries to the real backend (no mocked cache hits).
+type filterableFieldStore struct {
+	vectorstore.VectorStore
+	properties map[string]vectorstore.VectorStoreProperties
+	queries    []vectorstore.Query
+}
+
+func (store *filterableFieldStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
+	store.properties = maps.Clone(properties)
+	return store.VectorStore.CreateNamespace(ctx, namespace, dimension, properties)
+}
+
+func (store *filterableFieldStore) GetNearest(ctx context.Context, namespace string, vector []float32, queries []vectorstore.Query, fields []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+	store.queries = append([]vectorstore.Query(nil), queries...)
+	return store.VectorStore.GetNearest(ctx, namespace, vector, queries, fields, threshold, limit)
+}
+
+func TestSemanticCache_FilterableFieldContract(t *testing.T) {
+	backends := []struct {
+		name   string
+		typeID vectorstore.VectorStoreType
+		config interface{}
+	}{
+		{"Chromem", vectorstore.VectorStoreTypeChromem, vectorstore.ChromemConfig{}},
+		{"Redis", vectorstore.VectorStoreTypeRedis, getRedisConfigFromEnv()},
+		{"Weaviate", vectorstore.VectorStoreTypeWeaviate, getWeaviateConfigFromEnv()},
+		{"Qdrant", vectorstore.VectorStoreTypeQdrant, getQdrantConfigFromEnv()},
+		{"Pinecone", vectorstore.VectorStoreTypePinecone, getPineconeConfigFromEnv()},
+	}
+	if address := os.Getenv("VALKEY_ADDR"); address != "" {
+		config := getRedisConfigFromEnv()
+		config.Addr = schemas.NewSecretVar(address)
+		backends = append(backends, struct {
+			name   string
+			typeID vectorstore.VectorStoreType
+			config interface{}
+		}{"Valkey", vectorstore.VectorStoreTypeRedis, config})
+	}
+	for _, backend := range backends {
+		t.Run(backend.name, func(t *testing.T) {
+			if testing.Short() && backend.typeID != vectorstore.VectorStoreTypeChromem {
+				t.Skip("Skipping external-server integration in short mode")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+			backendStore, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{Enabled: true, Type: backend.typeID, Config: backend.config}, logger)
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, backendStore.Close(context.Background(), "")) })
+			store := &filterableFieldStore{VectorStore: backendStore}
+			namespace := "CacheIndexPolicy" + strings.ReplaceAll(uuid.NewString(), "-", "")
+			t.Cleanup(func() { assert.NoError(t, store.DeleteNamespace(context.Background(), namespace)) })
+			initPlugin := func() *Plugin {
+				llmPlugin, err := Init(ctx, &Config{Provider: schemas.OpenAI, EmbeddingModel: "test-embedding", Dimension: 3, VectorStoreNamespace: namespace}, logger, store)
+				require.NoError(t, err)
+				plugin := llmPlugin.(*Plugin)
+				plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+					return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0, 0}}}}}, nil
+				})
+				t.Cleanup(func() { assert.NoError(t, plugin.Cleanup()) })
+				return plugin
+			}
+			plugin := initPlugin()
+			filterFields := []string{}
+			for field, property := range store.properties {
+				if property.Filterable {
+					filterFields = append(filterFields, field)
+				}
+			}
+			assert.ElementsMatch(t, []string{"cache_key", "provider", "model", "params_hash", "from_bifrost_semantic_cache_plugin"}, filterFields)
+			for _, field := range []string{"response", "stream_chunks", "expires_at"} {
+				_, exists := store.properties[field]
+				require.True(t, exists, "payload fields must not be removed from the shared storage schema")
+				assert.False(t, store.properties[field].Filterable)
+			}
+			newContext := func(key string, cacheType CacheType) *schemas.BifrostContext {
+				requestCtx := withTestRequestID(schemas.NewBifrostContext(vectorstore.WithDisableScanFallback(ctx), schemas.NoDeadline))
+				requestCtx.SetValue(CacheKey, key)
+				if cacheType != "" {
+					requestCtx.SetValue(CacheTypeKey, cacheType)
+				}
+				t.Cleanup(requestCtx.Cancel)
+				return requestCtx
+			}
+			request := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: CreateBasicChatRequest("original request", 0.7, 100)}
+			writeCtx := newContext("tenant-a", "")
+			_, hit, err := plugin.PreLLMHook(writeCtx, request)
+			require.NoError(t, err)
+			require.Nil(t, hit)
+			queryFields := []string{}
+			for _, query := range store.queries {
+				assert.True(t, store.properties[query.Field].Filterable, "missing filter definition for %s", query.Field)
+				queryFields = append(queryFields, query.Field)
+			}
+			assert.ElementsMatch(t, filterFields, queryFields)
+			content := strings.Repeat("cached payload, not an index ", 128)
+			response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				ID: "provider-response", Choices: []schemas.BifrostResponseChoice{{Index: 0, ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &content}},
+				}}}, ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, OriginalModelRequested: request.ChatRequest.Model, RequestType: request.RequestType},
+			}}
+			_, bifrostErr, err := plugin.PostLLMHook(writeCtx, response, nil)
+			require.NoError(t, err)
+			require.Nil(t, bifrostErr)
+			plugin.WaitForPendingOperations()
+			assertHit := func(cacheType CacheType) {
+				requestCtx := newContext("tenant-a", cacheType)
+				_, hit, err := plugin.PreLLMHook(requestCtx, request)
+				require.NoError(t, err)
+				require.NotNil(t, hit)
+				require.NotNil(t, hit.Response)
+				AssertCacheHit(t, hit.Response, string(cacheType))
+				assert.Equal(t, content, *hit.Response.ChatResponse.Choices[0].Message.Content.ContentStr)
+			}
+			assertHit(CacheTypeDirect)
+			// Backend indexing may be asynchronous even after Add returns.
+			require.Eventually(t, func() bool {
+				_, hit, err := plugin.PreLLMHook(newContext("tenant-a", CacheTypeSemantic), request)
+				return err == nil && hit != nil
+			}, 5*time.Second, 20*time.Millisecond)
+			assertHit(CacheTypeSemantic)
+			_, hit, err = plugin.PreLLMHook(newContext("tenant-b", CacheTypeSemantic), request)
+			require.NoError(t, err)
+			require.Nil(t, hit, "semantic filtering must isolate cache keys")
+			require.NoError(t, plugin.Cleanup())
+			plugin = initPlugin()
+			assertHit(CacheTypeDirect)
+			assertHit(CacheTypeSemantic)
+			require.NoError(t, plugin.ClearCacheForKey("tenant-a"))
+			require.Eventually(t, func() bool {
+				_, hit, err := plugin.PreLLMHook(newContext("tenant-a", CacheTypeSemantic), request)
+				return err == nil && hit == nil
+			}, 5*time.Second, 20*time.Millisecond)
+		})
+	}
+}
+
 // requiresVectors returns true if the vector store requires vectors for storage.
 // Some stores (like Qdrant, Pinecone, and Weaviate) require vectors for all entries,
 // while others (like Redis) can store metadata without vectors.
