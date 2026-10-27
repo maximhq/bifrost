@@ -646,11 +646,27 @@ func stripHeadersForSigning(header http.Header) []restoredHeader {
 	return restore
 }
 
-func signAWSRequest(
+// SignAWSRequest SigV4-signs req for service in region with the key's AWS credentials (static,
+// assumed role, or the default chain when the key holds none). Other providers that relay to AWS
+// APIs (relays) sign through it so the credential handling lives in one place.
+func SignAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	// A relayed request is signed as the caller sent it: no Content-Type or Accept is invented,
+	// since an S3 PutObject would store the guess as the object's metadata.
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, false)
+}
+
+// signAWSRequest signs a Bedrock request, defaulting Content-Type and Accept to JSON when the
+// caller set neither, which every Bedrock API expects.
+func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, true)
+}
+
+func signAWSRequestWithDefaults(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
+	jsonDefaults bool,
 ) (signErr *schemas.BifrostError) {
 	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
 	// nested "credentials-fetch" span (below) isolates the network portion (STS
@@ -671,16 +687,31 @@ func signAWSRequest(
 	}
 
 	// Set required headers before signing (only if not already set)
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
+	if jsonDefaults {
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/json")
+		}
 	}
 
 	// Calculate SHA256 hash of the request body
 	var bodyHash string
-	if req.Body != nil {
+	if req.Body != nil && req.GetBody != nil {
+		// A body that can be re-read (every request built from a byte slice) is hashed as a stream
+		// and then rewound, so signing a large upload never holds a second copy of it.
+		h := sha256.New()
+		if _, err := io.Copy(h, req.Body); err != nil {
+			return providerUtils.NewBifrostOperationError("error reading request body", err)
+		}
+		body, err := req.GetBody()
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("error rewinding request body", err)
+		}
+		req.Body = body
+		bodyHash = hex.EncodeToString(h.Sum(nil))
+	} else if req.Body != nil {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("error reading request body", err)
@@ -711,7 +742,13 @@ func signAWSRequest(
 // every header still on the request, so the volatile ones are lifted out while it signs.
 func signWithCredentials(ctx context.Context, req *http.Request, creds aws.Credentials, payloadHash, service, region string) *schemas.BifrostError {
 	restoreHeaders := stripHeadersForSigning(req.Header)
-	err := v4.NewSigner().SignHTTP(ctx, creds, req, payloadHash, service, region, time.Now())
+	// S3 rejects a path escaped a second time (an object key holding %20 would be signed as
+	// %2520), so the SDK's own S3 client turns the extra escaping off; a relay signing for s3 does
+	// the same, and every other service keeps the default.
+	signer := v4.NewSigner(func(o *v4.SignerOptions) {
+		o.DisableURIPathEscaping = service == "s3"
+	})
+	err := signer.SignHTTP(ctx, creds, req, payloadHash, service, region, time.Now())
 	for _, h := range restoreHeaders {
 		req.Header[h.name] = h.values
 	}
