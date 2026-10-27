@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/stretchr/testify/require"
 )
 
@@ -345,6 +346,36 @@ func TestTopicWindowIsReadInSlices(t *testing.T) {
 	}
 }
 
+// Read in slices, the set that keeps a request from being taken twice holds
+// one slice's requests and the probe's, not the window's: it held a hash for
+// every request read, which grew with the window. Slices are disjoint ranges
+// of time, so nothing taken in one comes back in another; the probe's range
+// lies under whichever slices cover it, read in spread order, so what it took
+// is kept for the whole read.
+func TestTopicWindowDedupeHoldsASliceNotTheWindow(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	vectors, _ := topicWindowTestStore(t, start, 600)
+	vectors.filtersOnServer = true
+	limits := topicLimits{batch: 1000, clustered: 1000, slice: 20, sliceCeiling: 30, page: 10}
+	taken, largest := map[string]int{}, 0
+	reader := &topicWindowReader{
+		ctx: vectorstore.WithIncludeVectors(context.Background()), store: vectors, namespace: schemas.WarpDefaultLogVectorStoreNamespace,
+		limits: limits, from: start.Unix(), to: start.Add(600 * time.Minute).Unix(), seen: map[uint64]struct{}{},
+	}
+	reader.take = func(entry topicVector) error {
+		taken[entry.logID]++
+		largest = max(largest, len(reader.seen))
+		return nil
+	}
+	require.NoError(t, reader.readSlices())
+	require.Len(t, taken, 600)
+	for id, times := range taken {
+		require.Equal(t, 1, times, "%s is taken once", id)
+	}
+	require.LessOrEqual(t, len(reader.probed), limits.sliceCeiling, "the probe stops at the slice ceiling")
+	require.Less(t, largest, 100, "the set holds a slice's requests, not the 600 read")
+}
+
 // A burst that lands in one second cannot be split into smaller slices, so it
 // is paged to the end rather than stopped at the slice ceiling: stopping there
 // dropped everything past it with no word that the window was cut short.
@@ -441,14 +472,41 @@ func TestWarpTopicsJobReportsClusteredAndAssigned(t *testing.T) {
 	}
 }
 
-// One run takes in a bounded number of requests. A window that holds more is
-// not read to the end: the run stops at the bound, says that it did, and what
-// it clustered is drawn from across the window rather than from its start.
+// A deployment's run reads the whole window: 20,000 requests are clustered
+// and every one after is filed under its nearest topic as it is read, so
+// nothing it keeps grows with the window. A run given a read limit stops at
+// it, says that it did, and what it read is drawn from across the window
+// rather than from its start.
 func TestWarpTopicsJobStopsAtItsReadLimit(t *testing.T) {
-	require.Equal(t, 20000, defaultTopicLimits().read, "the bound a deployment runs with")
-	require.Equal(t, defaultTopicLimits().read, defaultTopicLimits().clustered, "within it, everything read is clustered")
+	require.Zero(t, defaultTopicLimits().read, "a deployment's run reads the whole window")
+	require.Equal(t, 20000, defaultTopicLimits().clustered, "the bound on what is clustered, and so on vectors held")
 
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	t.Run("with no read limit, the whole window is read and the rest assigned", func(t *testing.T) {
+		vectors, logs := topicWindowTestStore(t, start, 400)
+		service := NewService(nil,
+			WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
+			WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
+		)
+		defer service.Shutdown()
+		service.topicLimits = topicLimits{batch: 150, clustered: 150, slice: 40, sliceCeiling: 60, page: 20}
+		metaJSON, err := service.BuildTopicsJobMeta(context.Background(), start, start.Add(24*time.Hour))
+		require.NoError(t, err)
+		finalJSON, err := service.RunTopicsJob(context.Background(), tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(string) error { return nil })
+		require.NoError(t, err)
+		var final BackfillJobMeta
+		require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+		require.Equal(t, 400, final.Scanned)
+		require.Equal(t, 150, final.Clustered)
+		require.Positive(t, final.Assigned, "requests past the clustered ones are filed under a topic")
+		inTopics := 0
+		for _, topic := range final.Topics {
+			inTopics += topic.Size
+		}
+		require.Equal(t, final.Scanned, inTopics+final.Unassigned, "every request read is in a topic or counted as in none")
+		require.False(t, final.Capped)
+		require.NotContains(t, final.Message, "Stopped at the limit")
+	})
 	for name, filtersOnServer := range map[string]bool{"a store that filters": true, "a store that does not": false} {
 		t.Run(name, func(t *testing.T) {
 			vectors, logs := topicWindowTestStore(t, start, 400)

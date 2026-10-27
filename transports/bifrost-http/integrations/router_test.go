@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -2161,4 +2163,366 @@ func TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity(t *testing.T) {
 	assert.Empty(t, id)
 	require.True(t, hasSeq)
 	assert.Equal(t, 0, seq)
+}
+
+// holdUntilFinalPlugin mirrors a buffering output guardrail: it pauses the stream on the
+// first chunk and only resumes it once the final chunk has been seen and evaluated.
+type holdUntilFinalPlugin struct{ paused bool }
+
+func (p *holdUntilFinalPlugin) GetName() string { return "hold-until-final" }
+func (p *holdUntilFinalPlugin) Cleanup() error  { return nil }
+func (p *holdUntilFinalPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *holdUntilFinalPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *holdUntilFinalPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if !p.paused {
+		p.paused = true
+		ctx.PauseStream()
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		ctx.ResumeStream()
+	}
+	return resp, bifrostErr, nil
+}
+
+// blockAtFinalPlugin mirrors a buffering output guardrail that rejects the response once it
+// has seen all of it: it drops the held chunks and ends the stream with an error.
+type blockAtFinalPlugin struct{ holdUntilFinalPlugin }
+
+func (p *blockAtFinalPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if !p.paused {
+		p.paused = true
+		ctx.PauseStream()
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		_ = ctx.ClearPausedStreamBuffer()
+		ctx.ResumeStream()
+		return nil, &schemas.BifrostError{StatusCode: schemas.Ptr(446), Error: &schemas.ErrorField{Message: "blocked by guardrail"}}, nil
+	}
+	return resp, bifrostErr, nil
+}
+
+type heldStreamResult struct {
+	committedAfter time.Duration
+	status         int
+	body           string
+	upstreamHits   int
+}
+
+// runHeldStream sends one streaming request through a real Bifrost whose plugin holds the
+// stream, against an Anthropic upstream that pauses for hold mid-generation.
+func runHeldStream(t *testing.T, plugin schemas.LLMPlugin, hold time.Duration, uri, body string) heldStreamResult {
+	t.Helper()
+	return runHeldStreamWith(t, plugin, hold, uri, body, func(send func(event, data string)) {
+		send("message_start", heldMessageStart)
+		send("content_block_start", heldTextBlockStart)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+		time.Sleep(hold)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
+		send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+		send("message_stop", `{"type":"message_stop"}`)
+	})
+}
+
+const (
+	heldMessageStart   = `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":5,"output_tokens":1}}}`
+	heldTextBlockStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
+)
+
+// runHeldStreamWith is runHeldStream with the upstream's SSE events scripted by events.
+func runHeldStreamWith(t *testing.T, plugin schemas.LLMPlugin, hold time.Duration, uri, body string, events func(send func(event, data string))) heldStreamResult {
+	t.Helper()
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		events(func(event, data string) {
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+			flusher.Flush()
+		})
+	}))
+	t.Cleanup(upstream.Close)
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := tracing.NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughTestAccount{baseURL: upstream.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Tracer:     tracer,
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(uri)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+
+	start := time.Now()
+	returned := make(chan struct{})
+	go func() {
+		r.Handler(&ctx)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2*hold + 5*time.Second):
+		t.Fatal("handler never returned")
+	}
+	res := heldStreamResult{committedAfter: time.Since(start), status: ctx.Response.StatusCode()}
+	if bs := ctx.Response.BodyStream(); bs != nil {
+		raw, _ := io.ReadAll(bs)
+		res.body = string(raw)
+	} else {
+		res.body = string(ctx.Response.Body())
+	}
+	res.upstreamHits = int(hits.Load())
+	return res
+}
+
+// A plugin that holds a stream (a buffering output guardrail) keeps every chunk out of the
+// provider channel until the upstream finishes. The handler must still commit the SSE response
+// and start heartbeats once the upstream has produced output; otherwise a proxy in front of
+// Bifrost (Cloudflare's 125s read timeout) sees zero bytes for the whole generation and cuts the
+// request with a 524, which Bifrost then logs as "client disconnected". Once committed, the
+// client gets heartbeats during the hold and then every held chunk in order, with no trace of
+// the internal commit marker.
+func TestAnthropicHeldStreamDeliversHeartbeatsThenContent(t *testing.T) {
+	const hold = 2500 * time.Millisecond
+	res := runHeldStream(t, &holdUntilFinalPlugin{}, hold, "/anthropic/v1/messages",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	heartbeat := strings.Index(res.body, ": heartbeat")
+	start := strings.Index(res.body, "event: message_start")
+	require.NotEqual(t, -1, heartbeat, "no heartbeat reached the client during the hold: %s", res.body)
+	require.Less(t, heartbeat, start, "heartbeats must precede the held content: %s", res.body)
+	hello := strings.Index(res.body, `"text":"Hello"`)
+	world := strings.Index(res.body, `"text":" world"`)
+	require.True(t, hello != -1 && world > hello, "held text missing or out of order: %s", res.body)
+	require.Contains(t, res.body, "event: message_stop")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// The neutral OpenAI-shaped route reaches Anthropic through the same core path and must
+// commit a held stream just as early.
+func TestOpenAIChatHeldStreamCommitsEarly(t *testing.T) {
+	const hold = 2500 * time.Millisecond
+	res := runHeldStream(t, &holdUntilFinalPlugin{}, hold, "/openai/v1/chat/completions",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	require.Contains(t, res.body, ": heartbeat")
+	require.Contains(t, res.body, `"content":"Hello"`)
+	require.Contains(t, res.body, "data: [DONE]")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// A guardrail that rejects a held stream at its end now reports it as an in-stream error on
+// the already committed response, and the upstream is not called again for it.
+func TestAnthropicHeldStreamBlockedAtEndIsInStreamError(t *testing.T) {
+	const hold = 1500 * time.Millisecond
+	res := runHeldStream(t, &blockAtFinalPlugin{}, hold, "/anthropic/v1/messages",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	require.Contains(t, res.body, "event: error")
+	require.Contains(t, res.body, "blocked by guardrail")
+	require.NotContains(t, res.body, `"text":"Hello"`, "blocked content reached the client")
+	require.Equal(t, 1, res.upstreamHits, "a guardrail block must not re-run the upstream")
+}
+
+// When the upstream's first events carry no output (an OpenAI-family model, whose startup
+// events the retry loop withholds while it checks for a startup error), a held stream must not
+// commit on them: committing ends that check, along with any first-token deadline. It commits
+// once the first real output is held instead.
+func TestOpenAIChatHeldStreamCommitsOnOutputNotStartupEvents(t *testing.T) {
+	const hold = 1500 * time.Millisecond
+	res := runHeldStreamWith(t, &holdUntilFinalPlugin{}, hold, "/openai/v1/chat/completions",
+		`{"model":"anthropic/gpt-4o-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		func(send func(event, data string)) {
+			send("message_start", heldMessageStart)
+			time.Sleep(hold) // startup only: nothing generated yet
+			send("content_block_start", heldTextBlockStart)
+			send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+			time.Sleep(hold) // a long generation still in progress
+			send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+			send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+			send("message_stop", `{"type":"message_stop"}`)
+		})
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Greater(t, res.committedAfter, hold/2,
+		"the response was committed after %s, on the startup event alone, before any output existed", res.committedAfter)
+	require.Less(t, res.committedAfter, hold+hold/2,
+		"the response was committed only after %s: the held output did not commit it", res.committedAfter)
+	require.Contains(t, res.body, `"content":"Hello"`)
+	require.Contains(t, res.body, "data: [DONE]")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// heldDeadlineAccount serves an OpenAI primary and an Anthropic fallback from two test upstreams.
+type heldDeadlineAccount struct{ primaryURL, fallbackURL string }
+
+func (a heldDeadlineAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, nil
+}
+
+func (a heldDeadlineAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: string(p) + "-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a heldDeadlineAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	switch p {
+	case schemas.OpenAI:
+		nc.BaseURL = a.primaryURL
+	case schemas.Anthropic:
+		nc.BaseURL = a.fallbackURL
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// A first-token deadline still governs a held stream. The startup check only learns that a held
+// attempt produced output through the commit marker, and the marker disarms the deadline: an
+// attempt whose first token came in time must not be cut off, or fall back, while a plugin holds
+// the rest of it past the deadline.
+func TestHeldStreamFirstTokenDeadline(t *testing.T) {
+	const deadline = time.Second
+	openAIChunk := func(w http.ResponseWriter, data string) {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		w.(http.Flusher).Flush()
+	}
+	stall := func(r *http.Request, d time.Duration) bool {
+		select {
+		case <-time.After(d):
+			return true
+		case <-r.Context().Done():
+			return false
+		}
+	}
+	cases := []struct {
+		name         string
+		primary      func(w http.ResponseWriter, r *http.Request)
+		wantContent  string
+		wantFallback int32
+	}{
+		{
+			// Output before the deadline, then a hold that outlasts it: the primary made its
+			// first token in time and must not be cut off while the plugin holds the rest.
+			name: "primary with output in time survives a long hold",
+			primary: func(w http.ResponseWriter, r *http.Request) {
+				openAIChunk(w, `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"primary"}}]}`)
+				if !stall(r, 3*deadline) {
+					return
+				}
+				openAIChunk(w, `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+				openAIChunk(w, "[DONE]")
+			},
+			wantContent:  "primary",
+			wantFallback: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var primaryHits, fallbackHits atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				primaryHits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				tc.primary(w, r)
+			}))
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fallbackHits.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				send := func(event, data string) {
+					_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+					w.(http.Flusher).Flush()
+				}
+				send("message_start", heldMessageStart)
+				send("content_block_start", heldTextBlockStart)
+				send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
+				send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+				send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+				send("message_stop", `{"type":"message_stop"}`)
+			}))
+			t.Cleanup(func() {
+				primary.CloseClientConnections()
+				fallback.CloseClientConnections()
+				primary.Close()
+				fallback.Close()
+			})
+
+			store := tracing.NewTraceStore(5*time.Minute, nil)
+			t.Cleanup(store.Stop)
+			tracer := tracing.NewTracer(store, nil, nil)
+			t.Cleanup(tracer.Stop)
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account:    heldDeadlineAccount{primaryURL: primary.URL, fallbackURL: fallback.URL},
+				LLMPlugins: []schemas.LLMPlugin{&holdUntilFinalPlugin{}},
+				Tracer:     tracer,
+				Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, deadline)
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider:  schemas.OpenAI,
+				Model:     "gpt-4o-mini",
+				Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-test"}},
+			})
+			require.Nil(t, bifrostErr, "stream failed: %+v", bifrostErr)
+
+			var content strings.Builder
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for chunk := range stream {
+					require.False(t, schemas.IsStreamCommitMarker(chunk), "the commit marker leaked to the caller")
+					if chunk.BifrostError != nil {
+						t.Errorf("stream error: %+v", chunk.BifrostError.Error)
+						continue
+					}
+					if r := chunk.BifrostChatResponse; r != nil {
+						for _, c := range r.Choices {
+							if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil && c.ChatStreamResponseChoice.Delta.Content != nil {
+								content.WriteString(*c.ChatStreamResponseChoice.Delta.Content)
+							}
+						}
+					}
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(8 * time.Second):
+				t.Fatal("the stream never ended")
+			}
+
+			require.Equal(t, tc.wantContent, content.String())
+			require.Equal(t, int32(1), primaryHits.Load(), "a first-token miss must not retry the primary")
+			require.Equal(t, tc.wantFallback, fallbackHits.Load())
+		})
+	}
 }

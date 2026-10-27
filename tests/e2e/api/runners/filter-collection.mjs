@@ -162,6 +162,9 @@ const PROVIDER_KEYWORDS = {
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
+  // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
+  // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
+  mcp: ["mcp"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness

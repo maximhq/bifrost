@@ -1,0 +1,1 @@
+[feat]: add optional browser login to auth print-token [@CallumWayve](https://github.com/CallumWayve)

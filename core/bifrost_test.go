@@ -813,6 +813,36 @@ func BenchmarkCalculateBackoff(b *testing.B) {
 	}
 }
 
+// BenchmarkReadyHeldStreamCommit measures what the held-stream commit signal adds per stream
+// attempt, on the chunk that commits it. An ungated stream (nothing paused it) pays one context
+// lookup; only a held stream also marks the watch, which the gate then consumes.
+func BenchmarkReadyHeldStreamCommit(b *testing.B) {
+	newCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req")
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace")
+		return ctx
+	}
+	b.Run("ungated", func(b *testing.B) {
+		ctx := newCtx()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			readyHeldStreamCommit(ctx)
+		}
+	})
+	b.Run("held", func(b *testing.B) {
+		ctx := newCtx()
+		ctx.SetValue(schemas.BifrostContextKeyStreamGated, true)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			readyHeldStreamCommit(ctx)
+			ctx.ConsumeStreamCommitWatch()
+		}
+	})
+}
+
 // BenchmarkAgentContinuationChecksOnPlainRequest measures what the MCP agent-loop continuation
 // and MCP-instructions cache-placement checks add to a request that uses neither: one context
 // lookup each, expected to allocate nothing.

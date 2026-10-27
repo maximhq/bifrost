@@ -663,8 +663,29 @@ bifrost:
       #     useIdpCredentials: false                     # true = exchange as the SSO login app (ignores clientId/secret)
       #     clientId: "env.MY_EXCHANGE_CLIENT_ID"        # required unless useIdpCredentials is true (env./vault. prefix)
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
-      #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
+      #     authorizationServerUrl: ""                   # optional — override exchange endpoint: an issuer, or a full .../token URL used as is
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      #
+      # - name: "example-cross-app-access-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://mcp.linear.app/mcp"
+      #   # Cross App Access (Okta XAA, Enterprise builds only): Bifrost exchanges the user's SSO session for an
+      #   # ID-JAG addressed to the upstream authorization server, which redeems it for the user's own token.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     profile: "id_jag"
+      #     audience: "https://mcp.linear.app"            # upstream authorization server issuer
+      #     scopes: ["read"]
+      #     resourceClientId: "env.LINEAR_XAA_CLIENT_ID"  # required: Bifrost's client at the upstream authorization server
+      #     resourceClientSecret: "env.LINEAR_XAA_CLIENT_SECRET"  # omit for a public client or with resourcePrivateKey
+      #     # resourcePrivateKey: "env.LINEAR_XAA_PRIVATE_KEY"    # private_key_jwt instead of a secret (PEM RSA or EC)
+      #     # resourceKeyId: ""                                   # kid of the client assertion
+      #     # resourceSigningAlgorithm: "RS256"                   # ES256/384/512 for an EC key
+      #     # resourceAssertionAudience: ""                       # default the upstream token endpoint
+      #     # resourceClientAuthMethod: ""                        # client_secret_basic or client_secret_post; default follows discovery
+      #     resourceTokenEndpoint: ""                     # optional; discovered from the audience's metadata when empty
+      #     resource: ""                                  # optional; only if the IdP connection defines a resource indicator
       # - name: "example-per-user-headers-mcp"
       #   connectionType: "http"
       #   httpConfig:
@@ -1719,8 +1740,8 @@ bifrost:
     # archiveGracePeriod: "15m"     # Delay before a window closes, to absorb clock skew (< archiveInterval)
     # archiveMaxObjectBytes: 134217728  # Roll a new part at this many uncompressed bytes (128MiB; ~2x peak mem when compress: true)
     # objectStorage:
-    #   type: s3        # Options: s3, gcs
-    #   bucket: ""      # Bucket name
+    #   type: s3        # Options: s3, gcs, azure
+    #   bucket: ""      # Bucket name, or Azure Blob container name
     #   prefix: bifrost # Base key path (audit-logs/ is appended under it)
     #   compress: false # Enable gzip compression for stored objects
     #
@@ -1736,6 +1757,11 @@ bifrost:
     #   # GCS configuration (when type is gcs)
     #   projectId: ""
     #   credentialsJson: ""   # Service account JSON, omit for default credentials
+    #
+    #   # Azure configuration (when type is azure): choose exactly one auth mode
+    #   # endpoint: "https://mystorageaccount.blob.core.windows.net" # DefaultAzureCredential / workload identity
+    #   # connectionString: "env.AZURE_AUDIT_STORAGE_CONNECTION_STRING" # Alternative; omit endpoint
+    #   # Inject this env var using bifrost.providerSecrets or extraEnv; provider credentials are not reused
 
   # Large payload optimization - streams large payloads without full materialization
   # largePayloadOptimization:
@@ -1894,6 +1920,7 @@ storage:
     #   passwordKey: "password"
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m; unset = 5x interval, min 5m). A timeout leaves views intact but staler.
+    # matviewRefreshTempFileLimit: "10GB"  # Cap temp files per Postgres process (Postgres temp_file_limit); parallel workers each get the cap. Keep cap x (workers + 1) well under free disk. Needs superuser or GRANT SET ON PARAMETER temp_file_limit.
     # migrationMatviewCancelAfter: "60s"  # During schema migrations, cancel an in-flight matview refresh (any replica/version) after this long. Unset = 60s; "off" = wait only.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:
@@ -1923,14 +1950,16 @@ storage:
     objectStorageExcludeRequestTypes: []
 
     # Object storage for offloading large log payloads (optional)
-    # When enabled, request/response payloads are stored in S3/GCS
+    # When enabled, request/response payloads are stored in S3/GCS/Azure Blob
     # while the DB keeps only lightweight index data for fast analytics.
     objectStorage:
       enabled: false
-      # type: s3        # Options: s3, gcs
-      # bucket: ""      # Bucket name
+      # type: s3        # Options: s3, gcs, azure
+      # bucket: ""      # Bucket name, or Azure Blob container name
       # prefix: bifrost # Key prefix for stored objects
       # compress: false  # Enable gzip compression for stored objects
+      # format: json      # json or parquet (parquet supported on s3/azure)
+      # compression: gzip # json: none/gzip; parquet: none/gzip/snappy/zstd
 
       # S3 configuration (when type is s3)
       # region: us-east-1
@@ -1944,6 +1973,12 @@ storage:
       # GCS configuration (when type is gcs)
       # projectId: ""
       # credentialsJson: ""  # Service account JSON, omit for default credentials
+
+      # Azure configuration (when type is azure): choose exactly one auth mode
+      # endpoint: "https://mystorageaccount.blob.core.windows.net" # DefaultAzureCredential / workload identity
+      # connectionString: "env.AZURE_STORAGE_CONNECTION_STRING" # Alternative; omit endpoint
+      # existingSecret: "bifrost-azure-storage" # Alternative to inline connectionString; omit endpoint
+      # connectionStringKey: "connection-string" # Secret key (defaults to connection-string)
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:

@@ -178,3 +178,22 @@ func TestMCPClientConfig_OpenAPIConfigRoundTrips(t *testing.T) {
 		t.Fatalf("round trip lost data: %s", out)
 	}
 }
+
+// TestExchangesAsSSOApplication checks id_jag always exchanges as the SSO
+// application, while the direct profile follows use_idp_credentials.
+func TestExchangesAsSSOApplication(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg  *MCPTokenExchangeConfig
+		want bool
+	}{
+		"nil":                       {nil, false},
+		"direct, dedicated app":     {&MCPTokenExchangeConfig{}, false},
+		"direct, SSO app":           {&MCPTokenExchangeConfig{UseIdPCredentials: true}, true},
+		"id_jag, flag left off":     {&MCPTokenExchangeConfig{Profile: TokenExchangeProfileIDJAG}, true},
+		"id_jag, dedicated app set": {&MCPTokenExchangeConfig{Profile: TokenExchangeProfileIDJAG, ClientID: NewSecretVar("dedicated")}, true},
+	} {
+		if got := tc.cfg.ExchangesAsSSOApplication(); got != tc.want {
+			t.Errorf("%s: ExchangesAsSSOApplication() = %v, want %v", name, got, tc.want)
+		}
+	}
+}

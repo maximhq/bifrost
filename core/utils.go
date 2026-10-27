@@ -405,6 +405,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
 	// previous provider's headers would otherwise survive on the context and

@@ -328,8 +328,11 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 // Returns the response and latency, or an error if the request fails.
 //
 // The logic is:
-// 1. If deployments or allowedModels are configured, return those (no API call needed)
-// 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
+//  1. An API-key-only key with deployments or a restricted allowlist returns its configuration
+//     (no API call): Model Garden only accepts OAuth credentials.
+//  2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden). The pipeline
+//     filters the catalog through the allowlist, "*" and regex: entries included, and adds the
+//     deployments and exact entries the catalog does not return.
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	region := resolveVertexRegion(ctx, key)
 	if region == "" {
@@ -343,9 +346,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, 0)}, nil
 	}
 
-	// If deployments or allowedModels are configured, return those directly without API call
+	// An API-key-only key cannot list Model Garden, so it returns its deployments and allowlist directly.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
-	if !request.Unfiltered && (len(deployments) > 0 || allowedModels.IsRestricted()) {
+	if !request.Unfiltered && vertexKeyUsesAPIKeyOnly(key) && (len(deployments) > 0 || allowedModels.IsRestricted()) {
 		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
 	}
 

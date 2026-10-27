@@ -5,12 +5,12 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { useGetModelsQuery } from "@/lib/store/apis/providersApi";
 import type { ModelProvider } from "@/lib/types/config";
 import {
+	clefModelFromProvider,
 	decisionProviderIconKey,
 	defaultDecisionModel,
 	isDecisionProvider,
 	listsDecisionModels,
 	selfHostedModelGroups,
-	servesFixedDecisionModel,
 } from "@/lib/utils/decisionModelProviders";
 import { useEffect, useMemo } from "react";
 
@@ -73,10 +73,9 @@ interface DecisionModelSelectorProps {
 }
 
 // DecisionModelSelector follows the provider: providers whose catalogs mix in
-// chat models (OpenAI, OpenRouter, Cloudflare, Perplexity, Ollama, Azure) list only
-// the models the datasheet marks as decision models, Typesafe offers Jev
-// releases, a Cloudflare URL on a custom provider fixes its Clef model,
-// Databricks serves only ai_decide, and a
+// chat models (OpenAI, OpenRouter, Cloudflare, Perplexity, Ollama, Azure, Databricks)
+// list only the models the datasheet marks as decision models, Typesafe offers Jev
+// releases, a Cloudflare URL on a custom provider fixes its Clef model, and a
 // self-hosted provider offers the models it lists, or the known Laya, Nimble,
 // and Clef checkpoints when it lists none.
 export function DecisionModelSelector({
@@ -93,7 +92,7 @@ export function DecisionModelSelector({
 }: DecisionModelSelectorProps) {
 	const listsDecisions = listsDecisionModels(provider, providerName);
 	const servesJev = providerName === "typesafe";
-	const fixedModel = servesFixedDecisionModel(provider, providerName);
+	const fixedModel = clefModelFromProvider(provider) !== undefined;
 	const selfHosted = provider !== undefined && !servesJev && !listsDecisions && !fixedModel;
 
 	// currentData, not data: data keeps the previous provider's list while the new one loads.
@@ -145,8 +144,8 @@ export function DecisionModelSelector({
 		);
 	}
 	if (fixedModel) {
-		// Cloudflare binds the model to the provider's URL, and Databricks serves only
-		// ai_decide, so it is shown, not chosen: selecting the provider fills it in.
+		// Cloudflare binds the model to the provider's URL and rejects any other in the
+		// body, so it is shown, not chosen: selecting the provider fills it in.
 		return <Input id={inputId} data-testid={fixedModelTestId} value={value} readOnly disabled className="font-mono" />;
 	}
 	if (listedModels.length > 0) {

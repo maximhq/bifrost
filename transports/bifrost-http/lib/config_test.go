@@ -25842,3 +25842,55 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
 }
+
+// reauthRecordingStore records which MCP clients' admin exchange credentials
+// were marked needs_reauth; every other ConfigStore method is unused here.
+type reauthRecordingStore struct {
+	configstore.ConfigStore
+	marked []string
+}
+
+// MarkAdminExchangeTokenNeedsReauthByMCPClientID records the client.
+func (s *reauthRecordingStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(_ context.Context, mcpClientID, _ string) error {
+	s.marked = append(s.marked, mcpClientID)
+	return nil
+}
+
+// TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields checks a config.json
+// edit to an id_jag field re-verifies the retained admin credential, while an
+// unchanged block, direct profile (an existing deployment's) or id_jag, marks
+// nothing.
+func TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields(t *testing.T) {
+	SetLogger(&testLogger{})
+	endpoint := "https://as.example.com/token"
+	idjag := func() *schemas.MCPTokenExchangeConfig {
+		return &schemas.MCPTokenExchangeConfig{
+			Profile: schemas.TokenExchangeProfileIDJAG, Audience: "https://as.example.com", Scopes: []string{"read"},
+			Resource: "https://mcp.example.com", ResourceTokenEndpoint: &endpoint,
+			ResourceClientID: schemas.NewSecretVar("bifrost-at-upstream"), ResourceClientSecret: schemas.NewSecretVar("s3cret"),
+		}
+	}
+	direct := func() *schemas.MCPTokenExchangeConfig {
+		return &schemas.MCPTokenExchangeConfig{Audience: "api://mcp", ClientID: schemas.NewSecretVar("exchange-app"), Scopes: []string{"mcp"}}
+	}
+	moved := "https://other.example.com/token"
+	for name, tc := range map[string]struct {
+		existing, file *schemas.MCPTokenExchangeConfig
+		reauth         bool
+	}{
+		"unchanged direct block":       {existing: direct(), file: direct()},
+		"unchanged id_jag block":       {existing: idjag(), file: idjag()},
+		"direct switched to id_jag":    {existing: direct(), file: idjag(), reauth: true},
+		"resource changed":             {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.Resource = "https://x.example.com"; return c }(), reauth: true},
+		"resource token endpoint moved": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceTokenEndpoint = &moved; return c }(), reauth: true},
+		"resource client ID changed":    {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientID = schemas.NewSecretVar("other"); return c }(), reauth: true},
+		"resource secret rotated":       {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientSecret = schemas.NewSecretVar("rotated"); return c }(), reauth: true},
+		"secret switched to a key":      {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientSecret = nil; c.ResourcePrivateKey = schemas.NewSecretVar("pem"); return c }(), reauth: true},
+	} {
+		store := &reauthRecordingStore{}
+		rotateMCPTokenExchangeConfigFromFile(context.Background(), store, "client-1", "linear", tc.file, tc.existing)
+		if got := len(store.marked) == 1; got != tc.reauth {
+			t.Errorf("%s: marked needs_reauth = %v, want %v", name, got, tc.reauth)
+		}
+	}
+}
