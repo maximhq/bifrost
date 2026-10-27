@@ -650,7 +650,6 @@ func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContex
 //   - request: The MCP request containing the tool call (Chat or Responses format)
 //   - clientConn: The client connection for executing the tool
 //   - executionConfig: The MCP client configuration for execution context
-//   - toolNameMapping: Mapping of sanitized tool names to original MCP tool names for accurate logging and response metadata
 //
 // Returns:
 //   - *schemas.BifrostMCPResponse: Tool execution result (Chat or Responses format)
@@ -660,7 +659,6 @@ func (m *ToolsManager) ExecuteTool(
 	request *schemas.BifrostMCPRequest,
 	clientConn *client.Client,
 	executionConfig *schemas.MCPClientConfig,
-	toolNameMapping map[string]string,
 ) (*schemas.BifrostMCPResponse, error) {
 	// Validate request is not nil
 	if request == nil {
@@ -698,7 +696,7 @@ func (m *ToolsManager) ExecuteTool(
 	now := time.Now()
 
 	// Execute the tool in Chat format (internal execution format)
-	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +742,6 @@ func (m *ToolsManager) executeToolInternal(
 	toolCall *schemas.ChatAssistantMessageToolCall,
 	clientConn *client.Client,
 	executionConfig *schemas.MCPClientConfig,
-	toolNameMapping map[string]string,
 ) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
 
@@ -770,10 +767,9 @@ func (m *ToolsManager) executeToolInternal(
 		}
 	}
 
-	// Strip the client name prefix from tool name before calling MCP server
-	// The MCP server expects the original tool name (with hyphens), not the sanitized version
-	sanitizedToolName := stripClientPrefix(toolName, executionConfig.Name)
-	originalMCPToolName := getOriginalToolName(sanitizedToolName, toolNameMapping)
+	// Strip the client name prefix from tool name before calling MCP server. Tools are listed and
+	// resolved by their exact upstream names, so what remains is the name the server expects.
+	originalMCPToolName := stripClientPrefix(toolName, executionConfig.Name)
 
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
@@ -864,7 +860,7 @@ func (m *ToolsManager) executeToolInternal(
 			recoveryExhaustedBudget = budgetExhausted
 			if recovered {
 				// Mirrors the non-retry success path below, IsError included.
-				return createToolResponseMessage(*toolCall, retryResponse, toolName), executionConfig.Name, sanitizedToolName, nil
+				return createToolResponseMessage(*toolCall, retryResponse, toolName), executionConfig.Name, originalMCPToolName, nil
 			}
 		}
 
@@ -887,7 +883,7 @@ func (m *ToolsManager) executeToolInternal(
 		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
-	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, sanitizedToolName, nil
+	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, originalMCPToolName, nil
 }
 
 // attemptCallFailureRecovery reacts to a live tool call that failed for a

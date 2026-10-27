@@ -33,7 +33,6 @@ type recordingToolsConfigStore struct {
 type toolsUpdateCall struct {
 	clientID     string
 	tools        map[string]schemas.ChatTool
-	mapping      map[string]string
 	instructions string
 	prompts      []mcp.Prompt
 }
@@ -52,7 +51,7 @@ func (s *recordingToolsConfigStore) UpdateMCPClientDiscovery(ctx context.Context
 	if s.failErr != nil && (s.failTimes == 0 || s.attempts <= s.failTimes) {
 		return s.failErr
 	}
-	s.calls = append(s.calls, toolsUpdateCall{clientID: clientID, tools: discovery.Tools, mapping: discovery.ToolNameMapping, instructions: discovery.Instructions, prompts: discovery.Prompts})
+	s.calls = append(s.calls, toolsUpdateCall{clientID: clientID, tools: discovery.Tools, instructions: discovery.Instructions, prompts: discovery.Prompts})
 	return nil
 }
 
@@ -85,15 +84,13 @@ func TestPersistMCPClientDiscovery_WritesThroughConfigStore(t *testing.T) {
 	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: store}}
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo-server"}
 	prompts := []mcp.Prompt{mcp.NewPrompt("client-review")}
-	s.PersistMCPClientDiscovery(context.Background(), "client-1", &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping, Instructions: "Use me carefully.", Prompts: prompts})
+	s.PersistMCPClientDiscovery(context.Background(), "client-1", &schemas.MCPDiscovery{Tools: tools, Instructions: "Use me carefully.", Prompts: prompts})
 
 	require.Eventually(t, func() bool { return len(store.discoveryCalls()) == 1 }, 2*time.Second, time.Millisecond)
 	calls := store.discoveryCalls()
 	assert.Equal(t, "client-1", calls[0].clientID)
 	assert.Equal(t, tools, calls[0].tools)
-	assert.Equal(t, mapping, calls[0].mapping)
 	// The instructions must ride the same write: a per-call client holds no connection to
 	// re-read them from, so if they are dropped here they are lost across a restart.
 	assert.Equal(t, "Use me carefully.", calls[0].instructions)
@@ -106,7 +103,7 @@ func TestPersistMCPClientDiscovery_WritesThroughConfigStore(t *testing.T) {
 func TestPersistMCPClientDiscovery_NilConfigStore_NoOp(t *testing.T) {
 	s := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: nil}}
 	assert.NotPanics(t, func() {
-		s.PersistMCPClientDiscovery(context.Background(), "client-1", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}})
+		s.PersistMCPClientDiscovery(context.Background(), "client-1", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}})
 	})
 }
 

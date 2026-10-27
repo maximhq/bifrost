@@ -155,10 +155,9 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_ExtractsBearerTokenAndDispatches
 		ConnectionString: schemas.NewSecretVar(ts.URL),
 	}
 
-	tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "oauth-client-echo", "discovered tool should be present, prefixed by client name")
-	require.Equal(t, "echo", mapping["echo"])
 	require.Equal(t, 1, cred.callCount())
 
 	authVals := rec.headerValues("Authorization")
@@ -185,10 +184,9 @@ func TestPerformAdminToolDiscovery_PerUserOAuth_EmptyBearerToken_ErrorsWithoutDi
 		// ran first. Its absence here proves the guard short-circuits.
 	}
 
-	tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.Error(t, err)
 	require.Nil(t, tools)
-	require.Nil(t, mapping)
 	require.Contains(t, err.Error(), "admin credential resolved no access token")
 }
 
@@ -215,10 +213,9 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 		PerUserHeaderKeys: []string{"x-api-key", "x-tenant-id"},
 	}
 
-	tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "headers-client-echo")
-	require.Equal(t, "echo", mapping["echo"])
 	require.Equal(t, 1, cred.callCount())
 
 	apiKeyVals := rec.headerValues("X-Api-Key")
@@ -247,10 +244,9 @@ func TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError(t *testing.T
 		AuthType: schemas.MCPAuthType("something_unknown"),
 	}
 
-	tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.Error(t, err)
 	require.Nil(t, tools)
-	require.Nil(t, mapping)
 	require.True(t, strings.Contains(err.Error(), "admin tool discovery not supported for auth_type"))
 }
 
@@ -275,10 +271,9 @@ func TestPerformAdminToolDiscovery_SharedOAuth_PerCall_ExtractsBearerTokenAndDis
 		// NeedsSessionStickiness left nil: the default per-call value.
 	}
 
-	tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "shared-oauth-client-echo")
-	require.Equal(t, "echo", mapping["echo"])
 	require.Equal(t, 1, cred.callCount())
 
 	authVals := rec.headerValues("Authorization")
@@ -307,10 +302,9 @@ func TestPerformAdminToolDiscovery_SharedHeadersAndNone_PerCall_ConvertsHeadersA
 				ConnectionString: schemas.NewSecretVar(ts.URL),
 			}
 
-			tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+			tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 			require.NoError(t, err)
 			require.Contains(t, tools, "shared-headers-client-echo")
-			require.Equal(t, "echo", mapping["echo"])
 			require.Equal(t, 1, cred.callCount())
 
 			apiKeyVals := rec.headerValues("X-Api-Key")
@@ -342,7 +336,7 @@ func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispat
 		ConnectionString: schemas.NewSecretVar(ts.URL),
 	}
 
-	tools, _, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.NoError(t, err)
 	require.Contains(t, tools, "shared-none-client-echo")
 }
@@ -361,18 +355,17 @@ func TestPerformAdminToolDiscovery_CredStoreError_Propagates(t *testing.T) {
 		AuthType: schemas.MCPAuthTypePerUserOauth,
 	}
 
-	tools, mapping, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
+	tools, _, err := discoveryParts(m.performAdminToolDiscovery(context.Background(), config, 0))
 	require.Error(t, err)
 	require.Nil(t, tools)
-	require.Nil(t, mapping)
 	require.True(t, errors.Is(err, credErr), "expected the credStore error to be wrapped (%%w), got: %v", err)
 	require.Contains(t, err.Error(), "failed to resolve admin credential")
 }
 
 // discoveryParts unpacks a discovery result for assertions, nil-safe on error.
-func discoveryParts(discovery *schemas.MCPDiscovery, err error) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func discoveryParts(discovery *schemas.MCPDiscovery, err error) (map[string]schemas.ChatTool, string, error) {
 	if discovery == nil {
-		return nil, nil, "", err
+		return nil, "", err
 	}
-	return discovery.Tools, discovery.ToolNameMapping, discovery.Instructions, err
+	return discovery.Tools, discovery.Instructions, err
 }

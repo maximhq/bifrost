@@ -34,7 +34,6 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 		ExecutionConfig: config,
 		Conn:            nil, // every test here exercises the conn==nil branch
 		ToolMap:         tools,
-		ToolNameMapping: map[string]string{},
 	}
 	return state, config
 }

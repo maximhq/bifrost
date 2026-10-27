@@ -462,13 +462,13 @@ func drainMCPPluginLogs(ctx *schemas.BifrostContext) {
 // runListToolsWithHooks wraps retrieveExternalToolsDetailed in the MCP plugin gate.
 // All four list_tools call sites (connect / oauth-verify / sync / health-check fallback)
 // go through this helper so plugins see one consistent hook. The PostHook may mutate
-// the Tools / ToolNameMapping fields on the response — the caller receives the mutated
-// values via the returned maps.
+// the Tools field on the response, and the caller receives the mutated value via the
+// returned map.
 //
 // A PreHook short-circuit with Response is treated as a synthetic tool list (used as-is).
 // A PreHook short-circuit with Error returns the error; the caller decides whether to
 // keep existing state.
-func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Client, clientName string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Client, clientName string) (map[string]schemas.ChatTool, error) {
 	req := &schemas.BifrostMCPRequest{
 		RequestType:                schemas.MCPRequestTypeListTools,
 		ClientName:                 clientName,
@@ -488,10 +488,9 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 		}
 		return &schemas.BifrostMCPResponse{
 			BifrostMCPListToolsResponse: &schemas.BifrostMCPListToolsResponse{
-				Tools:           detailed.tools,
-				ToolNameMapping: detailed.toolNameMapping,
-				RawToolCount:    detailed.rawCount,
-				SkippedTools:    detailed.skipped,
+				Tools:        detailed.tools,
+				RawToolCount: detailed.rawCount,
+				SkippedTools: detailed.skipped,
 			},
 			ExtraFields: schemas.BifrostMCPResponseExtraFields{
 				Latency: time.Since(start).Milliseconds(),
@@ -500,14 +499,14 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 	})
 
 	if bErr != nil {
-		return nil, nil, fmt.Errorf("failed to list tools: %s", bErr.GetErrorString())
+		return nil, fmt.Errorf("failed to list tools: %s", bErr.GetErrorString())
 	}
 	if resp == nil || resp.BifrostMCPListToolsResponse == nil {
 		// Defensive: response somehow lost its list_tools payload (e.g. PostHook nilled it).
-		// Surface empty maps rather than nil to mirror the underlying list_tools contract.
-		return make(map[string]schemas.ChatTool), make(map[string]string), nil
+		// Surface an empty map rather than nil to mirror the underlying list_tools contract.
+		return make(map[string]schemas.ChatTool), nil
 	}
-	return resp.Tools, resp.ToolNameMapping, nil
+	return resp.Tools, nil
 }
 
 // runPingWithHooks wraps conn.Ping in the MCP plugin gate. A PreHook may short-circuit

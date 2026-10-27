@@ -382,7 +382,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 			// "needs re-authorization" / "disconnected" reason instead of a
 			// generic "not available").
 			assert.NotEmpty(t, after.ToolMap, "a failed re-dial must keep the last-known tool map")
-			assert.NotEmpty(t, after.ToolNameMapping)
 
 			// Reachability of the captured connection, which is the whole
 			// point of the split above.
@@ -417,7 +416,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 				assert.Nil(t, afterSecondFailure.Conn)
 			}
 			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial must keep the original last-known tool map")
-			assert.Equal(t, before.ToolNameMapping, afterSecondFailure.ToolNameMapping)
 		})
 	}
 }

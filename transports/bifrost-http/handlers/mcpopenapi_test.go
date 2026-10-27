@@ -79,7 +79,7 @@ func (m *openAPIRecordingManager) VerifyHeadersConnection(_ context.Context, c *
 	if c.ConnectionString == nil || c.ConnectionString.GetValue() == "" {
 		return nil, errors.New("connection URL is required for per-user headers verification")
 	}
-	return &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}, nil
+	return &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}, nil
 }
 
 func newOpenAPITestHandler(t *testing.T) (*MCPHandler, *openAPIRecordingManager) {

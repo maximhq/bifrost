@@ -632,7 +632,6 @@ func (m *MCPManager) writeBackDiscovery(clientID string, connGeneration uint64, 
 		return false
 	}
 	clientState.ToolMap = discovery.Tools
-	clientState.ToolNameMapping = discovery.ToolNameMapping
 	if instructionsKnown {
 		clientState.ServerInstructions = discovery.Instructions
 	}
@@ -824,11 +823,11 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 		bfCtx := schemas.NewBifrostContext(attemptCtx, schemas.NoDeadline)
 		bfCtx.SetValue(schemas.BifrostContextKeyMCPHealthCheckRequest, true)
 
-		tools, mapping, err := m.runListToolsWithHooks(bfCtx, conn, config.Name)
+		tools, err := m.runListToolsWithHooks(bfCtx, conn, config.Name)
 		if err != nil {
 			return 0, fmt.Errorf("failed to list tools for MCP client %s: %w", config.Name, err)
 		}
-		discovery := &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping}
+		discovery := &schemas.MCPDiscovery{Tools: tools}
 		m.listResourcesAndPrompts(bfCtx, ConnectionCheckTimeout, conn, config.Name, conn.GetServerCapabilities(), discovery, m.installedDiscoveryByID(clientID))
 		if !m.writeBackDiscovery(clientID, connGeneration, discovery, false) {
 			// Dropped as stale: a reconnect swapped the connection while this
@@ -927,7 +926,6 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			ExecutionConfig: config,
 			State:           schemas.MCPConnectionStateDisabled,
 			ToolMap:         make(map[string]schemas.ChatTool),
-			ToolNameMapping: make(map[string]string),
 			ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 		}
 		// Persisted tools for per-user auth types survive restarts in ExecutionConfig.
@@ -936,7 +934,6 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 				_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
 				clientState.ToolMap[toolName] = tool
 			}
-			clientState.ToolNameMapping = config.DiscoveredToolNameMapping
 			clientState.Resources, clientState.ResourceTemplates, clientState.Prompts = config.DiscoveredResources, config.DiscoveredResourceTemplates, config.DiscoveredPrompts
 			if config.ConnectionString != nil {
 				url := config.ConnectionString.GetValue()
@@ -954,7 +951,6 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		Name:            config.Name,
 		ExecutionConfig: config,
 		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
 		ConnectionInfo: &schemas.MCPClientConnectionInfo{
 			Type: config.ConnectionType,
 		},
@@ -1071,7 +1067,6 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 					_ = tool.EnsureSerialized() // cache serialized JSON at the source (see precomputeToolSerialization)
 					client.ToolMap[toolName] = tool
 				}
-				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				markClientHealthy(client)
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, config.AuthType, config.Name, len(config.DiscoveredTools))
 			} else {
@@ -1154,7 +1149,6 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 //
 // Returns:
 //   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
-//   - map[string]string: tool name mapping (sanitized → original MCP name)
 //   - error: any error during verification
 func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error) {
 	return m.verifyPerUserOAuthConnection(ctx, config, accessToken, 0)
@@ -1296,12 +1290,12 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 
 	// Discover tools through the list_tools plugin gate. PostHook may filter or augment
 	// the discovered set.
-	tools, toolNameMapping, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
+	tools, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
 
-	discovery := &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: toolNameMapping, Instructions: serverInstructions}
+	discovery := &schemas.MCPDiscovery{Tools: tools, Instructions: serverInstructions}
 	// Without tools, tools/list never reached the server; its resources and prompts lists did.
 	caps := tempClient.GetServerCapabilities()
 	if err := m.listResourcesAndPrompts(verifyCtx, eachList, tempClient, config.Name, caps, discovery, m.installedDiscoveryByID(config.ID)); err != nil && caps.Tools == nil {
@@ -1338,7 +1332,6 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 //
 // Returns:
 //   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
-//   - map[string]string: tool name mapping (sanitized → original MCP name)
 //   - error: any error during verification
 func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error) {
 	return m.verifyHeadersConnection(ctx, config, userHeaders, 0)
@@ -1481,12 +1474,12 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 		return nil, fmt.Errorf("headers verification was short-circuited by plugin; cannot discover tools without a live connection")
 	}
 
-	tools, toolNameMapping, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
+	tools, err := m.runListToolsWithHooks(verifyCtx, tempClient, config.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover tools during verification: %w", err)
 	}
 
-	discovery := &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: toolNameMapping, Instructions: serverInstructions}
+	discovery := &schemas.MCPDiscovery{Tools: tools, Instructions: serverInstructions}
 	// Without tools, tools/list never reached the server; its resources and prompts lists did.
 	caps := tempClient.GetServerCapabilities()
 	if err := m.listResourcesAndPrompts(verifyCtx, eachList, tempClient, config.Name, caps, discovery, m.installedDiscoveryByID(config.ID)); err != nil && caps.Tools == nil {
@@ -1553,7 +1546,7 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	if discovery == nil {
 		discovery = &schemas.MCPDiscovery{}
 	}
-	tools, toolNameMapping, instructions := discovery.Tools, discovery.ToolNameMapping, discovery.Instructions
+	tools, instructions := discovery.Tools, discovery.Instructions
 	m.mu.Lock()
 	client, exists := m.clientMap[clientID]
 	if !exists {
@@ -1571,7 +1564,6 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	}
 	precomputeToolSerialization(tools)
 	client.ToolMap = tools
-	client.ToolNameMapping = toolNameMapping
 	// Only the admin's own verification moves a pending client here (the
 	// checker stays quiet for one and a refresh refuses it), and a pending
 	// client has no checker: AddClient and EnableClient start none until the
@@ -1593,7 +1585,6 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 	if client.ExecutionConfig != nil {
 		recorded := *client.ExecutionConfig
 		recorded.DiscoveredTools = maps.Clone(tools)
-		recorded.DiscoveredToolNameMapping = maps.Clone(toolNameMapping)
 		recorded.DiscoveredInstructions = instructions
 		recorded.DiscoveredResources = slices.Clone(discovery.Resources)
 		recorded.DiscoveredResourceTemplates = slices.Clone(discovery.ResourceTemplates)
@@ -1742,7 +1733,6 @@ func (m *MCPManager) DisableClient(id string) (retErr error) {
 	// restores tools immediately.
 	if !m.credStore.RequiresPerCallConnection(clientState.ExecutionConfig) {
 		clientState.ToolMap = make(map[string]schemas.ChatTool)
-		clientState.ToolNameMapping = make(map[string]string)
 	}
 	clientState.State = schemas.MCPConnectionStateDisabled
 	clientState.ExecutionConfig.Disabled = true
@@ -2154,15 +2144,13 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// refused by every path that consults the predicate. It is also what a
 		// per-call client's tools are restored from, hence the rebinding: carried
 		// forward under the old name, a rename followed by a restore would reinstall
-		// tools the rebound ToolMap below no longer has. The name mapping is keyed by
-		// the unprefixed tool name and travels with the tools it describes.
-		// The resources, templates and prompts belong to the same discovery and travel with it.
+		// tools the rebound ToolMap below no longer has. The resources, templates and
+		// prompts belong to the same discovery and travel with it.
 		discovered := updatedConfig
 		if updatedConfig.DiscoveredTools == nil {
 			discovered = client.ExecutionConfig
 		}
 		discoveredTools := discovered.DiscoveredTools
-		discoveredToolNameMapping := discovered.DiscoveredToolNameMapping
 		discoveredInstructions := discovered.DiscoveredInstructions
 
 		// openapi_config is PATCH-style: nil keeps the stored one. A changed spec,
@@ -2196,20 +2184,19 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// will continue to see consistent data.
 		newConfig = &schemas.MCPClientConfig{
 			// Immutable fields - copy from existing config
-			ID:                        client.ExecutionConfig.ID,
-			ConnectionType:            client.ExecutionConfig.ConnectionType,
-			ConnectionString:          client.ExecutionConfig.ConnectionString,
-			StdioConfig:               client.ExecutionConfig.StdioConfig,
-			AuthType:                  client.ExecutionConfig.AuthType,
-			RequirePublicTarget:       client.ExecutionConfig.RequirePublicTarget || updatedConfig.RequirePublicTarget, // can be turned on, never off
-			OauthConfigID:             oauthConfigID,
-			State:                     client.ExecutionConfig.State,
-			InProcessServer:           client.ExecutionConfig.InProcessServer,
-			ConfigHash:                client.ExecutionConfig.ConfigHash,
-			ToolPricing:               maps.Clone(client.ExecutionConfig.ToolPricing),
-			DiscoveredTools:           rebindToolsToClientName(discoveredTools, updatedConfig.Name),
-			DiscoveredToolNameMapping: maps.Clone(discoveredToolNameMapping),
-			DiscoveredInstructions:    discoveredInstructions,
+			ID:                     client.ExecutionConfig.ID,
+			ConnectionType:         client.ExecutionConfig.ConnectionType,
+			ConnectionString:       client.ExecutionConfig.ConnectionString,
+			StdioConfig:            client.ExecutionConfig.StdioConfig,
+			AuthType:               client.ExecutionConfig.AuthType,
+			RequirePublicTarget:    client.ExecutionConfig.RequirePublicTarget || updatedConfig.RequirePublicTarget, // can be turned on, never off
+			OauthConfigID:          oauthConfigID,
+			State:                  client.ExecutionConfig.State,
+			InProcessServer:        client.ExecutionConfig.InProcessServer,
+			ConfigHash:             client.ExecutionConfig.ConfigHash,
+			ToolPricing:            maps.Clone(client.ExecutionConfig.ToolPricing),
+			DiscoveredTools:        rebindToolsToClientName(discoveredTools, updatedConfig.Name),
+			DiscoveredInstructions: discoveredInstructions,
 
 			DiscoveredResources:         slices.Clone(discovered.DiscoveredResources),
 			DiscoveredResourceTemplates: slices.Clone(discovered.DiscoveredResourceTemplates),
@@ -2611,7 +2598,6 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 						restored[toolName] = tool
 					}
 					cs.ToolMap = restored
-					cs.ToolNameMapping = newConfig.DiscoveredToolNameMapping
 					cs.Resources, cs.ResourceTemplates, cs.Prompts = newConfig.DiscoveredResources, newConfig.DiscoveredResourceTemplates, newConfig.DiscoveredPrompts
 				}
 				markClientHealthy(cs)
@@ -2909,11 +2895,11 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			// success. The generation bump invalidates any late writer that
 			// captured the detached connection (tool syncer, SSE loss callback).
 			//
-			// ToolMap/ToolNameMapping are deliberately left as last-known-good,
-			// not cleared here: the success path below replaces both wholesale
+			// ToolMap is deliberately left as last-known-good,
+			// not cleared here: the success path below replaces it wholesale
 			// after discovery regardless, and failConnectAttempt relies on
-			// finding the previous maps still in place if this dial fails —
-			// clearing them here would make a second consecutive failed
+			// finding the previous map still in place if this dial fails:
+			// clearing it here would make a second consecutive failed
 			// close-first reconnect (STDIO, in-process, or no live connection)
 			// lose its last-known tools instead of just the first one.
 			existingClient.State = schemas.MCPConnectionStateUnstable
@@ -2932,7 +2918,6 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			ExecutionConfig: config,
 			State:           schemas.MCPConnectionStateUnstable,
 			ToolMap:         make(map[string]schemas.ChatTool),
-			ToolNameMapping: make(map[string]string),
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
 				Type: config.ConnectionType,
 			},
@@ -3183,7 +3168,6 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	}
 
 	tools := make(map[string]schemas.ChatTool)
-	toolNameMapping := make(map[string]string)
 	discovery := &schemas.MCPDiscovery{}
 	var listToolsErr error
 	var toolChanges *toolChangeListener // set when the upstream announces tool list changes
@@ -3207,7 +3191,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
 		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
 		defer toolRetrievalCancel()
-		t, mapping, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
+		t, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
 		if err != nil {
 			listToolsErr = err
 			// Debug, not Warn: every reconnect attempt during an outage lands
@@ -3216,7 +3200,6 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			m.logger.Debug("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
 		} else {
 			tools = t
-			toolNameMapping = mapping
 			m.mu.RLock()
 			previous := installedDiscovery(entry)
 			if entry.LastDiscoveryHash == "" {
@@ -3295,11 +3278,9 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	}
 
 	// Replace the tool set wholesale (the entry may still hold the previous
-	// connection's tools on the make-before-break path) and store the tool
-	// name mapping for execution (sanitized_name -> original_mcp_name).
+	// connection's tools on the make-before-break path).
 	precomputeToolSerialization(tools)
 	client.ToolMap = tools
-	client.ToolNameMapping = toolNameMapping
 
 	// Bump the connection generation: anything still bound to the previous
 	// connection (a tool-sync tick that snapshotted it, the old SSE
@@ -3495,7 +3476,7 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 			}
 			clientState.ConnGeneration++
 		}
-		// ToolMap/ToolNameMapping are deliberately left as last-known-good, not
+		// ToolMap is deliberately left as last-known-good, not
 		// cleared: GetClientForTool resolves by tool name against this map, and
 		// wiping it here made a dead connection indistinguishable from a tool
 		// that never existed ("not available or not permitted" instead of
@@ -4068,8 +4049,7 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 			Name:           BifrostMCPClientKey, // Use same value as ID for consistent prefixing
 			ToolsToExecute: []string{"*"},       // Allow all tools for internal client
 		},
-		ToolMap:         make(map[string]schemas.ChatTool),
-		ToolNameMapping: make(map[string]string),
+		ToolMap: make(map[string]schemas.ChatTool),
 		ConnectionInfo: &schemas.MCPClientConnectionInfo{
 			Type: schemas.MCPConnectionTypeInProcess, // Accurate: in-process (in-memory) transport
 		},

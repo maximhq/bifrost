@@ -89,7 +89,6 @@ func TestEnableClient_StillPendingVerification_KeepsThatState(t *testing.T) {
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStateDisabled,
 				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -219,13 +218,12 @@ func TestAwaitsAdminVerification_NilIsTheDiscriminator(t *testing.T) {
 // awaitsAdminVerification reads for these auth types.
 func newVerifiedClientConfig(id string, authType schemas.MCPAuthType, discovered map[string]schemas.ChatTool) *schemas.MCPClientConfig {
 	config := &schemas.MCPClientConfig{
-		ID:                        id,
-		Name:                      "verified" + id,
-		AuthType:                  authType,
-		ConnectionType:            schemas.MCPConnectionTypeHTTP,
-		ConnectionString:          schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
-		DiscoveredTools:           discovered,
-		DiscoveredToolNameMapping: map[string]string{},
+		ID:               id,
+		Name:             "verified" + id,
+		AuthType:         authType,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+		DiscoveredTools:  discovered,
 	}
 	if authType == schemas.MCPAuthTypeTokenExchange {
 		config.TokenExchange = &schemas.MCPTokenExchangeConfig{
@@ -291,7 +289,6 @@ func TestUpdateClient_VerifiedClientStaysVerified(t *testing.T) {
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStateHealthy,
 				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -301,7 +298,6 @@ func TestUpdateClient_VerifiedClientStaysVerified(t *testing.T) {
 			// editable fields, and no DiscoveredTools.
 			edit := *config
 			edit.DiscoveredTools = nil
-			edit.DiscoveredToolNameMapping = nil
 			edit.ToolExecutionTimeout = 45 * time.Second
 			require.NoError(t, m.UpdateClient(config.ID, &edit))
 
@@ -311,7 +307,6 @@ func TestUpdateClient_VerifiedClientStaysVerified(t *testing.T) {
 			assert.Equal(t, 45*time.Second, updated.ToolExecutionTimeout, "fixture check: the edit itself applied")
 			require.NotNil(t, updated.DiscoveredTools, "an edit must not discard the record that verification ran")
 			assert.Equal(t, tc.discovered, updated.DiscoveredTools)
-			assert.NotNil(t, updated.DiscoveredToolNameMapping)
 			assert.False(t, awaitsAdminVerification(updated), "an edited client is still a verified client")
 
 			// The symptom on this path: disable it, enable it, and it must come
@@ -343,21 +338,18 @@ func TestUpdateClient_ReverifiedToolsReplaceTheOldOnes(t *testing.T) {
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
 		ToolMap:         map[string]schemas.ChatTool{},
-		ToolNameMapping: map[string]string{},
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
 
 	edit := *config
 	edit.DiscoveredTools = map[string]schemas.ChatTool{"verifiedclient-new": {}}
-	edit.DiscoveredToolNameMapping = map[string]string{"new": "new"}
 	require.NoError(t, m.UpdateClient(config.ID, &edit))
 
 	m.mu.RLock()
 	updated := m.clientMap[config.ID].ExecutionConfig
 	m.mu.RUnlock()
 	assert.Equal(t, map[string]schemas.ChatTool{"verifiedclient-new": {}}, updated.DiscoveredTools)
-	assert.Equal(t, map[string]string{"new": "new"}, updated.DiscoveredToolNameMapping)
 }
 
 // TestUpdateClient_RenameRebindsTheVerifiedTools pins the second job
@@ -380,7 +372,6 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
 		ToolMap:         map[string]schemas.ChatTool{"verifiedclient-lookup": lookup},
-		ToolNameMapping: map[string]string{},
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
@@ -388,7 +379,6 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 	edit := *config
 	edit.Name = "renamedclient"
 	edit.DiscoveredTools = nil
-	edit.DiscoveredToolNameMapping = nil
 	require.NoError(t, m.UpdateClient(config.ID, &edit))
 
 	m.mu.RLock()
@@ -464,7 +454,6 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 			defer m.checkerManager.StopAll()
 
 			config := newVerifiedClientConfig("client", tc.authType, nil)
-			config.DiscoveredToolNameMapping = nil
 			require.True(t, awaitsAdminVerification(config), "fixture check: the client starts out awaiting its admin")
 			m.mu.Lock()
 			m.clientMap[config.ID] = &schemas.MCPClientState{
@@ -472,13 +461,12 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
 				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
 
 			// What the verify handlers do once the admin's credential checks out.
-			m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tc.tools, ToolNameMapping: map[string]string{"lookup": "lookup"}})
+			m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tc.tools})
 
 			m.mu.RLock()
 			recorded := m.clientMap[config.ID].ExecutionConfig
@@ -487,7 +475,6 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 			require.Equal(t, schemas.MCPConnectionStateHealthy, state, "fixture check: verification marks the client healthy")
 			require.NotNil(t, recorded.DiscoveredTools, "a verification that just ran must be on the config the predicate reads")
 			assert.Equal(t, tc.wantNames, slices.AppendSeq([]string{}, maps.Keys(recorded.DiscoveredTools)))
-			assert.Equal(t, map[string]string{"lookup": "lookup"}, recorded.DiscoveredToolNameMapping)
 			assert.False(t, awaitsAdminVerification(recorded), "a client verified in this process is verified in this process")
 
 			// Recorded by swapping the config, never by writing into it: readers
@@ -547,7 +534,6 @@ func TestSetClientDiscovery_VerifyingAPendingClientStartsItsChecker(t *testing.T
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
 				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -561,7 +547,7 @@ func TestSetClientDiscovery_VerifyingAPendingClientStartsItsChecker(t *testing.T
 			verified.PendingOAuthConfig = nil
 			verified.DiscoveredTools = tools
 			require.NoError(t, m.UpdateClient(config.ID, &verified))
-			m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: map[string]string{"lookup": "lookup"}})
+			m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools})
 
 			checker := registeredChecker(m, config.ID)
 			require.NotNil(t, checker, "a verified client must get a checker, or its tools never sync again")
@@ -588,14 +574,13 @@ func TestSetClientDiscovery_VerifiedClientKeepsItsChecker(t *testing.T) {
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
 		ToolMap:         map[string]schemas.ChatTool{},
-		ToolNameMapping: map[string]string{},
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
 	running := NewClientConnectionChecker(m, config.ID, time.Hour, true, m.logger)
 	m.checkerManager.StartChecking(running)
 
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"verifiedclient-lookup": {}}, ToolNameMapping: map[string]string{"lookup": "lookup"}})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"verifiedclient-lookup": {}}})
 
 	assert.Same(t, running, registeredChecker(m, config.ID))
 	assert.True(t, checkerRunning(running))
