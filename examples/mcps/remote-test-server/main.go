@@ -139,6 +139,11 @@ func newMCPServer(instructions string) *server.MCPServer {
 	s.AddResource(mcp.NewResource("file:///fixture/handbook.md", "handbook",
 		mcp.WithResourceDescription("Fixture handbook"), mcp.WithMIMEType("text/markdown"),
 	), handbookHandler)
+	// A comma in a URI is legal; the MCP log filters must still find a read of it.
+	s.AddResource(mcp.NewResource("file:///fixture/report,2026.md", "report", mcp.WithMIMEType("text/markdown")),
+		func(context.Context, mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{mcp.TextResourceContents{URI: "file:///fixture/report,2026.md", MIMEType: "text/markdown", Text: "# Report"}}, nil
+		})
 	s.AddResourceTemplate(mcp.NewResourceTemplate("fixture://notes/{id}", "note"), noteHandler)
 	s.AddPrompt(mcp.NewPrompt("review",
 		mcp.WithPromptDescription("Review a change"),

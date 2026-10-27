@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -212,4 +213,46 @@ func BenchmarkToResponsesRequest_ToolResult(b *testing.B) {
 			}
 		})
 	}
+}
+
+// Logged prompt and resource reads name their media instead of carrying its base64, without
+// touching the result served to the caller.
+func TestPromptAndResourceForLog(t *testing.T) {
+	data := strings.Repeat("A", 4096)
+	resource := &mcp.ReadResourceResult{Contents: []mcp.ResourceContents{
+		mcp.TextResourceContents{URI: "file:///a.md", Text: "# A"},
+		mcp.BlobResourceContents{URI: "file:///a.png", MIMEType: "image/png", Blob: data},
+	}}
+	logged := ResourceContentsForLog(resource)
+	require.Len(t, logged, 2)
+	assert.Equal(t, "# A", logged[0].(mcp.TextResourceContents).Text)
+	assert.Equal(t, "[image/png, 3 KB returned by the tool, not shown]", logged[1].(mcp.BlobResourceContents).Blob)
+	assert.Equal(t, data, resource.Contents[1].(mcp.BlobResourceContents).Blob, "the served result is untouched")
+
+	prompt := &mcp.GetPromptResult{Messages: []mcp.PromptMessage{
+		mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("look")),
+		mcp.NewPromptMessage(mcp.RoleUser, mcp.NewImageContent(data, "image/png")),
+	}}
+	loggedPrompt := PromptForLog(prompt)
+	assert.Equal(t, "look", loggedPrompt.Messages[0].Content.(mcp.TextContent).Text)
+	assert.Equal(t, "[image/png, 3 KB returned by the tool, not shown]", loggedPrompt.Messages[1].Content.(mcp.ImageContent).Data)
+	assert.Equal(t, data, prompt.Messages[1].Content.(mcp.ImageContent).Data, "the served result is untouched")
+
+	// In-process servers can return pointer content; off-spec servers can nest media in tool_result.
+	image := mcp.NewImageContent(data, "image/png")
+	nested := mcp.NewToolResultContent("call-1", []mcp.Content{mcp.NewTextContent("ok"), mcp.NewAudioContent(data, "audio/wav")}, false)
+	prompt = &mcp.GetPromptResult{Messages: []mcp.PromptMessage{
+		{Role: mcp.RoleUser, Content: &image},
+		{Role: mcp.RoleUser, Content: nested},
+	}}
+	loggedPrompt = PromptForLog(prompt)
+	require.IsType(t, mcp.ImageContent{}, loggedPrompt.Messages[0].Content, "pointer content is logged as a redacted copy")
+	assert.Equal(t, "[image/png, 3 KB returned by the tool, not shown]", loggedPrompt.Messages[0].Content.(mcp.ImageContent).Data)
+	loggedNested := loggedPrompt.Messages[1].Content.(mcp.ToolResultContent).Content
+	assert.Equal(t, "ok", loggedNested[0].(mcp.TextContent).Text)
+	assert.Equal(t, "[audio/wav, 3 KB returned by the tool, not shown]", loggedNested[1].(mcp.AudioContent).Data)
+	assert.Equal(t, data, image.Data, "the served result is untouched")
+	assert.Equal(t, data, nested.Content[1].(mcp.AudioContent).Data, "the served result is untouched")
+	assert.Nil(t, PromptForLog(nil))
+	assert.Nil(t, ResourceContentsForLog(nil))
 }

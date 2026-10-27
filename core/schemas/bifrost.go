@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -1300,6 +1301,12 @@ func (t MCPRequestType) IsExecuteTool() bool {
 	return false
 }
 
+// IsPromptOrResourceRead reports whether this is a prompts/get or resources/read, which plugins log
+// and govern per call like a tool execution.
+func (t MCPRequestType) IsPromptOrResourceRead() bool {
+	return t == MCPRequestTypeGetPrompt || t == MCPRequestTypeReadResource
+}
+
 // OTelMethodName returns the OTel semconv mcp.method.name for this request type
 // (tools/call, tools/list, ping). Unknown types fall back to the raw string.
 func (t MCPRequestType) OTelMethodName() string {
@@ -1430,6 +1437,17 @@ func (r *BifrostMCPRequest) GetToolName() string {
 		if r.ResponsesToolMessage.Name != nil {
 			return *r.ResponsesToolMessage.Name
 		}
+	}
+	return ""
+}
+
+// ReadTarget returns the prompt name, without its client prefix, or the resource URI a read targets.
+func (r *BifrostMCPRequest) ReadTarget() string {
+	switch {
+	case r.BifrostMCPGetPromptRequest != nil:
+		return strings.TrimPrefix(r.BifrostMCPGetPromptRequest.Name, r.ClientName+"-")
+	case r.BifrostMCPReadResourceRequest != nil:
+		return r.BifrostMCPReadResourceRequest.URI
 	}
 	return ""
 }
