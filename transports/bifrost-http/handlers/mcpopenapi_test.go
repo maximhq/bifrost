@@ -375,6 +375,11 @@ func TestAddMCPClient_OpenAPI_Rejections(t *testing.T) {
 		want    string
 	}{
 		{"oauth auth refused", base(func(m map[string]any) { m["auth_type"] = "oauth" }), false, fasthttp.StatusBadRequest, "not supported for connection_type 'openapi'"},
+		{"per_user_headers storing a credential for a per-user header refused", base(func(m map[string]any) {
+			m["auth_type"] = "per_user_headers"
+			m["per_user_header_keys"] = []string{"x-api-key"}
+			m["openapi_config"] = map[string]any{"spec": petstoreSpecJSON, "security_credentials": map[string]any{"ApiKeyAuth": map[string]string{"value": "k-admin"}}}
+		}), false, fasthttp.StatusBadRequest, "security_credentials.ApiKeyAuth cannot be stored"},
 		{"token exchange refused", base(func(m map[string]any) { m["auth_type"] = "token_exchange" }), false, fasthttp.StatusBadRequest, "not supported for connection_type 'openapi'"},
 		{"missing openapi_config", base(func(m map[string]any) { delete(m, "openapi_config") }), false, fasthttp.StatusBadRequest, "openapi_config is required"},
 		{"connection_string set", base(func(m map[string]any) { m["connection_string"] = "https://mcp.example.com" }), false, fasthttp.StatusBadRequest, "connection_string must not be set"},
@@ -562,6 +567,63 @@ func TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL(t *testing.T) {
 	})
 	status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(private), "", true)
 	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+}
+
+// TestAddMCPClient_OpenAPI_PerUserHeadersKeepsOtherSchemeCredentials: a
+// per_user_headers openapi client may store a credential for a scheme callers
+// do not supply, alongside its per-user headers.
+func TestAddMCPClient_OpenAPI_PerUserHeadersKeepsOtherSchemeCredentials(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body, _ := json.Marshal(map[string]any{
+		"name": "petstore_mixed", "connection_type": "openapi", "auth_type": "per_user_headers",
+		"per_user_header_keys": []string{"x-user-token"},
+		"tools_to_execute":     []string{"*"},
+		"openapi_config":       map[string]any{"spec": petstoreSpecJSON, "security_credentials": map[string]any{"ApiKeyAuth": map[string]string{"value": "k-admin"}}},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	assert.Contains(t, mgr.added[0].OpenAPIConfig.SecurityCredentials, "ApiKeyAuth")
+}
+
+// TestUpdateMCPClient_OpenAPI_PerUserHeaderCredentialConflict: an update that
+// would leave a per_user_headers openapi client storing a credential for a
+// header its callers supply is refused, whether it adds the credential or adds
+// the header to per_user_header_keys; clearing the credentials with {} is
+// accepted.
+func TestUpdateMCPClient_OpenAPI_PerUserHeaderCredentialConflict(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	create := func(name string, keys []string, creds map[string]any) *schemas.MCPClientConfig {
+		oc := map[string]any{"spec": petstoreSpecJSON}
+		if creds != nil {
+			oc["security_credentials"] = creds
+		}
+		body, _ := json.Marshal(map[string]any{
+			"name": name, "connection_type": "openapi", "auth_type": "per_user_headers",
+			"per_user_header_keys": keys, "tools_to_execute": []string{"*"}, "openapi_config": oc,
+		})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+		client := mgr.added[len(mgr.added)-1]
+		h.store.MCPConfig.ClientConfigs = append(h.store.MCPConfig.ClientConfigs, client)
+		return client
+	}
+	stored := map[string]any{"ApiKeyAuth": map[string]string{"value": "k-admin"}}
+
+	perUserAPIKey := create("petstore_per_user_key", []string{"x-api-key"}, nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"security_credentials":{"ApiKeyAuth":{"value":"k-admin"}}}}`, perUserAPIKey.ID, false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "security_credentials.ApiKeyAuth cannot be stored")
+	assert.Empty(t, mgr.updated, "a refused update does not reach the runtime")
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"security_credentials":{}}}`, perUserAPIKey.ID, false)
+	assert.Equal(t, fasthttp.StatusOK, status, respBody)
+
+	storedAPIKey := create("petstore_stored_key", []string{"x-user-token"}, stored)
+	updatedBefore := len(mgr.updated)
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_header_keys":["x-user-token","x-api-key"]}`, storedAPIKey.ID, false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "security_credentials.ApiKeyAuth cannot be stored")
+	assert.Len(t, mgr.updated, updatedBefore, "a refused update does not reach the runtime")
 }
 
 // createPerUserHeadersOpenAPIClient registers an openapi client that collects

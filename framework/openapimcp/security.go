@@ -38,7 +38,7 @@ func SelectSecurity(op Operation, doc *Document, creds map[string]schemas.MCPOpe
 				break
 			}
 			if !hasCredential(scheme, creds[name]) {
-				if header := schemeHeader(scheme); header != "" && supplied.Get(header) != "" {
+				if header := SchemeHeader(scheme); header != "" && supplied.Get(header) != "" {
 					continue
 				}
 				satisfiable = false
@@ -54,9 +54,9 @@ func SelectSecurity(op Operation, doc *Document, creds map[string]schemas.MCPOpe
 	return nil
 }
 
-// schemeHeader names the request header a scheme's credential travels in, or
+// SchemeHeader names the request header a scheme's credential travels in, or
 // "" when it is sent in the query or a cookie.
-func schemeHeader(scheme SecurityScheme) string {
+func SchemeHeader(scheme SecurityScheme) string {
 	switch {
 	case scheme.Type == "apiKey" && scheme.In == InHeader:
 		return scheme.ParamName
