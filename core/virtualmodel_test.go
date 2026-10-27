@@ -1,6 +1,8 @@
 package bifrost
 
 import (
+	"context"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"testing"
 )
@@ -188,5 +190,67 @@ func BenchmarkVirtualModelEnabledMiss(b *testing.B) {
 		if err := engine.resolveVirtualModel(ctx, req, schemas.OpenAI); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// virtualAnsweringPlugin answers requests for one provider itself, as a cache hit does.
+type virtualAnsweringPlugin struct{ answers schemas.ModelProvider }
+
+func (p *virtualAnsweringPlugin) GetName() string { return "virtual-answering" }
+func (p *virtualAnsweringPlugin) Cleanup() error  { return nil }
+func (p *virtualAnsweringPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *virtualAnsweringPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider != p.answers {
+		return req, nil, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{ID: "answered-by-plugin", Model: "flash"},
+	}}, nil
+}
+func (p *virtualAnsweringPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// A plugin's answer runs on no provider worker, and the worker is what normally records the
+// route, so an answer used to come back with no routing_info at all. For a virtual model that
+// loses the only place the name the client sent survives.
+func TestVirtualModelAnsweredByAPluginKeepsTheVirtualName(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL("ollama", 1, 1, "http://127.0.0.1:1")
+	account.SetKeysForProvider("ollama", []schemas.Key{{ID: "ollama-key", Value: *schemas.NewSecretVar("k"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{&virtualAnsweringPlugin{answers: "ollama"}},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	var resolver schemas.VirtualModelResolver = &stubVirtualResolver{
+		vm:     &schemas.VirtualModel{Name: "qwen38", Provider: "ollama", Models: []string{"flash", "27b"}},
+		target: &schemas.VirtualModelResolution{Provider: "ollama", Model: "flash"},
+	}
+	client.virtualModels.Store(&resolver)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: "ollama",
+		Model:    "qwen38",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %v", bifrostErr.Error.Message)
+	}
+	route := resp.ExtraFields.RoutingInfo
+	if route.Provider != "ollama" || route.Model != "flash" {
+		t.Fatalf("answer names %s/%s, want ollama/flash: %+v", route.Provider, route.Model, route)
+	}
+	if route.RequestedModel != "qwen38" {
+		t.Fatalf("requested_model = %q, want the virtual name the client sent", route.RequestedModel)
 	}
 }

@@ -6401,17 +6401,29 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
+		// A provider attempt records its routing info on the worker that ran it. An answer a plugin
+		// produced in place of one runs on no worker, so it is recorded here: without it the answer
+		// carries no routing_info, and requested_model - the name the client sent, which is not the
+		// model in flight for an alias or a virtual model - is lost.
+		shortCircuitRoute := schemas.RoutingInfo{Provider: provider, Model: model}
+		if preReq != nil {
+			shortCircuitRoute.Provider, shortCircuitRoute.Model, _ = preReq.GetRequestFields()
+		}
+		shortCircuitRoute.ApplyRequestRouting(ctx)
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
+			shortCircuit.Response.PopulateRoutingInfo(shortCircuitRoute)
 			// Cache hit / short-circuit: upstream 0, overhead is the whole request.
 			// Stamp before post-hooks for logging.
 			populateLatencyExtraFields(ctx, shortCircuit.Response)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateRoutingInfo(shortCircuitRoute)
 			} else if resp != nil {
 				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+				resp.PopulateRoutingInfo(shortCircuitRoute)
 			}
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
@@ -6422,11 +6434,14 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
 			shortCircuit.Error.PopulateExtraFields(req.RequestType, provider, model, model)
+			shortCircuit.Error.PopulateRoutingInfo(shortCircuitRoute)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateRoutingInfo(shortCircuitRoute)
 			} else if resp != nil {
 				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+				resp.PopulateRoutingInfo(shortCircuitRoute)
 			}
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
@@ -6708,19 +6723,23 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	bifrost.endCoreSpan(prePipeSpan)
 	if shortCircuit != nil {
 		// A stream's headers are written from the routing info a provider worker records for each
-		// attempt, and a plugin's answer runs on no worker. On a fallback the previous attempt's
-		// record would still stand and the headers would name the provider that failed, so the
-		// answered attempt is recorded here. A primary the plugin answered keeps no record, as before.
-		// Not BuildRoutingInfo: it reads the resolved key alias, which on a fallback still holds the
+		// attempt, and a plugin's answer runs on no worker, so the answered attempt is recorded here.
+		// Without it the answer carries no routing_info, and requested_model - the name the client
+		// sent, which is not the model in flight for an alias or a virtual model - is lost. Not
+		// BuildRoutingInfo: it reads the resolved key alias, which on a fallback still holds the
 		// failed attempt's, and no provider key served this answer. The target is read from preReq,
 		// since a hook that ran before the answering plugin may have moved it.
+		shortCircuitRoute := schemas.RoutingInfo{Provider: provider, Model: model}
+		if preReq != nil {
+			shortCircuitRoute.Provider, shortCircuitRoute.Model, _ = preReq.GetRequestFields()
+		}
+		shortCircuitRoute.ApplyRequestRouting(ctx)
 		if shortCircuit.Response != nil || shortCircuit.Stream != nil {
 			if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex > 0 {
-				answered := schemas.RoutingInfo{Provider: provider, Model: model}
-				if preReq != nil {
-					answered.Provider, answered.Model, _ = preReq.GetRequestFields()
-				}
-				answered.ApplyRequestRouting(ctx)
+				// On a fallback the previous attempt's record would still stand and the headers would
+				// name the provider that failed, so the answered attempt replaces it. A primary the
+				// plugin answered keeps no record, as before.
+				answered := shortCircuitRoute
 				layerFallbackIdentity(ctx, &answered)
 				ctx.SetRoutingInfoSnapshot(answered)
 			}
@@ -6728,14 +6747,17 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
 			shortCircuit.Response.PopulateExtraFields(req.RequestType, provider, model, model)
+			shortCircuit.Response.PopulateRoutingInfo(shortCircuitRoute)
 			// Cache hit / short-circuit: upstream 0, overhead is the whole request.
 			// Stamp before post-hooks for logging.
 			populateLatencyExtraFields(ctx, shortCircuit.Response)
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateRoutingInfo(shortCircuitRoute)
 			} else if resp != nil {
 				resp.PopulateExtraFields(req.RequestType, provider, model, model)
+				resp.PopulateRoutingInfo(shortCircuitRoute)
 			}
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
@@ -6756,9 +6778,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				if result != nil {
 					result.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
+					result.PopulateRoutingInfo(shortCircuitRoute)
 				}
 				if err != nil {
 					err.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
+					err.PopulateRoutingInfo(shortCircuitRoute)
 				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 				if IsFinalChunk(ctx) {
@@ -6766,9 +6790,11 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 				}
 				if bifrostErr != nil {
 					bifrostErr.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
+					bifrostErr.PopulateRoutingInfo(shortCircuitRoute)
 					return nil, bifrostErr
 				} else if resp != nil {
 					resp.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
+					resp.PopulateRoutingInfo(shortCircuitRoute)
 				}
 				return resp, nil
 			}
