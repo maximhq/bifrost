@@ -5752,6 +5752,20 @@ const LOG08 = folder("LOG-08 Agent mode over two turns", `Setup: ${AGENT_TEXT(["
   agentTeardown("LOG-08"),
 ]);
 
+const LOG10 = folder("LOG-10 Code mode inside agent mode", `Setup: ${AGENT_TEXT(["*"])}, alpha a code-mode client; the model calls executeToolCode, which calls alpha.echo twice, then answers "done".`, [
+  ...freshServer("LOG-10", "alpha", ["echo", "add", "greet"]),
+  alphaClient("LOG-10", { tools_to_auto_execute: ["*"], is_code_mode_client: true }),
+  llmScript("LOG-10", "log10", { turns: [{ tool_calls: [llmCall("c1", "executeToolCode", { code: "a = alpha.echo(text=\"log10-a\")\nb = alpha.echo(text=\"log10-b\")\nresult = [a, b]" })] }, { text: "done" }] }),
+  infPost("LOG-10", "chat", "/v1/chat/completions", chatBody("log10"), [A.status(200), chatContent("done")]),
+  mockCalls("LOG-10", "alpha", "echo", 2),
+  request("LOG-10", "two echo log entries with distinct ids", "GET", "/api/mcp-logs?tool_names=echo&content_search=log10-", { pre: pollLogCount("tool_names=echo&content_search=log10-", 2), asserts: [A.status(200), A.custom("total_count is 2 and the ids differ", [
+    "var b = pm.response.json();",
+    "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(2);",
+    "pm.expect(b.logs[0].id).to.not.equal(b.logs[1].id);",
+  ])] }),
+  agentTeardown("LOG-10"),
+]);
+
 // ================================================================ provider-injected tools on the mock LLM
 
 // A provider's injected_tools expose one MCP tool to the model under a name of the provider's choosing, and Bifrost
@@ -7441,7 +7455,7 @@ const collection = {
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };

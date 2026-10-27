@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -531,4 +532,76 @@ func TestAgent_RequestID_MixedAutoAndNonAuto(t *testing.T) {
 	idMutex.Unlock()
 
 	t.Logf("✓ Agent stopped for approval, no request ID updates needed")
+}
+
+// mcpLogIDRecorder records the MCP log id each tool execution's pre-hook sees, keyed by tool name.
+type mcpLogIDRecorder struct {
+	mu  sync.Mutex
+	ids map[string][]string
+}
+
+// GetName implements schemas.BasePlugin.
+func (r *mcpLogIDRecorder) GetName() string { return "mcpLogIDRecorder" }
+
+// Cleanup implements schemas.BasePlugin.
+func (r *mcpLogIDRecorder) Cleanup() error { return nil }
+
+// PreMCPHook records the log id on the context of every tool call.
+func (r *mcpLogIDRecorder) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	if name := req.GetToolName(); name != "" {
+		id, _ := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
+		r.mu.Lock()
+		r.ids[name] = append(r.ids[name], id)
+		r.mu.Unlock()
+	}
+	return req, nil, nil
+}
+
+// PostMCPHook implements schemas.MCPPlugin.
+func (r *mcpLogIDRecorder) PostMCPHook(_ *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestCodeMode_NestedCallsGetTheirOwnMCPLogID pins that each tool call Code Mode makes gets its own
+// MCP log id. Agent mode sets one on the context of every tool call it runs, so the logging plugin
+// writes one entry per call; nested calls inherited executeToolCode's, every one of them was keyed
+// by the same id, and the log store kept the first and dropped the rest as duplicates.
+func TestCodeMode_NestedCallsGetTheirOwnMCPLogID(t *testing.T) {
+	manager := setupMCPManager(t)
+	require.NoError(t, RegisterEchoTool(manager))
+	for _, client := range manager.GetClients() {
+		if client.ExecutionConfig.ID == mcp.BifrostMCPClientKey {
+			config := client.ExecutionConfig
+			config.IsCodeModeClient = true
+			require.NoError(t, manager.UpdateClient(config.ID, config))
+		}
+	}
+
+	recorder := &mcpLogIDRecorder{ids: map[string][]string{}}
+	bf, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    &testAccount{},
+		MCPPlugins: []schemas.MCPPlugin{recorder},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(bf.Shutdown)
+	bf.SetMCPManager(manager)
+
+	// What agent mode puts on the context of the executeToolCode call it runs.
+	ctx := createTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "agent-call-log-id")
+	toolCall := CreateExecuteToolCodeCall("call-nested", "a = bifrostInternal.echo(message=\"one\")\nb = bifrostInternal.echo(message=\"two\")\nresult = [a, b]")
+	result, bifrostErr := bf.ExecuteChatMCPTool(ctx, &toolCall)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	nested := recorder.ids["bifrostInternal-echo"]
+	require.Len(t, nested, 2, "both nested calls reach the plugins")
+	assert.NotEqual(t, nested[0], nested[1], "each nested call is logged under its own id")
+	for _, id := range nested {
+		assert.NotEmpty(t, id)
+		assert.NotEqual(t, "agent-call-log-id", id, "a nested call does not reuse the executeToolCode call's id")
+	}
 }

@@ -312,6 +312,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 	nestedCtx := schemas.NewBifrostContext(ctx, deadline)
 	nestedCtx.SetValue(schemas.BifrostContextKeyRequestID, newRequestID)
+	// Each nested call is its own log entry. Agent mode puts a log id on the context of the
+	// executeToolCode call it runs; inherited here, every nested call would be logged under that
+	// one id and all but the first entry dropped as duplicates.
+	nestedCtx.SetValue(schemas.BifrostContextKeyMCPLogID, newRequestID)
 	if originalRequestID != "" {
 		nestedCtx.SetValue(schemas.BifrostContextKeyParentMCPRequestID, originalRequestID)
 	}
