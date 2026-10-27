@@ -213,6 +213,7 @@ const (
 	CountTokensRequest             RequestType = "count_tokens"
 	CompactionRequest              RequestType = "compaction"
 	MCPToolExecutionRequest        RequestType = "mcp_tool_execution"
+	RelayRequest                   RequestType = "relay" // a call to a Relay; no provider, no model
 	PassthroughRequest             RequestType = "passthrough"
 	PassthroughStreamRequest       RequestType = "passthrough_stream"
 	UnknownRequest                 RequestType = "unknown"
