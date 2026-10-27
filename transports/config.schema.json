@@ -1450,6 +1450,13 @@
                 "items": {
                   "$ref": "#/$defs/virtual_key_agent_grant"
                 }
+              },
+              "relay_grants": {
+                "type": "array",
+                "description": "Relays this virtual key may call, one by one (empty means no relays allowed, deny-by-default)",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_relay_grant"
+                }
               }
             },
             "required": [
@@ -2324,6 +2331,13 @@
           "agent_card_url"
         ],
         "additionalProperties": false
+      }
+    },
+    "relays": {
+      "type": "array",
+      "description": "Relays reconciled into the config store at startup, before governance so virtual keys can grant them. Matching is by name with hash-based change detection; in config.json source-of-truth mode stored endpoints absent from this list are pruned.",
+      "items": {
+        "$ref": "#/$defs/relay"
       }
     },
     "mcp": {
@@ -5419,6 +5433,413 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "relay_secret": {
+      "description": "A literal value, an env.VAR_NAME reference, or a structured secret reference (vault-backed secrets are stored as references).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "plain_text",
+                "env",
+                "vault"
+              ]
+            },
+            "env_var": {
+              "type": "string"
+            },
+            "from_env": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "properties": {
+                "value": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "ref": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "anyOf": [
+                {
+                  "required": [
+                    "type"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            },
+            {
+              "properties": {
+                "env_var": {
+                  "minLength": 1
+                },
+                "from_env": {
+                  "const": true
+                }
+              },
+              "required": [
+                "env_var",
+                "from_env"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relay_auth_config": {
+      "type": "object",
+      "description": "How the endpoint's credential is presented to the upstream",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "header",
+            "query",
+            "basic",
+            "aws_sigv4",
+            "none"
+          ],
+          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; aws_sigv4: SigV4 with the endpoint's credential.aws; none: nothing injected (default bearer)"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "Header that carries the key (auth.type header)"
+        },
+        "query_param": {
+          "type": "string",
+          "description": "Query parameter that carries the key (auth.type query)"
+        },
+        "value_prefix": {
+          "type": "string",
+          "description": "Literal prefix placed before the key value (auth.type header)"
+        },
+        "aws": {
+          "type": "object",
+          "description": "SigV4 settings (auth.type aws_sigv4)",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$",
+              "description": "SigV4 signing name, e.g. textract or translate. Requests are signed for credential.aws.region"
+            }
+          },
+          "required": [
+            "service"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_usage_config": {
+      "type": "object",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read. On the endpoint, a field left empty reads nothing; on a route, an empty field inherits the endpoint's value and reads nothing only when it is still empty after that (a route cannot switch an endpoint path off by leaving it blank). Negative numbers are ignored",
+      "properties": {
+        "model_path": {
+          "type": "string",
+          "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Stored on the log row and checked against virtual-key model restrictions. Unset reads no model"
+        },
+        "model_source": {
+          "type": "string",
+          "enum": [
+            "body",
+            "query"
+          ],
+          "description": "Where model_path points: body (default), a JSON field of the request body; or query, a query parameter (Deepgram's ?model=nova-3)"
+        },
+        "input_tokens_path": {
+          "type": "string",
+          "description": "Response body path for input tokens"
+        },
+        "output_tokens_path": {
+          "type": "string",
+          "description": "Response body path for output tokens"
+        },
+        "total_tokens_path": {
+          "type": "string",
+          "description": "Response body path for total tokens"
+        },
+        "cost_path": {
+          "type": "string",
+          "description": "Response body path for an endpoint-reported USD cost; an array of numbers is summed"
+        },
+        "cost_per_request": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat USD fee added to every billable call; on a route, 0 waives the endpoint fee"
+        },
+        "units_path": {
+          "type": "string",
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes or body_chars"
+        },
+        "units_source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "request"
+          ],
+          "description": "Body the quantity is read from: the upstream response (default) or the caller's request, which is what per-character APIs bill on"
+        },
+        "units_measure": {
+          "type": "string",
+          "enum": [
+            "value",
+            "chars",
+            "body_bytes",
+            "body_chars"
+          ],
+          "description": "value: the number at units_path (default); chars: the character count of the JSON string at units_path; body_bytes: the byte length of the whole body; body_chars: the character count of the whole body, any content type (what per-character APIs such as Azure Speech bill)"
+        },
+        "cost_per_unit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
+        },
+        "units_block_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bill per started block of this many raw units: 100 for an API priced per 100 characters. Default exact"
+        },
+        "units_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Least number of billed units once a quantity was read. Default 0"
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_streaming_config": {
+      "type": "object",
+      "description": "Paths that are always relayed as streams. Otherwise a route's stream flag wins, and without one the upstream's reply decides: text/event-stream is streamed, anything else is read and priced. Nothing the caller sends selects streaming",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Rooted segment globs that always stream, e.g. /v1/stream/**",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_route_config": {
+      "type": "object",
+      "description": "Overrides for one upstream operation",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "false refuses requests matching this route with 404, even when skip_route_check is on. Defaults to true"
+        },
+        "billable": {
+          "type": "boolean",
+          "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers that must also match for this route: header name (case-insensitive) to value glob. AWS JSON APIs send every operation to POST / and name it in X-Amz-Target, so one route per operation is {\"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"} or a glob such as Textract.Get*",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "Forces the streaming or buffered relay for this route"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "relay": {
+      "type": "object",
+      "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "description": "Served at /relay/{name}; immutable"
+        },
+        "description": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Absolute http(s) upstream origin and base path every request is pinned under"
+        },
+        "auth": {
+          "$ref": "#/$defs/relay_auth_config"
+        },
+        "credential": {
+          "type": "object",
+          "description": "The one secret the endpoint signs in with: value for bearer, header, query and basic auth; aws for aws_sigv4. Omit for auth none.",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/relay_secret"
+            },
+            "aws": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "secret_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_token": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "region": {
+                  "$ref": "#/$defs/relay_secret",
+                  "description": "SigV4 signing region"
+                },
+                "role_arn": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "external_id": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_name": {
+                  "$ref": "#/$defs/relay_secret"
+                }
+              },
+              "required": [
+                "region"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "extra_headers": {
+          "type": "object",
+          "description": "Operator headers sent on every request; a caller cannot replace them",
+          "additionalProperties": {
+            "$ref": "#/$defs/relay_secret"
+          }
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Whole-response timeout for buffered calls (default 60)"
+            },
+            "stream_idle_timeout_in_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Max silence between stream chunks (default 60)"
+            },
+            "max_conns_per_host": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Default 5000"
+            },
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config",
+          "description": "Outbound proxy; omit to inherit the global proxy when it is enabled for inference"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        },
+        "streaming": {
+          "$ref": "#/$defs/relay_streaming_config"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relay_route_config"
+          },
+          "description": "Upstream operations, first match wins; only listed routes are relayed unless skip_route_check is set"
+        },
+        "skip_route_check": {
+          "type": "boolean",
+          "description": "Relay requests that match no route instead of refusing them with 404"
+        },
+        "ignore_upstream_cost": {
+          "type": "boolean",
+          "description": "Ignore cost_path values; the operator's fee and unit pricing still apply"
+        }
+      },
+      "required": [
+        "name",
+        "base_url"
+      ],
+      "additionalProperties": false
+    },
+    "virtual_key_relay_grant": {
+      "type": "object",
+      "properties": {
+        "relay_name": {
+          "type": "string",
+          "description": "Name of a relay this key may call"
+        }
+      },
+      "required": [
+        "relay_name"
+      ],
+      "additionalProperties": false
+    },
     "azure_storage_secret": {
       "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference.",
       "anyOf": [
@@ -7048,7 +7469,7 @@
     },
     "passthrough_policy": {
       "type": "object",
-      "description": "Routes the HTTP passthrough endpoints (/openai_passthrough, /anthropic_passthrough, /azure_passthrough, /genai_passthrough, /bedrock_passthrough) forward to this provider. Omit to use the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing. A custom provider is reached on its base provider's route with the x-model-provider header, once it has a policy.",
+      "description": "Routes the HTTP relays (/openai_passthrough, /anthropic_passthrough, /azure_passthrough, /genai_passthrough, /bedrock_passthrough) forward to this provider. Omit to use the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing. A custom provider is reached on its base provider's route with the x-model-provider header, once it has a policy.",
       "properties": {
         "allowed_routes": {
           "type": "array",
@@ -11982,6 +12403,13 @@
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
           "default": false
         },
+        "relay_grants": {
+          "type": "array",
+          "description": "Relays keys governed by this access profile may call, one by one",
+          "items": {
+            "$ref": "#/$defs/virtual_key_relay_grant"
+          }
+        },
         "auto_rotation_interval": {
           "type": [
             "string",
@@ -12249,6 +12677,13 @@
           "type": "boolean",
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
+        },
+        "relay_grants": {
+          "type": "array",
+          "description": "Relays requests scoped to this project may call, one by one",
+          "items": {
+            "$ref": "#/$defs/virtual_key_relay_grant"
+          }
         },
         "disable_content_logging": {
           "type": "boolean",
