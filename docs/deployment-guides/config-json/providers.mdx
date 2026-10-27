@@ -7,7 +7,7 @@ icon: "plug"
 All providers are configured under `providers` in `config.json`. Each provider entry contains a `keys` array where every key has a `name`, `value`, `models`, and `weight`, plus optional provider-specific config objects.
 
 <Note>
-In DB-backed deployments, provider entries from `config.json` are reconciled into the config store at startup. The default `source_of_truth: "split"` mode preserves UI/API edits while matching file-backed providers are unchanged. With `source_of_truth: "config.json"`, a present `providers` section is authoritative and prunes DB-only providers or keys. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+In DB-backed deployments, provider entries from `config.json` are reconciled into the config store at startup. The default `source_of_truth: "split"` mode preserves UI/API edits while matching file-backed providers are unchanged, and when a provider entry changes it overwrites only the fields the file sets ([field-level merge](/deployment-guides/config-json/source-of-truth#field-level-merge-for-providers)). With `source_of_truth: "config.json"`, a present `providers` section is authoritative and prunes DB-only providers or keys. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 **Supplying credentials:**
@@ -42,7 +42,7 @@ Every key object supports these fields:
 | `name` | string | Unique name for this key (used in logs and virtual key pin) |
 | `value` | string | API key value or `env.VAR_NAME` reference |
 | `models` | array | Models this key serves. `["*"]` = all models |
-| `weight` | float | Load balancing weight. Higher = more traffic |
+| `weight` | float | Load balancing weight. Higher = more traffic. Optional: a new key without it gets `1`, and omitting it on an existing key keeps the stored value |
 | `enabled` | boolean | Set to `false` to keep the key configured but skip it during key selection. Same as the **Enabled** toggle in the UI. New keys default to `true`; omitting it on an existing key keeps the stored value (for example a UI toggle) |
 | `aliases` | object | Map logical name → actual model name for this key |
 | `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |

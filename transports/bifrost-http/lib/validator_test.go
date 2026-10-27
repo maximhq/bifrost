@@ -513,9 +513,10 @@ func TestValidateConfigSchema_ProviderKey_MissingName(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_ProviderKey_MissingWeight verifies that a provider key may omit
+// weight: a new key defaults to 1, and in split mode an omitted weight keeps the stored one.
 func TestValidateConfigSchema_ProviderKey_MissingWeight(t *testing.T) {
-	// Missing required field: weight
-	invalidConfig := `{
+	config := `{
 		"providers": {
 			"openai": {
 				"keys": [
@@ -528,9 +529,8 @@ func TestValidateConfigSchema_ProviderKey_MissingWeight(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
-	if err == nil {
-		t.Error("expected config missing 'weight' in provider key to fail validation")
+	if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected a provider key without weight to pass validation, got error: %v", err)
 	}
 }
 

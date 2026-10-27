@@ -11,6 +11,8 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - Added Cross App Access (ID-JAG) fields to `bifrost.mcp.clientConfigs[].tokenExchange` (Enterprise): `profile`, `resource`, `resourceTokenEndpoint`, `resourceClientId`, `resourceClientSecret`, `resourcePrivateKey`, `resourceKeyId`, `resourceSigningAlgorithm`, `resourceAssertionAudience` and `resourceClientAuthMethod`. They render into `token_exchange.profile` and `token_exchange.resource_*`; the values schema requires `resourceClientId` for profile `id_jag` and refuses a secret together with a private key. `id_jag` always exchanges as the SSO application, so `useIdpCredentials`, `clientId` and `clientSecret` are not needed for it.
+- Provider keys without `weight` (`bifrost.providers.<name>.keys[].weight`) no longer render `weight: 1` into `providers.<name>.keys[]`. A new key still gets weight 1; an existing key keeps its stored weight, so a weight set in the UI survives later values changes. The config.json hash of such a key is unchanged, so upgrading does not re-sync it.
+- Provider config is merged per field on restart in split mode: when `bifrost.providers.<name>` changes, fields set in values overwrite the stored provider and its keys, and fields left out keep the stored value instead of resetting to defaults. Changing only `network_config.max_retries` no longer resets concurrency, proxy, raw-request flags, key weights or keys added in the UI. `sourceOfTruth: config.json` is unchanged.
 - Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
 - Added `bifrost.disableOnboarding` (`disable_onboarding`) to hide the management UI setup checklist for every user. It is read from config.json on every start rather than the config store, so it stays in effect on stateless or provider-less deployments.
 - Added `bifrost.governance.projects[].disable_content_logging` (`governance.projects[].disable_content_logging` in config.json), a per-project content-logging setting. Omit it to inherit the virtual key's setting (or the client's when the key has none); `true` or `false` override the virtual key for requests scoped to the project.
@@ -1009,7 +1011,9 @@ vectorStore:
 
 Configure AI provider API keys:
 
-> **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+> **Note:** `keys[].weight` is optional in Helm values. A new key without it gets `1`, and omitting it on an existing key keeps its stored value (for example a weight set in the UI).
+>
+> **Note:** On restart, a provider whose values changed is merged field by field with what is stored (default `source_of_truth: split`). Fields set in values overwrite the stored value; fields left out of values keep the stored value, including edits made in the UI. Inside `network_config` and `concurrency_and_buffer_size` this applies per sub-field. Other blocks (`proxy_config`, `custom_provider_config`, `openai_config`, `prompt_cache`, `injected_tools`, `passthrough`, each key's `*_key_config`) and maps (`extra_headers`, `beta_header_overrides`, `aliases`) are replaced whole when set. Removing a field from values does not reset it; change it in the UI, or use `bifrost.sourceOfTruth: config.json` to make values authoritative.
 >
 > **Note:** `keys[].enabled` is optional. New keys default to `true`, and omitting it on an existing key keeps its stored value (for example a UI toggle). Set it to `false` to keep a key configured but skip it during key selection (the **Enabled** toggle in the UI).
 

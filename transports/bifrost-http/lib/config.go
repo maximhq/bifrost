@@ -242,8 +242,9 @@ type ConfigData struct {
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
 	presentMCPSections        map[string]bool
-	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
-	rejectedMCPClients        map[string]bool       // file clients dropped while loading; a config.json sync keeps their stored clients
+	presentProviderFields     map[string]*providerFilePresence // keyed by the provider name as written in config.json
+	SkillsRegistry            *SkillsRegistryConfig            `json:"skills_registry,omitempty"`
+	rejectedMCPClients        map[string]bool                  // file clients dropped while loading; a config.json sync keeps their stored clients
 }
 
 // SkillsRegistryConfig defines declarative skill definitions in config.json.
@@ -630,6 +631,8 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
 	}
+	cd.presentProviderFields = parseProviderFilePresence(raw["providers"])
+	defaultOmittedKeyWeights(cd.Providers, cd.presentProviderFields)
 
 	// Parse VectorStoreConfig using its internal unmarshaler
 	if len(temp.VectorStoreConfig) > 0 {
@@ -1868,7 +1871,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		// Process provider configurations from file
 		if len(configData.Providers) > 0 {
 			for providerName, providerCfgInFile := range configData.Providers {
-				if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+				if err = processProvider(config, providerName, providerCfgInFile, configData.presentProviderFields[providerName], providersInConfigStore); err != nil {
 					logger.Warn("failed to process provider %s: %v", providerName, err)
 				}
 			}
@@ -1933,6 +1936,7 @@ func processProvider(
 	_ *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
+	presence *providerFilePresence,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
 ) error {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
@@ -1965,7 +1969,7 @@ func processProvider(
 	}
 	providerCfgInFile.ConfigHash = fileProviderConfigHash
 	// Merge with existing config using hash-based reconciliation
-	mergeProviderWithHash(provider, providerCfgInFile, providersInConfigStore)
+	mergeProviderWithHash(provider, providerCfgInFile, presence, providersInConfigStore)
 	return nil
 }
 
@@ -2009,10 +2013,17 @@ func processAuthoritativeProvider(
 	providers[provider] = providerCfgInFile
 }
 
-// mergeProviderWithHash merges provider config using hash-based reconciliation
+// mergeProviderWithHash merges provider config using hash-based reconciliation.
+//
+// When the provider's file hash changed, presence decides what the file owns: fields the
+// file sets overwrite the stored provider and fields it omits keep their stored values,
+// so a file edit to one field does not reset dashboard edits to the others. Keys then go
+// through the same per-key reconciliation as an unchanged provider. A nil presence (a
+// ConfigData not decoded from JSON) keeps the older whole-provider replacement.
 func mergeProviderWithHash(
 	provider schemas.ModelProvider,
 	providerCfgInFile configstore.ProviderConfig,
+	presence *providerFilePresence,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
 ) {
 	existingCfg, exists := providersInConfigStore[provider]
@@ -2022,21 +2033,276 @@ func mergeProviderWithHash(
 		noteConfigFileApplied("provider", string(provider))
 		return
 	}
+	var keyPresence []map[string]bool
+	if presence != nil {
+		keyPresence = presence.keys
+	}
 	// Provider exists in DB - compare hashes
 	if existingCfg.ConfigHash != providerCfgInFile.ConfigHash {
-		// Hash mismatch - config.json was changed, sync from file
-		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
+		// Hash mismatch - config.json was changed
 		noteConfigFileApplied("provider", string(provider))
-		mergedKeys := mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
-		providerCfgInFile.Keys = mergedKeys
-		providersInConfigStore[provider] = providerCfgInFile
+		if presence == nil {
+			logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
+			providerCfgInFile.Keys = mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+			providersInConfigStore[provider] = providerCfgInFile
+			return
+		}
+		logger.Debug("config hash mismatch for provider %s, merging fields set in config file", provider)
+		merged := mergeProviderFields(existingCfg, providerCfgInFile, presence)
+		merged.Keys = reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys, keyPresence)
+		merged.ConfigHash = providerCfgInFile.ConfigHash
+		providersInConfigStore[provider] = merged
 	} else {
 		// Provider hash matches - but still check individual keys
 		logger.Debug("config hash matches for provider %s, checking individual keys", provider)
-		mergedKeys := reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		mergedKeys := reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys, keyPresence)
 		existingCfg.Keys = mergedKeys
 		providersInConfigStore[provider] = existingCfg
 	}
+}
+
+// providerFilePresence records which fields a config.json provider entry sets. The typed
+// decode cannot tell an omitted field from one set to its zero value (false, 0, ""), and the
+// split-mode merge must overwrite only what the file sets.
+type providerFilePresence struct {
+	fields        map[string]bool   // top-level provider fields
+	networkConfig map[string]bool   // fields inside network_config
+	concurrency   map[string]bool   // fields inside concurrency_and_buffer_size
+	keys          []map[string]bool // fields of each entry in keys, in file order
+}
+
+// parseProviderFilePresence reads the raw providers section of config.json into per-provider
+// presence, keyed by the provider name as written in the file. A provider whose entry does not
+// decode as an object gets no entry, which falls back to whole-provider replacement.
+func parseProviderFilePresence(rawProviders json.RawMessage) map[string]*providerFilePresence {
+	if len(rawProviders) == 0 {
+		return nil
+	}
+	var providers map[string]json.RawMessage
+	if err := json.Unmarshal(rawProviders, &providers); err != nil {
+		return nil
+	}
+	out := make(map[string]*providerFilePresence, len(providers))
+	for name, rawProvider := range providers {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rawProvider, &fields); err != nil || fields == nil {
+			continue
+		}
+		presence := &providerFilePresence{
+			fields:        presentFieldNames(fields),
+			networkConfig: presentObjectFieldNames(fields["network_config"]),
+			concurrency:   presentObjectFieldNames(fields["concurrency_and_buffer_size"]),
+		}
+		var rawKeys []json.RawMessage
+		if err := json.Unmarshal(fields["keys"], &rawKeys); err == nil {
+			presence.keys = make([]map[string]bool, len(rawKeys))
+			for i, rawKey := range rawKeys {
+				presence.keys[i] = presentObjectFieldNames(rawKey)
+			}
+		}
+		out[name] = presence
+	}
+	return out
+}
+
+// presentFieldNames returns the set of field names in a decoded JSON object.
+func presentFieldNames(fields map[string]json.RawMessage) map[string]bool {
+	names := make(map[string]bool, len(fields))
+	for name := range fields {
+		names[name] = true
+	}
+	return names
+}
+
+// presentObjectFieldNames returns the field names of a raw JSON object, or an empty set when
+// raw is absent, null or not an object.
+func presentObjectFieldNames(raw json.RawMessage) map[string]bool {
+	var fields map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil {
+		return map[string]bool{}
+	}
+	return presentFieldNames(fields)
+}
+
+// defaultOmittedKeyWeights sets weight 1 on file keys that omit weight. The key hash includes
+// the weight, and the Helm chart used to write weight: 1 for such keys, so defaulting here
+// keeps their hashes stable now that the chart leaves weight out. The merge still treats the
+// weight as omitted, so an existing key keeps its stored weight.
+func defaultOmittedKeyWeights(providers map[string]configstore.ProviderConfig, presence map[string]*providerFilePresence) {
+	for name, providerCfg := range providers {
+		p := presence[name]
+		if p == nil {
+			continue
+		}
+		for i := range providerCfg.Keys {
+			if i < len(p.keys) && !p.keys[i]["weight"] {
+				providerCfg.Keys[i].Weight = 1
+			}
+		}
+	}
+}
+
+// providerConfigMergeFields copies one top-level provider field from the file config onto
+// the stored config. Blocks such as proxy_config, custom_provider_config and the passthrough
+// allow-list are replaced whole: a half-merged proxy or policy is not a coherent config.
+var providerConfigMergeFields = map[string]func(dst, src *configstore.ProviderConfig){
+	"proxy_config":               func(dst, src *configstore.ProviderConfig) { dst.ProxyConfig = src.ProxyConfig },
+	"send_back_raw_request":      func(dst, src *configstore.ProviderConfig) { dst.SendBackRawRequest = src.SendBackRawRequest },
+	"send_back_raw_response":     func(dst, src *configstore.ProviderConfig) { dst.SendBackRawResponse = src.SendBackRawResponse },
+	"store_raw_request_response": func(dst, src *configstore.ProviderConfig) { dst.StoreRawRequestResponse = src.StoreRawRequestResponse },
+	"ignore_provider_cost":       func(dst, src *configstore.ProviderConfig) { dst.IgnoreProviderCost = src.IgnoreProviderCost },
+	"custom_provider_config":     func(dst, src *configstore.ProviderConfig) { dst.CustomProviderConfig = src.CustomProviderConfig },
+	"openai_config":              func(dst, src *configstore.ProviderConfig) { dst.OpenAIConfig = src.OpenAIConfig },
+	"prompt_cache":               func(dst, src *configstore.ProviderConfig) { dst.PromptCache = src.PromptCache },
+	"injected_tools":             func(dst, src *configstore.ProviderConfig) { dst.InjectedTools = src.InjectedTools },
+	"passthrough":                func(dst, src *configstore.ProviderConfig) { dst.Passthrough = src.Passthrough },
+}
+
+// providerConfigNestedMergeFields are merged one sub-field at a time by mergeProviderFields.
+var providerConfigNestedMergeFields = map[string]bool{
+	"network_config":              true,
+	"concurrency_and_buffer_size": true,
+}
+
+// providerConfigStoreOwnedFields are never taken from the file by the field merge: keys are
+// reconciled per key, and the rest are server-managed.
+var providerConfigStoreOwnedFields = map[string]bool{
+	"keys":        true,
+	"config_hash": true,
+	"status":      true,
+	"description": true,
+}
+
+// networkConfigMergeFields copies one network_config field. Map fields (extra_headers,
+// beta_header_overrides) are replaced whole, so a header removed from the file is removed.
+var networkConfigMergeFields = map[string]func(dst, src *schemas.NetworkConfig){
+	"base_url":      func(dst, src *schemas.NetworkConfig) { dst.BaseURL = src.BaseURL },
+	"extra_headers": func(dst, src *schemas.NetworkConfig) { dst.ExtraHeaders = src.ExtraHeaders },
+	"default_request_timeout_in_seconds": func(dst, src *schemas.NetworkConfig) {
+		dst.DefaultRequestTimeoutInSeconds = src.DefaultRequestTimeoutInSeconds
+	},
+	"max_retries":                    func(dst, src *schemas.NetworkConfig) { dst.MaxRetries = src.MaxRetries },
+	"retry_backoff_initial":          func(dst, src *schemas.NetworkConfig) { dst.RetryBackoffInitial = src.RetryBackoffInitial },
+	"retry_backoff_max":              func(dst, src *schemas.NetworkConfig) { dst.RetryBackoffMax = src.RetryBackoffMax },
+	"insecure_skip_verify":           func(dst, src *schemas.NetworkConfig) { dst.InsecureSkipVerify = src.InsecureSkipVerify },
+	"ca_cert_pem":                    func(dst, src *schemas.NetworkConfig) { dst.CACertPEM = src.CACertPEM },
+	"stream_idle_timeout_in_seconds": func(dst, src *schemas.NetworkConfig) { dst.StreamIdleTimeoutInSeconds = src.StreamIdleTimeoutInSeconds },
+	"keep_alive_timeout_in_seconds":  func(dst, src *schemas.NetworkConfig) { dst.KeepAliveTimeoutInSeconds = src.KeepAliveTimeoutInSeconds },
+	"max_conns_per_host":             func(dst, src *schemas.NetworkConfig) { dst.MaxConnsPerHost = src.MaxConnsPerHost },
+	"enforce_http2":                  func(dst, src *schemas.NetworkConfig) { dst.EnforceHTTP2 = src.EnforceHTTP2 },
+	"http2_ping_interval_in_seconds": func(dst, src *schemas.NetworkConfig) { dst.HTTP2PingIntervalInSeconds = src.HTTP2PingIntervalInSeconds },
+	"beta_header_overrides":          func(dst, src *schemas.NetworkConfig) { dst.BetaHeaderOverrides = src.BetaHeaderOverrides },
+	"allow_private_network":          func(dst, src *schemas.NetworkConfig) { dst.AllowPrivateNetwork = src.AllowPrivateNetwork },
+}
+
+// concurrencyMergeFields copies one concurrency_and_buffer_size field.
+var concurrencyMergeFields = map[string]func(dst, src *schemas.ConcurrencyAndBufferSize){
+	"concurrency": func(dst, src *schemas.ConcurrencyAndBufferSize) { dst.Concurrency = src.Concurrency },
+	"buffer_size": func(dst, src *schemas.ConcurrencyAndBufferSize) { dst.BufferSize = src.BufferSize },
+}
+
+// keyMergeFields copies one key field from the file key onto the stored key. Each
+// provider-specific *_key_config block is a credential set and is replaced whole, as are
+// the aliases map and the model lists.
+var keyMergeFields = map[string]func(dst, src *schemas.Key){
+	"value":                     func(dst, src *schemas.Key) { dst.Value = src.Value },
+	"models":                    func(dst, src *schemas.Key) { dst.Models = src.Models },
+	"blacklisted_models":        func(dst, src *schemas.Key) { dst.BlacklistedModels = src.BlacklistedModels },
+	"weight":                    func(dst, src *schemas.Key) { dst.Weight = src.Weight },
+	"aliases":                   func(dst, src *schemas.Key) { dst.Aliases = src.Aliases },
+	"azure_key_config":          func(dst, src *schemas.Key) { dst.AzureKeyConfig = src.AzureKeyConfig },
+	"vertex_key_config":         func(dst, src *schemas.Key) { dst.VertexKeyConfig = src.VertexKeyConfig },
+	"bedrock_key_config":        func(dst, src *schemas.Key) { dst.BedrockKeyConfig = src.BedrockKeyConfig },
+	"bedrock_mantle_key_config": func(dst, src *schemas.Key) { dst.BedrockMantleKeyConfig = src.BedrockMantleKeyConfig },
+	"vllm_key_config":           func(dst, src *schemas.Key) { dst.VLLMKeyConfig = src.VLLMKeyConfig },
+	"replicate_key_config":      func(dst, src *schemas.Key) { dst.ReplicateKeyConfig = src.ReplicateKeyConfig },
+	"ollama_key_config":         func(dst, src *schemas.Key) { dst.OllamaKeyConfig = src.OllamaKeyConfig },
+	"sgl_key_config":            func(dst, src *schemas.Key) { dst.SGLKeyConfig = src.SGLKeyConfig },
+	"databricks_key_config":     func(dst, src *schemas.Key) { dst.DatabricksKeyConfig = src.DatabricksKeyConfig },
+	"cloudflare_key_config":     func(dst, src *schemas.Key) { dst.CloudflareKeyConfig = src.CloudflareKeyConfig },
+	"oauth_key_config":          func(dst, src *schemas.Key) { dst.OAuthKeyConfig = src.OAuthKeyConfig },
+	"enabled":                   func(dst, src *schemas.Key) { dst.Enabled = src.Enabled },
+	"use_for_batch_api":         func(dst, src *schemas.Key) { dst.UseForBatchAPI = src.UseForBatchAPI },
+	"use_anthropic_endpoints":   func(dst, src *schemas.Key) { dst.UseAnthropicEndpoints = src.UseAnthropicEndpoints },
+	"use_openai_endpoints":      func(dst, src *schemas.Key) { dst.UseOpenAIEndpoints = src.UseOpenAIEndpoints },
+}
+
+// keyStoreOwnedFields are never taken from the file by the key merge: the key is matched by
+// name, and the stored ID, status and description are kept.
+var keyStoreOwnedFields = map[string]bool{
+	"id":          true,
+	"name":        true,
+	"config_hash": true,
+	"status":      true,
+	"description": true,
+}
+
+// mergeProviderFields returns the stored provider with every top-level field the file sets
+// copied over from the file. network_config and concurrency_and_buffer_size merge per
+// sub-field, so a file that sets only max_retries keeps a base_url set in the dashboard.
+// Keys and ConfigHash are left for the caller.
+func mergeProviderFields(stored, file configstore.ProviderConfig, presence *providerFilePresence) configstore.ProviderConfig {
+	merged := stored
+	for field := range presence.fields {
+		if copyField, ok := providerConfigMergeFields[field]; ok {
+			copyField(&merged, &file)
+		}
+	}
+	if presence.fields["network_config"] {
+		if stored.NetworkConfig == nil || file.NetworkConfig == nil {
+			merged.NetworkConfig = file.NetworkConfig
+		} else {
+			networkConfig := *stored.NetworkConfig
+			for field := range presence.networkConfig {
+				if copyField, ok := networkConfigMergeFields[field]; ok {
+					copyField(&networkConfig, file.NetworkConfig)
+				}
+			}
+			merged.NetworkConfig = &networkConfig
+		}
+	}
+	if presence.fields["concurrency_and_buffer_size"] {
+		if stored.ConcurrencyAndBufferSize == nil || file.ConcurrencyAndBufferSize == nil {
+			merged.ConcurrencyAndBufferSize = file.ConcurrencyAndBufferSize
+		} else {
+			concurrency := *stored.ConcurrencyAndBufferSize
+			for field := range presence.concurrency {
+				if copyField, ok := concurrencyMergeFields[field]; ok {
+					copyField(&concurrency, file.ConcurrencyAndBufferSize)
+				}
+			}
+			merged.ConcurrencyAndBufferSize = &concurrency
+		}
+	}
+	return merged
+}
+
+// mergeKeyFields returns the stored key with every field the file key sets copied over from
+// the file key. The caller sets ConfigHash.
+func mergeKeyFields(stored, file schemas.Key, present map[string]bool) schemas.Key {
+	merged := stored
+	for field := range present {
+		if copyField, ok := keyMergeFields[field]; ok {
+			copyField(&merged, &file)
+		}
+	}
+	return merged
+}
+
+// applyFileKey returns the key to store when the file changed a key that already exists:
+// the field merge when the file's presence is known, otherwise the file key with the stored
+// ID, status and description (the older whole-key replacement).
+func applyFileKey(dbKey, fileKey schemas.Key, fileKeyHash string, present map[string]bool) schemas.Key {
+	if present != nil {
+		merged := mergeKeyFields(dbKey, fileKey, present)
+		merged.ConfigHash = fileKeyHash
+		return merged
+	}
+	fileKey.ID = dbKey.ID
+	fileKey.ConfigHash = fileKeyHash
+	fileKey.Status = dbKey.Status
+	fileKey.Description = dbKey.Description
+	return fileKey
 }
 
 // mergeProviderKeys syncs keys when provider hash has changed (file is source of truth).
@@ -2122,8 +2388,11 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 	return mergedKeys
 }
 
-// reconcileProviderKeys reconciles keys when provider hash matches
-func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys []schemas.Key) []schemas.Key {
+// reconcileProviderKeys reconciles keys per key: a key whose file hash is unchanged keeps its
+// stored version, a changed key takes the fields the file sets (keyPresence[i] lists the
+// fields of keysInConfigJSON[i]; nil keeps the older whole-key replacement), DB-only keys
+// are kept and file-only keys are added.
+func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys []schemas.Key, keyPresence []map[string]bool) []schemas.Key {
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int) // name -> index in file keys
 	for i, fileKey := range keysInConfigJSON {
@@ -2154,13 +2423,9 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					dbKey.ConfigHash = fileKeyHash
 					mergedKeys = append(mergedKeys, dbKey)
 				} else {
-					// File changed - use file version but preserve ID and set ConfigHash
+					// File changed - take the fields the file sets, keep the stored ID
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
-					fileKey.ID = dbKey.ID
-					fileKey.ConfigHash = fileKeyHash
-					fileKey.Status = dbKey.Status
-					fileKey.Description = dbKey.Description
-					mergedKeys = append(mergedKeys, fileKey)
+					mergedKeys = append(mergedKeys, applyFileKey(dbKey, fileKey, fileKeyHash, keyPresenceAt(keyPresence, fileIdx)))
 				}
 			} else {
 				// No stored hash (legacy) - fall back to generating fresh hash for comparison
@@ -2193,13 +2458,9 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					continue
 				}
 				if fileKeyHash != dbKeyHash {
-					// Key changed in file - use file version but preserve ID and set ConfigHash
+					// Key changed in file - take the fields the file sets, keep the stored ID
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
-					fileKey.ID = dbKey.ID
-					fileKey.ConfigHash = fileKeyHash
-					fileKey.Status = dbKey.Status
-					fileKey.Description = dbKey.Description
-					mergedKeys = append(mergedKeys, fileKey)
+					mergedKeys = append(mergedKeys, applyFileKey(dbKey, fileKey, fileKeyHash, keyPresenceAt(keyPresence, fileIdx)))
 				} else {
 					// Key unchanged - keep DB version
 					mergedKeys = append(mergedKeys, dbKey)
@@ -2224,6 +2485,14 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 		mergedKeys = append(mergedKeys, fileKey)
 	}
 	return mergedKeys
+}
+
+// keyPresenceAt returns the field set of the file key at index i, or nil when unknown.
+func keyPresenceAt(keyPresence []map[string]bool, i int) map[string]bool {
+	if i < 0 || i >= len(keyPresence) {
+		return nil
+	}
+	return keyPresence[i]
 }
 
 // loadMCPConfig loads and merges MCP config from file
