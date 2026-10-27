@@ -580,8 +580,63 @@ type pushUpstreamClient struct {
 	deleted []*a2a.DeleteTaskPushConfigRequest
 }
 
+func TestPushDeliveryIDsAreScopedToTenant(t *testing.T) {
+	m, _, store, _ := pushGateway(t)
+	received := make(chan string, 2)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		received <- req.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer callback.Close()
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{
+			AgentName: "fixture", Tenant: tenant, TaskID: "task", ConfigID: "config", URL: callback.URL + "/" + tenant,
+			IngressTokenHash: hashPushIngressToken(tenant),
+		}))
+		status, err := m.AcceptPushCallback(context.Background(), "fixture", tenant, pushEventPayload(t, "task"))
+		require.NoError(t, err)
+		require.Equal(t, http.StatusAccepted, status)
+	}
+	var callbacks []string
+	for range 2 {
+		select {
+		case path := <-received:
+			callbacks = append(callbacks, path)
+		case <-time.After(5 * time.Second):
+			t.Fatal("namespaced notifications were not delivered")
+		}
+	}
+	require.ElementsMatch(t, []string{"/tenant-a", "/tenant-b"}, callbacks)
+	store.pushMu.Lock()
+	defer store.pushMu.Unlock()
+	require.Len(t, store.deliveries, 2, "identical events in different tenants must not deduplicate together")
+}
 
+func BenchmarkPushDeliveryIdentity(b *testing.B) {
+	payload := `{"statusUpdate":{"taskId":"task","contextId":"context","status":{"state":"TASK_STATE_WORKING"}}}`
+	config := &schemas.AgentPushConfig{Tenant: "tenant", TaskID: "task", ConfigID: "config"}
+	b.ReportAllocs()
+	for b.Loop() {
+		if pushDeliveryID("fixture", config, payload) == "" {
+			b.Fatal("empty digest")
+		}
+	}
+}
 
+func BenchmarkPushConfigRead(b *testing.B) {
+	_, h, _, _ := pushGateway(b)
+	if _, err := h.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task", ID: "config", URL: "http://callback.example"}); err != nil {
+		b.Fatal(err)
+	}
+	req := &a2a.GetTaskPushConfigRequest{TaskID: "task", ID: "config"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := h.GetTaskPushConfig(context.Background(), req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 func (c *pushUpstreamClient) CreateTaskPushConfig(_ context.Context, config *a2a.PushConfig) (*a2a.PushConfig, error) {
 	c.mu.Lock()
@@ -608,7 +663,7 @@ func (c *pushUpstreamClient) lastCreated(t *testing.T) *a2a.PushConfig {
 
 // pushGateway builds a push-enabled manager whose fixture runtime forwards to a
 // recording fake upstream, bypassing discovery.
-func pushGateway(t *testing.T) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
+func pushGateway(t testing.TB) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
 	t.Helper()
 	store := newMemoryPushStore()
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
