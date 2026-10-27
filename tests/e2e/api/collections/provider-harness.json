@@ -283726,6 +283726,621 @@
       ]
     },
     {
+      "name": "278. Advisor passes are billed at the advisor model rate (advisor pass billing) [SERIAL]",
+      "description": "Anthropic's advisor_20260301 tool runs a second model inside the request. The provider reports each advisor pass only in usage.iterations[] (type advisor_message, with its model) and bills it at the advisor model's rate; the top-level usage mirrors the executor passes alone. Bifrost priced the top-level usage only, so the log cost and every budget charge left out the advisor passes, which on an Opus advisor is most of the bill. The anthropic passthrough usage also dropped the iterations list. Cost now adds each advisor pass at its own model's rate (falling back to the executor's rate when the advisor model has no pricing, never to zero), on the Responses unary, Responses stream and passthrough paths. Setup creates a run-scoped virtual key and two virtual-key scoped pricing overrides (executor claude-haiku-4-5 and advisor claude-opus-4-8), so the expected cost is exact from the token counts in the response. Three routes are pinned: /anthropic/v1/messages unary and streaming (usage read from message_start overlaid by message_delta) and the neutral /v1/responses (no anthropic-beta header, the tool in its neutral 'advisor' shape). Each case asks the executor to consult the advisor and fails loudly if no advisor pass was reported (the pin needs one). Red before the change: the logged cost equalled the executor tokens alone. This spends three live executor calls plus the advisor passes Anthropic runs.",
+      "item": [
+        {
+          "name": "anthropic advisor pass billing setup: create a virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sweep what an earlier run left behind (a failed cleanup or an aborted run): the run-tagged pricing",
+                  "// overrides first, then the run-tagged virtual keys they were scoped to. The folder is [SERIAL], so it",
+                  "// runs whole and once per run: every run-tagged object that exists now is a leftover.",
+                  "(function () {",
+                  "  var BASE = pm.variables.get('baseUrl');",
+                  "  function sweep(path, field, prefix, done) {",
+                  "    pm.sendRequest({ url: BASE + path + '?search=' + encodeURIComponent(prefix) + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "      var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "      var items = ((json && json[field]) || []).filter(function (o) { return String(o.name || '').indexOf(prefix) === 0; });",
+                  "      var i = 0; (function next() { if (i >= items.length) { return done(); } pm.sendRequest({ url: BASE + path + '/' + items[i++].id, method: 'DELETE' }, function () { next(); }); })();",
+                  "    });",
+                  "  }",
+                  "  sweep('/api/governance/pricing-overrides', 'pricing_overrides', 'harness-apb-', function () {",
+                  "    sweep('/api/governance/virtual-keys', 'virtual_keys', 'harness-apb-vk-run-', function () {});",
+                  "  });",
+                  "})();",
+                  "pm.collectionVariables.set('apbVK', 'missing');",
+                  "pm.collectionVariables.unset('apbVKID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-apb-vk-run-' + Date.now(),",
+                  "  provider_configs: [{ provider: 'anthropic', allowed_models: ['*'], key_ids: ['*'], weight: 1 }]",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = {}; try { vk = (pm.response.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "if (value && vk.id) { pm.collectionVariables.set('apbVK', value); pm.collectionVariables.set('apbVKID', vk.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing setup: virtual-key scoped rates for executor [EXPECT-201]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('apbExecOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-apb-executor-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('apbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'claude-haiku-4-5*',",
+                  "  request_types: ['responses'],",
+                  "  patch: { input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: executor override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('advisor pass billing: executor override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('apbExecOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing setup: virtual-key scoped rates for advisor [EXPECT-201]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('apbAdvisorOverrideID');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'harness-apb-advisor-' + Date.now(),",
+                  "  // Virtual-key scoped: only this folder's requests are repriced.",
+                  "  scope_kind: 'virtual_key',",
+                  "  virtual_key_id: pm.collectionVariables.get('apbVKID') || 'missing',",
+                  "  match_type: 'wildcard',",
+                  "  pattern: 'claude-opus-4-8*',",
+                  "  request_types: ['responses'],",
+                  "  patch: { input_cost_per_token: 0.00001, output_cost_per_token: 0.0001 }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: advisor override accepted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && (body.pricing_override || body);",
+                  "pm.test('advisor pass billing: advisor override has an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('apbAdvisorOverrideID', ov.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages: the logged cost includes each advisor pass at the advisor rate - advisor pass billing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('advisor pass billing: messages request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var usage = body.usage || {};",
+                  "var passes = (usage.iterations || []).filter(function (it) { return it && it.type === 'advisor_message'; });",
+                  "pm.test('advisor pass billing: the executor consulted the advisor (this pin needs an advisor pass)', function () {",
+                  "  pm.expect(passes.length, 'no advisor_message in usage.iterations: ' + JSON.stringify(usage).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function cached(u) { return (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); }",
+                  "pm.test('advisor pass billing: no prompt caching, so input and output rates fully determine the cost', function () {",
+                  "  pm.expect(cached(usage), JSON.stringify(usage).slice(0, 800)).to.eql(0);",
+                  "  passes.forEach(function (p) { pm.expect(cached(p), JSON.stringify(p)).to.eql(0); });",
+                  "});",
+                  "var executorCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "var advisorCost = 0;",
+                  "passes.forEach(function (p) { advisorCost += (p.input_tokens || 0) * 0.00001 + (p.output_tokens || 0) * 0.0001; });",
+                  "var expected = executorCost + advisorCost;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('advisor pass billing: x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || passes.length === 0) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var total = (j.cost_breakdown || {}).total_cost;",
+                  "      pm.test('advisor pass billing: logged cost is executor tokens at the executor rate plus each advisor pass at the advisor rate', function () {",
+                  "        pm.expect(total, 'log: ' + JSON.stringify({ cost: j.cost, cost_breakdown: j.cost_breakdown }) + ' executor-only would be ' + executorCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('advisor pass billing: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"system\": \"Before you answer anything, you must call the advisor tool exactly once. Then answer in one short sentence.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Consult the advisor, then tell me whether 17 is prime.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages stream: the logged cost includes each advisor pass at the advisor rate - advisor pass billing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'advisor pass billing stream';",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test(LABEL + ': messages stream served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "// Usage is message_start's usage overlaid by each message_delta's (cumulative, iterations included).",
+                  "var usage = {};",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  var u = ev && ev.type === 'message_start' ? (ev.message || {}).usage : (ev && ev.type === 'message_delta' ? ev.usage : null);",
+                  "  if (u) { Object.keys(u).forEach(function (k) { if (u[k] !== null && u[k] !== undefined) { usage[k] = u[k]; } }); }",
+                  "});",
+                  "var passes = (usage.iterations || []).filter(function (it) { return it && it.type === 'advisor_message'; });",
+                  "pm.test(LABEL + ': the executor consulted the advisor (this pin needs an advisor pass)', function () {",
+                  "  pm.expect(passes.length, 'no advisor_message in usage.iterations: ' + JSON.stringify(usage).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function cached(u) { return (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); }",
+                  "pm.test(LABEL + ': no prompt caching, so input and output rates fully determine the cost', function () {",
+                  "  pm.expect(cached(usage), JSON.stringify(usage).slice(0, 800)).to.eql(0);",
+                  "  passes.forEach(function (p) { pm.expect(cached(p), JSON.stringify(p)).to.eql(0); });",
+                  "});",
+                  "var executorCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "var advisorCost = 0;",
+                  "passes.forEach(function (p) { advisorCost += (p.input_tokens || 0) * 0.00001 + (p.output_tokens || 0) * 0.0001; });",
+                  "var expected = executorCost + advisorCost;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || passes.length === 0) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var total = (j.cost_breakdown || {}).total_cost;",
+                  "      pm.test(LABEL + ': logged cost is executor tokens at the executor rate plus each advisor pass at the advisor rate', function () {",
+                  "        pm.expect(total, 'log: ' + JSON.stringify({ cost: j.cost, cost_breakdown: j.cost_breakdown }) + ' executor-only would be ' + executorCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{apbVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"system\": \"Before you answer anything, you must call the advisor tool exactly once. Then answer in one short sentence.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Consult the advisor, then tell me whether 17 is prime.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses: the logged cost includes each advisor pass at the advisor rate - advisor pass billing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'advisor pass billing responses';",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test(LABEL + ': /v1/responses request served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var usage = body.usage || {};",
+                  "var passes = (usage.iterations || []).filter(function (it) { return it && it.type === 'advisor_message'; });",
+                  "pm.test(LABEL + ': the executor consulted the advisor (this pin needs an advisor pass)', function () {",
+                  "  pm.expect(passes.length, 'no advisor_message in usage.iterations: ' + JSON.stringify(usage).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "function cached(u) { return ((u.input_tokens_details || {}).cached_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0); }",
+                  "pm.test(LABEL + ': no prompt caching, so input and output rates fully determine the cost', function () {",
+                  "  pm.expect(cached(usage), JSON.stringify(usage).slice(0, 800)).to.eql(0);",
+                  "  passes.forEach(function (p) { pm.expect(cached(p), JSON.stringify(p)).to.eql(0); });",
+                  "});",
+                  "var executorCost = (usage.input_tokens || 0) * 0.000001 + (usage.output_tokens || 0) * 0.000002;",
+                  "var advisorCost = 0;",
+                  "passes.forEach(function (p) { advisorCost += (p.input_tokens || 0) * 0.00001 + (p.output_tokens || 0) * 0.0001; });",
+                  "var expected = executorCost + advisorCost;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (!reqId || passes.length === 0) { return; }",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var total = (j.cost_breakdown || {}).total_cost;",
+                  "      pm.test(LABEL + ': logged cost is executor tokens at the executor rate plus each advisor pass at the advisor rate', function () {",
+                  "        pm.expect(total, 'log: ' + JSON.stringify({ cost: j.cost, cost_breakdown: j.cost_breakdown }) + ' executor-only would be ' + executorCost).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{apbVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 512,\n  \"instructions\": \"Before you answer anything, you must call the advisor tool exactly once. Then answer in one short sentence.\",\n  \"input\": \"Consult the advisor, then tell me whether 17 is prime.\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"model\": \"claude-opus-4-8\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing cleanup: delete the advisor override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('apbAdvisorOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: the advisor override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('apbAdvisorOverrideID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{apbAdvisorOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{apbAdvisorOverrideID}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing cleanup: delete the executor override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('apbExecOverrideID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: the executor override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('apbExecOverrideID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{apbExecOverrideID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{apbExecOverrideID}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic advisor pass billing cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('apbVKID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor pass billing: the virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) { pm.collectionVariables.unset('apbVKID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{apbVKID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{apbVKID}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "279. MCP OAuth discovery ignores protected resource metadata for another resource (mcp oauth resource match)",
       "description": "Management-endpoint check with no live provider involved. When an OAuth MCP client is added without authorize/token URLs, Bifrost discovers them from the MCP server: the 401's WWW-Authenticate resource_metadata document (RFC 9728) names the authorization servers. RFC 9728 section 3.3 says that document must not be used unless its resource identifies the server being connected to; before the fix any document was trusted, so an MCP server could hand Bifrost a different resource and any authorization server, and Bifrost sent its dynamic client registration and the admin's sign-in there.\n\nPrerequisite: node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs (port 8799, override with --port and the mcpOauthResourceFixtureUrl variable). Its /mcp advertises metadata whose resource is https://other-mcp.invalid/mcp and whose authorization server is the fixture's /rogue issuer; the server origin's own authorization server metadata points at /legit. Nothing in the harness runners starts it, so the row is [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp oauth resource match\" INCLUDE_PREVIEW=1 once the fixture is up. The row names no model, so no provider fork selects it and a run without PROVIDER=mcp skips it. The harness profile allowlists 127.0.0.1 for the MCP OAuth chain (see mcp-oauth-private-allowlist).\n\nRed before the fix: the authorize URL points at /rogue/authorize and the fixture records a registration on /rogue/register. Green after: the document is ignored, discovery falls back to the server origin, the authorize URL is /legit/authorize, and only /legit/register is called. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
       "item": [
