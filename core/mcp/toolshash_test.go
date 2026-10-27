@@ -104,6 +104,7 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 // causing a needless persist/resync immediately after every boot.
 func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOps(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 
 	callCount := 0
 	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {

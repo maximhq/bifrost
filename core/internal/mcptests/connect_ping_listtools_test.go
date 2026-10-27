@@ -75,7 +75,12 @@ func inProcessClientConfig(clientName string, s *server.MCPServer) *schemas.MCPC
 func legacyHTTPClientConfig(t *testing.T, clientName string, s *server.MCPServer) *schemas.MCPClientConfig {
 	t.Helper()
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)))
-	t.Cleanup(ts.Close)
+	// The client keeps a GET stream open to hear tools/list_changed, and the manager may still be
+	// running when this cleanup fires, so its connections are cut first.
+	t.Cleanup(func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	})
 	return &schemas.MCPClientConfig{
 		ID:               clientName + "-id",
 		Name:             clientName,

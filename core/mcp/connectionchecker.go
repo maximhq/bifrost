@@ -75,6 +75,7 @@ type ClientConnectionChecker struct {
 	// steady-state cadence (healthyInterval) rather than the tight Unstable
 	// one, so a runtime healthyInterval change knows whether to re-arm it.
 	onSteadyCadence bool
+	kick            chan struct{} // Kick's request for a check now; one slot, so a burst queues a single check
 }
 
 // NewClientConnectionChecker creates a new connection checker for a client.
@@ -101,6 +102,7 @@ func NewClientConnectionChecker(
 		timeout:         ConnectionCheckTimeout,
 		logger:          logger,
 		isPingAvailable: isPingAvailable,
+		kick:            make(chan struct{}, 1),
 	}
 }
 
@@ -202,22 +204,42 @@ func (c *ClientConnectionChecker) checkLoop() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-c.timer.C:
-			next, onSteady := c.performCheck()
+		case <-c.kick:
+			// The scheduled check is replaced, not added to; re-armed below as after a tick.
 			c.mu.Lock()
-			if c.isRunning {
-				if onSteady {
-					// Re-read rather than trusting the value the check
-					// started with: a SetHealthyInterval that landed while
-					// the check was in flight must win.
-					next = c.healthyInterval
-				}
-				c.timer.Reset(next)
-				c.onSteadyCadence = onSteady
-			}
+			c.timer.Stop()
 			c.mu.Unlock()
+			c.runCheck()
+		case <-c.timer.C:
+			c.runCheck()
 		}
 	}
+}
+
+// Kick asks for a check now, ahead of the timer. Kicks that arrive while one is pending collapse
+// into it, and a kick during a running check queues exactly one more.
+func (c *ClientConnectionChecker) Kick() {
+	select {
+	case c.kick <- struct{}{}:
+	default:
+	}
+}
+
+// runCheck performs one check and re-arms the timer from its result.
+func (c *ClientConnectionChecker) runCheck() {
+	next, onSteady := c.performCheck()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.isRunning {
+		return
+	}
+	if onSteady {
+		// Re-read rather than trusting the value the check started with: a
+		// SetHealthyInterval that landed while the check was in flight must win.
+		next = c.healthyInterval
+	}
+	c.timer.Reset(next)
+	c.onSteadyCadence = onSteady
 }
 
 // performCheck runs one check cycle and returns the interval the next one
@@ -621,6 +643,16 @@ func (m *ConnectionCheckerManager) StartChecking(checker *ClientConnectionChecke
 	m.mu.Unlock()
 
 	checker.Start()
+}
+
+// Kick asks clientID's checker for a check now. A client without a running checker is left alone.
+func (m *ConnectionCheckerManager) Kick(clientID string) {
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.Kick()
+	}
 }
 
 // StopChecking stops checking a specific client.

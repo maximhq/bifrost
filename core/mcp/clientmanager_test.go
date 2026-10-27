@@ -1841,13 +1841,26 @@ func TestUnmatchedToolSelections(t *testing.T) {
 // one protocol version (out of process, so benchmarks count only Bifrost's side).
 const (
 	stdioServerEnv       = "BIFROST_MCP_TEST_STDIO_SERVER"
+	stdioAddToolAfterEnv = "BIFROST_MCP_TEST_STDIO_ADD_TOOL_AFTER" // adds matrix tool "added" this long after the first tools/list
 	httpServerEnv        = "BIFROST_MCP_TEST_HTTP_SERVER"
 	httpServerVersionEnv = "BIFROST_MCP_TEST_HTTP_SERVER_VERSION"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv(stdioServerEnv) == "1" {
-		_ = server.ServeStdio(newMatrixUpstream())
+		var opts []server.ServerOption
+		var s *server.MCPServer
+		if after, err := time.ParseDuration(os.Getenv(stdioAddToolAfterEnv)); err == nil {
+			// Timed from the first tools/list (the client's discovery), not process start.
+			var once sync.Once
+			hooks := &server.Hooks{}
+			hooks.AddAfterListTools(func(context.Context, any, *mcpgo.ListToolsRequest, *mcpgo.ListToolsResult) {
+				once.Do(func() { time.AfterFunc(after, func() { addMatrixTool(s) }) })
+			})
+			opts = append(opts, server.WithHooks(hooks))
+		}
+		s = newMatrixUpstream(opts...)
+		_ = server.ServeStdio(s)
 		os.Exit(0)
 	}
 	if os.Getenv(httpServerEnv) == "1" {
@@ -1880,11 +1893,11 @@ func startHTTPUpstreamProcess(tb testing.TB, version string) string {
 	return "http://" + l.Addr().String()
 }
 
-func newMatrixUpstream() *server.MCPServer {
-	s := server.NewMCPServer("matrix-upstream", "1.0.0",
+func newMatrixUpstream(opts ...server.ServerOption) *server.MCPServer {
+	s := server.NewMCPServer("matrix-upstream", "1.0.0", append([]server.ServerOption{
 		server.WithToolCapabilities(true),
 		server.WithInstructions("matrix instructions"),
-	)
+	}, opts...)...)
 	s.AddTool(
 		mcpgo.NewTool("echo", mcpgo.WithString("message", mcpgo.Required())),
 		func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -1893,6 +1906,14 @@ func newMatrixUpstream() *server.MCPServer {
 		},
 	)
 	return s
+}
+
+// addMatrixTool adds the "added" tool to a running matrix upstream, which tells listening clients
+// the tool list changed.
+func addMatrixTool(s *server.MCPServer) {
+	s.AddTool(mcpgo.NewTool("added"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText("added"), nil
+	})
 }
 
 // TestConnectToMCPClient_ProtocolVersionMatrix pins that an upstream speaking any supported protocol
@@ -1986,6 +2007,15 @@ func (w *wireCounter) wrap(next http.Handler) http.Handler {
 	})
 }
 
+func newWireCounter() *wireCounter { return &wireCounter{methods: map[string]int{}} }
+
+// count returns how many requests for method (a JSON-RPC method, or GET/DELETE) have arrived.
+func (w *wireCounter) count(method string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.methods[method]
+}
+
 func (w *wireCounter) snapshot() (int, map[string]int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1999,7 +2029,7 @@ func TestPerCallConnection_WireCostPerToolCall(t *testing.T) {
 	const calls = 3
 	for _, version := range []string{mcpgo.ProtocolVersion20250618, mcpgo.ProtocolVersion20251125, mcpgo.ProtocolVersion20260728} {
 		t.Run(version, func(t *testing.T) {
-			counter := &wireCounter{methods: map[string]int{}}
+			counter := newWireCounter()
 			ts := httptest.NewUnstartedServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(version))))
 			ts.Config.ConnState = func(_ net.Conn, state http.ConnState) {
 				if state == http.StateNew {

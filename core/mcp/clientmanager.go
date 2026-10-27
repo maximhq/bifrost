@@ -2971,7 +2971,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 				var createErr error
 				switch config.ConnectionType {
 				case schemas.MCPConnectionTypeHTTP:
-					externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config, mutForWire)
+					externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config, mutForWire, "")
 				case schemas.MCPConnectionTypeSTDIO:
 					externalClient, connectionInfo, createErr = m.createSTDIOConnection(m.ctx, config, mutForWire)
 				case schemas.MCPConnectionTypeSSE:
@@ -3044,6 +3044,10 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		}
 		m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
 
+		if config.ConnectionType == schemas.MCPConnectionTypeHTTP {
+			externalClient, initResult = m.withLegacyListenStream(ctx, config, mutForWire, extInitRequest, externalClient, initResult)
+		}
+
 		// Build the gate response from captured initialize result.
 		resp := &schemas.BifrostMCPConnectResponse{
 			ConnectionInfo: connectionInfo,
@@ -3084,6 +3088,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string)
 	var listToolsErr error
+	var toolChanges *toolChangeListener // set when the upstream announces tool list changes
 	if externalClient == nil {
 		// Plugin short-circuited the connect with a success response; no live transport
 		// to query. Register the client as "connected" with an empty tool set — this is
@@ -3094,6 +3099,10 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			connectionInfo = &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}
 		}
 	} else {
+		// Before the first tools/list, so a change announced while it runs is not lost.
+		if toolsListChanges(initResult) {
+			toolChanges = m.newToolChangeListener(config.ID, externalClient)
+		}
 		// Retrieve tools from the external server through the list_tools plugin gate.
 		// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
 		// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
@@ -3228,6 +3237,11 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
 		checker := NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger)
 		m.checkerManager.StartChecking(checker)
+	}
+
+	// After StartChecking: the first refresh (a held change or the 2026-07-28 listen ack) kicks this checker, not none.
+	if toolChanges != nil {
+		toolChanges.activate(config.Name, swapGeneration)
 	}
 
 	// Make-before-break: the swap is committed and the workers re-registered,
@@ -3567,7 +3581,10 @@ func mcpProxySelector(next func(*http.Request) (*url.URL, error), requirePublicT
 // If overrides is non-nil and carries a populated ConnectionString or Headers, those values
 // are used instead of resolving them from config. This is how plugin PreHook mutations flow
 // into the transport.
-func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.MCPClientConfig, overrides *schemas.BifrostMCPConnectRequest) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
+//
+// listenOn, when set, pins the client to that legacy revision and opens the standalone GET stream,
+// which is where those revisions deliver notifications such as tools/list_changed.
+func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.MCPClientConfig, overrides *schemas.BifrostMCPConnectRequest, listenOn string) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.ConnectionString == nil {
 		return nil, nil, fmt.Errorf("HTTP connection string is required")
 	}
@@ -3617,6 +3634,11 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	if httpClient != nil {
 		opts = append(opts, transport.WithHTTPBasicClient(httpClient))
 	}
+	var clientOpts []client.ClientOption
+	if listenOn != "" {
+		opts = append(opts, transport.WithContinuousListening())
+		clientOpts = append(clientOpts, client.WithProtocolVersion(listenOn))
+	}
 	httpTransport, err := transport.NewStreamableHTTP(url, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create HTTP transport: %w", err)
@@ -3625,7 +3647,7 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 		Type:          config.ConnectionType,
 		ConnectionURL: &url,
 	}
-	return client.NewClient(httpTransport), connectionInfo, nil
+	return client.NewClient(httpTransport, clientOpts...), connectionInfo, nil
 }
 
 // createSTDIOConnection creates a STDIO-based MCP client connection without holding locks.

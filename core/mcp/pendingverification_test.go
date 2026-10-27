@@ -170,6 +170,7 @@ func TestSetState_PendingVerification_NotOverwritten(t *testing.T) {
 // exchange was len-checking and had that bug.
 func TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	defer m.checkerManager.StopAll()
 
 	config := newPendingClientConfig("client-tokenexchange-zero-tools", schemas.MCPAuthTypeTokenExchange)
