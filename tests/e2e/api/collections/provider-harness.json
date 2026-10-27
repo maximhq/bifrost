@@ -287723,6 +287723,73 @@
           }
         }
       ]
+    },
+    {
+      "name": "265. Bifrost's MCP OAuth server accepts Client ID Metadata Documents (mcp-oauth-cimd-server)",
+      "description": "Client ID Metadata Documents (MCP 2025-11-25+), server role: the gateway's OAuth server advertises client_id_metadata_document_supported and resolves an https client_id by fetching the document over the public internet only, validating it, and caching it per Cache-Control. These cases pin the advertised flag and the refusal path (a private-address document is not fetched): 400 invalid_client, no redirect. The success path needs a publicly reachable HTTPS document host, so it is covered by Go tests (TestHandleAuthorize_ClientIDMetadataDocument, TestOAuth2ClientMetadataResolver*). Requires mcp_server_auth_mode both or oauth. No provider calls - openai is only a filter label. Run with FEATURE=mcp-oauth-cimd-server.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-oauth-cimd-server authorization server metadata advertises client ID metadata documents",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/.well-known/oauth-authorization-server"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"MCP clients learn they may present a metadata document URL as client_id\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var doc = pm.response.json();",
+                  "  pm.expect(doc.client_id_metadata_document_supported, 'flag missing: ' + pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-oauth-cimd-server a metadata document on a private address is refused, not fetched",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/oauth2/authorize?client_id=https%3A%2F%2F127.0.0.1%3A9%2Foauth%2Fclient.json&redirect_uri=http%3A%2F%2F127.0.0.1%3A3000%2Fcallback&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=cimd"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the gateway refuses to fetch client metadata from a private address and does not redirect\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.headers.get('Location'), 'no redirect to an unverified client').to.be.undefined;",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error, 'error: ' + pm.response.text()).to.equal('invalid_client');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
