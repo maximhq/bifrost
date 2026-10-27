@@ -7647,6 +7647,54 @@
           "required": ["region"],
           "additionalProperties": false
         },
+        "sagemaker_key_config": {
+          "type": "object",
+          "description": "AWS credentials and routing for SageMaker real-time endpoints. Leave access_key and secret_key empty to use the default AWS credential chain.",
+          "properties": {
+            "access_key": {
+              "type": "string",
+              "description": "AWS access key used to mint bearer tokens (can use env. prefix)"
+            },
+            "secret_key": {
+              "type": "string",
+              "description": "AWS secret key (can use env. prefix)"
+            },
+            "session_token": {
+              "type": "string",
+              "description": "AWS session token for temporary credentials (can use env. prefix)"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region of the endpoints; a model id may override it with a region prefix"
+            },
+            "role_arn": {
+              "type": "string",
+              "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+            },
+            "external_id": {
+              "type": "string",
+              "description": "External ID for AssumeRole (can use env. prefix)"
+            },
+            "session_name": {
+              "type": "string",
+              "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Runtime host override, e.g. an interface VPC endpoint, FIPS or dual-stack host. Region is still required.",
+              "properties": {
+                "runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the SageMaker runtime (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["region"],
+          "additionalProperties": false
+        },
         "vllm_key_config": {
           "type": "object",
           "properties": {
