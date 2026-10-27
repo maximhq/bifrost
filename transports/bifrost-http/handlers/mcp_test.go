@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -582,6 +583,86 @@ func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
 	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
 	assert.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt pins that deleting a client reloads every virtual key
+// that granted it. The delete cascades over those grants in the store, but the keys cached in memory
+// kept them, so a client created again under the same client_id was granted to them once more.
+func TestDeleteMCPClient_ReloadsTheKeysThatGrantedIt(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-granted",
+		Name:             "delete_granted",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	row, err := store.GetMCPClientByID(ctx, "mcp-delete-granted")
+	require.NoError(t, err)
+	active := true
+	for _, id := range []string{"vk-grant-a", "vk-grant-b", "vk-no-grant"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: &active}))
+	}
+	for _, id := range []string{"vk-grant-a", "vk-grant-b"} {
+		require.NoError(t, store.CreateVirtualKeyMCPConfig(ctx, &configtables.TableVirtualKeyMCPConfig{VirtualKeyID: id, MCPClientID: row.ID, ToolsToExecute: []string{"*"}}))
+	}
+
+	governance := &reloadCountingGovernanceManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: &removeRecordingMCPManager{}, governanceManager: governance}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-granted")
+	h.deleteMCPClient(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	var reloaded []string
+	for _, batch := range governance.reloadedBatches {
+		reloaded = append(reloaded, batch...)
+	}
+	reloaded = append(reloaded, governance.reloaded...)
+	sort.Strings(reloaded)
+	assert.Equal(t, []string{"vk-grant-a", "vk-grant-b"}, reloaded, "exactly the keys that granted the client are reloaded")
+	remaining, err := store.GetVirtualKeyMCPConfigsByMCPClientID(ctx, row.ID)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "the grants are gone from the store, so the reload drops them from memory")
+}
+
+// grantReadFailingStore is a config store whose read of a client's virtual key grants fails.
+type grantReadFailingStore struct{ configstore.ConfigStore }
+
+// GetVirtualKeyMCPConfigsByMCPClientID always fails.
+func (grantReadFailingStore) GetVirtualKeyMCPConfigsByMCPClientID(context.Context, uint) ([]configtables.TableVirtualKeyMCPConfig, error) {
+	return nil, errors.New("database unavailable")
+}
+
+// TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead pins that a delete whose granting keys cannot
+// be read deletes nothing. It used to go ahead with no keys to reload: the grants left the store but
+// stayed cached on the keys, where they applied again to a client created later under the same id.
+func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newRealOAuth2Store(t)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-delete-unread",
+		Name:             "delete_unread",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	mgr := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: grantReadFailingStore{store}, ClientConfig: &configstore.ClientConfig{}}, mcpManager: mgr, governanceManager: &reloadCountingGovernanceManager{}}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodDelete)
+	reqCtx := initCtx(&req)
+	reqCtx.SetUserValue("id", "mcp-delete-unread")
+	h.deleteMCPClient(reqCtx)
+
+	assert.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	assert.Contains(t, string(reqCtx.Response.Body()), "nothing was deleted")
+	_, err := store.GetMCPClientByID(ctx, "mcp-delete-unread")
+	assert.NoError(t, err, "the client is still stored")
+	assert.Empty(t, mgr.removed, "the runtime client is untouched")
 }
 
 // =============================================================================

@@ -1752,6 +1752,26 @@ const ADM54 = folder("ADM-54 Assign and remove vk_configs", "Setup: alpha (echo_
   vkDelete("ADM-54", "teardown: delete vk2", "adm54_vk2"),
 ]);
 
+// adm61Tools checks whether vk1's /mcp tools/list has the client's two tools or none of them.
+const adm61Tools = (present) => A.custom(present ? "adm61_c-add_tool and adm61_c-echo_tool are listed" : "no adm61_c tool is listed", [
+  "var names = pm.response.json().result.tools.map(function (t) { return t.name; }).filter(function (n) { return n.indexOf('adm61_c-') === 0; }).sort();",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${present ? lit(["adm61_c-add_tool", "adm61_c-echo_tool"]) : "[]"});`,
+]);
+const ADM61 = folder("ADM-61 Recreating a client_id does not restore old VK access", "Setup: alpha (echo_tool, add_tool); a client on alpha with client_id \"reuse-id\", granted to virtual key vk1 with tools_to_execute [\"*\"]. The client is deleted and created again with the same client_id.", [
+  ...freshServer("ADM-61", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-61", httpClient("reuse-id", "adm61_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  vkCreate("ADM-61", "setup: create vk1", { name: "ADM-61 vk1" }, "adm61_vk1"),
+  request("ADM-61", "setup: grant vk1 every tool of the client", "PUT", "/api/mcp/client/reuse-id", { body: { vk_configs: [{ virtual_key_id: "{{adm61_vk1_id}}", tools_to_execute: ["*"] }] }, asserts: [A.status(200)] }),
+  rpc("ADM-61", "control: vk1's tools/list has the client's tools", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm61_vk1}}" }], asserts: [A.status(200), adm61Tools(true)] }),
+  request("ADM-61", "control: ?virtual_keys=vk1 lists the client", "GET", "/api/mcp/clients?virtual_keys={{adm61_vk1_id}}&limit=100", { asserts: [A.status(200), clientIdsIn(true, "adm61_vk1_id", "reuse-id")] }),
+  request("ADM-61", "delete the client", "DELETE", "/api/mcp/client/reuse-id", { asserts: [A.status(200)] }),
+  createClient("ADM-61", httpClient("reuse-id", "adm61_c", "alpha", { tools_to_execute: ["*"] }), "create the client again with client_id \"reuse-id\""),
+  rpc("ADM-61", "vk1's tools/list", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm61_vk1}}" }], asserts: [A.status(200), adm61Tools(false)] }),
+  request("ADM-61", "?virtual_keys=vk1", "GET", "/api/mcp/clients?virtual_keys={{adm61_vk1_id}}&limit=100", { asserts: [A.status(200), A.custom("no client is listed", ["pm.expect(pm.response.json().clients || [], 'body: ' + pm.response.text()).to.have.lengthOf(0);"])] }),
+  deleteClient("ADM-61", "reuse-id"),
+  vkDelete("ADM-61", "teardown: delete vk1", "adm61_vk1"),
+]);
+
 const ADM55 = folder("ADM-55 vk_configs validation", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual key vk1.", [
   ...freshServer("ADM-55", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-55", httpClient("adm55-c", "adm55_c", "alpha"), "setup: create the client"),
@@ -7539,7 +7559,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),

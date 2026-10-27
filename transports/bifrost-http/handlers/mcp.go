@@ -4045,6 +4045,20 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 		targetName = existing.Name
 	}
 	before := auditMCPClient(h.store, existing)
+	// The delete cascades over the virtual keys' grants of this client. The keys holding one are listed
+	// first and reloaded once the rows are gone: left as cached, their grant would apply again to a
+	// client created later under the same client_id. Keys that cannot be listed cannot be reloaded, so
+	// nothing is deleted then; an unknown id falls through to the delete's 404.
+	var grantingVKs []string
+	row, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+	if err == nil {
+		grantingVKs, err = h.virtualKeysGrantingMCPClient(ctx, row.ID)
+	}
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		logger.Error(fmt.Sprintf("failed to read the virtual keys granting MCP client %s before deleting it: %v", id, err))
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to read the virtual keys that grant this MCP client, so nothing was deleted")
+		return
+	}
 	// Delete from DB first to avoid memory/DB inconsistency if DB delete fails
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.DeleteMCPClientConfig(ctx, id); err != nil {
@@ -4060,6 +4074,7 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// The row is gone even if the runtime removal below fails.
 	lib.RecordAuditChange(ctx, "mcp_client.deleted", "mcp_client", id, targetName, before, nil)
+	h.reloadVirtualKeysForMCPClient(ctx, id, grantingVKs)
 	// RemoveMCPClient also evicts the client's cached OAuth access tokens
 	// and header credentials internally, covering the rows the database
 	// delete above cascaded over.
@@ -5054,20 +5069,36 @@ func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 // million queries, run synchronously inside the request. If the batched reload
 // fails, each key is reloaded on its own as before.
 func (h *MCPHandler) refreshMCPClientOnAssignedVirtualKeys(ctx context.Context, clientID string, dbID uint) {
+	ids, err := h.virtualKeysGrantingMCPClient(ctx, dbID)
+	if err != nil {
+		logger.Error(fmt.Sprintf("failed to fetch VK assignments for MCP client %s: %v", clientID, err))
+		return
+	}
+	h.reloadVirtualKeysForMCPClient(ctx, clientID, ids)
+}
+
+// virtualKeysGrantingMCPClient lists the virtual keys holding a grant of the MCP client whose row id is
+// dbID, or nothing when no governance manager would reload them.
+func (h *MCPHandler) virtualKeysGrantingMCPClient(ctx context.Context, dbID uint) ([]string, error) {
 	if h.store == nil || h.store.ConfigStore == nil || h.governanceManager == nil {
-		return
+		return nil, nil
 	}
-	assignedVKs, listErr := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, dbID)
-	if listErr != nil {
-		logger.Error(fmt.Sprintf("failed to fetch VK assignments for MCP client %s after update: %v", clientID, listErr))
-		return
-	}
-	if len(assignedVKs) == 0 {
-		return
+	assignedVKs, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, dbID)
+	if err != nil {
+		return nil, err
 	}
 	ids := make([]string, 0, len(assignedVKs))
 	for _, av := range assignedVKs {
 		ids = append(ids, av.VirtualKeyID)
+	}
+	return ids, nil
+}
+
+// reloadVirtualKeysForMCPClient reloads the cached virtual keys ids after a change to the MCP client
+// they grant, in one batched ReloadVirtualKeys call, falling back to one reload per key if that fails.
+func (h *MCPHandler) reloadVirtualKeysForMCPClient(ctx context.Context, clientID string, ids []string) {
+	if len(ids) == 0 || h.governanceManager == nil {
+		return
 	}
 	err := h.governanceManager.ReloadVirtualKeys(ctx, ids)
 	if err == nil {
@@ -5076,7 +5107,7 @@ func (h *MCPHandler) refreshMCPClientOnAssignedVirtualKeys(ctx context.Context, 
 	logger.Error(fmt.Sprintf("batched virtual key reload for MCP client %s failed, falling back to per-key reload: %v", clientID, err))
 	for _, id := range ids {
 		if _, err := h.governanceManager.ReloadVirtualKey(ctx, id); err != nil {
-			logger.Error(fmt.Sprintf("failed to reload virtual key %s after MCP client update: %v", id, err))
+			logger.Error(fmt.Sprintf("failed to reload virtual key %s after a change to MCP client %s: %v", id, clientID, err))
 		}
 	}
 }
