@@ -7236,6 +7236,18 @@ const GOV26 = folder("GOV-26 Code mode bills nested calls, not the meta call", `
   cmTeardown("GOV-26"),
 ]);
 
+const GOV18 = folder("GOV-18 Code-mode meta tools are gated", `Setup: ${CM_TEXT}; an inactive VK with mcp_configs cm ["*"]; then enforce_auth_on_inference true and no credential. listToolFiles is executed each way.`, [
+  ...cmSetup("GOV-18"),
+  vkCreate("GOV-18", "setup: create the inactive VK", { name: "GOV-18 key", mcp_configs: [{ mcp_client_name: "cm", tools_to_execute: ["*"] }], is_active: false }, "gov18_vk"),
+  metaWith("GOV-18", "listToolFiles with the inactive VK", "listToolFiles", {}, INACTIVE, vkUse("gov18_vk")),
+  meta("GOV-18", "control: listToolFiles with no credential and enforcement off", "listToolFiles", {}, [A.status(200)]),
+  readConfig("GOV-18"), setEnforce("GOV-18", true),
+  meta("GOV-18", "listToolFiles with no credential", "listToolFiles", {}, [A.status(401), A.jsonEquals("type", "virtual_key_required"), A.msgEquals("virtual key is required. Provide a virtual key via the x-bf-vk header.")]),
+  restoreConfig("GOV-18"),
+  vkDelete("GOV-18", "teardown: delete the VK", "gov18_vk"),
+  cmTeardown("GOV-18"),
+]);
+
 const GOV28 = folder("GOV-28 Pricing edits apply live", `Setup: ${ALPHA_EA}, echo priced 0.001. Pricing is then set to 0.005, then to {}, and the client is renamed alpha2.`, [
   ...alphaEA("GOV-28"),
   priceAlpha("GOV-28", "setup: price echo at 0.001", "gov-28-alpha", { echo: 0.001 }),
@@ -7488,7 +7500,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
