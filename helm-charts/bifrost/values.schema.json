@@ -7345,7 +7345,7 @@
           "type": "number",
           "minimum": 0,
           "default": 1,
-          "description": "Routing weight for this key. Optional; defaults to 1 when omitted."
+          "description": "Routing weight for this key. Optional: a new key without weight gets 1, and omitting it on an existing key keeps the stored value (for example a weight set in the UI)."
         },
         "enabled": {
           "type": "boolean",

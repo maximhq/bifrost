@@ -628,9 +628,7 @@ false
 {{- if and (not (hasKey $keyCopy "id")) (hasKey $keyCopy "name") $keyCopy.name }}
 {{- $_ := set $keyCopy "id" $keyCopy.name }}
 {{- end }}
-{{- if not (hasKey $keyCopy "weight") }}
-{{- $_ := set $keyCopy "weight" 1 }}
-{{- end }}
+{{- /* weight is left out when unset: Bifrost gives a new key weight 1 and keeps the stored weight of an existing key */}}
 {{- $keys = append $keys $keyCopy }}
 {{- end }}
 {{- $_ := set $providerCopy "keys" $keys }}

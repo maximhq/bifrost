@@ -7266,7 +7266,8 @@
         "weight": {
           "type": "number",
           "minimum": 0,
-          "description": "Weight for load balancing"
+          "description": "Weight for load balancing. A new key without weight gets 1; omitting it on an existing key keeps the stored value",
+          "default": 1
         },
         "enabled": {
           "type": "boolean",
@@ -7406,8 +7407,7 @@
         }
       },
       "required": [
-        "name",
-        "weight"
+        "name"
       ]
     },
     "bedrock_key": {

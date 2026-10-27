@@ -173,6 +173,25 @@ Tests for key Enabled and UseForBatchAPI field handling.
 | TestSQLite_Key_UseForBatchAPIChange_Detected     | UseForBatchAPI change detected during sync   |
 
 ===================================================================================
+SPLIT-MODE PROVIDER FIELD MERGE TESTS
+===================================================================================
+Tests for the split-mode merge of a changed provider or key: fields the file sets
+overwrite the store, fields it omits keep their stored value.
+
+| Test Name                                                | What It Tests                                    |
+|----------------------------------------------------------|--------------------------------------------------|
+| TestSQLite_Provider_SplitMerge_NetworkEditKeepsDashboardEdits | network_config edit keeps all dashboard edits |
+| TestSQLite_Provider_SplitMerge_OmittedFieldKeepsStoredValue   | field dropped from file keeps stored value    |
+| TestSQLite_Provider_SplitMerge_ExplicitZeroValuesOverwrite    | explicit false/0 in file overwrites store     |
+| TestSQLite_Key_SplitMerge_ChangedKeyKeepsOmittedFields   | changed key keeps dashboard weight/deny/enabled  |
+| TestSQLite_Key_SplitMerge_KeyConfigBlockReplacedWhole    | *_key_config set in file is replaced whole       |
+| TestSQLite_Key_OmittedWeightKeepsHashAndDefaultsNewKeys  | omitted weight: same hash, new key gets 1        |
+| TestSQLite_Provider_AuthoritativeModeStillReplaces       | config.json mode still writes the file exactly   |
+| TestParseProviderFilePresence                            | field sets read from the raw providers section   |
+| TestMergeProviderFields_NestedBlockMissingInStore        | nested block absent in store / null in file      |
+| TestProviderMergeFieldTablesCoverEveryJSONField          | every JSON field has exactly one merge rule      |
+
+===================================================================================
 DEPLOYMENT MAP TESTS
 ===================================================================================
 Tests for deployment map changes in provider-specific configs.
@@ -365,7 +384,9 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18703,6 +18724,471 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	}
 }
 
+// writeRawProvidersConfig writes config.json with providersJSON as its providers section, so
+// a test controls exactly which provider and key fields the file sets. createConfigFile
+// marshals the typed structs, which writes every non-omitempty field.
+func writeRawProvidersConfig(t *testing.T, dir, sourceOfTruth, providersJSON string) {
+	t.Helper()
+	base, err := json.Marshal(makeConfigDataWithProvidersAndDir(nil, dir))
+	if err != nil {
+		t.Fatalf("failed to marshal base config: %v", err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(base, &doc); err != nil {
+		t.Fatalf("failed to decode base config: %v", err)
+	}
+	doc["providers"] = json.RawMessage(providersJSON)
+	if sourceOfTruth != "" {
+		doc["source_of_truth"] = json.RawMessage(strconv.Quote(sourceOfTruth))
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+}
+
+// loadConfigForTest runs LoadConfig on dir. The returned close func is safe to call before the
+// next boot of the same dir; it also runs when the test ends, at most once.
+func loadConfigForTest(t *testing.T, dir string) (*Config, func()) {
+	t.Helper()
+	cfg, err := LoadConfig(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	var once sync.Once
+	closeCfg := func() { once.Do(func() { cfg.Close(context.Background()) }) }
+	t.Cleanup(closeCfg)
+	return cfg, closeCfg
+}
+
+// editStoredProvider applies edit to the stored provider and saves it the way a dashboard edit
+// does: through UpdateProvider, which keeps the stored config hashes.
+func editStoredProvider(t *testing.T, cfg *Config, provider schemas.ModelProvider, edit func(*configstore.ProviderConfig)) {
+	t.Helper()
+	ctx := context.Background()
+	providers, err := cfg.ConfigStore.GetProvidersConfig(ctx)
+	if err != nil {
+		t.Fatalf("GetProvidersConfig failed: %v", err)
+	}
+	providerCfg, ok := providers[provider]
+	if !ok {
+		t.Fatalf("provider %s not in store", provider)
+	}
+	edit(&providerCfg)
+	if err := cfg.ConfigStore.UpdateProvider(ctx, provider, providerCfg); err != nil {
+		t.Fatalf("UpdateProvider failed: %v", err)
+	}
+}
+
+// storedProvider returns the provider as persisted in the config store.
+func storedProvider(t *testing.T, cfg *Config, provider schemas.ModelProvider) configstore.ProviderConfig {
+	t.Helper()
+	providers, err := cfg.ConfigStore.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetProvidersConfig failed: %v", err)
+	}
+	providerCfg, ok := providers[provider]
+	if !ok {
+		t.Fatalf("provider %s not in store", provider)
+	}
+	return providerCfg
+}
+
+// findKeyByName returns the key with the given name, failing the test when it is missing.
+func findKeyByName(t *testing.T, keys []schemas.Key, name string) schemas.Key {
+	t.Helper()
+	for _, key := range keys {
+		if key.Name == name {
+			return key
+		}
+	}
+	t.Fatalf("key %q not found among %d keys", name, len(keys))
+	return schemas.Key{}
+}
+
+// TestSQLite_Provider_SplitMerge_NetworkEditKeepsDashboardEdits reproduces the Helm upgrade
+// that reset a provider: the file changes only network_config.max_retries, and every field
+// edited in the dashboard (fields the file never sets) must survive the restart, in memory
+// and in the store.
+func TestSQLite_Provider_SplitMerge_NetworkEditKeepsDashboardEdits(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	providersJSON := func(maxRetries int) string {
+		return fmt.Sprintf(`{"openai": {
+			"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}],
+			"network_config": {"max_retries": %d}
+		}}`, maxRetries)
+	}
+
+	writeRawProvidersConfig(t, tempDir, "", providersJSON(1))
+	cfg1, closeCfg1 := loadConfigForTest(t, tempDir)
+	editStoredProvider(t, cfg1, schemas.OpenAI, func(p *configstore.ProviderConfig) {
+		p.NetworkConfig.BaseURL = "https://dashboard.example.com"
+		p.ConcurrencyAndBufferSize = &schemas.ConcurrencyAndBufferSize{Concurrency: 50, BufferSize: 500}
+		p.ProxyConfig = &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://proxy.internal:3128")}
+		p.SendBackRawResponse = true
+		p.Keys[0].Weight = 3
+		p.Keys = append(p.Keys, schemas.Key{
+			ID: uuid.NewString(), Name: "dashboard-key", Value: *schemas.NewSecretVar("sk-dash"), Models: []string{"*"}, Weight: 1,
+		})
+	})
+	closeCfg1()
+
+	writeRawProvidersConfig(t, tempDir, "", providersJSON(5))
+	cfg2, _ := loadConfigForTest(t, tempDir)
+
+	for source, got := range map[string]configstore.ProviderConfig{
+		"memory": cfg2.Providers[schemas.OpenAI],
+		"store":  storedProvider(t, cfg2, schemas.OpenAI),
+	} {
+		if got.NetworkConfig == nil || got.NetworkConfig.MaxRetries != 5 {
+			t.Errorf("%s: expected max_retries 5 from file, got %+v", source, got.NetworkConfig)
+		}
+		if got.NetworkConfig == nil || got.NetworkConfig.BaseURL != "https://dashboard.example.com" {
+			t.Errorf("%s: expected dashboard base_url to survive, got %+v", source, got.NetworkConfig)
+		}
+		if got.ConcurrencyAndBufferSize == nil || got.ConcurrencyAndBufferSize.Concurrency != 50 || got.ConcurrencyAndBufferSize.BufferSize != 500 {
+			t.Errorf("%s: expected dashboard concurrency 50/500 to survive, got %+v", source, got.ConcurrencyAndBufferSize)
+		}
+		if got.ProxyConfig == nil || got.ProxyConfig.URL == nil || got.ProxyConfig.URL.GetValue() != "http://proxy.internal:3128" {
+			t.Errorf("%s: expected dashboard proxy to survive, got %+v", source, got.ProxyConfig)
+		}
+		if !got.SendBackRawResponse {
+			t.Errorf("%s: expected dashboard send_back_raw_response=true to survive", source)
+		}
+		if key := findKeyByName(t, got.Keys, "file-key"); key.Weight != 3 {
+			t.Errorf("%s: expected dashboard key weight 3 to survive, got %v", source, key.Weight)
+		}
+		findKeyByName(t, got.Keys, "dashboard-key")
+	}
+}
+
+// TestSQLite_Provider_SplitMerge_OmittedFieldKeepsStoredValue verifies that removing a field
+// from the file leaves its stored value in place, at the top level and inside network_config.
+func TestSQLite_Provider_SplitMerge_OmittedFieldKeepsStoredValue(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}],
+		"send_back_raw_response": true,
+		"network_config": {"base_url": "https://file.example.com", "max_retries": 1}
+	}}`)
+	_, closeFirst := loadConfigForTest(t, tempDir)
+	closeFirst()
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}],
+		"network_config": {"max_retries": 2}
+	}}`)
+	cfg2, _ := loadConfigForTest(t, tempDir)
+	got := cfg2.Providers[schemas.OpenAI]
+
+	if !got.SendBackRawResponse {
+		t.Error("expected send_back_raw_response=true to be kept after the file stopped setting it")
+	}
+	if got.NetworkConfig == nil || got.NetworkConfig.BaseURL != "https://file.example.com" {
+		t.Errorf("expected base_url to be kept after the file stopped setting it, got %+v", got.NetworkConfig)
+	}
+	if got.NetworkConfig == nil || got.NetworkConfig.MaxRetries != 2 {
+		t.Errorf("expected max_retries 2 from file, got %+v", got.NetworkConfig)
+	}
+}
+
+// TestSQLite_Provider_SplitMerge_ExplicitZeroValuesOverwrite verifies that a field the file
+// sets to its zero value (false, 0) still overwrites the stored value: presence, not the
+// decoded value, decides what the file owns.
+func TestSQLite_Provider_SplitMerge_ExplicitZeroValuesOverwrite(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}],
+		"send_back_raw_response": true,
+		"network_config": {"max_retries": 5}
+	}}`)
+	_, closeFirst := loadConfigForTest(t, tempDir)
+	closeFirst()
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}],
+		"send_back_raw_response": false,
+		"network_config": {"max_retries": 0}
+	}}`)
+	cfg2, _ := loadConfigForTest(t, tempDir)
+	got := cfg2.Providers[schemas.OpenAI]
+
+	if got.SendBackRawResponse {
+		t.Error("expected explicit send_back_raw_response=false from file to overwrite stored true")
+	}
+	if got.NetworkConfig == nil || got.NetworkConfig.MaxRetries != 0 {
+		t.Errorf("expected explicit max_retries 0 from file, got %+v", got.NetworkConfig)
+	}
+}
+
+// TestSQLite_Key_SplitMerge_ChangedKeyKeepsOmittedFields verifies that a key whose file entry
+// changed takes only the fields the file sets: a new model list from the file lands, while
+// the weight, deny list and enabled flag set in the dashboard survive.
+func TestSQLite_Key_SplitMerge_ChangedKeyKeepsOmittedFields(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	enabledFalse := false
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["gpt-4o"]}]
+	}}`)
+	cfg1, closeCfg1 := loadConfigForTest(t, tempDir)
+	editStoredProvider(t, cfg1, schemas.OpenAI, func(p *configstore.ProviderConfig) {
+		p.Keys[0].Weight = 3
+		p.Keys[0].BlacklistedModels = []string{"gpt-3.5-turbo"}
+		p.Keys[0].Enabled = &enabledFalse
+	})
+	closeCfg1()
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["gpt-4o", "gpt-4.1"]}]
+	}}`)
+	cfg2, _ := loadConfigForTest(t, tempDir)
+
+	for source, keys := range map[string][]schemas.Key{
+		"memory": cfg2.Providers[schemas.OpenAI].Keys,
+		"store":  storedProvider(t, cfg2, schemas.OpenAI).Keys,
+	} {
+		key := findKeyByName(t, keys, "file-key")
+		if !reflect.DeepEqual([]string(key.Models), []string{"gpt-4o", "gpt-4.1"}) {
+			t.Errorf("%s: expected models from file, got %v", source, key.Models)
+		}
+		if key.Weight != 3 {
+			t.Errorf("%s: expected dashboard weight 3 to survive, got %v", source, key.Weight)
+		}
+		if !reflect.DeepEqual([]string(key.BlacklistedModels), []string{"gpt-3.5-turbo"}) {
+			t.Errorf("%s: expected dashboard blacklisted_models to survive, got %v", source, key.BlacklistedModels)
+		}
+		if key.Enabled == nil || *key.Enabled {
+			t.Errorf("%s: expected dashboard enabled=false to survive, got %v", source, key.Enabled)
+		}
+	}
+}
+
+// TestSQLite_Key_SplitMerge_KeyConfigBlockReplacedWhole verifies that a provider-specific key
+// block the file sets is replaced whole: a credential set is not half-merged, so a tenant ID
+// added in the dashboard does not carry over onto a new endpoint from the file.
+func TestSQLite_Key_SplitMerge_KeyConfigBlockReplacedWhole(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	providersJSON := func(endpoint string) string {
+		return fmt.Sprintf(`{"azure": {
+			"keys": [{"name": "azure-key", "value": "az-secret", "models": ["*"], "weight": 1,
+				"azure_key_config": {"endpoint": %q}}]
+		}}`, endpoint)
+	}
+
+	writeRawProvidersConfig(t, tempDir, "", providersJSON("https://old.openai.azure.com"))
+	cfg1, closeCfg1 := loadConfigForTest(t, tempDir)
+	editStoredProvider(t, cfg1, schemas.Azure, func(p *configstore.ProviderConfig) {
+		p.Keys[0].AzureKeyConfig.TenantID = schemas.NewSecretVar("dashboard-tenant")
+	})
+	closeCfg1()
+
+	writeRawProvidersConfig(t, tempDir, "", providersJSON("https://new.openai.azure.com"))
+	cfg2, _ := loadConfigForTest(t, tempDir)
+	key := findKeyByName(t, cfg2.Providers[schemas.Azure].Keys, "azure-key")
+
+	if key.AzureKeyConfig == nil || key.AzureKeyConfig.Endpoint.GetValue() != "https://new.openai.azure.com" {
+		t.Fatalf("expected endpoint from file, got %+v", key.AzureKeyConfig)
+	}
+	if key.AzureKeyConfig.TenantID != nil && key.AzureKeyConfig.TenantID.GetValue() != "" {
+		t.Errorf("expected azure_key_config to be replaced whole, but dashboard tenant_id %q survived", key.AzureKeyConfig.TenantID.GetValue())
+	}
+}
+
+// TestSQLite_Key_OmittedWeightKeepsHashAndDefaultsNewKeys covers the Helm chart no longer
+// writing weight: 1. A key the chart used to render with weight 1 hashes the same without it,
+// so a dashboard edit to the key is not reset on upgrade, and a new key without weight gets 1.
+func TestSQLite_Key_OmittedWeightKeepsHashAndDefaultsNewKeys(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}]
+	}}`)
+	cfg1, closeCfg1 := loadConfigForTest(t, tempDir)
+	editStoredProvider(t, cfg1, schemas.OpenAI, func(p *configstore.ProviderConfig) {
+		p.Keys[0].Models = []string{"gpt-4o-mini"}
+	})
+	closeCfg1()
+
+	writeRawProvidersConfig(t, tempDir, "", `{"openai": {
+		"keys": [
+			{"name": "file-key", "value": "sk-file", "models": ["*"]},
+			{"name": "new-key", "value": "sk-new", "models": ["*"]}
+		]
+	}}`)
+	cfg2, _ := loadConfigForTest(t, tempDir)
+	keys := cfg2.Providers[schemas.OpenAI].Keys
+
+	if key := findKeyByName(t, keys, "file-key"); !reflect.DeepEqual([]string(key.Models), []string{"gpt-4o-mini"}) {
+		t.Errorf("expected dashboard models to survive dropping weight: 1 from the file, got %v", key.Models)
+	}
+	if key := findKeyByName(t, keys, "new-key"); key.Weight != 1 {
+		t.Errorf("expected a new key without weight to default to 1, got %v", key.Weight)
+	}
+}
+
+// TestSQLite_Provider_AuthoritativeModeStillReplaces pins that source_of_truth=config.json is
+// untouched by the split-mode merge: the file block is written exactly, so a dashboard
+// concurrency edit is reset and a dashboard-only key is removed.
+func TestSQLite_Provider_AuthoritativeModeStillReplaces(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	providersJSON := func(maxRetries int) string {
+		return fmt.Sprintf(`{"openai": {
+			"keys": [{"name": "file-key", "value": "sk-file", "models": ["*"], "weight": 1}],
+			"network_config": {"max_retries": %d}
+		}}`, maxRetries)
+	}
+
+	writeRawProvidersConfig(t, tempDir, SourceOfTruthConfigJSON, providersJSON(1))
+	cfg1, closeCfg1 := loadConfigForTest(t, tempDir)
+	editStoredProvider(t, cfg1, schemas.OpenAI, func(p *configstore.ProviderConfig) {
+		p.ConcurrencyAndBufferSize = &schemas.ConcurrencyAndBufferSize{Concurrency: 50, BufferSize: 500}
+		p.Keys = append(p.Keys, schemas.Key{
+			ID: uuid.NewString(), Name: "dashboard-key", Value: *schemas.NewSecretVar("sk-dash"), Models: []string{"*"}, Weight: 1,
+		})
+	})
+	closeCfg1()
+
+	writeRawProvidersConfig(t, tempDir, SourceOfTruthConfigJSON, providersJSON(5))
+	cfg2, _ := loadConfigForTest(t, tempDir)
+	got := storedProvider(t, cfg2, schemas.OpenAI)
+
+	if got.ConcurrencyAndBufferSize != nil && got.ConcurrencyAndBufferSize.Concurrency == 50 {
+		t.Errorf("expected authoritative mode to reset dashboard concurrency, got %+v", got.ConcurrencyAndBufferSize)
+	}
+	if len(got.Keys) != 1 || got.Keys[0].Name != "file-key" {
+		t.Errorf("expected authoritative mode to keep only the file key, got %d keys", len(got.Keys))
+	}
+}
+
+// TestParseProviderFilePresence verifies the field sets read from the raw providers section,
+// including nested blocks, per-key fields in file order and an explicit null block.
+func TestParseProviderFilePresence(t *testing.T) {
+	presence := parseProviderFilePresence(json.RawMessage(`{
+		"openai": {
+			"send_back_raw_response": false,
+			"network_config": {"max_retries": 0, "base_url": "https://x"},
+			"concurrency_and_buffer_size": {"concurrency": 10},
+			"keys": [{"name": "a", "value": "v"}, {"name": "b", "weight": 2}]
+		},
+		"anthropic": {"network_config": null},
+		"broken": "not-an-object"
+	}`))
+
+	openai := presence["openai"]
+	if openai == nil {
+		t.Fatal("expected presence for openai")
+	}
+	for _, field := range []string{"send_back_raw_response", "network_config", "concurrency_and_buffer_size", "keys"} {
+		if !openai.fields[field] {
+			t.Errorf("expected top-level field %q to be present", field)
+		}
+	}
+	if openai.fields["proxy_config"] {
+		t.Error("expected proxy_config to be absent")
+	}
+	if !openai.networkConfig["max_retries"] || !openai.networkConfig["base_url"] || openai.networkConfig["extra_headers"] {
+		t.Errorf("unexpected network_config presence: %v", openai.networkConfig)
+	}
+	if !openai.concurrency["concurrency"] || openai.concurrency["buffer_size"] {
+		t.Errorf("unexpected concurrency presence: %v", openai.concurrency)
+	}
+	if len(openai.keys) != 2 || !openai.keys[0]["value"] || openai.keys[0]["weight"] || !openai.keys[1]["weight"] {
+		t.Errorf("unexpected key presence: %v", openai.keys)
+	}
+
+	anthropic := presence["anthropic"]
+	if anthropic == nil || !anthropic.fields["network_config"] || len(anthropic.networkConfig) != 0 {
+		t.Errorf("expected null network_config to be present with no sub-fields, got %+v", anthropic)
+	}
+	if _, ok := presence["broken"]; ok {
+		t.Error("expected no presence for a provider entry that is not an object")
+	}
+}
+
+// TestMergeProviderFields_NestedBlockMissingInStore verifies that a nested block the store
+// does not have yet is taken from the file as is, and that an explicit null in the file
+// clears the stored block.
+func TestMergeProviderFields_NestedBlockMissingInStore(t *testing.T) {
+	file := configstore.ProviderConfig{NetworkConfig: &schemas.NetworkConfig{MaxRetries: 4}}
+	presence := &providerFilePresence{
+		fields:        map[string]bool{"network_config": true},
+		networkConfig: map[string]bool{"max_retries": true},
+	}
+	merged := mergeProviderFields(configstore.ProviderConfig{}, file, presence)
+	if merged.NetworkConfig == nil || merged.NetworkConfig.MaxRetries != 4 {
+		t.Errorf("expected network_config from file when the store has none, got %+v", merged.NetworkConfig)
+	}
+
+	stored := configstore.ProviderConfig{ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 50, BufferSize: 500}}
+	merged = mergeProviderFields(stored, configstore.ProviderConfig{}, &providerFilePresence{
+		fields: map[string]bool{"concurrency_and_buffer_size": true},
+	})
+	if merged.ConcurrencyAndBufferSize != nil {
+		t.Errorf("expected explicit null concurrency_and_buffer_size to clear the stored block, got %+v", merged.ConcurrencyAndBufferSize)
+	}
+}
+
+// jsonFieldNames returns the JSON names of a struct type's fields, skipping untagged and
+// "-" fields.
+func jsonFieldNames(typ reflect.Type) []string {
+	names := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// TestProviderMergeFieldTablesCoverEveryJSONField fails when a field is added to
+// ProviderConfig, NetworkConfig, ConcurrencyAndBufferSize or Key without a merge rule. A field
+// with no rule is silently kept from the store forever, so file edits to it would stop
+// applying in split mode.
+func TestProviderMergeFieldTablesCoverEveryJSONField(t *testing.T) {
+	for _, name := range jsonFieldNames(reflect.TypeOf(configstore.ProviderConfig{})) {
+		_, copied := providerConfigMergeFields[name]
+		handled := 0
+		for _, ok := range []bool{copied, providerConfigNestedMergeFields[name], providerConfigStoreOwnedFields[name]} {
+			if ok {
+				handled++
+			}
+		}
+		if handled != 1 {
+			t.Errorf("ProviderConfig field %q must have exactly one merge rule, has %d", name, handled)
+		}
+	}
+	for _, name := range jsonFieldNames(reflect.TypeOf(schemas.NetworkConfig{})) {
+		if _, ok := networkConfigMergeFields[name]; !ok {
+			t.Errorf("NetworkConfig field %q has no entry in networkConfigMergeFields", name)
+		}
+	}
+	for _, name := range jsonFieldNames(reflect.TypeOf(schemas.ConcurrencyAndBufferSize{})) {
+		if _, ok := concurrencyMergeFields[name]; !ok {
+			t.Errorf("ConcurrencyAndBufferSize field %q has no entry in concurrencyMergeFields", name)
+		}
+	}
+	for _, name := range jsonFieldNames(reflect.TypeOf(schemas.Key{})) {
+		_, copied := keyMergeFields[name]
+		if copied == keyStoreOwnedFields[name] {
+			t.Errorf("Key field %q must be in exactly one of keyMergeFields and keyStoreOwnedFields", name)
+		}
+	}
+}
+
 // TestGenerateVirtualKeyHash_ProviderConfigRateLimit verifies that RateLimitID
 // in VK provider configs affects hash generation.
 func TestGenerateVirtualKeyHash_ProviderConfigRateLimit(t *testing.T) {
@@ -25589,7 +26075,7 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 		dbKey.ID = "key-1"
 		dbKey.Weight = 0.25 // edited through the API after the last sync
 		dbKey.ConfigHash = legacy
-		merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{fileKey}, []schemas.Key{dbKey})
+		merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{fileKey}, []schemas.Key{dbKey}, nil)
 		require.Len(t, merged, 1)
 		require.Equal(t, 0.25, merged[0].Weight, "the stored edit must survive the hash format change")
 		require.Equal(t, sorted, merged[0].ConfigHash, "the stored hash must be upgraded to the sorted form")
@@ -25602,7 +26088,7 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 		dbKey.ConfigHash = legacy
 		editedFile := fileKey
 		editedFile.Weight = 2
-		merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{editedFile}, []schemas.Key{dbKey})
+		merged := reconcileProviderKeys(schemas.OpenAI, []schemas.Key{editedFile}, []schemas.Key{dbKey}, nil)
 		require.Len(t, merged, 1)
 		require.Equal(t, float64(2), merged[0].Weight, "a changed config.json must still replace the stored key")
 	})

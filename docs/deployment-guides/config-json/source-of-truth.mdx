@@ -48,15 +48,34 @@ In split mode, Bifrost treats `config.json` as a bootstrap and drift-detection s
 2. Stored rows keep reconciliation metadata for the file-backed definition.
 3. UI/API edits update the DB state without changing the file-backed definition.
 4. On later startups, unchanged file-backed definitions preserve DB edits.
-5. If the matching file-backed definition changes, the new file version is applied for that section or entity.
+5. If the matching file-backed definition changes, the new file version is applied for that section or entity. Providers and their keys are merged field by field instead (see [Field-level merge for providers](#field-level-merge-for-providers)).
 
 Split mode does not prune DB-only entries just because they are missing from `config.json`. Removing a provider, plugin, MCP client, or governance row from the file leaves the stored row in place; use `source_of_truth: "config.json"` when a present file section should prune DB-only rows.
 
 Use split mode when you want `config.json` to seed or update a deployment while preserving UI/API edits unless the matching file-backed definition changes.
 
 <Warning>
-Split mode preserves runtime edits only while the matching file-backed section or entity is unchanged. If you edit that entity in `config.json`, the file version wins on the next startup.
+Split mode preserves runtime edits only while the matching file-backed section or entity is unchanged. If you edit that entity in `config.json`, the file version wins on the next startup. Providers and provider keys are the exception: only the fields the file sets win, as described below.
 </Warning>
+
+### Field-level merge for providers
+
+When a provider entry in `config.json` changes, Bifrost merges it into the stored provider instead of replacing it:
+
+- A field the file sets overwrites the stored value, including an explicit `false` or `0`.
+- A field the file leaves out keeps its stored value, including edits made in the UI or API. It is not reset to its default.
+- Keys are matched by `name`. A key whose file entry is unchanged keeps its stored version; a changed key is merged with the same rule. Keys that exist only in the config store are kept.
+
+| Field | How a value set in the file is applied |
+|-------|----------------------------------------|
+| `network_config`, `concurrency_and_buffer_size` | Per sub-field: setting `max_retries` keeps a stored `base_url` |
+| `send_back_raw_request`, `send_back_raw_response`, `store_raw_request_response`, `ignore_provider_cost` | Overwrites the stored value |
+| `proxy_config`, `custom_provider_config`, `openai_config`, `prompt_cache`, `injected_tools`, `passthrough` | Replaced whole |
+| `network_config.extra_headers`, `network_config.beta_header_overrides` | Replaced whole: a header removed from the file is removed |
+| Key `value`, `models`, `blacklisted_models`, `weight`, `enabled`, `use_*` flags | Overwrites the stored value |
+| Key `aliases` and each `*_key_config` block | Replaced whole: a credential set is never half-merged |
+
+Removing a field from the file does not reset it. Change it in the UI or API, or use `source_of_truth: "config.json"` to write the file exactly. A new key without `weight` gets `1`.
 
 ---
 

@@ -31,6 +31,10 @@ bifrost:
 
 **Disabling a key** - set `enabled: false` to keep a key configured but skip it during key selection. This is the same setting as the **Enabled** toggle on the provider's key list in the UI. New keys default to `true`; omitting `enabled` on a key that already exists keeps its stored value, so a toggle made in the UI survives restarts. Adding `enabled: false` to an existing key that never set it takes effect only when another field on that key changes in the same edit; otherwise turn the key off in the UI.
 
+**Weight** - `weight` is optional. A new key without it gets `1`, and omitting it on a key that already exists keeps its stored value, so a weight set in the UI survives later values changes.
+
+**Changing values after the UI was used** - when a provider's values change, Bifrost merges them field by field into the stored provider on the next restart. Fields set in values overwrite the stored value; fields left out of values keep it, including edits made in the UI. Changing only `network_config.max_retries`, for example, leaves the concurrency, proxy, raw request/response flags, key weights and keys added in the UI as they were. See [Field-level merge](/deployment-guides/config-json/source-of-truth#field-level-merge-for-providers) for what is merged per sub-field and what is replaced whole.
+
 ```yaml
 bifrost:
   providers:
