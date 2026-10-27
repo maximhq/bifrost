@@ -186,7 +186,7 @@ curl -X PUT http://localhost:8080/api/config \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `mcp_server_auth_mode` | string | No | `headers` (default), `both`, or `oauth`. |
-| `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Supports `env.MY_VAR` syntax. |
+| `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. A trailing slash is ignored. Supports `env.MY_VAR` syntax. |
 | `oauth2_server_config.allowed_redirect_uris` | string[] | No | Exact approved remote callback URIs. Remote callbacks are denied unless listed. Loopback callbacks and `cursor://anysphere.cursor-mcp` remain available without entries. A bare `"*"` entry allows any `https` callback; partial wildcards are rejected. API changes require dashboard authentication. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
