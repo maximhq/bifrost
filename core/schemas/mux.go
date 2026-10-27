@@ -198,6 +198,10 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 			CallID: cm.ChatToolMessage.ToolCallID,
 		},
 	}
+	// A failed tool result is marked the way ToResponsesMessages marks it.
+	if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+		respMsg.Status = Ptr("incomplete")
+	}
 
 	// Extract output from content
 	if cm.Content != nil {
