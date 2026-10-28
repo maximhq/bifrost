@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
@@ -3545,9 +3546,9 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 }
 
 // agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
-// the in-process echo tool, and a turn that carries the tool result answers. It records the
-// model of every request it serves.
-func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+// the in-process echo tool, and a turn that carries the tool result answers. Each turn stalls for
+// turnDelay before answering. It records the model of every request it serves.
+func agentLoopServer(t *testing.T, turnDelay time.Duration) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	var models []string
@@ -3560,6 +3561,7 @@ func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
 		mu.Lock()
 		models = append(models, parsed.Model)
 		mu.Unlock()
+		time.Sleep(turnDelay)
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(string(body), `"role":"tool"`) {
 			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
@@ -3615,7 +3617,7 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 // the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
 // routed model.
 func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
-	server, models := agentLoopServer(t)
+	server, models := agentLoopServer(t, 0)
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
 	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
@@ -3660,7 +3662,7 @@ func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
 		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
 	}))
 	t.Cleanup(primary.Close)
-	fallback, models := agentLoopServer(t)
+	fallback, models := agentLoopServer(t, 0)
 
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
@@ -4165,6 +4167,362 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 	if count != 0 {
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}
+
+// deferredStreamTracer models the tracer's deferred-span store for stream tests: one
+// record per trace ID, as the real TraceStore keys it, counting the chunks recorded
+// against it, plus each span's end count, status, attributes and populated outcome.
+type deferredStreamTracer struct {
+	schemas.NoOpTracer
+	mu      sync.Mutex
+	nextID  int
+	records map[string]*deferredStreamRecord
+	spans   map[string]*deferredStreamSpan
+}
+
+type deferredStreamRecord struct {
+	spanID string
+	chunks int
+}
+
+type deferredStreamSpan struct {
+	kind         schemas.SpanKind
+	ends         int
+	status       schemas.SpanStatus
+	attrs        map[string]any
+	populated    *schemas.BifrostResponse
+	populatedErr *schemas.BifrostError
+}
+
+func newDeferredStreamTracer() *deferredStreamTracer {
+	return &deferredStreamTracer{records: map[string]*deferredStreamRecord{}, spans: map[string]*deferredStreamSpan{}}
+}
+
+func (t *deferredStreamTracer) StartSpanID(_ context.Context, _ string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.nextID++
+	id := fmt.Sprintf("span-%d", t.nextID)
+	t.spans[id] = &deferredStreamSpan{kind: kind, attrs: map[string]any{}}
+	return id, id
+}
+
+func (t *deferredStreamTracer) spanFor(handle schemas.SpanHandle) *deferredStreamSpan {
+	id, _ := handle.(string)
+	return t.spans[id]
+}
+
+func (t *deferredStreamTracer) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		s.attrs[key] = value
+	}
+}
+
+func (t *deferredStreamTracer) PopulateLLMResponseAttributes(_ *schemas.BifrostContext, handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		if resp != nil {
+			s.populated = resp
+		}
+		if err != nil {
+			s.populatedErr = err
+		}
+	}
+}
+
+func (t *deferredStreamTracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, _ string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		s.ends++
+		s.status = status
+	}
+}
+
+func (t *deferredStreamTracer) StoreDeferredSpan(traceID string, handle schemas.SpanHandle) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, _ := handle.(string)
+	t.records[traceID] = &deferredStreamRecord{spanID: id}
+}
+
+func (t *deferredStreamTracer) GetDeferredSpanHandle(traceID string) schemas.SpanHandle {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return r.spanID
+	}
+	return nil
+}
+
+func (t *deferredStreamTracer) GetDeferredSpanID(traceID string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return r.spanID
+	}
+	return ""
+}
+
+func (t *deferredStreamTracer) ClearDeferredSpan(traceID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.records, traceID)
+}
+
+func (t *deferredStreamTracer) AddStreamingChunk(traceID string, _ *schemas.BifrostResponse) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		r.chunks++
+	}
+}
+
+func (t *deferredStreamTracer) GetAccumulatedChunks(traceID string) (*schemas.BifrostResponse, int64, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return nil, 0, r.chunks
+	}
+	return nil, 0, 0
+}
+
+// llmSpans returns the LLM-call and retry-attempt spans in start order.
+func (t *deferredStreamTracer) llmSpans() []*deferredStreamSpan {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []*deferredStreamSpan
+	for i := 1; i <= t.nextID; i++ {
+		if s := t.spans[fmt.Sprintf("span-%d", i)]; s != nil && (s.kind == schemas.SpanKindLLMCall || s.kind == schemas.SpanKindRetry) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (t *deferredStreamTracer) recordCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.records)
+}
+
+func newDeferredStreamContext(tracer *deferredStreamTracer) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	return ctx
+}
+
+// responsesStreamChunks returns two text deltas and a response.completed chunk carrying usage.
+func responsesStreamChunks() []*schemas.BifrostResponse {
+	text := "hi"
+	return []*schemas.BifrostResponse{
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: &text}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: &text}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:     schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}},
+		}},
+	}
+}
+
+func passthroughPostHookRunner(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return resp, err
+}
+
+// onceFinalizer mirrors the core's sync.Once-wrapped per-attempt finalizer.
+func onceFinalizer() func(context.Context) {
+	var once sync.Once
+	return func(context.Context) { once.Do(func() {}) }
+}
+
+// startFakeProviderStream runs chunks through ProcessAndSendResponse and closes the
+// stream with the defers a provider goroutine uses. With hold set, nothing reaches the
+// returned channel until the final chunk has been processed, as when a plugin pauses
+// the stream until its last chunk.
+func startFakeProviderStream(ctx *schemas.BifrostContext, chunks []*schemas.BifrostResponse, hold bool) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	finalizer := onceFinalizer()
+	out := make(chan *schemas.BifrostStreamChunk, len(chunks))
+	sendTo := out
+	if hold {
+		sendTo = make(chan *schemas.BifrostStreamChunk, len(chunks))
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, finalizer)
+		defer providerUtils.CloseStream(ctx, out)
+		for i, chunk := range chunks {
+			if i == len(chunks)-1 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			providerUtils.ProcessAndSendResponse(ctx, passthroughPostHookRunner, chunk, sendTo, finalizer)
+		}
+		if hold {
+			for range chunks {
+				out <- <-sendTo
+			}
+		}
+	}()
+	return out, done
+}
+
+// drainStream reads a stream to its end and returns how many chunks it carried.
+func drainStream(stream chan *schemas.BifrostStreamChunk) int {
+	n := 0
+	for range stream {
+		n++
+	}
+	return n
+}
+
+// A plugin that holds a stream until its final chunk lets the provider goroutine finish
+// the stream before the retry loop has seen its first chunk. The LLM span must still be
+// completed OK with every chunk counted and the terminal chunk as its outcome.
+func TestExecuteRequestWithRetries_StreamSpanCompletesWhenStreamEndsBeforeFirstChunkCheck(t *testing.T) {
+	for _, hold := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hold=%v", hold), func(t *testing.T) {
+			tracer := newDeferredStreamTracer()
+			ctx := newDeferredStreamContext(tracer)
+			chunks := responsesStreamChunks()
+			var done <-chan struct{}
+			handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				var out chan *schemas.BifrostStreamChunk
+				out, done = startFakeProviderStream(ctx, chunks, hold)
+				return out, nil
+			}
+
+			stream, err := executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, time.Millisecond), handler, nil,
+				schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := drainStream(stream); got != len(chunks) {
+				t.Errorf("client received %d chunks, want %d", got, len(chunks))
+			}
+			<-done
+
+			spans := tracer.llmSpans()
+			if len(spans) != 1 {
+				t.Fatalf("got %d LLM spans, want 1", len(spans))
+			}
+			span := spans[0]
+			if span.ends == 0 || span.status != schemas.SpanStatusOk {
+				t.Errorf("LLM span ended %d times with status %q, want ended with %q", span.ends, span.status, schemas.SpanStatusOk)
+			}
+			if got := span.attrs[schemas.AttrTotalChunks]; got != len(chunks) {
+				t.Errorf("%s = %v, want %d", schemas.AttrTotalChunks, got, len(chunks))
+			}
+			if span.populated != chunks[len(chunks)-1] {
+				t.Error("LLM span was not populated from the stream's terminal chunk")
+			}
+			if n := tracer.recordCount(); n != 0 {
+				t.Errorf("%d deferred span records left behind", n)
+			}
+		})
+	}
+}
+
+// The stream span is registered before each attempt's provider starts. A failed
+// attempt's goroutine that is still unwinding when the retry starts must not touch the
+// retry's span; the retry loop owns the failed attempt's outcome.
+func TestExecuteRequestWithRetries_FailedStreamAttemptLeavesRetrySpanAlone(t *testing.T) {
+	tracer := newDeferredStreamTracer()
+	ctx := newDeferredStreamContext(tracer)
+	chunks := responsesStreamChunks()
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	retryStarted := make(chan struct{})
+	firstDone := make(chan struct{})
+	var retryDone <-chan struct{}
+	attempts := 0
+
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		attempts++
+		if attempts == 1 {
+			finalizer := onceFinalizer()
+			out := make(chan *schemas.BifrostStreamChunk, 1)
+			go func() {
+				defer close(firstDone)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, passthroughPostHookRunner,
+					createBifrostError("rate limit exceeded", schemas.Ptr(429), nil, false), out, logger, finalizer)
+				providerUtils.CloseStream(ctx, out)
+				// The dead attempt's last defer runs only once the retry is underway.
+				<-retryStarted
+				providerUtils.EnsureStreamFinalizerCalled(ctx, finalizer)
+			}()
+			return out, nil
+		}
+		close(retryStarted)
+		<-firstDone
+		out, done := startFakeProviderStream(ctx, chunks, true)
+		retryDone = done
+		return out, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, createTestConfig(1, time.Millisecond, time.Millisecond), handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, logger)
+	if err != nil {
+		t.Fatalf("expected the retry to succeed, got %v", err)
+	}
+	drainStream(stream)
+	<-retryDone
+
+	if attempts != 2 {
+		t.Fatalf("got %d attempts, want 2", attempts)
+	}
+	spans := tracer.llmSpans()
+	if len(spans) != 2 {
+		t.Fatalf("got %d LLM/retry spans, want 2", len(spans))
+	}
+	if first := spans[0]; first.ends != 1 || first.status != schemas.SpanStatusError || first.populatedErr == nil {
+		t.Errorf("failed attempt's span ended %d times with %q (error recorded: %v), want ended once %q with its error", first.ends, first.status, first.populatedErr != nil, schemas.SpanStatusError)
+	}
+	retry := spans[1]
+	if retry.ends == 0 || retry.status != schemas.SpanStatusOk || retry.populatedErr != nil {
+		t.Errorf("retry's span ended %d times with %q (error recorded: %v), want ended %q without an error", retry.ends, retry.status, retry.populatedErr != nil, schemas.SpanStatusOk)
+	}
+	if got := retry.attrs[schemas.AttrTotalChunks]; got != len(chunks) {
+		t.Errorf("retry %s = %v, want %d", schemas.AttrTotalChunks, got, len(chunks))
+	}
+	if n := tracer.recordCount(); n != 0 {
+		t.Errorf("%d deferred span records left behind", n)
+	}
+}
+
+// A stream that closes before producing a chunk is the retry loop's empty stream: its
+// span ends OK with no error stamped, as it did before spans were registered up front.
+func TestExecuteRequestWithRetries_EmptyStreamSpanEndsOk(t *testing.T) {
+	tracer := newDeferredStreamTracer()
+	ctx := newDeferredStreamContext(tracer)
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		out := make(chan *schemas.BifrostStreamChunk)
+		providerUtils.CloseStream(ctx, out)
+		providerUtils.EnsureStreamFinalizerCalled(ctx, onceFinalizer())
+		return out, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, time.Millisecond), handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := drainStream(stream); got != 0 {
+		t.Errorf("empty stream carried %d chunks", got)
+	}
+	spans := tracer.llmSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got %d LLM spans, want 1", len(spans))
+	}
+	if span := spans[0]; span.status != schemas.SpanStatusOk || span.populatedErr != nil {
+		t.Errorf("empty stream's span status %q (error recorded: %v), want %q without an error", span.status, span.populatedErr != nil, schemas.SpanStatusOk)
+	}
+	if n := tracer.recordCount(); n != 0 {
+		t.Errorf("%d deferred span records left behind", n)
 	}
 }
 

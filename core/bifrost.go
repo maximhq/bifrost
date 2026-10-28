@@ -6078,10 +6078,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	stopRequestTimeout, _ := armRequestTimeout(ctx)
 	defer stopRequestTimeout()
 
-	ctx.ResetUpstreamLatency()
-	// Whole-request start for top-down overhead (total minus upstream). On ctx so
-	// tryRequest can stamp the response before post-hooks, where logging reads it.
-	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
+	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
+	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
+	if continuation == nil {
+		ctx.ResetUpstreamLatency()
+		// Whole-request start for top-down overhead (total minus upstream). On ctx so
+		// tryRequest can stamp the response before post-hooks, where logging reads it.
+		ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
+	}
 	// Backstop for the returned body if a post-hook replaced the response.
 	defer func() {
 		ctx.StampUpstreamLatency()
@@ -6505,6 +6509,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Each attempt gets its own log row; mark where its window begins.
+	ctx.MarkAttemptStart()
 	provider, model, _ := req.GetRequestFields()
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
@@ -6793,6 +6799,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 //
 // firstTokenTimeout is this attempt's TTFT deadline; 0 disables it.
 func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, firstTokenTimeout time.Duration) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Each attempt gets its own log row; mark where its window begins.
+	ctx.MarkAttemptStart()
+	ctx.MarkStreamAttemptStart()
 	provider, model, _ := req.GetRequestFields()
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
@@ -7727,6 +7736,15 @@ func executeRequestWithRetries[T any](
 			}
 		}
 
+		// Register the stream's span before the provider starts: its goroutine counts
+		// every chunk against it and completes it, possibly before the first-chunk check
+		// below returns (a plugin holding the stream until its last chunk does this).
+		if isStreamRequest && handle != nil {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				tracer.StoreDeferredSpan(traceID, handle)
+			}
+		}
+
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
@@ -7783,54 +7801,61 @@ func executeRequestWithRetries[T any](
 			bifrostError = settleAttemptAbort(ctx, attemptAbort, bifrostError, providerKey, model)
 		}
 
-		// Check if result is a streaming channel - if so, defer span completion
-		// Only defer for successful stream setup; error paths must end the span
-		// synchronously. An empty stream is also ended synchronously: its
-		// provider goroutine is gone, so a deferred span would never complete.
+		// A live stream's span is ended by its provider goroutine when the stream
+		// completes. Everything else ends it here: non-stream responses, failed stream
+		// setup, and empty streams, whose provider goroutine is already gone.
 		isStreamChan := false
 		if bifrostError == nil && !emptyStream {
 			if ch, ok := any(result).(chan *schemas.BifrostStreamChunk); ok && ch != nil {
 				isStreamChan = true
 			}
 		}
-		if isStreamChan {
-			// For streaming requests, store the span handle in TraceStore keyed by trace ID
-			// This allows the provider's streaming goroutine to retrieve it later
-			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
-				tracer.StoreDeferredSpan(traceID, handle)
-			}
-			// Don't end the span here - it will be ended when streaming completes
-		} else {
-			// Populate LLM response attributes for non-streaming responses
-			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
-				// Populate ExtraFields with provider/model/requestType before cost
-				// calculation, because the per-request worker only calls PopulateExtraFields
-				// after executeRequestWithRetries returns (line ~5802).  Without this,
-				// resp.GetExtraFields().Provider is empty and CalculateCost always returns 0.
-				// This is currently done for showing correct OTEL cost calculations. Will check if there is a better way to get this done
-				resolvedModelUsed := model
-				if req != nil {
-					if _, rm, _ := req.GetRequestFields(); rm != "" {
-						resolvedModelUsed = rm
-					}
+		if !isStreamChan {
+			// A failed or empty stream has closed by now, and a provider goroutine does no
+			// span work after closing. If it already completed the span (a first-chunk
+			// error), the outcome is recorded; otherwise it is ours. Drop the registration
+			// either way so the next attempt's provider never sees it.
+			spanEnded := false
+			if isStreamRequest {
+				if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+					spanEnded = tracer.GetDeferredSpanHandle(traceID) == nil
+					tracer.ClearDeferredSpan(traceID)
 				}
-				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
-				_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
-				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
-				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
-			} else if bifrostError != nil {
-				// Failed stream requests carry a chan result and miss the cast above;
-				// stamp error attributes explicitly so spans don't report unknown.
-				_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
-				tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
-				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			}
+			// The provider stamped and ended the span itself; a second end would overwrite
+			// its end time and status.
+			if !spanEnded {
+				// Populate LLM response attributes for non-streaming responses
+				if resp, ok := any(result).(*schemas.BifrostResponse); ok {
+					// Populate ExtraFields with provider/model/requestType before cost
+					// calculation, because the per-request worker only calls PopulateExtraFields
+					// after executeRequestWithRetries returns (line ~5802).  Without this,
+					// resp.GetExtraFields().Provider is empty and CalculateCost always returns 0.
+					// This is currently done for showing correct OTEL cost calculations. Will check if there is a better way to get this done
+					resolvedModelUsed := model
+					if req != nil {
+						if _, rm, _ := req.GetRequestFields(); rm != "" {
+							resolvedModelUsed = rm
+						}
+					}
+					resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
+					_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
+					tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
+					tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
+				} else if bifrostError != nil {
+					// Failed stream requests carry a chan result and miss the cast above;
+					// stamp error attributes explicitly so spans don't report unknown.
+					_, attrHandle := tracer.StartSpanID(ctx, "attribute-population", schemas.SpanKindInternal)
+					tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
+					tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
+				}
 
-			// Error attributes are stamped by PopulateLLMResponseAttributes above.
-			if bifrostError != nil {
-				tracer.EndSpan(handle, schemas.SpanStatusError, "request failed")
-			} else {
-				tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+				// Error attributes are stamped by PopulateLLMResponseAttributes above.
+				if bifrostError != nil {
+					tracer.EndSpan(handle, schemas.SpanStatusError, "request failed")
+				} else {
+					tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+				}
 			}
 		}
 
