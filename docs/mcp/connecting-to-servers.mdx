@@ -456,6 +456,33 @@ func main() {
 }
 ```
 
+### Per-Call Outbound Tokens
+
+When one gateway serves many callers over a shared HTTP or SSE connection, each tool call can carry its own `Authorization: Bearer <token>` instead of the connection-level credential. Implement `OutboundMCPTokenProvider` and set it on `MCPConfig`:
+
+```go
+type tokenProvider struct{}
+
+// Called once per tool call, with that call's context and the MCP client name.
+func (tokenProvider) GetTokenForUpstream(ctx context.Context, serverName string) (string, error) {
+    tenant, _ := ctx.Value(tenantKey{}).(string)
+    return mintToken(tenant, serverName) // "" means: use the configured credential
+}
+
+mcpConfig := &schemas.MCPConfig{
+    ClientConfigs:         clientConfigs,
+    OutboundTokenProvider: tokenProvider{},
+}
+```
+
+- A non-empty token is sent as `Authorization: Bearer <token>` on that JSON-RPC request only. Concurrent calls over the same connection each send their own token.
+- An empty string means "no per-request token": the call uses the configured credential unchanged.
+- An error fails that tool call, and nothing is sent upstream.
+- Plugins can supply the same token without a Go SDK provider: a `PreMCPHook` sets `schemas.BifrostContextKeyMCPOutboundToken` (a `string`) on the context.
+- Precedence, highest first: the provider's token, the context key, `Authorization` from [forwarded extra headers](#forwarding-request-headers-to-mcp-servers), then the configured credential.
+- Tool discovery, health checks and tool sync run with no caller. They never consult the provider and always use the configured credential.
+- Tokens are not cached or stored by Bifrost; cache them in your provider if minting is expensive.
+
 ### Tools To Execute Semantics
 
 The `ToolsToExecute` field controls which tools from the client are available:
@@ -906,6 +933,10 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 
 </Tab>
 </Tabs>
+
+### Per-Call Authorization
+
+To give each tool call its own bearer token rather than forwarding a caller header, use `MCPConfig.OutboundTokenProvider` (Go SDK) or set `BifrostContextKeyMCPOutboundToken` from a `PreMCPHook` plugin. The token replaces `Authorization` for that one request, whether it came from the configured credential or from `allowed_extra_headers`. Precedence is provider, then context key, then extra headers, then the configured credential. Health checks and tool sync never use it. See [Per-Call Outbound Tokens](#per-call-outbound-tokens).
 
 ---
 

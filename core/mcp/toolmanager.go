@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/mcp/credstore"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -98,6 +99,8 @@ type ToolsManager struct {
 	// CredentialStore resolves per-call credentials (headers, Bearer tokens)
 	// and signals whether a client needs an ephemeral upstream connection.
 	credStore schemas.MCPCredentialStore
+
+	outboundTokenProvider atomic.Pointer[outboundProviderHolder] // see MCPConfig.OutboundTokenProvider
 
 	// CodeMode implementation for code execution (Starlark by default)
 	codeMode CodeMode
@@ -231,7 +234,25 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 		ClientManager:         m.clientManager,
 		FetchNewRequestIDFunc: m.fetchNewRequestIDFunc,
 		CredentialStore:       m.credStore,
+
+		OutboundTokenProvider: m.getOutboundTokenProvider,
 	}
+}
+
+type outboundProviderHolder struct {
+	p schemas.OutboundMCPTokenProvider
+}
+
+func (m *ToolsManager) getOutboundTokenProvider() schemas.OutboundMCPTokenProvider {
+	if h := m.outboundTokenProvider.Load(); h != nil {
+		return h.p
+	}
+	return nil
+}
+
+// SetOutboundTokenProvider replaces the per-call outbound token provider; it is safe to call at any time.
+func (m *ToolsManager) SetOutboundTokenProvider(p schemas.OutboundMCPTokenProvider) {
+	m.outboundTokenProvider.Store(&outboundProviderHolder{p: p})
 }
 
 // GetAvailableTools returns the available tools for the given context.
@@ -847,7 +868,8 @@ func (m *ToolsManager) executeToolInternal(
 		//     terminated session, which on 2026-07-28 it cannot be.
 		//
 		// See attemptCallFailureRecovery for the per-auth-type mechanics.
-		if isAuthFailure(callErr) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn)) {
+		// A per-call token failing says nothing about the connection credential: no refresh or reconnect.
+		if !utils.HasCallToken(toolCtx) && (isAuthFailure(callErr) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn))) {
 			// Recovery runs inside this call's own budget, not the caller's.
 			// The attempt above already spent part of toolCtx, and handing the
 			// parent ctx down instead would let the reconnect wait its full

@@ -417,7 +417,7 @@ func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testi
 				delete(m.clientMap, "codey-id")
 				m.mu.Unlock()
 			}
-			_, _, release, err := m.prepareToolExecution(ctx, request)
+			_, _, _, release, err := m.prepareToolExecution(ctx, request)
 			if tc.wantErr {
 				assert.ErrorContains(t, err, "not permitted")
 				return

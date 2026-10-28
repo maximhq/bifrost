@@ -27,6 +27,7 @@ type StarlarkCodeMode struct {
 	clientManager         mcp.ClientManager
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
 	credStore             schemas.MCPCredentialStore
+	outboundTokenProvider func() schemas.OutboundMCPTokenProvider
 
 	// Logger for this instance
 	logger schemas.Logger
@@ -86,6 +87,7 @@ func (s *StarlarkCodeMode) SetDependencies(deps *mcp.CodeModeDependencies) {
 		s.clientManager = deps.ClientManager
 		s.fetchNewRequestIDFunc = deps.FetchNewRequestIDFunc
 		s.credStore = deps.CredentialStore
+		s.outboundTokenProvider = deps.OutboundTokenProvider
 	}
 }
 

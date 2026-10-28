@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -190,4 +191,71 @@ func ExtractFilteredExtras(ctx context.Context, config *schemas.MCPClientConfig)
 		}
 	}
 	return headers
+}
+
+// callTokenKey carries the token resolved for one tool call. Only the tool-execution
+// gates set it, so probes, sync and reconnects can never send a token.
+type callTokenKey struct{}
+
+// PerRequestHeaders returns the headers to add to one outgoing MCP request: the
+// allow-listed extras, with Authorization replaced by the call's resolved token when set.
+func PerRequestHeaders(ctx context.Context, config *schemas.MCPClientConfig) map[string]string {
+	out := FlattenHeaders(ExtractFilteredExtras(ctx, config))
+	if token := callToken(ctx); token != "" {
+		out["Authorization"] = "Bearer " + token
+	}
+	return out
+}
+
+// ApplyOutboundToken replaces Authorization in h with the call's resolved token, if any.
+func ApplyOutboundToken(ctx context.Context, h http.Header) {
+	if token := callToken(ctx); token != "" {
+		h.Set("Authorization", "Bearer "+token)
+	}
+}
+
+// HasCallToken reports whether ctx carries a per-call token.
+func HasCallToken(ctx context.Context) bool { return callToken(ctx) != "" }
+
+// ResolveOutboundToken returns the token for one call to serverName: the provider's
+// when it returns one, else the value a hook left on BifrostContextKeyMCPOutboundToken.
+// Provider errors are logged and returned as a fixed message that omits the provider's text.
+func ResolveOutboundToken(ctx context.Context, provider schemas.OutboundMCPTokenProvider, serverName string, logger schemas.Logger) (string, error) {
+	if provider != nil {
+		token, err := provider.GetTokenForUpstream(ctx, serverName)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("outbound token provider failed for MCP server %s: %v", serverName, err)
+			}
+			return "", fmt.Errorf("failed to resolve outbound token for MCP server '%s'", serverName)
+		}
+		if token != "" {
+			return token, nil
+		}
+	}
+	token, _ := ctx.Value(schemas.BifrostContextKeyMCPOutboundToken).(string)
+	return token, nil
+}
+
+// WithCallToken returns a child context carrying token for this call only, and a release
+// func. An empty token returns ctx unchanged.
+func WithCallToken(ctx *schemas.BifrostContext, token string) (*schemas.BifrostContext, func()) {
+	if token == "" {
+		return ctx, func() {}
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = schemas.NoDeadline
+	}
+	child := schemas.NewBifrostContext(ctx, deadline)
+	child.SetValue(callTokenKey{}, token)
+	return child, child.Cancel
+}
+
+func callToken(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	token, _ := ctx.Value(callTokenKey{}).(string)
+	return token
 }

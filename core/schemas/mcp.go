@@ -270,6 +270,24 @@ type MCPConfig struct {
 	// The transport registers framework/openapimcp.Factory here; Go SDK users opt in
 	// the same way. Nil means openapi clients fail to connect with a clear error.
 	InProcessServerFactory InProcessServerFactory `json:"-"`
+
+	OutboundTokenProvider OutboundMCPTokenProvider `json:"-"` // Optional per-call bearer token source; see OutboundMCPTokenProvider
+}
+
+// OutboundMCPTokenProvider supplies the bearer token for one tool call to an upstream MCP
+// server, so a multi-tenant deployment can use a different identity per call over a shared connection.
+//
+// GetTokenForUpstream is called once per tool call, after PreMCPHook plugins have run, with the
+// call's context and the MCP client name. It is called for HTTP, SSE and in-process (openapi)
+// clients, never for stdio, and never for discovery, health probes or tool sync. A non-empty
+// token is sent as "Authorization: Bearer <token>" on that call's requests only. An empty string
+// falls back to a token a hook set on BifrostContextKeyMCPOutboundToken, then to the extra
+// headers and the configured credential; return "" for servers that take no bearer. An error
+// fails that tool call before anything is sent upstream; the caller sees a fixed message and
+// the error is logged. A call that fails with a token is not retried or reconnected.
+// Implementations must be safe for concurrent use.
+type OutboundMCPTokenProvider interface {
+	GetTokenForUpstream(ctx context.Context, serverName string) (string, error)
 }
 
 // ErrMCPOpenAPIConfigInvalid marks a permanent failure to synthesize an openapi

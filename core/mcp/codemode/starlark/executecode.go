@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -343,7 +344,20 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	// the gate, mirroring the gateway's exec.go:prepareToolExecution → gate
 	// ordering. Connection lifecycle is the caller's concern; the gate's op
 	// closure only performs the wire CallTool.
-	conn, release, err := s.clientManager.AcquireClientConn(nestedCtx, client)
+	// Hooks of this nested call decide its token: drop whatever the outer call carried.
+	nestedCtx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, "")
+	sendsHeaders := client.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO
+	var providerToken string
+	if sendsHeaders && s.outboundTokenProvider != nil {
+		var tokenErr error
+		providerToken, tokenErr = mcputils.ResolveOutboundToken(nestedCtx, s.outboundTokenProvider(), clientName, s.logger)
+		if tokenErr != nil {
+			return nil, tokenErr
+		}
+	}
+	acquireCtx, releaseAcquireToken := mcputils.WithCallToken(nestedCtx, providerToken)
+	defer releaseAcquireToken()
+	conn, release, err := s.clientManager.AcquireClientConn(acquireCtx, client)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +407,13 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		}
 
 		startTime := time.Now()
-		toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
+		opToken := providerToken
+		if opToken == "" && sendsHeaders {
+			opToken, _ = nestedCtx.Value(schemas.BifrostContextKeyMCPOutboundToken).(string)
+		}
+		callCtx, releaseCallToken := mcputils.WithCallToken(nestedCtx, opToken)
+		defer releaseCallToken()
+		toolCtx, cancel := context.WithTimeout(callCtx, toolExecutionTimeout)
 		defer cancel()
 
 		// Per-request extra headers (BifrostContextKeyMCPExtraHeaders) are injected
