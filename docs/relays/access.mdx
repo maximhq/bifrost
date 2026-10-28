@@ -69,7 +69,7 @@ An omitted `relay_grants` leaves the grants unchanged and `[]` clears them.
 | --- | --- | --- | --- |
 | `relay_grants` | array | omitted | Relays this key may call, one `{ "relay_name": "..." }` each. Omitted keeps the grants made in the dashboard or API; a declared list, `[]` included, replaces them when the key syncs from the file. Not applied when an access profile governs the key's team, customer or user (Enterprise): that profile's `relay_grants` decide the key's relays. |
 
-Relays declared in `config.json` are loaded before governance, so a virtual key in the same file may grant them.
+Relays declared in `config.json` are loaded before governance, so a virtual key in the same file may grant them. A name that matches no relay is skipped with a warning. The key is reconciled again only when its entry changes (or on every start with `config.json` as the source of truth), so after fixing the relay, the grant is applied the next time the key's entry is synced.
 
 </Tab>
 <Tab title="Helm">
