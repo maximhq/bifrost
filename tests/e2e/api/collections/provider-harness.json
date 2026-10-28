@@ -297306,6 +297306,57 @@
               ]
             }
           }
+        },
+        {
+          "name": "280.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('280.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = (body.data || []).filter(function (m) { return m.id === 'openrouter/openai/gpt-4o-mini'; })[0];",
+                  "pm.test('the upstream label reaches the Anthropic drop-in listing (#8914)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text().slice(0, 2000)).to.be.an('object');",
+                  "  pm.expect(entry['display_name'], 'display_name missing on ' + JSON.stringify(entry)).to.be.a('string').and.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{openaiKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "openrouter"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
         }
       ]
     }
