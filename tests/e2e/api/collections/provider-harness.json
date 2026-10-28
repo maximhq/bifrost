@@ -113,6 +113,10 @@
           "    } else if (typeof j.output_text === 'string' && j.output_text.length > 0) {",
           "        shape = 'openai-responses-output_text';",
           "        hasContent = true;",
+          "    } else if (j.type === 'function_call_output' && j.output !== undefined) {",
+          "        shape = 'mcp-tool-result-responses';",
+          "        // POST /v1/mcp/tool/execute?format=responses answers with one function_call_output; its output (a string or input_* blocks) IS the result.",
+          "        hasContent = typeof j.output === 'string' ? j.output.length > 0 : Array.isArray(j.output) && j.output.length > 0;",
           "    } else if (Array.isArray(j.output) && j.output.length > 0) {",
           "        shape = 'openai-responses-output';",
           "        // Responses tool-use items are all typed <tool>_call (function_call, tool_search_call, custom_tool_call, mcp_call, local_shell_call, ...). A client-execution call is a valid TERMINAL output: the model emits the call and stops, waiting for the matching *_output, so no text accompanies it.",
@@ -265,6 +269,10 @@
           "    } else if (j.type === 'completion' && typeof j.completion === 'string') {",
           "        shape = 'anthropic-text-completion';",
           "        hasContent = j.completion.length > 0;",
+          "    } else if (j.session && typeof j.session.id === 'string' && j.transport && typeof j.transport.type === 'string') {",
+          "        shape = 'live-session';",
+          "        // POST /v1/live/sessions answers with the session id and its transport (an SDP answer for WebRTC); the conversation runs on that transport, so the body carries no text.",
+          "        hasContent = j.session.id.length > 0;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
@@ -240261,16 +240269,17 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "var MISMATCH = 'provider does not match the passthrough route: expected openai';",
+                  "var MISMATCH = 'provider does not match the passthrough route: expected openai or a custom provider based on it';",
                   "var errorOf = function (res) { var j = {}; try { j = res.json() || {}; } catch (e) { j = {}; } return (j.error || {}).message; };",
                   "pm.test('a standard provider other than the route’s is refused, and nothing is dispatched', function () {",
                   "  pm.expect(errorOf(pm.response), pm.response.text()).to.eql(MISMATCH);",
                   "  pm.expect(pm.response.headers.get('x-bifrost-provider'), pm.response.text()).to.equal(undefined);",
                   "});",
                   "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai_passthrough/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-model-provider': 'openai_pc_auto' }, body: { mode: 'raw', raw: JSON.stringify({\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}) } }, function (err, res) {",
-                  "  pm.test('a custom provider built on the route’s provider is refused too: the header must name the route’s provider exactly', function () {",
-                  "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(400);",
-                  "    pm.expect(errorOf(res), res.text()).to.eql(MISMATCH);",
+                  "  pm.test('a custom provider built on the route’s provider without a passthrough policy is refused with 403, and nothing is dispatched', function () {",
+                  "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(403);",
+                  "    pm.expect(errorOf(res), res.text()).to.eql('passthrough is not enabled for provider openai_pc_auto; configure its passthrough allowed routes');",
+                  "    pm.expect(res.headers.get('x-bifrost-provider'), res.text()).to.equal(undefined);",
                   "  });",
                   "});"
                 ],
@@ -285133,7 +285142,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming claude-opus-4-8 is refused as a permission_error - server tool model check",
           "event": [
             {
               "listen": "test",
@@ -285146,8 +285155,10 @@
                   "pm.test('anthropic messages: refused with 403', function () {",
                   "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
                   "});",
-                  "pm.test('anthropic messages: the refusal is model_blocked and names the advisor model', function () {",
-                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "pm.test('anthropic messages: the refusal is the Anthropic permission_error and names the advisor model', function () {",
+                  "  // The Anthropic route answers in Anthropic's error shape, which carries permission_error, not the gateway's model_blocked code.",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('\"type\":\"permission_error\"');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('is not allowed for virtual key');",
                   "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
                   "});"
                 ]
@@ -285196,7 +285207,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming claude-opus-4-8 is refused as a permission_error - server tool model check",
           "event": [
             {
               "listen": "test",
@@ -285209,8 +285220,10 @@
                   "pm.test('anthropic messages stream: refused with 403', function () {",
                   "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
                   "});",
-                  "pm.test('anthropic messages stream: the refusal is model_blocked and names the advisor model', function () {",
-                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "pm.test('anthropic messages stream: the refusal is the Anthropic permission_error and names the advisor model', function () {",
+                  "  // The Anthropic route answers in Anthropic's error shape, which carries permission_error, not the gateway's model_blocked code.",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('\"type\":\"permission_error\"');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('is not allowed for virtual key');",
                   "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
                   "});"
                 ]
@@ -291146,7 +291159,8 @@
                   "pm.sendRequest({",
                   "  url: pm.variables.get('baseUrl') + '/mcp',",
                   "  method: 'POST',",
-                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'X-Forwarded-For': '203.0.113.8, 10.0.0.1' },",
+                  "  // sse_mcp and slow_mcp serve the same fixture and a read goes to the first client by name, so pin it to sse_mcp, the label the log query filters on.",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'X-Forwarded-For': '203.0.113.8, 10.0.0.1', 'x-bf-mcp-include-clients': 'sse_mcp' },",
                   "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: uri } }) }",
                   "}, function (err, res) {",
                   "  var text = res ? res.text() : '';",
@@ -291235,7 +291249,8 @@
                   "pm.sendRequest({",
                   "  url: pm.variables.get('baseUrl') + '/mcp',",
                   "  method: 'POST',",
-                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },",
+                  "  // sse_mcp and slow_mcp serve the same fixture and a read goes to the first client by name, so pin it to sse_mcp, the label the log query filters on.",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18', 'x-bf-mcp-include-clients': 'sse_mcp' },",
                   "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'file:///fixture/report,2026.md' } }) }",
                   "}, function (err, res) {",
                   "  var text = res ? res.text() : '';",
@@ -292159,14 +292174,14 @@
           }
         },
         {
-          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages streaming: message_delta invents no prompt counters - #7896",
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages streaming: message_delta prompt counters agree with message_start - #7896",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('a message_delta reports no prompt counter the upstream did not send - #7896', function () {",
+                  "pm.test('a message_delta prompt counter agrees with message_start - #7896', function () {",
                   "  pm.expect(pm.response.code, 'stream request failed: ' + pm.response.text()).to.be.below(400);",
                   "  var body = pm.response.text() || '';",
                   "  var lines = body.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; });",
@@ -292179,16 +292194,16 @@
                   "  pm.expect(deltas.length, 'no message_delta data line found in stream: ' + body.slice(0, 400)).to.be.above(0);",
                   "  // An accumulating client OVERWRITES the fields each usage object carries, so a",
                   "  // message_delta reporting input_tokens:0 erases the prompt count it already has.",
-                  "  // Anthropic sends no prompt counters on that frame, so neither may Bifrost.",
+                  "  // Anthropic reports cumulative prompt counters on message_delta, so a counter",
+                  "  // the frame carries must equal message_start's. A gateway that invents one for an",
+                  "  // output-only upstream frame is pinned by TestStreamedPromptUsageSurvivesToTheClient.",
                   "  deltas.forEach(function (l, i) {",
                   "    var frame = JSON.parse(l.replace(/^data:\\s*/, ''));",
                   "    if (!frame.usage) { return; }",
-                  "    // Anthropic reports prompt counters on message_start and output-only on",
-                  "    // message_delta. Comparing against message_start's figure would also pass",
-                  "    // for a gateway that COPIES it onto the delta -- which is the invented",
-                  "    // counter this case exists to catch -- so absence is what gets asserted.",
+                  "    var startUsage = startFrame.message.usage;",
                   "    ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].forEach(function (key) {",
-                  "      pm.expect(frame.usage, 'message_delta #' + i + ' reports ' + key + ':' + frame.usage[key] + '; the upstream sends no prompt counters on this frame, and an accumulating client OVERWRITES the ' + promptTokens + ' it already has from message_start: ' + l.slice(0, 300)).to.not.have.property(key);",
+                  "      if (!(key in frame.usage) || frame.usage[key] === null) { return; }",
+                  "      pm.expect(frame.usage[key], 'message_delta #' + i + ' reports ' + key + ':' + frame.usage[key] + ' but message_start reported ' + startUsage[key] + '; an accumulating client OVERWRITES its count with it: ' + l.slice(0, 300)).to.eql(startUsage[key]);",
                   "    });",
                   "  });",
                   "});"
@@ -296750,7 +296765,7 @@
           "description": "Which header selects a route is the operator's choice, so a route matcher may name any header, here an x-amz-* header under aws_sigv4 that the relay does not forward upstream. Before, create was refused with 400 \"is not forwarded under aws_sigv4\". Management API only, the upstream is never called.",
           "item": [
             {
-              "name": "create a sigv4 relay whose route matches on X-Amz-Storage-Class - relays-e2e",
+              "name": "[EXPECT-201] create a sigv4 relay whose route matches on X-Amz-Storage-Class - relays-e2e",
               "event": [
                 {
                   "listen": "test",
@@ -296795,7 +296810,7 @@
               }
             },
             {
-              "name": "cleanup: delete the sigv4 relay - relays-e2e",
+              "name": "[EXPECT-204] cleanup: delete the sigv4 relay - relays-e2e",
               "event": [
                 {
                   "listen": "test",
