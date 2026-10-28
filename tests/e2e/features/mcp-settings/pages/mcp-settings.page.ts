@@ -19,6 +19,7 @@ export class MCPSettingsPage extends BasePage {
   readonly securityIssuerUrlInput: Locator
   readonly securityIssuerUrlChangeWarning: Locator
   readonly securitySaveBtn: Locator
+  readonly maxProtocolVersionSelect: Locator
 
   constructor(page: Page) {
     super(page)
@@ -40,6 +41,7 @@ export class MCPSettingsPage extends BasePage {
     this.securityIssuerUrlInput = page.getByTestId('oauth2-issuer-url-input')
     this.securityIssuerUrlChangeWarning = page.getByTestId('oauth2-issuer-url-change-warning')
     this.securitySaveBtn = page.getByTestId('security-save-btn')
+    this.maxProtocolVersionSelect = page.getByTestId('mcp-max-protocol-version-select')
   }
 
   /** The remove button of one OAuth private allowlist entry, present while the entry is listed. */
@@ -55,6 +57,12 @@ export class MCPSettingsPage extends BasePage {
   /** Input for one code mode limit, keyed by its config field (e.g. 'max_tool_calls'). */
   codeModeLimitInput(field: string): Locator {
     return this.page.getByTestId(`mcp-code-mode-${field.replace(/_/g, '-')}-input`)
+  }
+
+  /** Picks a global max protocol version ('auto' or a version) from the select. */
+  async selectMaxProtocolVersion(value: string): Promise<void> {
+    await this.maxProtocolVersionSelect.click()
+    await this.page.getByTestId(`mcp-max-protocol-version-${value}`).click()
   }
 
   async goto(): Promise<void> {

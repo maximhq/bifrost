@@ -72,6 +72,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "MCP",
             "MCP Tool Groups",
             "Agent Gateway",
+            "Relays",
             "OAuth",
             "Circuit Breaker",
             "Logging",

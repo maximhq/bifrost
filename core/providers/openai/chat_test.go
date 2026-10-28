@@ -3253,3 +3253,42 @@ func TestInlineChatMidConversationSystem_NilContent(t *testing.T) {
 	require.Equal(t, "ops", *out[2].Name)
 	require.Nil(t, out[2].Content)
 }
+
+// A tool result's explicit prompt-cache breakpoint survives the media in it being named instead of
+// sent: the tool message stays a part array carrying the breakpoint.
+func TestToOpenAIChatRequest_ToolResultBreakpointSurvivesMediaPlaceholder(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-sol",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
+			}}}},
+			{
+				Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below"), PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}},
+					{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+				}},
+			},
+		},
+		Params: &schemas.ChatParameters{},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	out := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, out)
+	b, err := out.MarshalJSON()
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+	msgs, _ := m["messages"].([]any)
+	require.Len(t, msgs, 3, string(b))
+	tool, _ := msgs[2].(map[string]any)
+	parts, ok := tool["content"].([]any)
+	require.True(t, ok, "the tool message must stay a part array; raw=%s", string(b))
+	first, _ := parts[0].(map[string]any)
+	require.NotNil(t, first["prompt_cache_breakpoint"], "raw=%s", string(b))
+}

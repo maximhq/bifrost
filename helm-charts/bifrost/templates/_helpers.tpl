@@ -1502,6 +1502,16 @@ false
 {{- else if hasKey $client "toolsToAutoExecute" }}
 {{- $_ := set $cc "tools_to_auto_execute" $client.toolsToAutoExecute }}
 {{- end }}
+{{- if hasKey $client "prompts_to_expose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.prompts_to_expose }}
+{{- else if hasKey $client "promptsToExpose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.promptsToExpose }}
+{{- end }}
+{{- if hasKey $client "resources_to_expose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resources_to_expose }}
+{{- else if hasKey $client "resourcesToExpose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resourcesToExpose }}
+{{- end }}
 {{- if hasKey $client "auth_type" }}
 {{- $_ := set $cc "auth_type" $client.auth_type }}
 {{- else if hasKey $client "authType" }}
@@ -1556,6 +1566,9 @@ false
 {{- end }}
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
+{{- end }}
+{{- if $client.maxProtocolVersion }}
+{{- $_ := set $cc "max_protocol_version" $client.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
@@ -1665,6 +1678,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
+{{- end }}
+{{- if .Values.bifrost.mcp.maxProtocolVersion }}
+{{- $_ := set $mcpConfig "max_protocol_version" .Values.bifrost.mcp.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}

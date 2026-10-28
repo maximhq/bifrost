@@ -865,3 +865,24 @@ func TestDecision_PassesPerplexityErrorsThrough(t *testing.T) {
 		t.Errorf("message = %+v, want Perplexity's", bifrostErr.Error)
 	}
 }
+
+// A tool result's media is named instead of sent: Perplexity takes text only in a tool message.
+func TestToPerplexityChatCompletionRequest_FlattensToolResultMedia(t *testing.T) {
+	req := perplexity.ToPerplexityChatCompletionRequest(&schemas.BifrostChatRequest{
+		Model: "sonar",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+			}}},
+		},
+	})
+	if req == nil || len(req.Messages) != 2 {
+		t.Fatalf("expected two messages, got %+v", req)
+	}
+	text := req.Messages[1].Content.ContentStr
+	if text == nil || !strings.Contains(*text, "[image/png") {
+		t.Fatalf("the tool message must be text naming the image; got %+v", req.Messages[1].Content)
+	}
+}
