@@ -713,13 +713,9 @@ func anthropicNativeEffortFrom(ctx *schemas.BifrostContext) (anthropicNativeEffo
 // has no field for thinking.display, which a caller may send beside
 // thinking.type "between_tools" and which the raw/passthrough path forwards.
 //
-// The three sampling scalars survive the neutral shape, but not the trip: a
-// request-normalizing layer between the two conversions may legitimately drop a
-// parameter its own model table does not list (the built-in compat plugin does
-// exactly this from ResponsesParameters.Temperature / .TopP in
-// plugins/compat/dropparams.go), and the Anthropic egress then has nothing left
-// to forward. Reading them back off the neutral parameters at egress is
-// therefore not sound; they are recorded here at ingress instead.
+// The sampling scalars are not recorded: they cross the neutral shape
+// unchanged, and the egress deliberately does not restore them (see the note at
+// the end of restoreNativeAnthropicRequestSurface).
 //
 // The PRESENCE of this witness is itself the signal that the request arrived as
 // a native Anthropic Messages body. Every OpenAI-shaped inbound dialect reaches
@@ -744,9 +740,7 @@ type anthropicNativeRequestSurface struct {
 	// request alone: the projection is lossy by construction, so Reasoning
 	// already differs from the caller's own thinking before any plugin runs.
 	// Comparing against what the conversion itself produced is the only reading
-	// that isolates a later edit. The three sampling scalars need no such
-	// record -- they cross the neutral shape unchanged, so a value still
-	// present at egress is current whoever put it there.
+	// that isolates a later edit.
 	NeutralReasoning *schemas.ResponsesParametersReasoning
 }
 
@@ -754,7 +748,7 @@ type anthropicNativeRequestSurface struct {
 // a package-private one so that core's ClearContextForInternalRequest can shed
 // it: BifrostContext.Value reads through to its parent, so a plugin-owned
 // sub-request built on a context derived from the caller's would otherwise
-// inherit this caller's thinking mode and sampling scalars and be answered with
+// inherit this caller's thinking mode and be answered with
 // parameters it never carried. Exporting the KEY costs nothing: the value type
 // below is unexported, so no package outside this one can construct a witness,
 // and the type assertion in anthropicNativeRequestSurfaceFrom rejects anything
@@ -786,13 +780,12 @@ func preserveNativeThinking(caps schemas.ModelCaps, thinkingType string) bool {
 }
 
 // setAnthropicNativeRequestSurface records an inbound Anthropic Messages
-// request's own reasoning and sampling surface so the Anthropic egress can
-// rebuild it verbatim.
+// request's own reasoning surface so the Anthropic egress can rebuild it
+// verbatim.
 //
 // It is called for EVERY native Anthropic Messages request, including ones with
-// no thinking and no sampling parameters: the witness's presence is what tells
-// the egress that this request came in as a native Anthropic body, and that
-// question has to be answerable when the caller sent sampling parameters only.
+// no thinking parameters: the witness's presence is what tells the egress that
+// this request came in as a native Anthropic body.
 //
 // It rides on the context rather than ExtraParams because ExtraParams is
 // serialized onto the wire when the passthrough header is set: a
@@ -882,7 +875,6 @@ func eqPtr[T comparable](a, b *T) bool {
 	return *a == *b
 }
 
-
 // anthropicNativeRequestSurfaceFrom recovers a recorded native Anthropic
 // Messages request surface. ok is false for every route that did not come in as
 // an Anthropic Messages request -- every OpenAI-shaped inbound dialect included
@@ -895,23 +887,6 @@ func anthropicNativeRequestSurfaceFrom(ctx *schemas.BifrostContext) (anthropicNa
 	return surface, ok
 }
 
-// restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
-// Anthropic Messages request that the round trip through the neutral shape
-// could not carry. It is a no-op unless this request arrived as a native
-// Anthropic Messages body AND the target model is one whose surface this build
-// forwards rather than guesses at, so it cannot change any other inbound
-// dialect or any other model.
-//
-// It is called from BuildAnthropicResponsesRequestBody rather than from
-// ToAnthropicResponsesRequest, and deliberately AFTER the shared
-// stripUnsupportedAnthropicFields pass: that pass rewrites thinking for the
-// whole adaptive-only family one step later, so a restore inside the converter
-// would be silently undone (the lesson the DeepSeek effort refresh in this same
-// builder already carries). Restoring after it also means the shared strip needs
-// no exemption of its own, so its other caller -- the OpenAI-shaped chat path,
-// which promotes thinking out of ExtraParams -- keeps its behaviour untouched.
-// The builder is the single call site of the converter, so nothing loses the
-// restore by it living here.
 // compatDroppedParams reports which parameters the built-in compat plugin
 // removed because the model catalog did not allowlist them.
 //
@@ -937,6 +912,23 @@ func compatDroppedParams(ctx *schemas.BifrostContext) map[string]bool {
 	return set
 }
 
+// restoreNativeAnthropicRequestSurface puts back the parts of the caller's own
+// Anthropic Messages request that the round trip through the neutral shape
+// could not carry. It is a no-op unless this request arrived as a native
+// Anthropic Messages body AND the target model is one whose surface this build
+// forwards rather than guesses at, so it cannot change any other inbound
+// dialect or any other model.
+//
+// It is called from BuildAnthropicResponsesRequestBody rather than from
+// ToAnthropicResponsesRequest, and deliberately AFTER the shared
+// stripUnsupportedAnthropicFields pass: that pass rewrites thinking for the
+// whole adaptive-only family one step later, so a restore inside the converter
+// would be silently undone (the lesson the DeepSeek effort refresh in this same
+// builder already carries). Restoring after it also means the shared strip needs
+// no exemption of its own, so its other caller -- the OpenAI-shaped chat path,
+// which promotes thinking out of ExtraParams -- keeps its behaviour untouched.
+// The builder is the single call site of the converter, so nothing loses the
+// restore by it living here.
 func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, params *schemas.ResponsesParameters, provider schemas.ModelProvider, capModel string) {
 	if req == nil {
 		return
@@ -1023,7 +1015,6 @@ func restoreNativeAnthropicRequestSurface(ctx *schemas.BifrostContext, req *Anth
 	// footing: between_tools is documented as Sonnet 5.5's lowest accepted
 	// setting, and effort is documented as independent of thinking.
 }
-
 
 // SetResponsesStreamPassthrough marks this request's Anthropic reverse stream
 // conversion as running on the Claude Code passthrough path (raw upstream frames
@@ -4695,10 +4686,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 			Effort: schemas.Ptr(*req.OutputConfig.Effort),
 		}
 	}
-	// Record the caller's own reasoning and sampling surface, so the Anthropic
-	// egress can rebuild it verbatim instead of collapsing thinking into
-	// "disabled", rewriting it to adaptive, or forwarding sampling parameters a
-	// later normalization pass has since dropped. Recorded for EVERY native
+	// Record the caller's own reasoning surface, so the Anthropic egress can
+	// rebuild it verbatim instead of collapsing thinking into "disabled" or
+	// rewriting it to adaptive. Recorded for EVERY native
 	// Anthropic Messages request: the witness's presence is also what
 	// distinguishes this ingress from an OpenAI-shaped one at egress.
 	//

@@ -1840,9 +1840,6 @@ func TestEnabledBudgetThinkingIsForwardedVerbatim(t *testing.T) {
 	}
 }
 
-
-
-
 // The same rule for the reasoning half. The witness restores thinking because
 // the neutral shape cannot carry a budget beside the caller's own thinking.type
 // -- but a layer that deliberately rewrote the reasoning configuration has
