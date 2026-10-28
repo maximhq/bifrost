@@ -825,6 +825,102 @@ test_template "mcp tokenExchange: id_jag needs resourceClientId, not clientId" \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.profile=id_jag' \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.resourceClientId=bifrost-client'
 
+# connection_type "openapi" builds an MCP server from an OpenAPI/Swagger document. Every
+# openapiConfig field must render under its config.schema.json key, and the values schema plus
+# the template guards must refuse what config.schema.json refuses.
+cat > "$VALUES_DIR/mcp-openapi.yaml" << 'VALS'
+bifrost:
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: web_search
+        connectionType: openapi
+        authType: headers
+        headers:
+          X-Team: platform
+        openapiConfig:
+          specUrl: "https://searxng.example.com/openapi.json"
+          baseUrl: "https://searxng.example.com"
+          securityCredentials:
+            apiKeyAuth:
+              value: "env.SEARXNG_API_KEY"
+            basicAuth:
+              username: "svc"
+              password: "env.SEARXNG_PASSWORD"
+          includeDeprecated: true
+          maxResponseBytes: 131072
+        toolsToExecute: ["*"]
+      - name: inline_spec
+        connectionType: openapi
+        openapiConfig:
+          spec: |
+            openapi: 3.0.3
+            info: {title: Inline, version: "1"}
+            paths: {}
+      - name: file_spec
+        connectionType: openapi
+        authType: per_user_headers
+        perUserHeaderKeys: ["Authorization"]
+        openapiConfig:
+          specFile: "specs/petstore.yaml"
+          includeDeprecated: false
+          maxResponseBytes: 0
+VALS
+OPENAPI_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=oa'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi'
+)
+
+check_config "mcp openapi: every openapiConfig field renders under its openapi_config key" \
+  'cc = cfg["mcp"]["client_configs"]
+assert cc[0]["connection_type"] == "openapi", cc[0]
+assert cc[0]["auth_type"] == "headers", cc[0]
+assert cc[0]["headers"] == {"X-Team": "platform"}, cc[0]
+assert cc[0]["openapi_config"] == {
+    "spec_url": "https://searxng.example.com/openapi.json",
+    "base_url": "https://searxng.example.com",
+    "security_credentials": {
+        "apiKeyAuth": {"value": "env.SEARXNG_API_KEY"},
+        "basicAuth": {"username": "svc", "password": "env.SEARXNG_PASSWORD"},
+    },
+    "include_deprecated": True,
+    "max_response_bytes": 131072,
+}, "openapi_config changed: %r" % cc[0]["openapi_config"]
+assert cc[1]["openapi_config"] == {"spec": "openapi: 3.0.3\ninfo: {title: Inline, version: \"1\"}\npaths: {}\n"}, "inline spec changed: %r" % cc[1]["openapi_config"]
+assert "auth_type" not in cc[1], "auth_type rendered without being set: %r" % cc[1]
+assert cc[2]["openapi_config"] == {"spec_file": "specs/petstore.yaml", "include_deprecated": False, "max_response_bytes": 0}, "spec_file client changed: %r" % cc[2]["openapi_config"]
+assert cc[2]["auth_type"] == "per_user_headers" and cc[2]["per_user_header_keys"] == ["Authorization"], cc[2]
+for c in cc:
+    for k in ("connection_string", "stdio_config", "tls_config"):
+        assert k not in c, "%s rendered on openapi client %s" % (k, c["name"])' \
+  -f "$VALUES_DIR/mcp-openapi.yaml"
+
+# The values schema refuses what config.schema.json refuses.
+expect_render_failure "mcp openapi: schema requires openapiConfig" "allOf" \
+  "${OPENAPI_CLIENT[@]}"
+expect_render_failure "mcp openapi: schema requires spec, specFile or specUrl" "anyOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.baseUrl=https://api.example.com'
+expect_render_failure "mcp openapi: schema refuses oauth auth" "allOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=oauth'
+expect_render_failure "mcp openapi: schema refuses token_exchange auth" "allOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=token_exchange'
+expect_render_failure "mcp openapi: schema refuses a non-http specUrl" "specUrl" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=ftp://api.example.com/openapi.json'
+expect_render_failure "mcp openapi: schema refuses a credential userinfo baseUrl" "baseUrl" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.baseUrl=https://user:pass@api.example.com'
+expect_render_failure "mcp openapi: schema refuses unknown openapiConfig fields" "additional" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.spec_url=https://api.example.com/openapi.json'
+expect_render_failure "mcp openapi: schema refuses openapiConfig on an http client" "allOf" \
+  --set bifrost.mcp.enabled=true --set 'bifrost.mcp.clientConfigs[0].name=h' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+
 # Every identity provider inherits crossAppAccess, tokenExchangeHosts and
 # accessProfileResolutionStrategy from the enterprise ProvisioningConfig; the chart passes
 # scim.config through, so the values schema is what has to accept them.
