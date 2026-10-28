@@ -77,6 +77,16 @@ type TableKey struct {
 	BedrockMantleProjectID       *schemas.SecretVar `gorm:"type:text" json:"bedrock_mantle_project_id,omitempty"`
 	BedrockMantleEndpointsJSON   *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.BedrockEndpoints
 
+	// SageMaker config fields (embedded)
+	SageMakerAccessKey       *schemas.SecretVar `gorm:"type:text;column:sagemaker_access_key" json:"sagemaker_access_key,omitempty"`
+	SageMakerSecretKey       *schemas.SecretVar `gorm:"type:text;column:sagemaker_secret_key" json:"sagemaker_secret_key,omitempty"`
+	SageMakerSessionToken    *schemas.SecretVar `gorm:"type:text;column:sagemaker_session_token" json:"sagemaker_session_token,omitempty"`
+	SageMakerRegion          *schemas.SecretVar `gorm:"type:text;column:sagemaker_region" json:"sagemaker_region,omitempty"`
+	SageMakerRoleARN         *schemas.SecretVar `gorm:"type:text;column:sagemaker_role_arn" json:"sagemaker_role_arn,omitempty"`
+	SageMakerExternalID      *schemas.SecretVar `gorm:"type:text;column:sagemaker_external_id" json:"sagemaker_external_id,omitempty"`
+	SageMakerRoleSessionName *schemas.SecretVar `gorm:"type:text;column:sagemaker_role_session_name" json:"sagemaker_role_session_name,omitempty"`
+	SageMakerEndpointsJSON   *string            `gorm:"type:text;column:sagemaker_endpoints_json" json:"-"` // JSON serialized schemas.SageMakerEndpoints
+
 	// VLLM config fields (embedded)
 	VLLMUrl       *schemas.SecretVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string            `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
@@ -135,6 +145,7 @@ type TableKey struct {
 	VertexKeyConfig        *schemas.VertexKeyConfig        `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig       *schemas.BedrockKeyConfig       `gorm:"-" json:"bedrock_key_config,omitempty"`
 	BedrockMantleKeyConfig *schemas.BedrockMantleKeyConfig `gorm:"-" json:"bedrock_mantle_key_config,omitempty"`
+	SageMakerKeyConfig     *schemas.SageMakerKeyConfig     `gorm:"-" json:"sagemaker_key_config,omitempty"`
 	VLLMKeyConfig          *schemas.VLLMKeyConfig          `gorm:"-" json:"vllm_key_config,omitempty"`
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
@@ -452,6 +463,71 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockMantleEndpointsJSON = nil
 	}
 
+	// Copy to avoid encrypting the shared SageMakerKeyConfig through the pointer.
+	if k.SageMakerKeyConfig != nil {
+		if k.SageMakerKeyConfig.AccessKey.IsSet() {
+			ak := k.SageMakerKeyConfig.AccessKey
+			k.SageMakerAccessKey = &ak
+		} else {
+			k.SageMakerAccessKey = nil
+		}
+		if k.SageMakerKeyConfig.SecretKey.IsSet() {
+			sk := k.SageMakerKeyConfig.SecretKey
+			k.SageMakerSecretKey = &sk
+		} else {
+			k.SageMakerSecretKey = nil
+		}
+		if k.SageMakerKeyConfig.SessionToken != nil {
+			v := *k.SageMakerKeyConfig.SessionToken
+			k.SageMakerSessionToken = &v
+		} else {
+			k.SageMakerSessionToken = nil
+		}
+		if k.SageMakerKeyConfig.Region != nil {
+			v := *k.SageMakerKeyConfig.Region
+			k.SageMakerRegion = &v
+		} else {
+			k.SageMakerRegion = nil
+		}
+		if k.SageMakerKeyConfig.RoleARN != nil {
+			v := *k.SageMakerKeyConfig.RoleARN
+			k.SageMakerRoleARN = &v
+		} else {
+			k.SageMakerRoleARN = nil
+		}
+		if k.SageMakerKeyConfig.ExternalID != nil {
+			v := *k.SageMakerKeyConfig.ExternalID
+			k.SageMakerExternalID = &v
+		} else {
+			k.SageMakerExternalID = nil
+		}
+		if k.SageMakerKeyConfig.RoleSessionName != nil {
+			v := *k.SageMakerKeyConfig.RoleSessionName
+			k.SageMakerRoleSessionName = &v
+		} else {
+			k.SageMakerRoleSessionName = nil
+		}
+		if k.SageMakerKeyConfig.Endpoints != nil {
+			data, err := sonic.Marshal(k.SageMakerKeyConfig.Endpoints)
+			if err != nil {
+				return err
+			}
+			s := string(data)
+			k.SageMakerEndpointsJSON = &s
+		} else {
+			k.SageMakerEndpointsJSON = nil
+		}
+	} else {
+		k.SageMakerAccessKey = nil
+		k.SageMakerSecretKey = nil
+		k.SageMakerSessionToken = nil
+		k.SageMakerRegion = nil
+		k.SageMakerRoleARN = nil
+		k.SageMakerExternalID = nil
+		k.SageMakerRoleSessionName = nil
+		k.SageMakerEndpointsJSON = nil
+	}
+
 	if k.Aliases != nil {
 		data, err := sonic.Marshal(k.Aliases)
 		if err != nil {
@@ -690,6 +766,31 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptString(k.BedrockMantleEndpointsJSON); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock mantle endpoints: %w", err)
 		}
+		// SageMaker
+		if err := encryptSecretVarPtr(&k.SageMakerAccessKey); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker access key: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerSecretKey); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker secret key: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerSessionToken); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker session token: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerRegion); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker region: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerRoleARN); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker role arn: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerExternalID); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker external id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.SageMakerRoleSessionName); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker role session name: %w", err)
+		}
+		if err := encryptString(k.SageMakerEndpointsJSON); err != nil {
+			return fmt.Errorf("failed to encrypt sagemaker endpoints: %w", err)
+		}
 		// Aliases
 		if err := encryptString(k.AliasesJSON); err != nil {
 			return fmt.Errorf("failed to encrypt aliases: %w", err)
@@ -843,6 +944,31 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptString(k.BedrockMantleEndpointsJSON); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock mantle endpoints: %w", err)
+		}
+		// SageMaker
+		if err := decryptSecretVarPtr(&k.SageMakerAccessKey); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker access key: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerSecretKey); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker secret key: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerSessionToken); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker session token: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerRegion); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker region: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerRoleARN); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker role arn: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerExternalID); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker external id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.SageMakerRoleSessionName); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker role session name: %w", err)
+		}
+		if err := decryptString(k.SageMakerEndpointsJSON); err != nil {
+			return fmt.Errorf("failed to decrypt sagemaker endpoints: %w", err)
 		}
 		// Aliases
 		if err := decryptString(k.AliasesJSON); err != nil {
@@ -1043,6 +1169,29 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 			mantleConfig.Endpoints = &endpoints
 		}
 		k.BedrockMantleKeyConfig = mantleConfig
+	}
+	// Reconstruct SageMaker config if fields are present
+	if k.SageMakerAccessKey != nil || k.SageMakerSecretKey != nil || k.SageMakerSessionToken != nil || k.SageMakerRegion != nil || k.SageMakerRoleARN != nil || k.SageMakerExternalID != nil || k.SageMakerRoleSessionName != nil || (k.SageMakerEndpointsJSON != nil && *k.SageMakerEndpointsJSON != "") {
+		smConfig := &schemas.SageMakerKeyConfig{}
+		if k.SageMakerAccessKey != nil {
+			smConfig.AccessKey = *k.SageMakerAccessKey
+		}
+		if k.SageMakerSecretKey != nil {
+			smConfig.SecretKey = *k.SageMakerSecretKey
+		}
+		smConfig.SessionToken = k.SageMakerSessionToken
+		smConfig.Region = k.SageMakerRegion
+		smConfig.RoleARN = k.SageMakerRoleARN
+		smConfig.ExternalID = k.SageMakerExternalID
+		smConfig.RoleSessionName = k.SageMakerRoleSessionName
+		if k.SageMakerEndpointsJSON != nil && *k.SageMakerEndpointsJSON != "" {
+			var endpoints schemas.SageMakerEndpoints
+			if err := json.Unmarshal([]byte(*k.SageMakerEndpointsJSON), &endpoints); err != nil {
+				return err
+			}
+			smConfig.Endpoints = &endpoints
+		}
+		k.SageMakerKeyConfig = smConfig
 	}
 	// Reconstruct Aliases
 	if k.AliasesJSON != nil && *k.AliasesJSON != "" {

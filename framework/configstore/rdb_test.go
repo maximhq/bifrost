@@ -68,6 +68,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
+	require.NoError(t, migrationAddRelaysTables(context.Background(), db, testMigrationLogger), "Failed to migrate relay tables")
 
 	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
 	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
@@ -5230,6 +5231,33 @@ func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T
 	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
 }
 
+func TestUpsertModelPricesBatch_VideoTokenColumnSurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	rate := 0.000007
+
+	row := tables.TableModelPricing{Model: "dreamina-seedance-2-0-260128", Provider: "byteplus", Mode: "video_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.OutputCostPerVideoToken = &rate
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "dreamina-seedance-2-0-260128" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.OutputCostPerVideoToken, "output_cost_per_video_token missing from pricingSyncUpdateColumns")
+	assert.Equal(t, rate, *found.OutputCostPerVideoToken)
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —
@@ -5797,26 +5825,7 @@ func vkMetadataStoreBackends(t *testing.T) map[string]*RDBConfigStore {
 // dialect-specific metadata filter cannot go untested while the run still passes on SQLite.
 func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 	t.Helper()
-	db, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, pgTestSchema, vkMetadataPGSchema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		return nil
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil
-	}
-	if sqlDB.Ping() != nil {
-		_ = sqlDB.Close()
-		return nil
-	}
-	// Registered before the schema statements so the connection is closed even if they fail.
-	t.Cleanup(func() {
-		_ = db.Exec("DROP SCHEMA IF EXISTS " + vkMetadataPGSchema + " CASCADE").Error
-		_ = sqlDB.Close()
-	})
-	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+vkMetadataPGSchema+" CASCADE").Error)
-	require.NoError(t, db.Exec("CREATE SCHEMA "+vkMetadataPGSchema).Error)
-	require.NoError(t, db.AutoMigrate(
+	s := trySetupPostgresSchemaStore(t, vkMetadataPGSchema,
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
 		&tables.TableBudget{},
@@ -5830,8 +5839,40 @@ func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableAgentRegistration{},
 		&tables.TableVirtualKeyAgentGrant{},
-	))
-	require.NoError(t, db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}))
+		&tables.TableRelay{},
+		&tables.TableVirtualKeyRelayGrant{},
+	)
+	if s == nil {
+		return nil
+	}
+	require.NoError(t, s.DB().SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}))
+	return s
+}
+
+// trySetupPostgresSchemaStore returns a Postgres store whose tables for models live in their own
+// schema, dropped on cleanup, or nil when the local test Postgres is not reachable.
+func trySetupPostgresSchemaStore(t *testing.T, schema string, models ...interface{}) *RDBConfigStore {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, pgTestSchema, schema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return nil
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil
+	}
+	if sqlDB.Ping() != nil {
+		_ = sqlDB.Close()
+		return nil
+	}
+	// Registered before the schema statements so the connection is closed even if they fail.
+	t.Cleanup(func() {
+		_ = db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE").Error
+		_ = sqlDB.Close()
+	})
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+schema+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
+	require.NoError(t, db.AutoMigrate(models...))
 	s := &RDBConfigStore{logger: nil}
 	s.db.Store(db)
 	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
@@ -5891,4 +5932,138 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeleteAbandonedOauthConfigs pins which oauth_configs rows the sweep may
+// remove: only 'pending'/'failed' rows past the grace period with no MCP
+// client, live flow, or token pointing at them.
+func TestDeleteAbandonedOauthConfigs(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.AutoMigrate(&tables.TableOauthConfig{}))
+
+	old := time.Now().Add(-2 * time.Hour)
+	seedConfig := func(id, status string, createdAt time.Time) {
+		require.NoError(t, db.Create(&tables.TableOauthConfig{
+			ID: id, Status: status, RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: createdAt,
+		}).Error)
+	}
+	seedFlow := func(id, configID string, expiresAt time.Time) {
+		require.NoError(t, db.Create(&tables.TableMCPOauthFlow{
+			ID: id, State: "state-" + id, OauthConfigID: configID, FlowMode: "admin", Status: "pending", ExpiresAt: expiresAt,
+		}).Error)
+	}
+
+	seedConfig("abandoned-pending", "pending", old)
+	seedConfig("abandoned-failed", "failed", old)
+	seedConfig("expired-flow", "pending", old)
+	seedFlow("flow-expired", "expired-flow", old)
+	seedConfig("young-pending", "pending", time.Now())
+	seedConfig("live-flow", "pending", old)
+	seedFlow("flow-live", "live-flow", time.Now().Add(10*time.Minute))
+	seedConfig("authorized", "authorized", old)
+	seedConfig("has-token", "failed", old)
+	require.NoError(t, db.Create(&tables.TableMCPOauthToken{
+		ID: "tok-1", AuthMode: "shared", OauthConfigID: "has-token", Status: "active", AccessToken: "x", TokenType: "Bearer",
+	}).Error)
+	seedConfig("linked", "pending", old)
+	linkedID := "linked"
+	require.NoError(t, db.Create(&tables.TableMCPClient{
+		ClientID: "linked-client", Name: "linked", ConnectionType: "http", AuthType: "oauth", OauthConfigID: &linkedID,
+	}).Error)
+
+	n, err := store.DeleteAbandonedOauthConfigs(ctx, 0)
+	require.NoError(t, err)
+	assert.Zero(t, n, "non-positive grace must be a no-op")
+
+	n, err = store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n)
+
+	var remaining []string
+	require.NoError(t, db.Model(&tables.TableOauthConfig{}).Order("id").Pluck("id", &remaining).Error)
+	assert.Equal(t, []string{"authorized", "has-token", "linked", "live-flow", "young-pending"}, remaining)
+}
+
+// TestDeleteAbandonedOauthConfigs_BoundedBatch pins that one call removes at
+// most one batch, so a backlog larger than the database's bound-parameter
+// limit cannot wedge the sweep; later ticks drain the rest.
+func TestDeleteAbandonedOauthConfigs_BoundedBatch(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.AutoMigrate(&tables.TableOauthConfig{}))
+
+	old := time.Now().Add(-2 * time.Hour)
+	configs := make([]tables.TableOauthConfig, abandonedOauthConfigSweepBatch+1)
+	for i := range configs {
+		configs[i] = tables.TableOauthConfig{
+			ID: fmt.Sprintf("abandoned-%04d", i), Status: "pending", RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: old,
+		}
+	}
+	require.NoError(t, db.CreateInBatches(configs, 100).Error)
+
+	n, err := store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(abandonedOauthConfigSweepBatch), n, "one call must delete at most one batch")
+
+	n, err = store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "the next call drains the remainder")
+}
+
+// oauthSweepPGSchema keeps the abandoned-config race test's tables apart from
+// the shared test schema.
+const oauthSweepPGSchema = "configstore_oauth_sweep_test"
+
+// TestDeleteAbandonedOauthConfigs_ConcurrentClientLinkSurvives reproduces the
+// Postgres READ COMMITTED race: an MCP client linking an abandoned config is
+// inserted but not yet committed when the sweep starts, so the sweep's
+// NOT EXISTS check cannot see it and the sweep blocks on the row lock the
+// client's foreign key holds. Once the client commits, the sweep must re-check
+// and keep the row; deleting it would cascade and delete the new client.
+func TestDeleteAbandonedOauthConfigs_ConcurrentClientLinkSurvives(t *testing.T) {
+	store := trySetupPostgresSchemaStore(t, oauthSweepPGSchema,
+		&tables.TableOauthConfig{}, &tables.TableMCPClient{}, &tables.TableMCPOauthFlow{}, &tables.TableMCPOauthToken{})
+	if store == nil {
+		t.Skip("test Postgres not reachable")
+	}
+	ctx := context.Background()
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.Create(&tables.TableOauthConfig{
+		ID: "racing", Status: "pending", RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: time.Now().Add(-2 * time.Hour),
+	}).Error)
+
+	linker := db.Begin()
+	require.NoError(t, linker.Error)
+	defer linker.Rollback()
+	racingID := "racing"
+	require.NoError(t, linker.Create(&tables.TableMCPClient{
+		ClientID: "racing-client", Name: "racing", ConnectionType: "http", AuthType: "oauth", OauthConfigID: &racingID,
+	}).Error)
+
+	type sweepResult struct {
+		n   int64
+		err error
+	}
+	done := make(chan sweepResult, 1)
+	go func() {
+		n, err := store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+		done <- sweepResult{n, err}
+	}()
+
+	require.Eventually(t, func() bool {
+		var waiting int64
+		_ = db.Raw("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").Scan(&waiting).Error
+		return waiting > 0
+	}, 5*time.Second, 20*time.Millisecond, "sweep must block on the linking client's row lock")
+	require.NoError(t, linker.Commit().Error)
+
+	res := <-done
+	require.NoError(t, res.err)
+	assert.Zero(t, res.n, "a config linked while the sweep waited must not be deleted")
+	var clients int64
+	require.NoError(t, db.Model(&tables.TableMCPClient{}).Where("client_id = ?", "racing-client").Count(&clients).Error)
+	assert.Equal(t, int64(1), clients, "the sweep must never cascade-delete a just-linked MCP client")
 }

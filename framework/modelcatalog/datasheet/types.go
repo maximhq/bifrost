@@ -237,6 +237,10 @@ type Options struct {
 	OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
 
+	// Per-token video output rate, for providers that meter video in tokens (BytePlus Seedance).
+	// Takes precedence over OutputCostPerToken for video output tokens.
+	OutputCostPerVideoToken *float64 `json:"output_cost_per_video_token,omitempty"`
+
 	// Costs - Other.
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the upstream datasheet
@@ -879,6 +883,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond1024p: entry.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: entry.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          entry.OutputCostPerVideoToken,
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
@@ -1015,6 +1020,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond1024p: pricing.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: pricing.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          pricing.OutputCostPerVideoToken,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,

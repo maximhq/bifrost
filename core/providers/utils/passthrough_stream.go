@@ -101,7 +101,7 @@ func streamPassthrough(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				HandleStreamTimeout(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody)
 			}
-			close(ch)
+			CloseStream(ctx, ch)
 		}()
 		defer release()
 		defer stopIdleTimeout()

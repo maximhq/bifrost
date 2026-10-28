@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -303,6 +304,39 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 		return
 	}
 	entry.ApplyGovernanceContext(ctx)
+}
+
+// responsesToolResultWithoutMedia is message with each image, file and audio block of its tool output
+// replaced by a placeholder naming it; message itself is never mutated.
+func responsesToolResultWithoutMedia(message *schemas.ResponsesMessage) *schemas.ResponsesMessage {
+	if message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Output == nil {
+		return message
+	}
+	flattened, changed := schemas.FlattenResponsesToolResultMedia(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+	if !changed {
+		return message
+	}
+	output := *message.ResponsesToolMessage.Output
+	output.ResponsesFunctionToolCallOutputBlocks = flattened
+	toolMessage := *message.ResponsesToolMessage
+	toolMessage.Output = &output
+	copied := *message
+	copied.ResponsesToolMessage = &toolMessage
+	return &copied
+}
+
+// resourceURIForLog is uri without its user info, query and fragment, where credentials ride. Commas
+// are percent-encoded (the same URI) because the log filters split tool names on them.
+func resourceURIForLog(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return "[unparseable resource URI]"
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		parsed.User, parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = nil, "", false, "", ""
+		uri = parsed.String()
+	}
+	return strings.ReplaceAll(uri, ",", "%2C")
 }
 
 func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
@@ -1291,7 +1325,10 @@ type LoggerPlugin struct {
 	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key or named project; attached in PostMCPHook only if content ends up visible
 	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
+	pendingEndpointLogs          sync.Map                       // Maps request id -> *logstore.RelayLog awaiting PostRelayHook
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
+	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
+	relayRetainWarnOnce          sync.Once                      // retain_content_in_object_storage is not honoured on relay rows; said once
 	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry          // Buffered channel for batch write queue
 	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue
@@ -2802,6 +2839,15 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	// An output-monitor guardrail still evaluating the response holds the row at
 	// the writer hand-off (see holdForDeferredGuardrail).
 	entry.DeferredGuardrail, _ = schemas.DeferredGuardrailResultFromContext(ctx)
+	// Read now, while this attempt is still the current one on the context.
+	window, windowOK := schemas.GetAttemptWindow(ctx)
+	if windowOK && entry.Stream {
+		window.StreamBefore, _ = schemas.GetStreamAttemptStart(ctx)
+	}
+	rw := rowWindow{window: window, ok: windowOK}
+	if windowOK {
+		applyLaterAttemptWindow(entry, window)
+	}
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" {
 		// Fallback: no tracing (Go SDK path), enqueue directly
@@ -2820,7 +2866,7 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 		return
 	}
 	// Append to slice for Inject() to pick up — supports multiple attempts per trace
-	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
+	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, windows: []rowWindow{rw}, createdAt: time.Now()})
 	if !loaded {
 		// The trace may have ended between the check above and this store. Inject
 		// runs after EndTrace, so if it already drained, this fresh slot is
@@ -2849,6 +2895,7 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 		return
 	}
 	pending.entries = append(pending.entries, entry)
+	pending.windows = append(pending.windows, rw)
 	pending.mu.Unlock()
 }
 
@@ -2890,6 +2937,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	// attributes as LLM rows. Done before the LLM early-return below: an A2A
 	// trace has no pending LLM entries.
 	p.injectAgentEntries(trace, joinKey)
+	p.injectRelayEntries(trace, joinKey)
 	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(joinKey)
 	if !ok {
 		return nil
@@ -2903,6 +2951,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	pending.mu.Lock()
 	pending.drained = true
 	entries := pending.entries
+	windows := pending.windows
 	pending.mu.Unlock()
 	// Serialize plugin logs once for all entries
 	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
@@ -2915,6 +2964,28 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		upstreamMs, upOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
 		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
+	// Several rows under one trace (agent turns, fallback attempts, list_models pages),
+	// each with a measured attempt window: every row reports its own share.
+	if len(entries) > 1 && allWindowsMeasured(windows, len(entries)) {
+		measured := make([]schemas.AttemptWindow, len(entries))
+		for i := range entries {
+			measured[i] = windows[i].window
+		}
+		rows := splitTraceLatency(trace, measured, upstreamMs, upOK)
+		for i, entry := range entries {
+			entry.PluginLogs = pluginLogsJSON
+			row := rows[i]
+			entry.Latency = &row.latencyMs
+			entry.UpstreamLatency = &row.upstreamMs
+			entry.OverheadLatency = &row.overheadMs
+			if len(row.breakdown) > 0 {
+				entry.OverheadBreakdownParsed = row.breakdown
+			}
+			p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		}
+		return nil
+	}
+
 	// Per-span self-time decomposition of overhead, attached to the same terminal
 	// row that receives the overhead number below.
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
@@ -3426,8 +3497,9 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
-	// Only log for tool execute requests
-	if !req.RequestType.IsExecuteTool() {
+	// Only log tool executions and prompt or resource reads
+	isRead := req.RequestType.IsPromptOrResourceRead()
+	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
 
@@ -3448,10 +3520,24 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	fullToolName := req.GetToolName()
 	arguments := req.GetToolArguments()
+	if isRead {
+		serverLabel = req.ClientName
+		toolName = req.ReadTarget()
+		arguments = nil
+		if req.BifrostMCPGetPromptRequest != nil {
+			arguments = req.BifrostMCPGetPromptRequest.Arguments
+		}
+		// tool_name, stored whatever the content policy, holds the URI without credentials; the
+		// arguments, gated by that policy, keep it whole.
+		if req.BifrostMCPReadResourceRequest != nil {
+			toolName = resourceURIForLog(toolName)
+			arguments = map[string]string{"uri": req.BifrostMCPReadResourceRequest.URI}
+		}
+	}
 
 	// Extract server label from tool name (format: {client}-{tool_name})
 	// The first part before hyphen is the client/server label
-	if fullToolName != "" {
+	if fullToolName != "" && !isRead {
 		if idx := strings.Index(fullToolName, "-"); idx > 0 {
 			serverLabel = fullToolName[:idx]
 			toolName = fullToolName[idx+1:]
@@ -3469,7 +3555,8 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// e.g. "executeToolCode") and the suffix after the client prefix (e.g.
 	// "myclient-executeToolCode") so PreMCP and PostMCP agree on what to skip
 	// and we never leave an orphan pending row to expire via the TTL path.
-	if bifrost.IsCodemodeTool(fullToolName) || bifrost.IsCodemodeTool(toolName) {
+	// Reads are never codemode: an upstream prompt may share one of those names.
+	if !isRead && (bifrost.IsCodemodeTool(fullToolName) || bifrost.IsCodemodeTool(toolName)) {
 		return req, nil, nil
 	}
 
@@ -3484,10 +3571,14 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ID:          mcpLogID,
 		RequestID:   requestID,
 		Timestamp:   createdTimestamp,
-		ToolName:    toolName,
+		ToolName:    clampString(toolName, maxPersistedMCPToolNameLen),
 		ServerLabel: serverLabel,
 		Status:      "processing",
 		CreatedAt:   createdTimestamp,
+	}
+	if isRead {
+		method := req.RequestType.OTelMethodName()
+		entry.Method = &method
 	}
 
 	if parentRequestID != "" {
@@ -3560,7 +3651,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	} else if bifrostErr != nil {
 		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
 	}
-	if !mcpReqType.IsExecuteTool() {
+	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
 	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
@@ -3615,6 +3706,10 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency
+		// Core may move a read to another server after the pre-hooks; log the one that answered.
+		if mcpReqType.IsPromptOrResourceRead() && resp.ExtraFields.ClientName != "" {
+			entry.ServerLabel = resp.ExtraFields.ClientName
+		}
 	}
 
 	success := resp != nil && bifrostErr == nil
@@ -3636,20 +3731,23 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		// stored when it is also visible.
 		if contentVisible {
 			var result interface{}
+			// Media a tool returned is logged as a placeholder, not as base64.
 			if resp.ChatMessage != nil {
-				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
-					contentStr := *resp.ChatMessage.Content.ContentStr
+				message := *resp.ChatMessage
+				message.Content = schemas.FlattenToolResultMedia(resp.ChatMessage.Content, nil)
+				result = &message
+				if message.Content != nil && message.Content.ContentStr != nil {
 					var parsedContent interface{}
-					if err := sonic.Unmarshal([]byte(contentStr), &parsedContent); err == nil {
+					if err := sonic.Unmarshal([]byte(*message.Content.ContentStr), &parsedContent); err == nil {
 						result = parsedContent
-					} else {
-						result = resp.ChatMessage
 					}
-				} else {
-					result = resp.ChatMessage
 				}
 			} else if resp.ResponsesMessage != nil {
-				result = resp.ResponsesMessage
+				result = responsesToolResultWithoutMedia(resp.ResponsesMessage)
+			} else if resp.BifrostMCPGetPromptResponse != nil {
+				result = schemas.PromptForLog(resp.BifrostMCPGetPromptResponse.Prompt)
+			} else if resp.BifrostMCPReadResourceResponse != nil {
+				result = schemas.ResourceContentsForLog(resp.BifrostMCPReadResourceResponse.Resource)
 			}
 			if result != nil {
 				entry.ResultParsed = result

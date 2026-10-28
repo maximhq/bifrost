@@ -1295,7 +1295,12 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
 	for _, chatMsg := range cr.Input {
-		responsesMessages := chatMsg.ToResponsesMessages()
+		msg := &chatMsg
+		if chatMsg.Role == ChatMessageRoleTool {
+			// A function_call_output carries only the media every Responses provider reads.
+			msg = ToolResultForResponses(msg)
+		}
+		responsesMessages := msg.ToResponsesMessages()
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages
