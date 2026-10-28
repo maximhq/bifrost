@@ -250,10 +250,8 @@ type BifrostHTTPServer struct {
 	Client *bifrost.Bifrost
 	Config *lib.Config
 
-	// KeySelector and KeyPoolFilter let an embedder supply key-selection policy
-	// to core. They must be set before Bootstrap; nil keeps core's defaults.
-	KeySelector   schemas.KeySelector
-	KeyPoolFilter schemas.KeyPoolFilter
+	KeySelector   schemas.KeySelector   // embedder key-selection policy; nil keeps core's default
+	KeyPoolFilter schemas.KeyPoolFilter // embedder key-pool filter; nil keeps core's default
 
 	// HTTPClientFactory hands out clients for outbound traffic other than provider
 	// inference (webhooks, skills, plugin downloads, MCP, catalog sync) that honour
@@ -3274,6 +3272,9 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, sho
 // 2. Reads and parses configuration from the specified config file
 // 3. Initializes the Bifrost client with the configuration
 // 4. Sets up HTTP routes for text and chat completions
+//
+// KeySelector and KeyPoolFilter are passed to core here, so an embedder must
+// set them before calling Bootstrap.
 //
 // The server exposes the following endpoints:
 //   - POST /v1/text/completions: For text completion requests
