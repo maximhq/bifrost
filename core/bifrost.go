@@ -59,6 +59,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/valyala/fasthttp"
 )
 
@@ -8512,6 +8513,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// a concurrent request can then reuse it and overwrite RequestType.
 				// Reading req.RequestType inside the closure would observe the new request's type.
 				attemptRequestType := req.RequestType
+				// The request payloads a cancelled attempt's prompt is estimated from. Only
+				// these three pointers are kept: copying the whole BifrostRequest into the
+				// closure moved it to the heap on every streamed attempt.
+				attemptChat, attemptResponses, attemptText := req.ChatRequest, req.ResponsesRequest, req.TextCompletionRequest
+				// The Anthropic stream handlers mark usage provisional per attempt; a mark left
+				// by an earlier attempt must not mark this one's usage as provisional.
+				req.Context.ClearValue(schemas.BifrostContextKeyStreamUsageProvisional)
 				pipeline := bifrost.getPluginPipeline()
 				// Mirrors the retry loop's startup check for this attempt.
 				var isPreamble func(*schemas.BifrostStreamChunk) bool
@@ -8541,6 +8549,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if result == nil && startup.IsStartupError(err) && err.ExtraFields.BilledUsage == nil && ctx.Err() == nil {
 						heldBackError.Store(true)
 						return nil, err
+					}
+					if err != nil {
+						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 					if IsFinalChunk(ctx) {

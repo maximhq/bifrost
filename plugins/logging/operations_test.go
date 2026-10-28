@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,7 +15,9 @@ import (
 	"unicode/utf8"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -6935,4 +6938,235 @@ func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
 
 	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
 	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+// streamAccount serves one provider whose upstream is a test server.
+type streamAccount struct {
+	provider schemas.ModelProvider
+	config   schemas.ProviderConfig
+}
+
+func (a *streamAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{a.provider}, nil
+}
+
+func (a *streamAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}}, nil
+}
+
+func (a *streamAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if provider != a.provider {
+		return nil, fmt.Errorf("provider %s not configured", provider)
+	}
+	config := a.config
+	return &config, nil
+}
+
+// failedUsageRecorder keeps the billed usage of every stream failure its post-hook sees.
+type failedUsageRecorder struct {
+	usage chan *schemas.BifrostLLMUsage
+}
+
+func (r *failedUsageRecorder) GetName() string { return "failed-usage-recorder" }
+
+func (r *failedUsageRecorder) Cleanup() error { return nil }
+
+func (r *failedUsageRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (r *failedUsageRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (r *failedUsageRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil && err.Error != nil {
+		select {
+		case r.usage <- err.ExtraFields.BilledUsage.DeepCopy():
+		default:
+		}
+	}
+	return resp, err, nil
+}
+
+// stallingUpstream writes events, flushes, and holds the stream open until the client leaves.
+func stallingUpstream(t *testing.T, events ...string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// net/http notices a client hang-up only once the request body is consumed.
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			fmt.Fprint(w, e+"\n\n")
+		}
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+const openAIStallingChunk = `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}]}`
+
+// newEstimatingClient runs Bifrost with the real tracer and its stream accumulator,
+// fed by the logging plugin as in production, plus a recorder of failed-stream usage.
+func newEstimatingClient(t *testing.T, provider schemas.ModelProvider, baseURL string, custom bool, idleTimeout int) (*bifrost.Bifrost, *failedUsageRecorder) {
+	t.Helper()
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	t.Cleanup(tracer.Stop)
+	plugin, err := Init(context.Background(), &Config{}, logger, newTestStore(t), nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	account := &streamAccount{provider: provider, config: schemas.ProviderConfig{
+		NetworkConfig:            schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 30, StreamIdleTimeoutInSeconds: idleTimeout},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 16},
+	}}
+	if custom {
+		account.config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}
+	}
+	recorder := &failedUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 4)}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: logger, Tracer: tracer, LLMPlugins: []schemas.LLMPlugin{plugin, recorder},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	return client, recorder
+}
+
+func hiRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{},
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+}
+
+func awaitFailedUsage(t *testing.T, recorder *failedUsageRecorder, wait time.Duration) *schemas.BifrostLLMUsage {
+	t.Helper()
+	select {
+	case usage := <-recorder.usage:
+		return usage
+	case <-time.After(wait):
+		t.Fatal("the stream failure never reached the post-hooks")
+		return nil
+	}
+}
+
+// A cancelled stream is billed from what the real accumulator received before the
+// cancel: the worker estimates it ahead of every post-hook.
+func TestCancelledStreamEstimatedFromRealAccumulator(t *testing.T) {
+	const provider schemas.ModelProvider = "cancel-estimate"
+	client, recorder := newEstimatingClient(t, provider, stallingUpstream(t, openAIStallingChunk), true, 0)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	usage := awaitFailedUsage(t, recorder, 3*time.Second)
+	require.NotNil(t, usage, "cancelled stream carries no billed usage")
+	require.Equal(t, 8, usage.PromptTokens, "cl100k_base fallback prompt count")
+	require.Equal(t, 1, usage.CompletionTokens)
+	require.Equal(t, 9, usage.TotalTokens)
+	require.NotNil(t, usage.Estimation)
+}
+
+// Claude's message_start output count is provisional, so a stream cancelled after
+// more output is re-counted from the accumulated text, on chat and responses.
+func TestAnthropicCancelledStreamEstimatedFromRealAccumulator(t *testing.T) {
+	output := strings.Repeat("hello world ", 1000)
+	for _, responses := range []bool{false, true} {
+		t.Run(map[bool]string{false: "chat", true: "responses"}[responses], func(t *testing.T) {
+			url := stallingUpstream(t,
+				"event: message_start\n"+`data: {"type":"message_start","message":{"id":"msg_cancel","type":"message","role":"assistant","model":"claude-3-haiku","content":[],"usage":{"input_tokens":26,"output_tokens":4}}}`,
+				"event: content_block_start\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				"event: content_block_delta\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+output+`"}}`)
+			client, recorder := newEstimatingClient(t, schemas.Anthropic, url, false, 0)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			request := hiRequest(schemas.Anthropic, "claude-3-haiku")
+			var stream chan *schemas.BifrostStreamChunk
+			var streamErr *schemas.BifrostError
+			if responses {
+				stream, streamErr = client.ResponsesStreamRequest(ctx, request.ToResponsesRequest())
+			} else {
+				stream, streamErr = client.ChatCompletionStreamRequest(ctx, request)
+			}
+			require.Nil(t, streamErr)
+			seen := 0
+			for chunk := range stream {
+				if chunk.BifrostChatResponse != nil {
+					for _, c := range chunk.BifrostChatResponse.Choices {
+						if c.ChatStreamResponseChoice != nil && c.Delta != nil && c.Delta.Content != nil {
+							seen += len(*c.Delta.Content)
+						}
+					}
+				}
+				if c := chunk.BifrostResponsesStreamResponse; c != nil && c.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && c.Delta != nil {
+					seen += len(*c.Delta)
+				}
+				if seen >= len(output) {
+					cancel()
+				}
+			}
+			usage := awaitFailedUsage(t, recorder, 3*time.Second)
+			require.NotNil(t, usage)
+			require.Equal(t, 26, usage.PromptTokens, "the provider's prompt count is kept")
+			require.Greater(t, usage.CompletionTokens, 4, "the provisional output count was not replaced: %+v", usage)
+			require.NotNil(t, usage.Estimation)
+			require.True(t, usage.Estimation.Completion)
+			require.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+		})
+	}
+}
+
+// The Anthropic handlers' provisional-usage mark belongs to the attempt that set it;
+// one left on the context must not mark real provider usage as provisional.
+func TestCancelledStreamIgnoresStaleProvisionalUsage(t *testing.T) {
+	const provider schemas.ModelProvider = "stale-counter"
+	url := stallingUpstream(t, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`)
+	client, recorder := newEstimatingClient(t, provider, url, true, 0)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true) // left by an earlier Anthropic-handler attempt
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	usage := awaitFailedUsage(t, recorder, 3*time.Second)
+	require.NotNil(t, usage)
+	require.Nil(t, usage.Estimation, "provider usage replaced by a stale provisional mark: %+v", usage)
+	require.Equal(t, 5, usage.PromptTokens)
+	require.Equal(t, 7, usage.CompletionTokens)
+}
+
+// A stream that produces output and then goes silent fails on the per-chunk idle
+// timeout with an untyped error; its received output is still estimated.
+func TestIdleTimedOutStreamEstimatedFromRealAccumulator(t *testing.T) {
+	const provider schemas.ModelProvider = "idle-estimate"
+	client, recorder := newEstimatingClient(t, provider, stallingUpstream(t, openAIStallingChunk), true, 1)
+	stream, streamErr := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	var failure *schemas.BifrostError
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			failure = chunk.BifrostError
+		}
+	}
+	require.NotNil(t, failure)
+	require.NotNil(t, failure.Error)
+	require.ErrorIs(t, failure.Error.Error, providerUtils.ErrStreamIdleTimeout)
+	usage := awaitFailedUsage(t, recorder, 5*time.Second)
+	require.NotNil(t, usage)
+	require.Equal(t, 8, usage.PromptTokens)
+	require.Equal(t, 1, usage.CompletionTokens)
+	require.NotNil(t, usage.Estimation)
 }
