@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -111,12 +112,15 @@ var testHookBeforeConnRelease func()
 // (network.StaleConnectionRetryIfErr) walks past such sockets. The same failure
 // on a socket dialed for this request is the upstream failing, so it is
 // reported without a fasthttp-level retry and counts against Bifrost's own
-// max_retries (maximhq/bifrost#7035). ErrBodyTooLarge never retries.
+// max_retries (maximhq/bifrost#7035). Requests can opt out of this retry when
+// they must not be replayed after an ambiguous transport failure. ErrBodyTooLarge
+// never retries.
 func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (retry bool, err error) {
 	ctx := lookupRequestContext(req)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return false, ctxErr
 	}
+	disableStaleConnectionRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableStaleConnectionRetries).(bool)
 	// A stream attempt past its first-token deadline must not dial again when
 	// fasthttp retries a pooled socket the abort just closed.
 	abort := AttemptAbortFromContext(ctx)
@@ -136,7 +140,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// pool, so a zero value means this socket was dialed for this request.
 	reused := !cc.LastUseTime().IsZero()
 	retryOn := func(err error) bool {
-		return reused && !errors.Is(err, fasthttp.ErrBodyTooLarge)
+		return !disableStaleConnectionRetries && reused && !errors.Is(err, fasthttp.ErrBodyTooLarge)
 	}
 
 	watcher := startCancelWatcher(ctx, abort, conn)

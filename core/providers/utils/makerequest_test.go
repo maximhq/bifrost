@@ -1058,6 +1058,120 @@ func BenchmarkTransport_Streamed_Default(b *testing.B) {
 }
 func BenchmarkTransport_Streamed_Context(b *testing.B) { benchmarkStreamed(b, NewContextTransport()) }
 
+func TestContextTransport_DisableStaleConnectionRetries(t *testing.T) {
+	falseValue, trueValue := false, true
+	tests := []struct {
+		name      string
+		value     *bool
+		wantDials int32
+	}{
+		{name: "absent", wantDials: 2},
+		{name: "false", value: &falseValue, wantDials: 2},
+		{name: "true", value: &trueValue, wantDials: 1},
+	}
+	for _, streamed := range []bool{false, true} {
+		mode := "buffered"
+		if streamed {
+			mode = "streamed"
+		}
+		for _, test := range tests {
+			t.Run(mode+"/"+test.name, func(t *testing.T) {
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				tcpListener := ln.(*net.TCPListener)
+				listenerAddr := ln.Addr().String()
+				t.Cleanup(func() { _ = ln.Close() })
+
+				secondRequestRead := make(chan struct{})
+				go func() {
+					conn, err := tcpListener.Accept()
+					if err != nil {
+						return
+					}
+					defer conn.Close()
+					br := bufio.NewReader(conn)
+					if !readRequest(br) {
+						return
+					}
+					_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+					if !readRequest(br) {
+						return
+					}
+					close(secondRequestRead)
+					_ = tcpListener.Close()
+					if tcpConn, ok := conn.(*net.TCPConn); ok {
+						_ = tcpConn.SetLinger(0)
+					}
+				}()
+
+				var dials atomic.Int32
+				client := &fasthttp.Client{
+					Dial: func(addr string) (net.Conn, error) {
+						dials.Add(1)
+						return net.Dial("tcp", addr)
+					},
+					ReadTimeout:  5 * time.Second,
+					WriteTimeout: 5 * time.Second,
+				}
+				ConfigureDialer(client, true)
+				if streamed {
+					client = BuildStreamingClient(client)
+				}
+
+				send := func(ctx *schemas.BifrostContext) error {
+					req := fasthttp.AcquireRequest()
+					resp := fasthttp.AcquireResponse()
+					defer fasthttp.ReleaseRequest(req)
+					defer fasthttp.ReleaseResponse(resp)
+					req.SetRequestURI("http://" + listenerAddr + "/inference")
+					req.Header.SetMethod("POST")
+					req.SetBodyString(`{"model":"test","prompt":"do not replay"}`)
+					if streamed {
+						if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+							return err
+						}
+						_, readErr := io.ReadAll(resp.BodyStream())
+						closeErr := resp.CloseBodyStream()
+						if readErr != nil {
+							return readErr
+						}
+						return closeErr
+					}
+					unbind := bindRequestContext(req, ctx)
+					defer unbind()
+					return client.Do(req, resp)
+				}
+
+				warmCtx, warmCancel := schemas.NewBifrostContextWithCancel(context.Background())
+				if err := send(warmCtx); err != nil {
+					warmCancel()
+					t.Fatalf("warm request: %v", err)
+				}
+				warmCancel()
+
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				defer cancel()
+				if test.value != nil {
+					ctx.SetValue(schemas.BifrostContextKeyDisableStaleConnectionRetries, *test.value)
+				}
+				if err := send(ctx); err == nil {
+					t.Fatal("request after the provider read the body unexpectedly succeeded")
+				}
+				select {
+				case <-secondRequestRead:
+				case <-time.After(2 * time.Second):
+					t.Fatal("provider did not read the complete second request")
+				}
+				if got := dials.Load(); got != test.wantDials {
+					t.Fatalf("dial attempts = %d, want %d", got, test.wantDials)
+				}
+			})
+		}
+	}
+}
+
 // TestContextTransport_BufferedLateCancelDoesNotPoisonPool guards the ownership
 // rule on the buffered path: the cancel watcher must be stopped before the
 // connection is returned to the pool. The test hook fires at the release
