@@ -1837,3 +1837,43 @@ func BenchmarkAccess_IsModelAllowed_AliasTargets(b *testing.B) {
 		})
 	}
 }
+
+// Under a union the scoping permit may admit a model the base permit blacklists; the base permit must
+// then not serve it, whether named literally or through an alias whose target it blacklists.
+func TestAccess_UnionCandidateHeldToBaseBlacklistOfAliasTarget(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(_, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	base := NewPermit(PermitVirtualKey, "vk1", "VK", true, false, []schemas.ProviderPermit{{
+		Provider: "bedrock", AllowedModels: []string{"regex:^claude-.*"}, BlacklistedModels: []string{"claude-opus-4-6"}, KeyIDs: []string{"base-key"},
+	}}, nil)
+	scoping := NewPermit("other", "o1", "Other", true, false, []schemas.ProviderPermit{{
+		Provider: "bedrock", AllowedModels: []string{"*"}, KeyIDs: []string{"scope-key"},
+	}}, nil)
+	access := NewAccess(held(base), scoping, Union, allowAll).WithAliasTargets(bestToOpus)
+	for _, model := range []string{"best-model", "claude-opus-4-6"} {
+		assert.True(t, access.IsModelAllowed("bedrock", model), model)
+		for _, c := range access.ProvidersForModel(model) {
+			assert.NotContains(t, c.KeyIDs, "base-key", "%s must not be served through the base permit that blacklists it", model)
+		}
+	}
+}
+
+// A scoping permit that blacklists the alias's target refuses the alias under an intersection.
+func TestAccess_IntersectScopingBlacklistHoldsAliasTarget(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(_, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	base := permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "*")
+	scoping := permitWithBlacklist("other", "o1", "Other", "bedrock", []string{"regex:^claude-.*"}, "claude-opus-4-6")
+	access := NewAccess(held(base), scoping, Intersect, allowAll).WithAliasTargets(bestToOpus)
+	assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+	assert.False(t, access.IsModelAllowed("bedrock", "claude-opus-4-6"))
+	assert.True(t, NewAccess(held(base), scoping, Intersect, allowAll).IsModelAllowed("bedrock", "best-model"), "no source, no alias target")
+}

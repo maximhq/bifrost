@@ -318,8 +318,9 @@ func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 		// Whether *this* permit permits it: under a union the other side may be the one authorizing
 		// the request, and a permit that blacklists the model must not serve it. One blacklisting
 		// provider permit blocks the provider for that model across the whole permit, so a
-		// permissive one cannot reopen it:
-		if blacklistsModel(owner, provider, model) {
+		// permissive one cannot reopen it, and so does one that blacklists a model the name becomes through
+		// a key alias:
+		if !a.permitAllowsModel(owner, provider, model) {
 			return false
 		}
 		// And whether this provider permit in particular permits it, so a permit holding several for
