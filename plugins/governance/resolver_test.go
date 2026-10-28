@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1533,6 +1534,86 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 			require.Nil(t, shortCircuit, "%q should be admitted", tc.model)
 		})
 	}
+}
+
+// Inline batch items reach the provider exactly as written: key selection resolves the request's
+// own model, never an item's. An item is therefore held to its literal name, so an alias of an
+// allowed model that is also a real upstream model cannot slip through as the allowed one.
+func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	batch := func(requestModel string, itemModels ...string) *schemas.BifrostRequest {
+		items := make([]schemas.BatchRequestItem, 0, len(itemModels))
+		for i, m := range itemModels {
+			items = append(items, schemas.BatchRequestItem{CustomID: fmt.Sprintf("item-%d", i), Params: map[string]any{"model": m}})
+		}
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Anthropic, Model: &requestModel, Requests: items}}
+	}
+	for _, tc := range []struct {
+		name    string
+		req     *schemas.BifrostRequest
+		blocked bool
+	}{
+		{"item names the allowed model", batch("claude-sonnet-4-6", "claude-sonnet-4-6"), false},
+		{"item names an alias of the allowed model", batch("claude-sonnet-4-6", "claude-opus-4-6"), true},
+		{"the request's own model may be an alias", batch("claude-opus-4-6", "claude-sonnet-4-6"), false},
+		{"an item repeating the request's alias is still literal", batch("claude-opus-4-6", "claude-opus-4-6"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := presentCtx(mcpTestVKValue)
+			require.NoError(t, plugin.PreRequestHook(ctx, tc.req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, tc.req)
+			require.NoError(t, err)
+			if tc.blocked {
+				require.NotNil(t, shortCircuit, "an item that names an alias must be refused")
+				return
+			}
+			require.Nil(t, shortCircuit)
+		})
+	}
+}
+
+// A literal check still honours the custom-provider exemption: an unrestricted allowlist on a
+// custom provider that cannot list models admits any name, since the catalog cannot know them.
+func TestBatchItemLiteralCheckKeepsCustomProviderExemption(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"acme": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-custom", mcpTestVKValue, "custom-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("acme", []string{"*"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	model := "private-model-the-catalog-does-not-know"
+	req := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Provider: "acme", Model: &model,
+		Requests: []schemas.BatchRequestItem{{CustomID: "item-0", Params: map[string]any{"model": model}}},
+	}}
+	ctx := presentCtx(mcpTestVKValue)
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "an item on a custom provider that cannot list models must be admitted")
 }
 
 func BenchmarkPreLLMHookBatchCreate(b *testing.B) {

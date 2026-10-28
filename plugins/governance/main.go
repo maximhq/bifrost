@@ -1249,9 +1249,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// pass, last, leaves the access as it would be without the extra passes. Nothing
 	// reached from here charges usage, so the passes cannot double-count it.
 	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		itemModels := BatchItemModels(req)
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
+			batchEvaluationRequest.LiteralModel = slices.Contains(itemModels, batchModel)
 			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{
@@ -1534,6 +1536,27 @@ func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
 	}
 	batch := req.BatchCreateRequest
 	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
+}
+
+// BatchItemModels returns the distinct models the inline items of a batch create name. They reach
+// the provider as written, unlike the request's own model, so governance holds them to the literal
+// name.
+func BatchItemModels(req *schemas.BifrostRequest) []string {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
+		return nil
+	}
+	var models []string
+	for _, item := range req.BatchCreateRequest.Requests {
+		for _, body := range []map[string]any{item.Body, item.Params} {
+			if m, ok := body["model"].(string); ok {
+				if m != "" && !slices.Contains(models, m) {
+					models = append(models, m)
+				}
+				break
+			}
+		}
+	}
+	return models
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,
