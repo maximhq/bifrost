@@ -556,13 +556,20 @@ const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
 
 // isNativeWebSearchCall reports whether message is a web_search_call that OpenAI itself
 // produced: its id has OpenAI's "ws_" prefix and its status is one OpenAI defines.
+// "ws_<n>" is excluded because Gemini synthesizes it for ID-less search calls
+// (convertGeminiCandidatesToResponsesOutput, generateItemID), and OpenAI rejects an id
+// it never issued.
 func isNativeWebSearchCall(message schemas.ResponsesMessage) bool {
 	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeWebSearchCall ||
-		message.ID == nil || !strings.HasPrefix(*message.ID, "ws_") || message.Status == nil {
+		message.ID == nil || message.Status == nil {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(*message.ID, "ws_")
+	if !ok || suffix == "" || strings.Trim(suffix, "0123456789") == "" {
 		return false
 	}
 	switch *message.Status {
-	case "in_progress", "searching", "completed", "failed":
+	case "in_progress", "searching", "completed", "failed", "incomplete":
 		return true
 	}
 	return false

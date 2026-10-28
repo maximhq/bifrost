@@ -2939,12 +2939,49 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// OpenAI defines "incomplete" for an interrupted web search, and requires
+			// status on a replayed web_search_call just like the other values.
+			name: "native incomplete web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("incomplete"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"incomplete"` {
+					t.Errorf("status: got %s, want \"incomplete\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// Gemini synthesizes "ws_<n>" for an ID-less search call and marks it completed.
+			// OpenAI does not know that id and answers 400 "Item with id ... not found".
+			name: "gemini synthetic ws_<n> web_search_call stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_0"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
 			// A "ws_" id with a status OpenAI does not define is not a native item.
 			name: "web_search_call with ws_ id and foreign status stripped",
 			input: schemas.ResponsesMessage{
 				Type:   &webSearchCallType,
 				ID:     schemas.Ptr("ws_replay_probe"),
-				Status: schemas.Ptr("incomplete"),
+				Status: schemas.Ptr("pending"),
 			},
 			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
 				for _, field := range []string{"id", "status"} {
@@ -3155,13 +3192,18 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Store original pointers to verify immutability
-			origStatus := tc.input.Status
-			origID := tc.input.ID
-
 			req := &schemas.BifrostResponsesRequest{
 				Model: "gpt-4o",
 				Input: []schemas.ResponsesMessage{tc.input},
+			}
+			// Snapshot the request's own item, since tc.input is only copied into it
+			origStatus, origID := req.Input[0].Status, req.Input[0].ID
+			var origStatusVal, origIDVal string
+			if origStatus != nil {
+				origStatusVal = *origStatus
+			}
+			if origID != nil {
+				origIDVal = *origID
 			}
 
 			converted := ToOpenAIResponsesRequest(nil, req)
@@ -3194,10 +3236,10 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 			// Verify caller's input is unmutated
 			if tc.origMutable {
-				if tc.input.Status != origStatus {
+				if req.Input[0].Status != origStatus || (origStatus != nil && *origStatus != origStatusVal) {
 					t.Error("original input status was mutated")
 				}
-				if tc.input.ID != origID {
+				if req.Input[0].ID != origID || (origID != nil && *origID != origIDVal) {
 					t.Error("original input ID was mutated")
 				}
 			} else {
