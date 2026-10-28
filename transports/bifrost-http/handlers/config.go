@@ -401,6 +401,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not exceed 30 days")
 		return
 	}
+	// default_request_timeout bounds match the 30m clamp on the x-bf-request-timeout header.
+	if payload.ClientConfig.DefaultRequestTimeout < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "default_request_timeout must not be negative")
+		return
+	}
+	if payload.ClientConfig.DefaultRequestTimeout.D() > configstore.MaxDefaultRequestTimeout {
+		SendError(ctx, fasthttp.StatusBadRequest, "default_request_timeout must not exceed 30 minutes")
+		return
+	}
 
 	// Validating framework config. An empty pricing_url or model_parameters_url
 	// (what the UI sends when the field is cleared) resets it to the default.
@@ -887,6 +896,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
 	updatedConfig.VKRotationCooldown = payload.ClientConfig.VKRotationCooldown
+
+	// Copied only when sent, so a partial save keeps the stored default; 0 or "" clears it.
+	// Read per request by ConvertToBifrostContext, so no restart is needed.
+	if _, present := clientConfigFields["default_request_timeout"]; present {
+		updatedConfig.DefaultRequestTimeout = payload.ClientConfig.DefaultRequestTimeout
+	}
 
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {

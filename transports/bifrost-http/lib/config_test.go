@@ -2838,6 +2838,38 @@ func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_DefaultRequestTimeout pins the same load-time bound
+// for client.default_request_timeout: config.json and DB rows bypass the
+// PUT /api/config check, so 0..30m must hold here too.
+func TestValidateClientConfig_DefaultRequestTimeout(t *testing.T) {
+	timeout := func(d time.Duration) *configstore.ClientConfig {
+		return &configstore.ClientConfig{DefaultRequestTimeout: schemas.Duration(d)}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"unset means no default", &configstore.ClientConfig{}, false},
+		{"zero is valid", timeout(0), false},
+		{"in-range", timeout(30 * time.Second), false},
+		{"exactly at cap", timeout(configstore.MaxDefaultRequestTimeout), false},
+		{"one nanosecond over cap", timeout(configstore.MaxDefaultRequestTimeout + 1), true},
+		{"negative", timeout(-time.Second), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "default_request_timeout")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // TestValidateClientConfig_AllowedRedirectURIsWildcard locks in that a
 // config.json or DB entry can use only a bare "*" wildcard: a partial pattern
 // is matched literally, so it would silently approve nothing.

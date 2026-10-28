@@ -97,6 +97,9 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
 	ShouldSendExtraFieldsInHeaders() bool
+	// GetDefaultRequestTimeout returns the total request deadline applied when a request sends no
+	// x-bf-request-timeout header, or 0 for none
+	GetDefaultRequestTimeout() time.Duration
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetCustomProviderPassthrough returns a custom provider's base provider type and whether it
@@ -1523,6 +1526,11 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 		return fmt.Errorf("vk_rotation_cooldown %s must not be negative", cd)
 	} else if cd > configstore.MaxVKRotationCooldown {
 		return fmt.Errorf("vk_rotation_cooldown %s exceeds the maximum of %s (30 days)", cd, configstore.MaxVKRotationCooldown)
+	}
+	if rt := cc.DefaultRequestTimeout.D(); rt < 0 {
+		return fmt.Errorf("default_request_timeout %s must not be negative", rt)
+	} else if rt > configstore.MaxDefaultRequestTimeout {
+		return fmt.Errorf("default_request_timeout %s exceeds the maximum of %s", rt, configstore.MaxDefaultRequestTimeout)
 	}
 	// When OAuth discovery is enabled, every issuer reference (the discovery
 	// documents' issuer/token_endpoint/jwks_uri, the authorize redirect, JWT
@@ -7825,6 +7833,17 @@ func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// GetDefaultRequestTimeout reports client.default_request_timeout. It reads under Mu, the lock
+// config saves and reloads hold while they copy the client config in; unset means no default.
+func (c *Config) GetDefaultRequestTimeout() time.Duration {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return 0
+	}
+	return c.ClientConfig.DefaultRequestTimeout.D()
 }
 
 // IsProviderConfigured reports whether provider has a configuration on this gateway.

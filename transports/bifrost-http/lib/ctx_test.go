@@ -37,9 +37,10 @@ import (
 
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
-	matcher              *HeaderMatcher
-	allowDirectKeys      bool
-	extraFieldsInHeaders bool
+	matcher               *HeaderMatcher
+	allowDirectKeys       bool
+	extraFieldsInHeaders  bool
+	defaultRequestTimeout time.Duration
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -55,6 +56,7 @@ func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { ret
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
+func (s testHandlerStore) GetDefaultRequestTimeout() time.Duration         { return s.defaultRequestTimeout }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -124,6 +126,61 @@ func TestConvertToBifrostContext_RequestTimeoutIndependentOfStreamIdleTimeout(t 
 
 	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok {
 		t.Fatal("x-bf-request-timeout must not set the stream-idle-timeout context key")
+	}
+}
+
+// TestConvertToBifrostContext_DefaultRequestTimeout verifies client.default_request_timeout
+// becomes the request deadline when no usable x-bf-request-timeout header is sent, and that a
+// valid header replaces it for that request in either direction.
+func TestConvertToBifrostContext_DefaultRequestTimeout(t *testing.T) {
+	const gatewayDefault = 30 * time.Second
+	cases := []struct {
+		name       string
+		defaultVal time.Duration
+		header     string
+		want       time.Duration
+		set        bool
+	}{
+		{"no default and no header leaves no deadline", 0, "", 0, false},
+		{"default applies without a header", gatewayDefault, "", gatewayDefault, true},
+		{"longer header wins over the default", gatewayDefault, "5m", 5 * time.Minute, true},
+		{"shorter header wins over the default", gatewayDefault, "2s", 2 * time.Second, true},
+		{"header without a default still applies", 0, "90", 90 * time.Second, true},
+		{"over-max header is clamped, not replaced by the default", gatewayDefault, "2h", requestTimeoutOverrideMax, true},
+		{"zero header falls back to the default", gatewayDefault, "0", gatewayDefault, true},
+		{"garbage header falls back to the default", gatewayDefault, "soon", gatewayDefault, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			if tc.header != "" {
+				ctx.Request.Header.Set("x-bf-request-timeout", tc.header)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{defaultRequestTimeout: tc.defaultVal})
+			defer cancel()
+			got, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration)
+			if !tc.set {
+				if ok {
+					t.Fatalf("expected no request timeout, got %v", got)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Fatalf("got %v (set=%v), want %v", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestConvertToBifrostContext_DefaultRequestTimeoutLeavesStreamIdleAlone verifies the gateway-wide
+// default only sets the total deadline, never the independent per-chunk stream idle timeout.
+func TestConvertToBifrostContext_DefaultRequestTimeoutLeavesStreamIdleAlone(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{defaultRequestTimeout: time.Minute})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok {
+		t.Fatal("default_request_timeout must not set the stream-idle-timeout context key")
 	}
 }
 

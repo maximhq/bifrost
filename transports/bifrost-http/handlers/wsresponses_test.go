@@ -62,6 +62,7 @@ func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { r
 func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testWSHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return false }
+func (s testWSHandlerStore) GetDefaultRequestTimeout() time.Duration         { return 0 }
 func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }

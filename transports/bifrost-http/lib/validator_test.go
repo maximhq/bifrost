@@ -3237,6 +3237,36 @@ func TestSchemaVKRotationCooldownBounds(t *testing.T) {
 	})
 }
 
+func TestSchemaDefaultRequestTimeoutBounds(t *testing.T) {
+	compiled := compileSchema(t)
+
+	timeoutConfig := func(value string) string {
+		return fmt.Sprintf(`{"client": {"default_request_timeout": %s}}`, value)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{"duration string accepted", `"30s"`, true},
+		{"zero accepted", `0`, true},
+		{"30 minutes in nanoseconds accepted", `1800000000000`, true},
+		{"negative integer rejected", `-1`, false},
+		{"integer above 30 minutes rejected", `1800000000001`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, timeoutConfig(tc.value))
+			if tc.valid && err != nil {
+				t.Errorf("%s should be valid, got: %v", tc.value, err)
+			}
+			if !tc.valid && err == nil {
+				t.Errorf("%s must be rejected by the schema", tc.value)
+			}
+		})
+	}
+}
+
 func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 	schema := loadSchema(t)
 

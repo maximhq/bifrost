@@ -3,6 +3,7 @@
 - **Azure Blob Storage** - Added log payload and skills-file storage with default Azure identity or connection-string authentication, JSON/gzip and Parquet support, and config-file/Helm configuration. Structured environment and vault references can omit `value`.
 - feat: parse the `x-bf-request-timeout` header (duration string or whole seconds) into `BifrostContextKeyRequestTimeout`, clamped to 30m [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 - feat: parse the `x-bf-stream-idle-timeout` header (duration string or whole seconds) into a per-request stream idle timeout override, clamped to 30m [@public-aanp-tanium](https://github.com/public-aanp-tanium)
+- feat: `client.default_request_timeout` - gateway-wide default for `x-bf-request-timeout` (0 = none, max 30m) [@siaarzh](https://github.com/siaarzh)
 
 ## 🐞 Fixed
 

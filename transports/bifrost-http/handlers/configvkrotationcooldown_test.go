@@ -88,6 +88,49 @@ func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 	})
 }
 
+// PUT /api/config persists default_request_timeout, keeps it when omitted (a partial save must not
+// silently drop the gateway deadline), clears it on 0 or "", and rejects values outside 0..30m.
+func TestUpdateConfig_DefaultRequestTimeout(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	save := func(t *testing.T, body string) int {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{` + body + `"log_retention_days":7}}`)
+		h.updateConfig(ctx)
+		return ctx.Response.StatusCode()
+	}
+	stored := func(t *testing.T) time.Duration {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.DefaultRequestTimeout.D()
+	}
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"default_request_timeout":"45s",`))
+	assert.Equal(t, 45*time.Second, stored(t))
+	assert.Equal(t, 45*time.Second, cfg.GetDefaultRequestTimeout(), "in-memory config must carry the new default")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.Equal(t, 45*time.Second, stored(t), "omitted keeps the stored default")
+
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"default_request_timeout":"31m",`))
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"default_request_timeout":"-1s",`))
+	assert.Equal(t, 45*time.Second, stored(t), "a rejected value must not overwrite the stored default")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"default_request_timeout":"30m",`))
+	assert.Equal(t, 30*time.Minute, stored(t), "the 30m cap itself is allowed")
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"default_request_timeout":0,`))
+	assert.Equal(t, time.Duration(0), stored(t))
+
+	require.Equal(t, fasthttp.StatusOK, save(t, `"default_request_timeout":"45s",`))
+	require.Equal(t, fasthttp.StatusOK, save(t, `"default_request_timeout":"",`))
+	assert.Equal(t, time.Duration(0), stored(t), "an empty string clears the default")
+	assert.Equal(t, time.Duration(0), cfg.GetDefaultRequestTimeout())
+}
+
 // PUT /api/config sets the global MCP max protocol version; omitting it keeps the stored cap, so a
 // caller unaware of the field never lifts the upgrade pin, and an unsupported value is rejected.
 func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {

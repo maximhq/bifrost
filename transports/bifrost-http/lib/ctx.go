@@ -301,7 +301,8 @@ func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
 // 10. Request Timeout Header:
 //   - x-bf-request-timeout: per-request total request/stream deadline (duration string e.g. "5m" or
 //     seconds integer). Independent of x-bf-stream-idle-timeout -- setting one does not affect the
-//     other. Clamped to requestTimeoutOverrideMax.
+//     other. Clamped to requestTimeoutOverrideMax. When the header is absent or invalid,
+//     client.default_request_timeout applies, if set.
 //
 // 10a. Stream Idle Timeout Header:
 //   - x-bf-stream-idle-timeout: per-request override of the per-chunk stream idle timeout
@@ -344,11 +345,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	mcpHeaderCombinedAllowlist := schemas.WhiteList{}
 	allowPerRequestStorageOverride := false
 	allowPerRequestRawOverride := false
+	var defaultRequestTimeout time.Duration
 	if store != nil {
 		matcher = store.GetHeaderMatcher()
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
 		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+		defaultRequestTimeout = store.GetDefaultRequestTimeout()
 		if store.ShouldSendExtraFieldsInHeaders() {
 			ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
 		}
@@ -910,6 +913,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		}
 		return true
 	})
+
+	// Gateway-wide client.default_request_timeout; a valid x-bf-request-timeout header parsed above wins.
+	if defaultRequestTimeout > 0 {
+		if _, set := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration); !set {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, defaultRequestTimeout)
+		}
+	}
 
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {
