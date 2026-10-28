@@ -26,6 +26,7 @@ type PassthroughStreamParams struct {
 	// appears in a framed event — for providers (Gemini/Vertex) that emit it before the HTTP
 	// body closes.
 	UseTerminalDetector bool
+	IsTerminal          func(event []byte) bool // optional; true on a provider's last event (Responses response.completed)
 	// SkipFraming forwards the bytes without scanning them for SSE frames, for binary or otherwise
 	// unframed streams (an AWS event stream) where there is no usage to observe and a "\n\n" byte
 	// pair means nothing.
@@ -48,6 +49,10 @@ type PassthroughStreamParams struct {
 // parsing), and in parallel frames complete SSE events into a bounded buffer, feeding each to
 // params.Observe to build usage incrementally. On a terminal marker or EOF it emits the final
 // chunk carrying RawRequest + the observed usage. No full response body is accumulated.
+//
+// params.IsTerminal lets a provider name its own last event. Clients such as Codex stop reading
+// at that event without waiting for the body to close, so finalizing only at EOF would race their
+// disconnect and log the stream as cancelled without its usage.
 //
 // This owns the idle-timeout wrapper, cancellation hookup, response release, and goroutine.
 func StreamPassthrough(
@@ -121,6 +126,9 @@ func streamPassthrough(
 				if u := params.Observe(payload); u != nil {
 					usage = u
 				}
+			}
+			if params.IsTerminal != nil && params.IsTerminal(payload) {
+				return true
 			}
 			return params.UseTerminalDetector && isTerminalSSEPayload(payload)
 		}

@@ -89,6 +89,25 @@ func HasOpenAIPassthroughUsage(event []byte) bool {
 		providerUtils.GetJSONField(event, "response.usage").Exists()
 }
 
+var (
+	responsesCompletedType  = []byte(schemas.ResponsesStreamResponseTypeCompleted)
+	responsesIncompleteType = []byte(schemas.ResponsesStreamResponseTypeIncomplete)
+)
+
+// isResponsesTerminalEvent reports whether a passthrough event ends a Responses stream. Both
+// events carry the final usage, and Codex stops reading as soon as one arrives.
+func isResponsesTerminalEvent(event []byte) bool {
+	// Most events name neither type, so they skip the JSON lookup and the copy it allocates.
+	if !bytes.Contains(event, responsesCompletedType) && !bytes.Contains(event, responsesIncompleteType) {
+		return false
+	}
+	switch schemas.ResponsesStreamResponseType(providerUtils.GetJSONField(event, "type").String()) {
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
+		return true
+	}
+	return false
+}
+
 // ---- video generation ----
 const openAIVideoDefaultSeconds = 4
 

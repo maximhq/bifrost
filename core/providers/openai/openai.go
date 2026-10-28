@@ -8690,6 +8690,12 @@ func (provider *OpenAIProvider) PassthroughStream(
 			fmt.Errorf("provider returned an empty stream body"))
 	}
 
+	// Only Responses streams end on a typed event; every other route still finalizes at EOF.
+	var isTerminal func(event []byte) bool
+	if ClassifyPassthroughPath(req.Method, req.Path) == schemas.ResponsesRequest {
+		isTerminal = isResponsesTerminalEvent
+	}
+
 	// Forward raw chunks to the client and extract usage incrementally per SSE event —
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,
@@ -8705,6 +8711,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
 				return ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
 			},
+			IsTerminal: isTerminal,
 		},
 	), nil
 }

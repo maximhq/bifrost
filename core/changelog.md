@@ -1,3 +1,4 @@
+- [fix]: record OpenAI Responses passthrough usage at response.completed instead of upstream EOF [@limineol](https://github.com/limineol)
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
