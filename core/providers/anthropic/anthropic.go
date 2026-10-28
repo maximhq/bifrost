@@ -1120,6 +1120,9 @@ func HandleAnthropicChatCompletionStreaming(
 		// can bill for tokens already processed Mutated in place below;
 		// the deferred HandleStreamCancellation/Timeout reads it from context.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		// The message_start output count stays provisional until a message_delta
+		// reports usage, which a cancelled stream's estimate needs to know.
+		ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true)
 
 		// Fold cached tokens into prompt/total exactly once at stream end. The EOF
 		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
@@ -1166,6 +1169,9 @@ func HandleAnthropicChatCompletionStreaming(
 					return
 				}
 				if readErr != io.EOF {
+					// A read error (an idle timeout among them) leaves ctx live, so the
+					// deferred normalization would run after the error post-hook.
+					normalizeUsage()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -1197,6 +1203,8 @@ func HandleAnthropicChatCompletionStreaming(
 			var usageToProcess *AnthropicUsage
 			if event.Usage != nil {
 				usageToProcess = event.Usage
+				// Top-level usage (message_delta) makes the output count authoritative.
+				ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, false)
 			} else if event.Message != nil && event.Message.Usage != nil {
 				usageToProcess = event.Message.Usage
 			}
@@ -1816,6 +1824,9 @@ func HandleAnthropicResponsesStream(
 		// can bill for Anthropic Responses usage already reported by message_start
 		// or message_delta events before the stream was interrupted.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+		// The message_start output count stays provisional until a message_delta
+		// reports usage, which a cancelled stream's estimate needs to know.
+		ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true)
 
 		usageNormalized := false
 		normalizeBilledUsage := func() {
@@ -1867,6 +1878,9 @@ func HandleAnthropicResponsesStream(
 					return
 				}
 				if readErr != io.EOF {
+					// A read error (an idle timeout among them) leaves ctx live, so the
+					// deferred normalization would run after the error post-hook.
+					normalizeBilledUsage()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -1921,6 +1935,8 @@ func HandleAnthropicResponsesStream(
 			var usageToProcess *AnthropicUsage
 			if event.Usage != nil {
 				usageToProcess = event.Usage
+				// Top-level usage (message_delta) makes the output count authoritative.
+				ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, false)
 			} else if event.Message != nil && event.Message.Usage != nil {
 				usageToProcess = event.Message.Usage
 			}
