@@ -285661,6 +285661,52 @@
               }
             }
           ]
+        },
+        {
+          "name": "270.19 azure speech key lists Azure AI Speech models in /v1/models: voice suffixes from the voices list and the transcription models (azure speech)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The profile's Azure Speech Key sets use_speech_endpoints on the key and allows only speech names",
+                  "// through a regex: entry, which list-models never backfills. So a MAI-Voice-* entry can only come from",
+                  "// that key's {endpoint}/tts/cognitiveservices/voices/list, and llm-speech and MAI-Transcribe-2 only",
+                  "// from the speech models the azure provider adds for such a key; no alias on the shared key names them.",
+                  "pm.test('a speech key lists the Azure AI Speech models', function () {",
+                  "  pm.expect(pm.response.code, 'list models failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
+                  "  ['azure/neural', 'azure/fast-transcription', 'azure/llm-speech', 'azure/short-audio', 'azure/MAI-Transcribe-2'].forEach(function (id) {",
+                  "    pm.expect(ids, id + ' missing from the ' + ids.length + ' azure models').to.include(id);",
+                  "  });",
+                  "  var voiceSuffixes = ids.filter(function (id) { return id.indexOf('azure/MAI-Voice-') === 0; });",
+                  "  pm.expect(voiceSuffixes.length, 'no azure/MAI-Voice-* voice suffix in: ' + ids.join(', ').slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

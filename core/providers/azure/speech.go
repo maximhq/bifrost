@@ -34,6 +34,7 @@ const (
 	azureSpeechFastModel           = "fast-transcription"
 	azureSpeechLLMModel            = "llm-speech"
 	azureSpeechSynthesisPath       = "/tts/cognitiveservices/v1"
+	azureSpeechVoicesPath          = "/tts/cognitiveservices/voices/list"
 	azureSpeechTranscriptionPath   = "/speechtotext/transcriptions:transcribe"
 	azureSpeechAPIVersion          = "2025-10-15"
 	azureSpeechDefaultOutputFormat = "audio-24khz-48kbitrate-mono-mp3"
@@ -49,6 +50,12 @@ const (
 
 // azureSpeechRecognitionModes are the short audio endpoints. The mode is a path segment, so no other value is sent.
 var azureSpeechRecognitionModes = map[string]bool{"conversation": true, "interactive": true, "dictation": true}
+
+// azureSpeechTranscriptionModels are the speech to text models listed for a speech key; Azure has no endpoint that lists them.
+var azureSpeechTranscriptionModels = []string{azureSpeechFastModel, azureSpeechLLMModel, azureSpeechShortAudioModel, "MAI-Transcribe-2"}
+
+// azureSpeechVoicesDeadlineMargin is how long before a list models deadline the voices list gives up.
+const azureSpeechVoicesDeadlineMargin = time.Second
 
 // azureSpeechOutputFormats maps OpenAI response formats to Azure output formats. aac and flac
 // have no Azure equivalent and fall back to mp3; any other value is sent as an Azure format name.
@@ -372,6 +379,49 @@ func (provider *AzureProvider) getAzureSpeechAuthHeaders(ctx *schemas.BifrostCon
 		authHeader["Ocp-Apim-Subscription-Key"] = apiKey
 	}
 	return authHeader, nil
+}
+
+// listSpeechVoices returns the text to speech voices the key's Azure AI Speech region serves.
+func (provider *AzureProvider) listSpeechVoices(ctx *schemas.BifrostContext, key schemas.Key) ([]AzureSpeechVoice, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	authHeader, bifrostErr := provider.getAzureSpeechAuthHeaders(ctx, key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(endpoint + azureSpeechVoicesPath)
+	req.Header.SetMethod(http.MethodGet)
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, parseAzureSpeechError(resp)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	var voices []AzureSpeechVoice
+	if err := sonic.Unmarshal(body, &voices); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
+	return voices, nil
 }
 
 // prepareSpeechSynthesisRequest writes an Azure AI Speech text to speech call onto req and
