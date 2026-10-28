@@ -1289,6 +1289,11 @@ const (
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
+	// AttrBifrostBackground marks a span as work the request did not wait for (e.g. a
+	// guardrail evaluating the response after it was delivered). The overhead breakdown
+	// leaves it out; the span is still exported.
+	AttrBifrostBackground = "bifrost.background"
+
 	// AttrBifrostTimeToFirstTokenMs is request receipt to first streamed chunk, so
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
 	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
