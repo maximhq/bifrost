@@ -830,7 +830,7 @@ func (m *ToolsManager) executeToolInternal(
 		// A call made under a caller's identity is sent once: a resend could repeat its side effects.
 		retryConfig.MaxRetries = 0
 	}
-	toolCallStart := time.Now()
+	toolWait := schemas.BeginUpstreamWait(ctx)
 	var toolResponse *mcp.CallToolResult
 	callErr := ExecuteWithRetry(
 		toolCtx,
@@ -842,7 +842,7 @@ func (m *ToolsManager) executeToolInternal(
 		retryConfig,
 		m.logger,
 	)
-	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))
+	toolWait.End()
 	if callErr != nil {
 		// Set by the recovery below when it gave up because the tool budget ran
 		// out, as opposed to because the reconnect or the retry failed on its
@@ -1066,9 +1066,9 @@ func (m *ToolsManager) recoverCall(
 	retryCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
-	retryStart := time.Now()
+	retryWait := schemas.BeginUpstreamWait(ctx)
 	retryErr := retry(retryCtx, conn)
-	schemas.AddUpstreamLatency(ctx, time.Since(retryStart))
+	retryWait.End()
 	if retryErr != nil {
 		m.logger.Debug("%s Auth-failure retry also failed for %s: %v", MCPLogPrefix, label, retryErr)
 		return false, false
@@ -1202,9 +1202,9 @@ func (m *ToolsManager) recoverSharedConnection(
 	retryCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
-	retryStart := time.Now()
+	retryWait := schemas.BeginUpstreamWait(ctx)
 	retryErr := retry(retryCtx, conn)
-	schemas.AddUpstreamLatency(ctx, time.Since(retryStart))
+	retryWait.End()
 	if retryErr != nil {
 		m.logger.Debug("%s Auth-failure retry after reconnect also failed for %s: %v", MCPLogPrefix, label, retryErr)
 		return false, false

@@ -13,6 +13,13 @@
         "connection_string": "http://localhost:3012/sse",
         "tools_to_execute": ["echo", "add", "greet"],
         "tools_to_auto_execute": ["echo", "add", "greet"]
+      },
+      {
+        "name": "slow_mcp",
+        "connection_type": "sse",
+        "connection_string": "http://localhost:3012/sse",
+        "tools_to_execute": ["slow_echo"],
+        "tools_to_auto_execute": ["slow_echo"]
       }
     ]
   },
@@ -799,6 +806,32 @@
           { "methods": ["GET"], "path": "/v1/models" }
         ]
       }
+    },
+    "openai_injectedslow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "slow_lookup",
+          "mcp_client_name": "slow_mcp",
+          "tool_name": "slow_echo"
+        }
+      ]
     },
     "openai_injectedtools": {
       "send_back_raw_request": true,
