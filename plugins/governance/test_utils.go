@@ -565,7 +565,7 @@ func scopedModelLimits(gs *LocalGovernanceStore, ctx context.Context, scope, sco
 	if providerName != "" {
 		providerArg = &providerName
 	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg) {
+	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg, gs.aliasTargets(providerArg, model)) {
 		if mc == nil {
 			continue
 		}
