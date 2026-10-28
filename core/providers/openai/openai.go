@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 
@@ -2002,18 +2003,42 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	)
 }
 
-// rawResponsesCacheCountersKnown preserves one fact that
-// BifrostResponsesResponse.WithDefaults otherwise destroys: whether the raw
-// provider response actually contained an input-token detail object. Only the
-// closed boolean is retained in request context; raw content never
-// leaves this parser boundary.
-func rawResponsesCacheCountersKnown(body []byte, streaming bool) bool {
-	path := "usage.input_tokens_details"
-	if streaming {
-		path = "response.usage.input_tokens_details"
+// rawResponsesCacheCountersKnown reports whether a raw Responses body carried a
+// usage.input_tokens_details object, for ExtraFields.RawResponsesCacheCountersKnown.
+// BifrostResponsesResponse.WithDefaults materializes an empty detail object when the
+// upstream sent none, which turns "the upstream said nothing" into "the upstream
+// reported zero cached tokens"; post hooks that gate on cache evidence need the
+// difference. The fact is recorded for every provider that delegates to these
+// handlers (Azure, OpenRouter, xAI, vLLM, Perplexity, Fireworks, Databricks,
+// OpenCode, Bedrock Mantle, ...), so a compatible backend that never sends the
+// object reads as false: its counters are not known, exactly as for an OpenAI
+// reply that omitted them. The field stays nil (unknown) where the body is not
+// read: a response streamed through unparsed, or a stream that ends before its
+// terminal event. Only the boolean leaves this parser; the body is not retained.
+func rawResponsesCacheCountersKnown(body []byte) bool {
+	// gjson.GetBytes copies the matched value; only its type is needed, so the body
+	// is read in place. The result does not outlive this call.
+	return gjson.Get(unsafe.String(unsafe.SliceData(body), len(body)), "usage.input_tokens_details").IsObject()
+}
+
+// rawResponsesStreamCacheCountersKnown is rawResponsesCacheCountersKnown for a
+// terminal stream event, whose usage sits under "response". It reads the event
+// string itself, so the stream path copies nothing.
+func rawResponsesStreamCacheCountersKnown(event string) bool {
+	return gjson.Get(event, "response.usage.input_tokens_details").IsObject()
+}
+
+// cacheCountersKnown and cacheCountersUnknown are the two targets of
+// ExtraFields.RawResponsesCacheCountersKnown, so stamping it allocates nothing.
+// They are shared: never write through the field.
+var cacheCountersKnown, cacheCountersUnknown = true, false
+
+// cacheCountersKnownPtr returns the shared pointer for known.
+func cacheCountersKnownPtr(known bool) *bool {
+	if known {
+		return &cacheCountersKnown
 	}
-	detail := gjson.GetBytes(body, path)
-	return detail.Exists() && detail.IsObject()
+	return &cacheCountersUnknown
 }
 
 // HandleOpenAIResponsesRequest handles a responses request to OpenAI's API.
@@ -2062,18 +2087,15 @@ func HandleOpenAIResponsesRequest(
 			return nil, lpErr
 		}
 		if len(lpResult.ResponseBody) > 0 {
-			// The large-request passthrough returns before the normal response parser
-			// below. Read the raw presence fact at this boundary, before the returned
-			// typed response can reach WithDefaults in the caller.
-			countersKnown := rawResponsesCacheCountersKnown(lpResult.ResponseBody, false)
-
 			response := &schemas.BifrostResponsesResponse{}
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
-			// ExtraFields is replaced wholesale here, so the fact is stamped after.
-			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
-			response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
+			// This early return skips the parser below, so the raw fact is read here too.
+			response.ExtraFields = schemas.BifrostResponseExtraFields{
+				Latency:                        lpResult.Latency,
+				RawResponsesCacheCountersKnown: cacheCountersKnownPtr(rawResponsesCacheCountersKnown(lpResult.ResponseBody)),
+			}
 			return response, nil
 		}
 		return &schemas.BifrostResponsesResponse{
@@ -2131,16 +2153,13 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 	if lpResult != nil {
+		// The body is streamed through to the client unparsed, so cache-counter
+		// presence stays unknown: RawResponsesCacheCountersKnown is left nil.
 		return &schemas.BifrostResponsesResponse{
 			Model:       request.Model,
 			ExtraFields: schemas.BifrostResponseExtraFields{Latency: lpResult.Latency},
 		}, nil
 	}
-
-	// Read raw field presence before HandleProviderResponse / WithDefaults can
-	// materialize an empty InputTokensDetails object. Stamped onto the response
-	// below, once it exists.
-	countersKnown := rawResponsesCacheCountersKnown(body, false)
 
 	response := &schemas.BifrostResponsesResponse{}
 
@@ -2172,7 +2191,9 @@ func HandleOpenAIResponsesRequest(
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-	response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
+	// Read from the raw body: by the time a post hook sees the typed response,
+	// WithDefaults has materialized any missing detail object.
+	response.ExtraFields.RawResponsesCacheCountersKnown = cacheCountersKnownPtr(rawResponsesCacheCountersKnown(body))
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -2514,8 +2535,7 @@ func HandleOpenAIResponsesStreaming(
 				// The terminal event is the sole authoritative usage object, and the only
 				// frame that can know the answer - every earlier chunk leaves the field
 				// nil, i.e. unknown. Read before WithDefaults reaches plugin post hooks.
-				countersKnown := rawResponsesCacheCountersKnown([]byte(jsonData), true)
-				response.ExtraFields.RawResponsesCacheCountersKnown = &countersKnown
+				response.ExtraFields.RawResponsesCacheCountersKnown = cacheCountersKnownPtr(rawResponsesStreamCacheCountersKnown(jsonData))
 
 				// Set raw request if enabled
 				if sendBackRawRequest {

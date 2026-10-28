@@ -5361,13 +5361,140 @@ func TestRawResponsesCacheCountersKnown(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rawResponsesCacheCountersKnown([]byte(tt.body), tt.streaming)
+			got := rawResponsesCacheCountersKnown([]byte(tt.body))
+			if tt.streaming {
+				got = rawResponsesStreamCacheCountersKnown(tt.body)
+			}
 			if got != tt.want {
 				t.Fatalf("knownness = %t, want %t", got, tt.want)
 			}
 		})
 	}
 }
+
+// TestRawResponsesCacheCountersKnownStaysOffTheWire pins that the fact is for
+// in-process post hooks only: ExtraFields is serialized as extra_fields on
+// /v1/responses, and this field must not widen that public schema.
+func TestRawResponsesCacheCountersKnownStaysOffTheWire(t *testing.T) {
+	response := &schemas.BifrostResponsesResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{RawResponsesCacheCountersKnown: cacheCountersKnownPtr(true)},
+	}
+	data, err := sonic.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "cache_counters_known")
+}
+
+// TestLargeResponsePassthroughLeavesCacheCounterPresenceUnknown pins the
+// response-side large-payload path: the body is streamed through to the client
+// without being parsed, so the fact is deliberately nil (unknown), not false.
+func TestLargeResponsePassthroughLeavesCacheCounterPresenceUnknown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_large_response","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{}}}`))
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	// Any body above one byte takes the large-response streaming path.
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
+	request := &schemas.BifrostResponsesRequest{
+		Model: "gpt-test",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("large response")},
+		}},
+	}
+
+	response, bifrostErr := HandleOpenAIResponsesRequest(ctx, &fasthttp.Client{}, server.URL, request, nil, nil, false, false, schemas.OpenAI, nil, nil, nil, testNoopLogger{})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+	if reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser); ok {
+		_, _ = io.Copy(io.Discard, reader)
+		_ = reader.Close()
+	} else {
+		t.Fatal("expected the response-side large-payload path to hand the body to the client")
+	}
+	require.Nil(t, response.ExtraFields.RawResponsesCacheCountersKnown, "an unparsed body must leave cache-counter presence unknown")
+}
+
+// BenchmarkResponsesCacheCountersKnown measures what recording the fact adds to the
+// unary decode and to the terminal stream event, against the decode alone. usage
+// comes last in a Responses body, so the gjson scan walks nearly all of it; the
+// large case has ~256 KiB of output text.
+func BenchmarkResponsesCacheCountersKnown(b *testing.B) {
+	unary := func(outputBytes int) []byte {
+		return []byte(`{"id":"resp_bench","object":"response","status":"completed","model":"gpt-test","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"` +
+			strings.Repeat("x", outputBytes) + `","annotations":[]}]}],"usage":{"input_tokens":12,"output_tokens":34,"total_tokens":46,"input_tokens_details":{"cached_tokens":8}}}`)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"unary/small", unary(256)},
+		{"unary/large", unary(256 << 10)},
+	} {
+		b.Run(tc.name+"/before", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.body)))
+			for b.Loop() {
+				var response schemas.BifrostResponsesResponse
+				if err := sonic.Unmarshal(tc.body, &response); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(tc.name+"/after", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.body)))
+			for b.Loop() {
+				var response schemas.BifrostResponsesResponse
+				if err := sonic.Unmarshal(tc.body, &response); err != nil {
+					b.Fatal(err)
+				}
+				response.ExtraFields.RawResponsesCacheCountersKnown = cacheCountersKnownPtr(rawResponsesCacheCountersKnown(tc.body))
+			}
+		})
+		b.Run(tc.name+"/scan-only", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.body)))
+			for b.Loop() {
+				benchmarkCacheCountersKnown = cacheCountersKnownPtr(rawResponsesCacheCountersKnown(tc.body))
+			}
+		})
+	}
+
+	event := `{"type":"response.completed","sequence_number":9,"response":` + string(unary(4<<10)) + `}`
+	b.Run("stream-terminal/before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var response schemas.BifrostResponsesStreamResponse
+			if err := sonic.UnmarshalString(event, &response); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("stream-terminal/after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var response schemas.BifrostResponsesStreamResponse
+			if err := sonic.UnmarshalString(event, &response); err != nil {
+				b.Fatal(err)
+			}
+			response.ExtraFields.RawResponsesCacheCountersKnown = cacheCountersKnownPtr(rawResponsesStreamCacheCountersKnown(event))
+		}
+	})
+	b.Run("stream-terminal/scan-only", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			benchmarkCacheCountersKnown = cacheCountersKnownPtr(rawResponsesStreamCacheCountersKnown(event))
+		}
+	})
+}
+
+// benchmarkCacheCountersKnown keeps the scan-only results live.
+var benchmarkCacheCountersKnown *bool
 
 // TestResponsesStreamCacheCounterKnownnessBoundary verifies that only a
 // terminal Responses event publishes cache-counter evidence to post hooks.
