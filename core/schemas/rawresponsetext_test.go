@@ -16,6 +16,30 @@ const (
 	syncUsageFrame   = `{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`
 )
 
+// Anthropic Messages stream events, as the provider sends them.
+const (
+	anthropicTextDelta    = `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"mail alex@example.com"}}`
+	anthropicJSONDelta    = `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"to\":\"alex@example.com\"}"}}`
+	anthropicBlockStop    = `{"type":"content_block_stop","index":0}`
+	anthropicMessageDelta = `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":7}}`
+)
+
+// syncToolChunk builds a normalized chat stream chunk carrying one tool-call arguments delta.
+func syncToolChunk(arguments string) *BifrostChatResponse {
+	return &BifrostChatResponse{
+		Choices: []BifrostResponseChoice{{
+			ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{
+				ToolCalls: []ChatAssistantMessageToolCall{{Index: 0, Function: ChatAssistantMessageToolCallFunction{Arguments: arguments}}},
+			}},
+		}},
+	}
+}
+
+// syncResponsesDelta builds a normalized Responses delta event of the given type.
+func syncResponsesDelta(eventType ResponsesStreamResponseType, delta string) *BifrostResponsesStreamResponse {
+	return &BifrostResponsesStreamResponse{Type: eventType, OutputIndex: Ptr(0), ContentIndex: Ptr(0), Delta: Ptr(delta)}
+}
+
 // syncChatChunk builds a normalized chat stream chunk with optional content and finish reason.
 func syncChatChunk(content *string, finishReason *string) *BifrostChatResponse {
 	return &BifrostChatResponse{
@@ -174,12 +198,16 @@ func TestSyncRawResponseTextReportsUnsupportedPayloads(t *testing.T) {
 		before any
 		after  any
 	}{
-		"undeclared format":            {raw: syncContentFrame, format: "", before: before, after: after},
-		"format for another payload":   {raw: syncContentFrame, format: RawResponseFormatOpenAIResponsesStreamEvent, before: before, after: after},
-		"raw is not a string":          {raw: map[string]any{"choices": []any{}}, format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
-		"raw is not JSON":              {raw: "event: ping", format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
-		"raw content is a block array": {raw: `{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"mail alex@example.com"}]}}]}`, format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
-		"raw has no content field":     {raw: `{"choices":[{"index":0,"delta":{"text":"mail alex@example.com"}}]}`, format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
+		"undeclared format":           {raw: syncContentFrame, format: "", before: before, after: after},
+		"format for another payload":  {raw: syncContentFrame, format: RawResponseFormatOpenAIResponsesStreamEvent, before: before, after: after},
+		"raw is not a string":         {raw: map[string]any{"choices": []any{}}, format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
+		"raw is not JSON":             {raw: "event: ping", format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
+		"raw has no content field":    {raw: `{"choices":[{"index":0,"delta":{"text":"mail alex@example.com"}}]}`, format: RawResponseFormatOpenAIChatCompletionChunk, before: before, after: after},
+		"content blocks without text": {raw: `{"choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[]}]}}]}`, format: RawResponseFormatOpenAIChatCompletionChunk, before: syncChatChunk(nil, nil), after: syncChatChunk(Ptr("released"), nil)},
+		"format on another payload":   {raw: anthropicTextDelta, format: RawResponseFormatAnthropicMessagesStreamEvent, before: &BifrostTextCompletionResponse{}, after: &BifrostTextCompletionResponse{}},
+		"anthropic closing event":     {raw: anthropicMessageDelta, format: RawResponseFormatAnthropicMessagesStreamEvent, before: syncChatChunk(nil, Ptr("stop")), after: syncChatChunk(Ptr("released"), Ptr("stop"))},
+		"gemini code execution part":  {raw: `{"candidates":[{"content":{"role":"model","parts":[{"executableCode":{"language":"PYTHON","code":"print(1)"}},{"text":"mail alex@example.com"}]}}]}`, format: RawResponseFormatGeminiStreamChunk, before: before, after: after},
+		"gemini function call args":   {raw: `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"f","args":{"to":"alex@example.com"}}}]}}]}`, format: RawResponseFormatGeminiStreamChunk, before: syncToolChunk(`{"to":"alex@example.com"}`), after: syncToolChunk(`{"to":"[EMAIL-1]"}`)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -205,6 +233,16 @@ func TestSyncRawResponseTextRejectsMisalignedText(t *testing.T) {
 		assert.Equal(t, raw, synced)
 	})
 
+	t.Run("different original in a mapped field", func(t *testing.T) {
+		raw := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"something else"}}`
+
+		synced, err := SyncRawResponseText(raw, RawResponseFormatAnthropicMessagesStreamEvent, syncChatChunk(Ptr("mail alex@example.com"), nil), syncChatChunk(Ptr("mail [EMAIL-1]"), nil))
+
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrRawResponseTextUnsupported))
+		assert.Equal(t, raw, synced)
+	})
+
 	t.Run("raw text where normalized had none", func(t *testing.T) {
 		raw := `{"choices":[{"index":0,"delta":{"content":"leftover"},"finish_reason":"stop"}]}`
 
@@ -213,4 +251,149 @@ func TestSyncRawResponseTextRejectsMisalignedText(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, raw, synced)
 	})
+}
+
+// TestSyncRawResponseTextMapsProviderEvents verifies each provider format mirrors a normalized text change into the
+// field its own event keeps that text in, leaving every other raw byte (reasoning included) unchanged.
+func TestSyncRawResponseTextMapsProviderEvents(t *testing.T) {
+	cases := map[string]struct {
+		format        RawResponseFormat
+		raw           string
+		before, after any
+		want          string
+	}{
+		"anthropic chat text": {
+			format: RawResponseFormatAnthropicMessagesStreamEvent, raw: anthropicTextDelta,
+			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
+			want: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"mail [EMAIL-1]"}}`,
+		},
+		"anthropic responses text held back": {
+			format: RawResponseFormatAnthropicMessagesStreamEvent, raw: anthropicTextDelta,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, ""),
+			want:   `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`,
+		},
+		"anthropic tool arguments": {
+			format: RawResponseFormatAnthropicMessagesStreamEvent, raw: anthropicJSONDelta,
+			before: syncToolChunk(`{"to":"alex@example.com"}`), after: syncToolChunk(`{"to":"[EMAIL-1]"}`),
+			want: `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"to\":\"[EMAIL-1]\"}"}}`,
+		},
+		"anthropic structured output": {
+			format: RawResponseFormatAnthropicMessagesStreamEvent, raw: anthropicJSONDelta,
+			before: syncChatChunk(Ptr(`{"to":"alex@example.com"}`), nil), after: syncChatChunk(Ptr(`{"to":"[EMAIL-1]"}`), nil),
+			want: `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"to\":\"[EMAIL-1]\"}"}}`,
+		},
+		"bedrock text": {
+			format: RawResponseFormatBedrockConverseStreamEvent, raw: `{"contentBlockIndex":0,"delta":{"text":"mail alex@example.com"},"p":"abc"}`,
+			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
+			want: `{"contentBlockIndex":0,"delta":{"text":"mail [EMAIL-1]"},"p":"abc"}`,
+		},
+		"bedrock tool arguments": {
+			format: RawResponseFormatBedrockConverseStreamEvent, raw: `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"to\":\"alex@example.com\"}"}},"p":"ab"}`,
+			before: syncToolChunk(`{"to":"alex@example.com"}`), after: syncToolChunk(`{"to":"[EMAIL-1]"}`),
+			want: `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{\"to\":\"[EMAIL-1]\"}"}},"p":"ab"}`,
+		},
+		"cohere text": {
+			format: RawResponseFormatCohereChatStreamEvent, raw: `{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"mail alex@example.com"}}}}`,
+			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
+			want: `{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"mail [EMAIL-1]"}}}}`,
+		},
+		"cohere tool arguments": {
+			format: RawResponseFormatCohereChatStreamEvent, raw: `{"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"to\":\"alex@example.com\"}"}}}}}`,
+			before: syncToolChunk(`{"to":"alex@example.com"}`), after: syncToolChunk(`{"to":"[EMAIL-1]"}`),
+			want: `{"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"to\":\"[EMAIL-1]\"}"}}}}}`,
+		},
+		"gemini text parts skip thoughts": {
+			format: RawResponseFormatGeminiStreamChunk,
+			raw:    `{"candidates":[{"content":{"role":"model","parts":[{"text":"check alex@example.com","thought":true},{"text":"mail alex@"},{"text":"example.com"}]},"index":0}]}`,
+			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
+			want: `{"candidates":[{"content":{"role":"model","parts":[{"text":"check alex@example.com","thought":true},{"text":""},{"text":"mail [EMAIL-1]"}]},"index":0}]}`,
+		},
+		"gemini responses delta": {
+			format: RawResponseFormatGeminiStreamChunk, raw: `{"candidates":[{"content":{"role":"model","parts":[{"text":"mail alex@example.com"}]}}]}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail [EMAIL-1]"),
+			want:   `{"candidates":[{"content":{"role":"model","parts":[{"text":"mail [EMAIL-1]"}]}}]}`,
+		},
+		"replicate chat": {
+			format: RawResponseFormatReplicateStreamEvent, raw: `{"Data":"mail alex@example.com","Event":"output","ID":""}`,
+			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
+			want: `{"Data":"mail [EMAIL-1]","Event":"output","ID":""}`,
+		},
+		"replicate text completion": {
+			format: RawResponseFormatReplicateStreamEvent, raw: `{"Data":"mail alex@example.com","Event":"output","ID":""}`,
+			before: &BifrostTextCompletionResponse{Choices: []BifrostResponseChoice{{TextCompletionResponseChoice: &TextCompletionResponseChoice{Text: Ptr("mail alex@example.com")}}}},
+			after:  &BifrostTextCompletionResponse{Choices: []BifrostResponseChoice{{TextCompletionResponseChoice: &TextCompletionResponseChoice{Text: Ptr("mail [EMAIL-1]")}}}},
+			want:   `{"Data":"mail [EMAIL-1]","Event":"output","ID":""}`,
+		},
+		"openai-compatible content blocks": {
+			format: RawResponseFormatOpenAIChatCompletionChunk,
+			raw:    `{"choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"alex@example.com?"}]},{"type":"text","text":"mail alex@example.com"}]}}]}`,
+			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
+			want: `{"choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"alex@example.com?"}]},{"type":"text","text":"mail [EMAIL-1]"}]}}]}`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			synced, err := SyncRawResponseText(tc.raw, tc.format, tc.before, tc.after)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, synced)
+		})
+	}
+}
+
+// TestSyncRawResponseTextLeavesTextAProviderEventDoesNotCarry verifies accumulated Responses text, which delta-only
+// provider events never contain, is left out, while reasoning text a provider does carry is never rewritten.
+func TestSyncRawResponseTextLeavesTextAProviderEventDoesNotCarry(t *testing.T) {
+	t.Run("accumulated text on a closing event", func(t *testing.T) {
+		done := func(text string) *BifrostResponsesStreamResponse {
+			return &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeOutputTextDone, OutputIndex: Ptr(0), ContentIndex: Ptr(0), Text: Ptr(text)}
+		}
+
+		synced, err := SyncRawResponseText(anthropicBlockStop, RawResponseFormatAnthropicMessagesStreamEvent, done("mail alex@example.com"), done("mail [EMAIL-1]"))
+
+		require.NoError(t, err)
+		assert.Equal(t, anthropicBlockStop, synced)
+	})
+
+	t.Run("reasoning delta", func(t *testing.T) {
+		raw := `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"check alex@example.com"}}`
+		before := syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "check alex@example.com")
+		after := syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "check [EMAIL-1]")
+
+		synced, err := SyncRawResponseText(raw, RawResponseFormatAnthropicMessagesStreamEvent, before, after)
+
+		require.ErrorIs(t, err, ErrRawResponseTextUnsupported)
+		assert.Equal(t, raw, synced)
+	})
+}
+
+// TestSyncRawResponseTextFillsEmptyMappedField verifies text released onto a provider text event whose field was
+// already emptied goes back into that field, which is how held text returns to an earlier event.
+func TestSyncRawResponseTextFillsEmptyMappedField(t *testing.T) {
+	raw := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`
+
+	synced, err := SyncRawResponseText(raw, RawResponseFormatAnthropicMessagesStreamEvent, syncChatChunk(Ptr(""), nil), syncChatChunk(Ptr("Thanks!"), nil))
+
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Thanks!"}}`, synced)
+}
+
+// TestRawResponseFormatTextOnlyInDeltaEvents pins which formats have closing events without a text field.
+func TestRawResponseFormatTextOnlyInDeltaEvents(t *testing.T) {
+	cases := map[RawResponseFormat]bool{
+		RawResponseFormatOpenAIChatCompletionChunk:    false,
+		RawResponseFormatOpenAITextCompletionChunk:    false,
+		RawResponseFormatOpenAIResponsesStreamEvent:   false,
+		RawResponseFormatGeminiStreamChunk:            false,
+		RawResponseFormatAnthropicMessagesStreamEvent: true,
+		RawResponseFormatBedrockConverseStreamEvent:   true,
+		RawResponseFormatCohereChatStreamEvent:        true,
+		RawResponseFormatReplicateStreamEvent:         true,
+		"":                                            false,
+	}
+	for format, want := range cases {
+		assert.Equal(t, want, format.TextOnlyInDeltaEvents(), "format %q", format)
+	}
 }

@@ -1287,6 +1287,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 						if sendBackRawResponse {
 							response.ExtraFields.RawResponse = eventData
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatAnthropicMessagesStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1331,6 +1332,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = eventData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatAnthropicMessagesStreamEvent
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1913,6 +1915,7 @@ func HandleAnthropicResponsesStream(
 
 					if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) && i == rawIdx {
 						response.ExtraFields.RawResponse = eventData
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatAnthropicMessagesStreamEvent
 					}
 
 					// Carry safeguard_results (Claude Code auto-mode classifier) so the

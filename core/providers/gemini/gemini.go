@@ -713,8 +713,12 @@ func HandleGeminiChatCompletionStream(
 
 				// A split event yields several deltas; attach the upstream event once,
 				// on the last of them, so a base64 media payload is not copied per delta.
+				// Only an unsplit event's payload backs exactly its delta's text.
 				if sendBackRawResponse && i == len(responses)-1 {
 					response.ExtraFields.RawResponse = string(eventData)
+					if len(responses) == 1 {
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatGeminiStreamChunk
+					}
 				}
 
 				lastChunkTime = time.Now()
@@ -1226,6 +1230,7 @@ func HandleGeminiResponsesStream(
 				return
 			}
 
+			rawIdx, rawFormat := geminiResponsesRawAttachment(responses)
 			for i, response := range responses {
 				if response != nil {
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1241,9 +1246,10 @@ func HandleGeminiResponsesStream(
 						}
 					}
 
-					// Only add raw response to the LAST response in the array
-					if sendBackRawResponse && i == len(responses)-1 {
+					// Attach the upstream event to exactly one response
+					if sendBackRawResponse && i == rawIdx {
 						response.ExtraFields.RawResponse = string(eventData)
+						response.ExtraFields.RawResponseFormat = rawFormat
 					}
 
 					chunkIndex++
@@ -1317,6 +1323,28 @@ func HandleGeminiResponsesStream(
 	}()
 
 	return responseChan, nil
+}
+
+// geminiResponsesRawAttachment picks the response that carries one Gemini stream chunk's raw payload: its only
+// output_text.delta, so the raw text travels with the normalized text it backs, or else the last response. The
+// payload's format is declared unless the chunk's text is spread over several deltas, which one payload cannot
+// mirror per delta.
+func geminiResponsesRawAttachment(responses []*schemas.BifrostResponsesStreamResponse) (int, schemas.RawResponseFormat) {
+	textIdx, textDeltas := -1, 0
+	for i, response := range responses {
+		if response != nil && response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta {
+			textIdx = i
+			textDeltas++
+		}
+	}
+	switch textDeltas {
+	case 0:
+		return len(responses) - 1, schemas.RawResponseFormatGeminiStreamChunk
+	case 1:
+		return textIdx, schemas.RawResponseFormatGeminiStreamChunk
+	default:
+		return len(responses) - 1, ""
+	}
 }
 
 // Embedding performs an embedding request to the Gemini API.
