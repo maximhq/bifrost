@@ -274,7 +274,7 @@ type BifrostResponsesResponse struct {
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
 	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
-	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields,omitzero"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields
@@ -324,10 +324,13 @@ func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does. r is a copy, so
-// clearing usage's copy leaves the caller's response intact.
+// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does, and output as
+// [] when nil (a required array clients iterate). r is a copy, so the caller's response is intact.
 func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesResponse
+	if r.Output == nil {
+		r.Output = []ResponsesMessage{}
+	}
 	if r.Usage != nil && r.Usage.ToolUsage != nil {
 		if r.ToolUsage == nil {
 			r.ToolUsage = r.Usage.ToolUsage
@@ -492,9 +495,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 		}
 	}
 
-	// Usage - ensure token details exist
-	result.Usage = resp.Usage
-	if result.Usage != nil {
+	// Usage - ensure token details exist. Shaped on a copy: governance prices the caller's
+	// response concurrently, and its iterations carry the advisor passes.
+	if resp.Usage != nil {
+		usage := *resp.Usage
+		result.Usage = &usage
 		result.Usage.Iterations = nil
 		result.Usage.Type = nil
 		if result.Usage.InputTokensDetails == nil {
@@ -1494,7 +1499,8 @@ const (
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
 	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
-	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call"         // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeConfigurationUpdate  ResponsesMessageType = "configuration_update" // OpenAI mid-conversation reasoning effort change
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1558,6 +1564,8 @@ type ResponsesMessage struct {
 	// decode promotes them into the embedded mcp_list_tools fields and strips
 	// required fields. Rather than fail to deserialize the whole input array
 	// or drop/mangle these items, we round-trip the original bytes unchanged.
+	// OpenAI's `configuration_update` item is preserved the same way: its
+	// `reasoning` object has no typed field and OpenAI requires it.
 	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
 	rawPreserved []byte
 }
@@ -1567,7 +1575,8 @@ type ResponsesMessage struct {
 func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
 		t == string(ResponsesMessageTypeToolSearchOutput) ||
-		t == string(ResponsesMessageTypeAdditionalTools)
+		t == string(ResponsesMessageTypeAdditionalTools) ||
+		t == string(ResponsesMessageTypeConfigurationUpdate)
 }
 
 // UnmarshalJSON preserves codex tool_search/additional_tools items verbatim
@@ -1600,6 +1609,27 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		}
 		if callID := gjson.GetBytes(data, "call_id"); callID.Type == gjson.String && callID.String() != "" {
 			m.ResponsesToolMessage = &ResponsesToolMessage{CallID: Ptr(callID.String())}
+		}
+		// Anthropic tool_search_call replays carry the search variant and discovered tools; OpenAI items carry neither.
+		if t == string(ResponsesMessageTypeToolSearchCall) {
+			if name := gjson.GetBytes(data, "name"); name.Type == gjson.String && name.String() != "" {
+				if m.ResponsesToolMessage == nil {
+					m.ResponsesToolMessage = &ResponsesToolMessage{}
+				}
+				m.Name = new(name.String())
+			}
+			var toolReferences []string
+			for _, ref := range gjson.GetBytes(data, "tool_references").Array() {
+				if ref.Type == gjson.String && ref.String() != "" {
+					toolReferences = append(toolReferences, ref.String())
+				}
+			}
+			if len(toolReferences) > 0 {
+				if m.ResponsesToolMessage == nil {
+					m.ResponsesToolMessage = &ResponsesToolMessage{}
+				}
+				m.ResponsesToolSearchCall = &ResponsesToolSearchCall{ToolReferences: toolReferences}
+			}
 		}
 		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
@@ -4574,8 +4604,13 @@ type ResponsesShellCallOutputDelta struct {
 // MarshalJSON omits event-scoped fields that are nil so strict Responses
 // clients do not see explicit nulls on unrelated event types. Some event types
 // still intentionally emit empty arrays after WithDefaults populates them.
+// resp is a copy, so defaults set here never reach the caller's event.
 func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesStreamResponse
+	// Anthropic/Bedrock carry the thinking signature on a text-less delta; delta is required on the wire.
+	if resp.Type == ResponsesStreamResponseTypeReasoningSummaryTextDelta && resp.Delta == nil {
+		resp.Delta = new("")
+	}
 	encoded, err := Marshal(alias(resp))
 	if err != nil {
 		return nil, err

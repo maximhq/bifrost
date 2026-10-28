@@ -342,7 +342,7 @@ func TestToOpenRouterDecisionRequest_SendsImagesAsStateItems(t *testing.T) {
 	request.Input = schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
 		Role: "user",
 		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-			{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("Look at this")},
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Look at this")},
 			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr(testImageURL)},
 		}},
 	}}}

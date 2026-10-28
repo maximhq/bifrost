@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/fasthttp/router"
@@ -15,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -283,9 +286,10 @@ func TestOpenAIDecisionsRouteRegisteredOnEveryPath(t *testing.T) {
 
 // TestOpenAIDecisionsRouteConvertsRequest pins the route's request handling:
 // an SDK body becomes the normalized request, questions keep their order and
-// an unnamed question stays unnamed, a model without a prefix is OpenAI's, an
-// unknown future field is marked to reach the provider wire, and fallbacks are
-// kept for routing. The payload is synthetic.
+// an unnamed question stays unnamed, a model without a prefix is left for
+// routing to resolve, an unknown future field is marked to reach the provider
+// wire, the prompt-cache key is a typed field rather than an extension, and
+// fallbacks are kept for routing. The payload is synthetic.
 func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 	route := findOpenAIRoute("/openai", "/openai/v1/decisions")
 	if route == nil {
@@ -301,6 +305,7 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 			{"type": "score", "instructions": "How severe is the damage?", "levels": [{"label": "Cosmetic"}, {"label": "Blocked"}]}
 		],
 		"fallbacks": ["typesafe/jev-1.13.0"],
+		"prompt_cache_key": "tenant-1",
 		"future_option": {"mode": "strict"}
 	}`)
 	if err := parseJSONRequestBody(body, incoming); err != nil {
@@ -313,8 +318,8 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 		t.Fatalf("convert: %v", err)
 	}
 	decision := converted.DecisionRequest
-	if decision.Provider != schemas.OpenAI || decision.Model != "gpt-6-luna" {
-		t.Errorf("got provider %q model %q, want openai gpt-6-luna", decision.Provider, decision.Model)
+	if decision.Provider != "" || decision.Model != "gpt-6-luna" {
+		t.Errorf("got provider %q model %q, want unresolved provider and gpt-6-luna", decision.Provider, decision.Model)
 	}
 	if decision.Input.NonTextPartType() != schemas.DecisionInputPartTypeImage {
 		t.Error("input messages, with the image, were not kept")
@@ -330,6 +335,9 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 	}
 	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
 		t.Error("unknown fields present but passthrough not requested; they would be dropped on the wire")
+	}
+	if _, ok := decision.ExtraParams["prompt_cache_key"]; ok || decision.PromptCacheKey == nil || *decision.PromptCacheKey != "tenant-1" {
+		t.Errorf("prompt_cache_key must be a typed field, got %v and extra params %v", decision.PromptCacheKey, decision.ExtraParams)
 	}
 
 	router := &GenericRouter{}
@@ -561,6 +569,176 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
 			require.Contains(t, string(ctx.Response.Header.ContentType()), "audio/", "body: %.200s", ctx.Response.Body())
 			require.Equal(t, audio, ctx.Response.Body())
+		})
+	}
+}
+
+// azureDataSourcesJSON is an Azure "On Your Data" data_sources value, the
+// extension the Azure OpenAI SDK sends at the top level of a chat body.
+const azureDataSourcesJSON = `[{"type":"azure_search","parameters":{"endpoint":"https://unreachable.search.windows.net","index_name":"idx","authentication":{"type":"api_key","key":"k"}}}]`
+
+// chatUpstream records the last chat body the provider sent and answers it,
+// as SSE when the body asked to stream.
+type chatUpstream struct {
+	mu   sync.Mutex
+	path string
+	body []byte
+}
+
+func (u *chatUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.path, u.body = r.URL.Path, body
+	u.mu.Unlock()
+	var probe struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	if probe.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+}
+
+func (u *chatUpstream) last() (string, []byte) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.path, u.body
+}
+
+// TestAzureDeploymentChatForwardsUnknownTopLevelFields pins that the Azure
+// OpenAI SDK route /openai/deployments/{deployment}/chat/completions forwards
+// top-level fields Bifrost does not model, such as On Your Data data_sources,
+// to the Azure deployment, unary and streaming. They used to be dropped at
+// decode, so Azure answered 200 for a body it should have rejected. The plain
+// chat routes and a provider-prefixed deployment path keep dropping them.
+func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
+	upstream := &chatUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	const deploymentURI = "/openai/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21"
+	cases := []struct {
+		name        string
+		uri         string
+		body        string
+		headers     map[string]string
+		wantPath    string
+		wantFields  map[string]string
+		wantMissing []string
+	}{
+		{
+			name:       "azure deployment unary",
+			uri:        deploymentURI,
+			body:       `{"messages":[{"role":"user","content":"hi"}],"temperature":0.2,"data_sources":` + azureDataSourcesJSON + `,"x_future_field":{"a":1}}`,
+			wantPath:   "/openai/v1/chat/completions",
+			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "x_future_field": `{"a":1}`, "temperature": "0.2"},
+		},
+		{
+			name:       "azure deployment stream",
+			uri:        deploymentURI,
+			body:       `{"messages":[{"role":"user","content":"hi"}],"stream":true,"data_sources":` + azureDataSourcesJSON + `}`,
+			wantPath:   "/openai/v1/chat/completions",
+			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "stream": "true"},
+		},
+		{
+			name:        "azure deployment nested extra_params wins on conflict",
+			uri:         deploymentURI,
+			body:        `{"messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `,"x_dup":"top","extra_params":{"x_dup":"nested"}}`,
+			headers:     map[string]string{"x-bf-passthrough-extra-params": "true"},
+			wantPath:    "/openai/v1/chat/completions",
+			wantFields:  map[string]string{"data_sources": azureDataSourcesJSON, "x_dup": `"nested"`},
+			wantMissing: []string{"extra_params"},
+		},
+		{
+			name:        "azure deployment without unknown fields",
+			uri:         deploymentURI,
+			body:        `{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low","fallbacks":["openai/gpt-4o"]}`,
+			wantPath:    "/openai/v1/chat/completions",
+			wantMissing: []string{"fallbacks", "extra_params"},
+		},
+		{
+			name:        "plain chat route keeps dropping unknown fields",
+			uri:         "/openai/v1/chat/completions",
+			body:        `{"model":"azure/gpt-4o","messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `}`,
+			wantPath:    "/openai/v1/chat/completions",
+			wantMissing: []string{"data_sources"},
+		},
+		{
+			name:        "provider-prefixed deployment path does not forward Azure fields",
+			uri:         "/openai/openai/deployments/openai/gpt-4o/chat/completions?api-version=2024-10-21",
+			body:        `{"messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `}`,
+			wantPath:    "/v1/chat/completions",
+			wantMissing: []string{"data_sources"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			ctx.Request.SetBodyString(tc.body)
+
+			r.Handler(&ctx)
+			respBody := string(ctx.Response.Body())
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", respBody)
+
+			path, sent := upstream.last()
+			require.Equal(t, tc.wantPath, path, "upstream body: %s", sent)
+			for field, want := range tc.wantFields {
+				got := gjson.GetBytes(sent, field)
+				require.True(t, got.Exists(), "%s missing from the provider body: %s", field, sent)
+				require.JSONEq(t, want, got.Raw, "%s in provider body: %s", field, sent)
+			}
+			for _, field := range tc.wantMissing {
+				require.False(t, gjson.GetBytes(sent, field).Exists(), "%s must not reach the provider: %s", field, sent)
+			}
+		})
+	}
+}
+
+// BenchmarkAzureEndpointPreHookChat measures the Azure deployments pre-hook on
+// a chat body with no unknown fields (the common case) and with data_sources.
+func BenchmarkAzureEndpointPreHookChat(b *testing.B) {
+	hook := AzureEndpointPreHook(&mockHandlerStore{})
+	bodies := map[string]string{
+		"known-only":   `{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"stream":true,"stream_options":{"include_usage":true}}`,
+		"data-sources": `{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"data_sources":` + azureDataSourcesJSON + `}`,
+	}
+	for _, name := range []string{"known-only", "data-sources"} {
+		body := []byte(bodies[name])
+		b.Run(name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("deploymentPath", "gpt-4o/chat/completions")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req := &openai.OpenAIChatRequest{}
+				if err := hook(&ctx, bctx, req); err != nil {
+					b.Fatal(err)
+				}
+				bctx.Cancel()
+			}
 		})
 	}
 }

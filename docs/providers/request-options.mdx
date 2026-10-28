@@ -25,6 +25,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
 | `BifrostContextKeyPassthroughExtraParams`  | `x-bf-passthrough-extra-params`                      | `bool`                | Enable passthrough for extra parameters                                                                                               |
 | `BifrostContextKeyExtraHeaders`            | `x-bf-eh-*`                                          | `map[string][]string` | Custom headers forwarded to provider                                                                                                  |
+| `BifrostContextKeyRequestHeaders`          | `x-bf-lh-*`                                          | `map[string]string`   | Log metadata labels (prefix stripped), stored on the request's log entry                                                             |
 | `BifrostContextKeySkipKeySelection`        | `-`                                                  | `bool`                | Skip key selection process (Go SDK only)                                                                                              |
 | `BifrostContextKeyURLPath`                 | `-`                                                  | `string`              | Custom URL path appended to provider base URL (Go SDK only)                                                                           |
 | `BifrostContextKeyUseRawRequestBody`       | `-`                                                  | `bool`                | Use raw request body (Go SDK only, requires RawRequestBody field)                                                                     |
@@ -90,7 +91,7 @@ Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk
 
 Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
 
-A key pinned with `x-bf-api-key-id` or `x-bf-api-key` applies to the first attempt only, on whichever provider your configuration put first: the requested provider, a routing rule, virtual key weights, the adaptive load balancer, a circuit breaker redirect or the session. Bifrost never changes the provider for a pin. If that provider has no key with that id or name, or the key does not serve the model, the attempt fails key selection without calling the provider, and the fallbacks run. Fallbacks never carry the caller's pin; each uses its own `key_id` or picks a key normally. A routing rule's key pin overrides the caller's, and a [direct key](#direct-api-key) (`x-bf-direct-key`) overrides both.
+A key pinned with `x-bf-api-key-id` or `x-bf-api-key` applies only to the first provider of the chain, its retries included. That is whichever provider your configuration put first: the requested provider, a routing rule, virtual key weights, the adaptive load balancer, a circuit breaker redirect or the session. Bifrost never changes the provider for a pin. If that provider has no key with that id or name, or the key does not serve the model, the attempt fails key selection without calling the provider, and the fallbacks run. Fallbacks never carry the caller's pin; each uses its own `key_id` or picks a key normally. A routing rule's key pin overrides the caller's, and a [direct key](#direct-api-key) (`x-bf-direct-key`) overrides both.
 
 #### By ID
 
@@ -193,7 +194,7 @@ A direct key only replaces the provider credential — it bypasses the **key poo
 </Warning>
 
 <Note>
-A direct key is tried only on the first provider of the request's chain; fallback providers run on their own configured keys. With a bare model that first provider is whatever routing or [session affinity](/providers/session-affinity) puts first. Name the provider (`openai/gpt-4o`) and a session never moves the request away from it. A fallback that serves a request with a direct key does not become the session's provider.
+A direct key is used on the first provider of the request's chain, its retries included, and on nothing after it. Every fallback, including one on the same provider with another model, runs on the gateway's configured keys. When the provider refuses the caller's key, Bifrost returns the provider's own error, never its `502 upstream_credentials_exhausted`, whatever `max_retries` is. With a bare model that first provider is whatever routing or [session affinity](/providers/session-affinity) puts first. Name the provider (`openai/gpt-4o`) and a session never moves the request away from it. A fallback that serves a request with a direct key does not become the session's provider.
 </Note>
 
 <Note>
@@ -245,10 +246,10 @@ Keep a session on what served it before, so a conversation keeps hitting the sam
 - **Provider**: when routing offers more than one provider for what the caller asked for (virtual key weights, load balancing, model catalog candidates), the provider that last served the session is tried first, as long as routing still offers it. Routing decides which providers are allowed; the session only decides their order. A request that names its provider (`openai/gpt-4o`) is never reordered: the caller asked for that provider, so only the key level applies to it, even when a fallback served an earlier turn. Nor is one that pins one of the routed provider's keys with [`x-bf-api-key-id` or `x-bf-api-key`](#api-key-selection), since that key exists only there.
 - **Key**: within a provider, the key that last served the session is used while it stays eligible.
 
-Bindings are written when a request is served, never when it fails, and are scoped to the virtual key and user the request is attributed to. A fallback that serves becomes the session's new home. Bindings live in the KV store for the session TTL, refreshed by every served request.
+Bindings are written when a request is served, never when it fails, and are scoped to the virtual key and user the request is attributed to. A fallback that serves becomes the session's new home. Bindings live in the KV store for the session TTL, refreshed by every served request that followed them.
 
 **Retry and Fallback Behavior:**
-- **Retries**: A bound key is used for every retry of a request. A session with no key binding yet rotates keys on rate limits like any other request, and the key that serves is the one that gets bound.
+- **Retries**: A bound key is used for every retry of a request, including on a rate limit, until the provider rejects it outright (a rejected credential, exhausted quota, no model access, a retired model or a blocked region). The request then moves to another eligible key on the same provider, and the session rebinds to the key that serves. A session with no key binding yet rotates keys on rate limits like any other request, and the key that serves is the one that gets bound.
 - **Fallbacks**: Fallback providers select keys freely. When a fallback serves, the session is rebound to that provider and its key, so the next request starts there. A request with a [direct key](#direct-api-key) is the exception: the fallback served on the gateway's keys, so only its key is bound and the next request follows the routing decision.
 - **Switch**: `x-bf-session-affinity: off` turns affinity off for a request, at both levels; `on` is the default.
 - **Routing trail**: Decisions the session made appear in the request's routing logs under the `session-affinity` engine, which is also listed among the routing engines used. The UI labels it **Session**.
@@ -396,7 +397,7 @@ Every traced gateway request echoes the correlation IDs so you can pivot from a 
 The same `trace_id` and `request_id` appear as fields on Bifrost's structured access logs, so the value returned to the caller can be searched directly in your log store.
 
 <Note>
-Provider response headers are forwarded to the caller, except the `x-bifrost-*` names Bifrost writes itself. When the upstream is another Bifrost gateway, its `x-bifrost-*` headers describe its own hop and are not forwarded, so they can never replace this gateway's request ID, trace ID or routing headers.
+Provider response headers are forwarded to the caller, except the `x-bifrost-*` names Bifrost writes itself. When the upstream is another Bifrost gateway, its `x-bifrost-*` headers describe its own hop and are not forwarded, so they can never replace this gateway's request ID, trace ID or routing headers. Every header the gateway adds is listed in [Response Headers](/providers/response-headers).
 </Note>
 
 ### Send Back Raw Request
@@ -627,7 +628,7 @@ Override the logging plugin's global `disable_content_logging` config for a sing
 This is useful when you need to suppress sensitive data (e.g. PII, credentials) for specific requests while keeping content logging enabled globally - or, conversely, to opt a single request into full content+raw capture while content logging is globally disabled.
 
 <Warning>
-Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. When the toggle is off, this value is ignored and the client `disable_content_logging` setting, overridden by the virtual key's own `disable_content_logging` when it has one, is authoritative.
+Per-request overrides are **disabled by default**. You must first enable `allow_per_request_content_storage_override` in your logging configuration (or in the UI under **Logs Settings**) before this header or context key has any effect. When the toggle is off, this value is ignored and the client `disable_content_logging` setting, overridden by the virtual key's own `disable_content_logging` and then by the project's when they have one, is authoritative.
 </Warning>
 
 <Tabs>
@@ -664,7 +665,7 @@ Input: messages,
 
 **Prerequisite:** `allow_per_request_content_storage_override` must be `true` in the logging plugin config (set in `config.json` or via the UI).
 
-**Precedence (when override is enabled):** The per-request value takes precedence over both the global `disable_content_logging` setting and the virtual key's own `disable_content_logging` (see [Content Logging](/features/observability/content-logging)). A value of `true` suppresses content; `false` forces content on.
+**Precedence (when override is enabled):** The per-request value takes precedence over the global `disable_content_logging` setting, the virtual key's own `disable_content_logging`, and the [project's](/enterprise/projects#content-logging) (see [Content Logging](/features/observability/content-logging)). A value of `true` suppresses content; `false` forces content on.
 
 <Note>
 This flag affects only what is written to the log record (messages, params, tool results, raw request/response). Token counts, latency, cost, status, and routing metadata are always logged regardless of this setting.
@@ -893,6 +894,55 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 Result:
 - Provider receives `session-id: sess-abc-123` in the request headers.
 - OTel `llm.call` span gets attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"` so you can filter or group traces by session in Grafana, Datadog, Honeycomb, Langfuse, etc.
+
+### Log Metadata (x-bf-lh-\*)
+
+**Context Key:** `BifrostContextKeyRequestHeaders`  
+**Header Pattern:** `x-bf-lh-{name}`  
+**Type:** `map[string]string`  
+**Required:** No
+
+Attach labels to the request's log entry. The `x-bf-lh-` prefix is stripped and the rest becomes the metadata key, so `x-bf-lh-tenant: acme` is stored as `tenant = acme`. Works for both LLM and MCP requests and needs no configuration.
+
+Unlike [`x-bf-dim-*`](#unified-dimensions-x-bf-dim), these labels are not forwarded to other observability backends by default, and never become Prometheus labels, which makes them a good fit for high-cardinality values such as tenant or user IDs. The OTel and Maxim plugins only pick them up if their `request_headers` setting matches them (for example `x-bf-lh-*`), and then keep the full header name.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-lh-tenant: acme' \
+--header 'x-bf-lh-env: production' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+// Set the labels as request headers, keeping the x-bf-lh- prefix
+headers := map[string]string{
+    "x-bf-lh-tenant": "acme",
+    "x-bf-lh-env":    "production",
+}
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestHeaders, headers)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+These labels are merged with [configured logging headers](/features/observability/default) and `x-bf-dim-*` dimensions into the same metadata, and you can filter logs by them. If an `x-bf-lh-*` label and an `x-bf-dim-*` dimension use the same key, the `x-bf-lh-*` value wins. If a [virtual key](/features/governance/virtual-keys) defines metadata with the same key, the virtual key's value wins, so callers cannot override attribution set on the key.
+
+<Note>
+Avoid sending secrets in `x-bf-lh-*` headers, since the values are stored in logs.
+</Note>
 
 ## Semantic Cache Options
 

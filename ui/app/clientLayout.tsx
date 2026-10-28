@@ -133,9 +133,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
 							    60px topbar so its top edge lands on the same line as the sidebar's
 							    search input, and --app-content-viewport compensates so full-height
 							    pages still measure to the card's inner height. */}
-									<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-3 md:mb-3 md:rounded-md md:px-10 dark:border-zinc-800">
+									<div className="dark:bg-card custom-scrollbar content-container mx-0 min-h-0 min-w-0 flex-1 overflow-auto border border-gray-200 bg-white md:mr-3 md:mb-3 md:rounded-md dark:border-zinc-800">
 										<TrialExpiryBanner />
-										<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:p-4">
+										{/* The page scrolls inside main, so the side padding lives here rather than on the
+										    card: padding outside the scroller would inset the scrollbar from the card's edge. */}
+										<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden md:px-14 md:py-4">
 											{isLoading ? (
 												<FullPageLoader />
 											) : (
@@ -162,8 +164,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
 // like the MCP per-user OAuth auth page.
 function MinimalShell({ children }: { children: React.ReactNode }) {
 	return (
-		<div className="dark:bg-card custom-scrollbar content-container h-dvh w-full overflow-auto border border-gray-200 bg-white px-4 md:my-[0.5rem] md:h-[calc(100dvh-1rem)] md:rounded-md md:px-10 dark:border-zinc-800">
-			<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden p-4">
+		<div className="dark:bg-card custom-scrollbar content-container h-dvh w-full overflow-auto border border-gray-200 bg-white md:my-[0.5rem] md:h-[calc(100dvh-1rem)] md:rounded-md dark:border-zinc-800">
+			<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden px-8 py-4 md:px-14">
 				{children}
 			</main>
 		</div>

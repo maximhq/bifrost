@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -710,6 +711,10 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 
 // Speech is not supported by the Azure provider.
 func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	if useSpeechEndpoints(ctx, key) {
+		return provider.speechSynthesis(ctx, key, request)
+	}
+
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -752,10 +757,18 @@ func (provider *AzureProvider) Rerank(ctx *schemas.BifrostContext, key schemas.K
 // (Microsoft-Decision-1). It takes no api-version.
 const azureDecisionPath = "/providers/microsoft/v1/systemone"
 
-// Decision runs a decision on a Microsoft decision model deployment. The body and
-// response are Typesafe's systemone shapes, so Typesafe's handler is reused; the
-// model is the deployment name, sent as is, and a deployment that does not serve
-// decisions is rejected by Azure with its own error.
+// azureOpenAIDecisionPath is where a resource serves OpenAI's decisions models
+// (gpt-6-luna) in OpenAI's decisions shape. Like the other /openai/v1 routes it
+// takes no api-version.
+const azureOpenAIDecisionPath = "/openai/v1/decisions"
+
+// Decision runs a decision on a decision model deployment. A deployment of an
+// OpenAI decisions model (gpt-6-luna) is served on /openai/v1/decisions in
+// OpenAI's shape, so OpenAI's handler is reused; any other deployment is taken
+// for a Microsoft decision model, whose body and response are Typesafe's
+// systemone shapes, so Typesafe's handler is reused. Either way the model is the
+// deployment name, sent as is, and a deployment that does not serve decisions is
+// rejected by Azure with its own error.
 func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
@@ -764,6 +777,21 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if isOpenAIDecisionDeployment(ctx, canonicalModel) {
+		return openai.HandleOpenAIDecisionRequest(
+			ctx,
+			provider.client,
+			endpoint+providerUtils.GetPathFromContext(ctx, azureOpenAIDecisionPath),
+			request,
+			authHeaders,
+			provider.networkConfig.ExtraHeaders,
+			provider.GetProviderKey(),
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			provider.logger,
+		)
 	}
 	return typesafe.HandleTypesafeDecisionRequest(
 		ctx,
@@ -781,6 +809,17 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	)
 }
 
+// isOpenAIDecisionDeployment reports whether a decision deployment serves an
+// OpenAI decisions model, by its canonical model or, when that is an opaque
+// deployment id, by the alias name the client sent.
+func isOpenAIDecisionDeployment(ctx *schemas.BifrostContext, canonicalModel string) bool {
+	if schemas.DefaultSupportsDecisions(canonicalModel) {
+		return true
+	}
+	ra := schemas.GetResolvedAlias(ctx)
+	return ra != nil && schemas.DefaultSupportsDecisions(ra.Key)
+}
+
 // OCR is not supported by the Azure provider.
 func (provider *AzureProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
@@ -789,6 +828,10 @@ func (provider *AzureProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key,
 // SpeechStream handles streaming for speech synthesis with Azure.
 // Azure sends raw binary audio bytes in SSE format, unlike OpenAI which sends JSON.
 func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if useSpeechEndpoints(ctx, key) {
+		return provider.speechSynthesisStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+	}
+
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1096,6 +1139,13 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	if useSpeechEndpoints(ctx, key) {
+		if request.Model == azureSpeechShortAudioModel {
+			return provider.speechShortAudioTranscription(ctx, key, request)
+		}
+		return provider.speechTranscription(ctx, key, request)
+	}
+
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
@@ -1107,11 +1157,30 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 
 	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", endpoint, request.Model, resolveAPIVersion(ctx, DefaultAzureAPIVersion))
 
+	// Azure Whisper returns no usage, so json is fetched as verbose_json for the billed duration.
+	whisper := strings.Contains(schemas.ResolveCanonicalModel(ctx, request.Model), "whisper")
+	format := ""
+	if request.Params != nil && request.Params.ResponseFormat != nil {
+		format = *request.Params.ResponseFormat
+	}
+	// A large upload streams to Azure as sent, so its response_format cannot be switched.
+	upstreamRequest := request
+	if whisper && !providerUtils.IsLargePayloadPassthroughEnabled(ctx) && (format == "" || format == "json") {
+		params := schemas.TranscriptionParameters{}
+		if request.Params != nil {
+			params = *request.Params
+		}
+		params.ResponseFormat = new("verbose_json")
+		copied := *request
+		copied.Params = &params
+		upstreamRequest = &copied
+	}
+
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
 		url,
-		request,
+		upstreamRequest,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		authHeader,
@@ -1124,6 +1193,15 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
+	if whisper {
+		if response.Usage == nil && response.Duration != nil {
+			response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: new(math.Ceil(*response.Duration))}
+		}
+		// A json caller gets the text alone, as OpenAI's json response carries.
+		if upstreamRequest != request {
+			response.Duration, response.Language, response.Task, response.Segments, response.Words = nil, nil, nil, nil, nil
+		}
+	}
 	return response, err
 }
 

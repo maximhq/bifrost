@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,18 @@ func SecretVarAsString(e *SecretVar) string {
 		return e.ref
 	}
 	return e.GetValue()
+}
+
+// NewSecretVarMap wraps each value of a string map in a SecretVar via NewSecretVar.
+func NewSecretVarMap(values map[string]string) map[string]SecretVar {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]SecretVar, len(values))
+	for name, value := range values {
+		out[name] = *NewSecretVar(value)
+	}
+	return out
 }
 
 // knownProvidersMu protects concurrent access to knownProviders.
@@ -1019,6 +1032,14 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 			copyAnnotations.OpenWorldHint = &v
 		}
 		copyTool.Annotations = copyAnnotations
+	}
+
+	if original.MCP != nil {
+		copyTool.MCP = &MCPToolMetadata{
+			Title:        original.MCP.Title,
+			Icons:        slices.Clone(original.MCP.Icons),
+			OutputSchema: slices.Clone(original.MCP.OutputSchema),
+		}
 	}
 
 	// Deep copy Custom if present
@@ -2456,11 +2477,22 @@ func IsMicrosoftDecisionModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "microsoft-decision")
 }
 
-// IsDatabricksDecisionModel checks if the model is Databricks' ai_decide AI Function,
-// served on the workspace's AI Functions endpoint rather than a serving endpoint. It is a
-// single function, so the match is on the exact name.
+// IsDatabricksDecisionModel checks if the model answers decisions natively on Databricks:
+// the ai_decide AI Function, served on the workspace's AI Functions endpoint and matched
+// on its exact name, or a System One model (see IsDatabricksSystemOneModel).
 func IsDatabricksDecisionModel(model string) bool {
-	return strings.EqualFold(model, "ai_decide")
+	return strings.EqualFold(model, "ai_decide") || IsDatabricksSystemOneModel(model)
+}
+
+// IsDatabricksSystemOneModel checks if the model is a System One model service that a
+// workspace's Unity Gateway serves on its systemone endpoint: an OpenJev or TypeSafe AI
+// Jev model, by its Unity Catalog name ("system.ai.openjev-qwen35-4b",
+// "system.ai.typesafeai-jev-1-14-0"). The endpoint takes only Unity Catalog names, so
+// their serving endpoint names ("databricks-openjev-qwen35-4b") do not match. Later
+// versions share the prefixes.
+func IsDatabricksSystemOneModel(model string) bool {
+	name, ok := strings.CutPrefix(strings.ToLower(model), "system.ai.")
+	return ok && (strings.HasPrefix(name, "openjev") || strings.HasPrefix(name, "typesafeai-jev"))
 }
 
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports

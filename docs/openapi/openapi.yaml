@@ -162,10 +162,14 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: News Feeds
+    description: RSS and Atom news sources shown in the News tab of the dashboard notification tray
   - name: Background Jobs
     description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
     description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
+  - name: Relays
+    description: Relays to non-LLM HTTP APIs - endpoint management, usage preview, Relay Logs and the /relay data plane
 
 paths:
   # ==================== Unified Inference API ====================
@@ -811,6 +815,8 @@ paths:
     $ref: "./paths/management/providers.yaml#/models-parameters"
   /api/models/base:
     $ref: "./paths/management/providers.yaml#/models-base"
+  /api/models/newest:
+    $ref: "./paths/management/providers.yaml#/models-newest"
 
   # Plugins
   /api/plugins:
@@ -939,6 +945,10 @@ paths:
     $ref: "./paths/management/governance.yaml#/budgets"
   /api/governance/rate-limits:
     $ref: "./paths/management/governance.yaml#/rate-limits"
+
+  # Governance - Budget Increase Requests (Enterprise)
+  /api/governance/budget-requests/{request_id}/approve:
+    $ref: "./paths/management/governanceextensions.yaml#/budget-request-approve"
 
   # Governance - Model Configs
   /api/governance/model-configs:
@@ -1147,6 +1157,14 @@ paths:
   /api/circuit-breaker/state:
     $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-state"
 
+  # Adaptive Routing (Enterprise)
+  /api/adaptive-routing/config:
+    $ref: "./paths/management/adaptiverouting.yaml#/adaptive-routing-config"
+
+  # Adaptive Routing - deprecated path, kept so existing clients keep working
+  /api/load-balancer-config:
+    $ref: "./paths/management/adaptiverouting.yaml#/adaptive-routing-config-legacy"
+
   # Routing
   /api/routing/rules:
     $ref: "./paths/management/routing.yaml#/rules"
@@ -1341,6 +1359,16 @@ paths:
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
 
+  # News feeds
+  /api/rss/feeds:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-feeds"
+  /api/rss/feeds/{id}:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-feed-by-id"
+  /api/rss/items:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-items"
+  /api/rss/settings:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-settings"
+
   # Background jobs
   /api/sidekiq/jobs:
     $ref: "./paths/management/sidekiq.yaml#/sidekiq-jobs"
@@ -1356,6 +1384,12 @@ paths:
     $ref: "./paths/management/warp.yaml#/warp-backfill-status"
   /api/warp/log-index/backfill/cancel:
     $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/log-index/topics:
+    $ref: "./paths/management/warp.yaml#/warp-topics"
+  /api/warp/log-index/topics/status:
+    $ref: "./paths/management/warp.yaml#/warp-topics-status"
+  /api/warp/log-index/topics/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-topics-cancel"
   /api/warp/chat:
     $ref: "./paths/management/warp.yaml#/warp-session"
   /api/warp/log-index/status:
@@ -1412,6 +1446,32 @@ paths:
     $ref: "./paths/management/agents.yaml#/agent-rest-extendedAgentCard"
   /agents/a2a/{name}/push/callback:
     $ref: "./paths/management/agents.yaml#/agent-push-callback"
+
+  # Relays
+  /api/relays:
+    $ref: "./paths/management/relays.yaml#/relays"
+  /api/relays/{name}:
+    $ref: "./paths/management/relays.yaml#/relay-by-name"
+  /api/relays/usage-preview:
+    $ref: "./paths/management/relays.yaml#/relays-usage-preview"
+  /api/relays/openapi-spec:
+    $ref: "./paths/management/relays.yaml#/relays-openapi-spec"
+  /api/relays/{name}/access-profiles:
+    $ref: "./paths/management/relays.yaml#/relay-access-profiles"
+  /api/relay-logs:
+    $ref: "./paths/management/relays.yaml#/relay-logs"
+  /api/relay-logs/{id}:
+    $ref: "./paths/management/relays.yaml#/relay-logs-by-id"
+  /api/relay-logs/stats:
+    $ref: "./paths/management/relays.yaml#/relay-logs-stats"
+  /api/relay-logs/filterdata:
+    $ref: "./paths/management/relays.yaml#/relay-logs-filterdata"
+  /api/relay-logs/histogram:
+    $ref: "./paths/management/relays.yaml#/relay-logs-histogram"
+  /api/relay-logs/top-endpoints:
+    $ref: "./paths/management/relays.yaml#/relay-logs-top-endpoints"
+  /relay/{endpoint}/{path}:
+    $ref: "./paths/management/relays.yaml#/relay-call"
 
 components:
   securitySchemes:
@@ -1532,7 +1592,76 @@ components:
     WebhookEndpointId:
       $ref: "./paths/management/webhooks.yaml#/components/parameters/WebhookEndpointId"
 
+  headers:
+    BifrostRequestId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRequestId"
+    BifrostTraceId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostTraceId"
+    RequestIdLegacy:
+      $ref: "./schemas/inference/responseheaders.yaml#/RequestIdLegacy"
+    BifrostRoutingInfoProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoProvider"
+    BifrostRoutingInfoModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoModel"
+    BifrostRoutingInfoKey:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoKey"
+    BifrostRoutingInfoRequestedProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoRequestedProvider"
+    BifrostRoutingInfoRequestedModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoRequestedModel"
+    BifrostRoutingInfoIsFallback:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoIsFallback"
+    BifrostRoutingInfoPrimaryProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoPrimaryProvider"
+    BifrostRoutingInfoPrimaryModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoPrimaryModel"
+    BifrostRoutingInfoAliasModelId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoAliasModelId"
+    BifrostRoutingInfoAliasModelName:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoAliasModelName"
+    BifrostRoutingInfoAliasModelFamily:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoAliasModelFamily"
+    BifrostRoutingInfoServerSideFallbackModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoServerSideFallbackModel"
+    BifrostRequestType:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRequestType"
+    BifrostProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostProvider"
+    BifrostOriginalModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostOriginalModel"
+    BifrostResolvedModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostResolvedModel"
+    BifrostFallbackIndex:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostFallbackIndex"
+    BifrostUpstreamLatencyMs:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostUpstreamLatencyMs"
+    BifrostCacheHit:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheHit"
+    BifrostCacheId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheId"
+    BifrostCacheHitType:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheHitType"
+    BifrostCacheHitLatencyMs:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheHitLatencyMs"
+    BifrostCacheRequestedProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheRequestedProvider"
+    BifrostCacheRequestedModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheRequestedModel"
+    BifrostCacheSimilarity:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheSimilarity"
+    BifrostCacheThreshold:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheThreshold"
+    BifrostCacheProviderUsed:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheProviderUsed"
+    BifrostCacheModelUsed:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheModelUsed"
+    BifrostCacheInputTokens:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheInputTokens"
   responses:
+    InferenceBadRequest:
+      $ref: "./schemas/inference/responseheaders.yaml#/InferenceBadRequest"
+    InferenceInternalError:
+      $ref: "./schemas/inference/responseheaders.yaml#/InferenceInternalError"
     BadRequest:
       description: Bad request
       content:
@@ -1709,12 +1838,22 @@ components:
       $ref: "./schemas/inference/common.yaml#/BifrostError"
     ErrorField:
       $ref: "./schemas/inference/common.yaml#/ErrorField"
+    RoutingInfo:
+      $ref: "./schemas/inference/common.yaml#/RoutingInfo"
+    ResolvedKeyAlias:
+      $ref: "./schemas/inference/common.yaml#/ResolvedKeyAlias"
     BifrostErrorExtraFields:
       $ref: "./schemas/inference/common.yaml#/BifrostErrorExtraFields"
     BifrostResponseExtraFields:
       $ref: "./schemas/inference/common.yaml#/BifrostResponseExtraFields"
     BifrostCacheDebug:
       $ref: "./schemas/inference/common.yaml#/BifrostCacheDebug"
+    BifrostGuardrailMetadata:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailMetadata"
+    BifrostGuardrailDetection:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailDetection"
+    BifrostGuardrailJudgeCall:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailJudgeCall"
     CacheControl:
       $ref: "./schemas/inference/common.yaml#/CacheControl"
 
@@ -1797,6 +1936,32 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputText"
     DecisionInputImage:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
+    DecisionInputImageAsset:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
+    DecisionInputItem:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputItem"
+    DecisionFunctionCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCall"
+    DecisionFunctionCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCallOutput"
+    DecisionCustomToolCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCall"
+    DecisionCustomToolCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCallOutput"
+    DecisionToolOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionToolOutput"
+    DecisionInputJSON:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputJSON"
+    DecisionOutputText:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionOutputText"
+    DecisionRefusal:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRefusal"
+    DecisionInstructionPart:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInstructionPart"
+    DecisionPromptCacheOptions:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheOptions"
+    DecisionPromptCacheBreakpoint:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheBreakpoint"
     DecisionMapFormRequest:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
     DecisionMapFormResponse:
@@ -2030,6 +2195,8 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPOpenAPIPreviewResponse"
     MCPConnectionFailure:
       $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPIcon:
+      $ref: "./schemas/management/mcp.yaml#/MCPIcon"
     MCPInstanceState:
       $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:
@@ -2126,6 +2293,12 @@ components:
       $ref: "./schemas/management/governance.yaml#/BudgetOverrideRequest"
     BudgetOverrideResponse:
       $ref: "./schemas/management/governance.yaml#/BudgetOverrideResponse"
+    ApproveBudgetRequestRequest:
+      $ref: "./schemas/management/governance.yaml#/ApproveBudgetRequestRequest"
+    BudgetRequest:
+      $ref: "./schemas/management/governance.yaml#/BudgetRequest"
+    BudgetRequestBudgetSnapshot:
+      $ref: "./schemas/management/governance.yaml#/BudgetRequestBudgetSnapshot"
     CreateRateLimitRequest:
       $ref: "./schemas/management/governance.yaml#/CreateRateLimitRequest"
     UpdateRateLimitRequest:
@@ -2270,6 +2443,14 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+    AuditSeverity:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditSeverity"
+    AuditAuthMethod:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAuthMethod"
+    AuditFieldChange:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFieldChange"
+    AuditChangeSet:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditChangeSet"
 
     # API Keys
     APIKey:
@@ -2324,6 +2505,23 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # News feeds
+    RSSFeed:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeed"
+    RSSFeedList:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedList"
+    RSSFeedCreateRequest:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedCreateRequest"
+    RSSFeedUpdateRequest:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedUpdateRequest"
+    RSSItem:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSItem"
+    RSSFeedError:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedError"
+    RSSItemList:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSItemList"
+    RSSSettings:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSSettings"
     # Background jobs
     SidekiqJobStatus:
       $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobStatus"
@@ -2346,6 +2544,12 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
     WarpBackfillStatus:
       $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
+    WarpTopicsRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicsRequest"
+    WarpTopicsStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicsStatus"
+    WarpTopicSummary:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicSummary"
     WarpUnavailable:
       $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
     WarpSessionRequest:
@@ -2366,3 +2570,63 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpStoredToolCall"
     WarpStoredQuestion:
       $ref: "./schemas/management/warp.yaml#/WarpStoredQuestion"
+
+    # Relays
+    RelayAuthConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayAuthConfig"
+    RelayAWSAuthConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayAWSAuthConfig"
+    RelayCredential:
+      $ref: "./schemas/management/relays.yaml#/RelayCredential"
+    RelayAWSCredential:
+      $ref: "./schemas/management/relays.yaml#/RelayAWSCredential"
+    RelayNetworkConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayNetworkConfig"
+    RelayUsageConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayUsageConfig"
+    RelayStreamingConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayStreamingConfig"
+    RelayRouteConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayRouteConfig"
+    RelayConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayConfig"
+    Relay:
+      $ref: "./schemas/management/relays.yaml#/Relay"
+    RelayListResponse:
+      $ref: "./schemas/management/relays.yaml#/RelayListResponse"
+    RelayUsagePreviewSample:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreviewSample"
+    RelayUsagePreviewRequest:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreviewRequest"
+    RelayPreviewTokens:
+      $ref: "./schemas/management/relays.yaml#/RelayPreviewTokens"
+    RelayUsagePreview:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreview"
+    RelayOverheadBucket:
+      $ref: "./schemas/management/relays.yaml#/RelayOverheadBucket"
+    RelayLog:
+      $ref: "./schemas/management/relays.yaml#/RelayLog"
+    RelayLogSearchResult:
+      $ref: "./schemas/management/relays.yaml#/RelayLogSearchResult"
+    RelayLogStats:
+      $ref: "./schemas/management/relays.yaml#/RelayLogStats"
+    RelayHistogramBucket:
+      $ref: "./schemas/management/relays.yaml#/RelayHistogramBucket"
+    RelayHistogramResult:
+      $ref: "./schemas/management/relays.yaml#/RelayHistogramResult"
+    RelayTopEndpoint:
+      $ref: "./schemas/management/relays.yaml#/RelayTopEndpoint"
+    RelayTopEndpointsResult:
+      $ref: "./schemas/management/relays.yaml#/RelayTopEndpointsResult"
+    RelayFilterOption:
+      $ref: "./schemas/management/relays.yaml#/RelayFilterOption"
+    RelayFilterData:
+      $ref: "./schemas/management/relays.yaml#/RelayFilterData"
+    DeleteRelayLogsRequest:
+      $ref: "./schemas/management/relays.yaml#/DeleteRelayLogsRequest"
+    DeleteRelayLogsResponse:
+      $ref: "./schemas/management/relays.yaml#/DeleteRelayLogsResponse"
+    RelayAccessProfileUsage:
+      $ref: "./schemas/management/relays.yaml#/RelayAccessProfileUsage"
+    RelayAccessProfilesResponse:
+      $ref: "./schemas/management/relays.yaml#/RelayAccessProfilesResponse"

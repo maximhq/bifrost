@@ -40,6 +40,65 @@ interface HeadersTableProps<T extends HeaderValue> {
 	renderKeyInput?: (params: CellRenderParams) => React.ReactNode;
 	/** Optional custom renderer for the value cell input */
 	renderValueInput?: (params: CellRenderParams) => React.ReactNode;
+	/** When set, the built-in inputs get `<prefix>-name-<row>` and `<prefix>-value-<row>` test ids. */
+	testIdPrefix?: string;
+	/**
+	 * Keep a row whose name is cleared, under an empty name, instead of removing it with its value.
+	 * For callers that validate the result (an empty name with a value is an error there), so a
+	 * rename in progress cannot silently drop the entry.
+	 */
+	keepClearedNames?: boolean;
+	/**
+	 * Called with the rows the table holds as conflicts (row index -> the name typed there) whenever they
+	 * change, and with the headers those indices refer to (after a delete, the remaining rows). The table
+	 * keeps such a row's last valid name in `value`; a caller that validates names can use this to block
+	 * saving until the conflict is resolved. With keepClearedNames, deleting a conflicted row removes it.
+	 */
+	onConflictsChange?: (conflicts: ReadonlyMap<number, string>, headers: Record<string, T>) => void;
+}
+
+/**
+ * Whether the table shows its empty add row. With keepClearedNames a cleared row keeps its value under
+ * the empty name, which is also the add row's key, so the add row is hidden until that row is named or
+ * removed; otherwise typing into it would overwrite the cleared row's value.
+ */
+export function showsAddRow(value: Record<string, unknown>, keepClearedNames: boolean): boolean {
+	return !(keepClearedNames && Object.hasOwn(value, ""));
+}
+
+/**
+ * The headers after row `rowIndex` is renamed to `newKey`, for keepClearedNames: the row keeps its
+ * position and value, and a cleared name stays as an "" entry. A plain object holds one "" key, so a
+ * second cleared row cannot be kept and undefined is returned; the caller holds it as a row conflict.
+ */
+export function renameHeaderKeepingCleared<T>(
+	value: Record<string, T>,
+	rowIndex: number,
+	newKey: string,
+	currentValue: T,
+): Record<string, T> | undefined {
+	const entries = Object.entries(value);
+	if (rowIndex >= entries.length) return newKey === "" ? value : { ...value, [newKey]: currentValue };
+	if (newKey === "" && entries.some(([k], i) => k === "" && i !== rowIndex)) return undefined;
+	return Object.fromEntries(entries.map(([k, v], i) => (i === rowIndex ? [newKey, currentValue] : [k, v])));
+}
+
+/**
+ * The headers and conflicts after row `rowIndex` is deleted, for keepClearedNames: the row goes even when
+ * it holds a conflict (its message offers to remove it), and conflicts below it move up with their rows.
+ * A row past the headers (the add row) only loses its conflict.
+ */
+export function deleteHeaderRow<T>(
+	value: Record<string, T>,
+	conflicts: ReadonlyMap<number, string>,
+	rowIndex: number,
+): { value: Record<string, T>; conflicts: Map<number, string> } {
+	const shifted = new Map<number, string>();
+	conflicts.forEach((name, i) => {
+		if (i < rowIndex) shifted.set(i, name);
+		else if (i > rowIndex) shifted.set(i - 1, name);
+	});
+	return { value: Object.fromEntries(Object.entries(value).filter((_, i) => i !== rowIndex)), conflicts: shifted };
 }
 
 // Empty SecretVar for new rows
@@ -77,12 +136,27 @@ export function HeadersTable<T extends HeaderValue>({
 	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
+	testIdPrefix,
+	keepClearedNames = false,
+	onConflictsChange,
 }: HeadersTableProps<T>) {
 	// Use explicit prop if provided, otherwise detect from existing values
 	const isSecretVarMode = useSecretVarInput ?? Object.values(value || {}).some((v) => isSecretVar(v));
 
 	// Track duplicate key conflicts: maps rowIndex -> attempted duplicate key
 	const [duplicateConflicts, setDuplicateConflicts] = useState<Map<number, string>>(new Map());
+	// Every conflict change goes through here, so onConflictsChange hears it before the matching onChange.
+	// Without that callback this is the plain functional update the table has always used.
+	// `headers` is what the indices refer to: the current value, or the remaining rows after a delete.
+	const updateConflicts = (update: (prev: Map<number, string>) => Map<number, string>, headers: Record<string, T> = value) => {
+		if (!onConflictsChange) {
+			setDuplicateConflicts(update);
+			return;
+		}
+		const next = update(duplicateConflicts);
+		setDuplicateConflicts(next);
+		onConflictsChange(next, headers);
+	};
 	// Track which row to highlight (for scroll-to-existing behavior)
 	const [highlightedRow, setHighlightedRow] = useState<number | null>(null);
 	// Refs for each table row to enable scrolling
@@ -102,10 +176,13 @@ export function HeadersTable<T extends HeaderValue>({
 	// Filter out any empty string keys from stored headers
 	const headerEntries = Object.entries(value || {});
 	// In fixed-keys mode the rows are exactly the supplied keys (read-only,
-	// no trailing add-row). Otherwise always show one empty row at the bottom.
+	// no trailing add-row). Otherwise show one empty row at the bottom, unless a
+	// cleared row already holds the empty name (see showsAddRow).
 	const rows: [string, T][] = fixedKeys
 		? fixedKeys.map((key) => [key, value?.[key] ?? getEmptyValue()] as [string, T])
-		: [...headerEntries, ["", getEmptyValue()]];
+		: showsAddRow(value || {}, keepClearedNames)
+			? [...headerEntries, ["", getEmptyValue()]]
+			: headerEntries;
 
 	const handleKeyChange = (oldKey: string, newKey: string, currentValue: T, rowIndex: number) => {
 		// Check if newKey already exists (and it's not the current row's original key)
@@ -119,16 +196,23 @@ export function HeadersTable<T extends HeaderValue>({
 		if (isDuplicate || isUnsupported) {
 			// Duplicate detected - store conflict key locally, let user continue typing
 			// Don't update parent value (would overwrite existing entry)
-			setDuplicateConflicts((prev) => new Map(prev).set(rowIndex, newKey));
+			updateConflicts((prev) => new Map(prev).set(rowIndex, newKey));
 			return;
 		}
 
 		// Key is unique - clear any previous conflict for this row
-		setDuplicateConflicts((prev) => {
+		updateConflicts((prev) => {
 			const next = new Map(prev);
 			next.delete(rowIndex);
 			return next;
 		});
+
+		if (keepClearedNames) {
+			const next = renameHeaderKeepingCleared(value, rowIndex, newKey, currentValue);
+			if (next) onChange(next);
+			else updateConflicts((prev) => new Map(prev).set(rowIndex, ""));
+			return;
+		}
 
 		// Rebuild the object preserving key order so the row doesn't jump to the end
 		const newHeaders: Record<string, T> = {};
@@ -170,9 +254,16 @@ export function HeadersTable<T extends HeaderValue>({
 	};
 
 	const handleDelete = (key: string, rowIndex: number) => {
+		if (keepClearedNames) {
+			const next = deleteHeaderRow(value, duplicateConflicts, rowIndex);
+			updateConflicts(() => next.conflicts, next.value);
+			onChange(next.value);
+			return;
+		}
+
 		// If this row has a conflict, just clear the conflict (don't modify value)
 		if (duplicateConflicts.has(rowIndex)) {
-			setDuplicateConflicts((prev) => {
+			updateConflicts((prev) => {
 				const next = new Map(prev);
 				next.delete(rowIndex);
 				return next;
@@ -185,7 +276,7 @@ export function HeadersTable<T extends HeaderValue>({
 		delete newHeaders[key];
 
 		// Shift down conflict indices for rows after the deleted one
-		setDuplicateConflicts((prev) => {
+		updateConflicts((prev) => {
 			const next = new Map<number, string>();
 			prev.forEach((conflictKey, conflictRowIndex) => {
 				if (conflictRowIndex > rowIndex) {
@@ -274,6 +365,7 @@ export function HeadersTable<T extends HeaderValue>({
 													value={hasConflict ? conflictKey : key}
 													data-row={index}
 													data-column="key"
+													data-testid={testIdPrefix ? `${testIdPrefix}-name-${index}` : undefined}
 													onChange={(e) => handleKeyChange(key, e.target.value, headerValue, index)}
 													onKeyDown={(e) => handleKeyDown(e, index, "key")}
 													className={cn("border-0 focus-visible:ring-0 focus-visible:ring-offset-0", hasConflict && "text-destructive")}
@@ -282,7 +374,11 @@ export function HeadersTable<T extends HeaderValue>({
 											)}
 											{hasConflict && (
 												<span className="text-destructive px-3 text-xs">
-													{conflictKey === UNSUPPORTED_KEY ? "This key name is not supported" : "Duplicate key"}
+													{conflictKey === UNSUPPORTED_KEY
+														? "This key name is not supported"
+														: conflictKey === ""
+															? "Enter a name or remove the row"
+															: "Duplicate key"}
 												</span>
 											)}
 										</div>
@@ -302,6 +398,7 @@ export function HeadersTable<T extends HeaderValue>({
 												value={headerValue as SecretVar}
 												data-row={index}
 												data-column="value"
+												data-testid={testIdPrefix ? `${testIdPrefix}-value-${index}` : undefined}
 												onChange={(secretVar) => handleValueChange(key, secretVar, index)}
 												onKeyDown={(e) => handleKeyDown(e, index, "value")}
 												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -313,6 +410,7 @@ export function HeadersTable<T extends HeaderValue>({
 												value={getDisplayValue(headerValue)}
 												data-row={index}
 												data-column="value"
+												data-testid={testIdPrefix ? `${testIdPrefix}-value-${index}` : undefined}
 												onChange={(e) => handleValueChange(key, e.target.value, index)}
 												onKeyDown={(e) => handleKeyDown(e, index, "value")}
 												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"

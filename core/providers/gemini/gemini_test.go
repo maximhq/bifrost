@@ -143,6 +143,25 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			expectFinish: "stop",
 		},
 		{
+			// A prompt Gemini refuses outright has no candidate; promptFeedback is the only signal.
+			name: "PromptBlocked_NonStream",
+			response: &gemini.GenerateContentResponse{
+				ModelVersion:   "gemini-4-argon",
+				PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{BlockReason: "SAFETY", BlockReasonMessage: "The prompt is blocked due to safety"},
+			},
+			isStream:     false,
+			expectFinish: "content_filter",
+		},
+		{
+			name: "PromptBlocked_Stream",
+			response: &gemini.GenerateContentResponse{
+				ModelVersion:   "gemini-4-argon",
+				PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{BlockReason: "PROHIBITED_CONTENT"},
+			},
+			isStream:     true,
+			expectFinish: "content_filter",
+		},
+		{
 			name: "SafetyFilter_NonStream",
 			response: &gemini.GenerateContentResponse{
 				ResponseID:   "test-3",
@@ -2960,10 +2979,12 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 					}
 				}
 				require.NotNil(t, fr, "Should have a functionResponse")
-				// Text is still preserved, but the image is dropped (older models reject
-				// multimodal function responses with a hard 400), so no parts are emitted.
+				// Text is kept; the image is dropped (older models reject multimodal function
+				// responses with a 400) and named in the text output instead.
 				assert.Contains(t, string(fr.Response), "result:", "Text output should be preserved")
 				assert.Empty(t, fr.Parts, "Media must be dropped for non-Gemini-3 models (no 400)")
+				assert.Contains(t, string(fr.Response), "image/png", "the dropped image is named in the output, not lost silently")
+				assert.Contains(t, string(fr.Response), "returned by the tool, not shown")
 			},
 		},
 		{

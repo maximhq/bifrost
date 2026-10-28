@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -379,6 +381,53 @@ func TestGetInjectedTool(t *testing.T) {
 	assert.ErrorContains(t, err, "disabled")
 }
 
+// fakeCodeMode serves one code-mode tool, executeToolCode.
+type fakeCodeMode struct{ CodeMode }
+
+func (fakeCodeMode) IsCodeModeTool(toolName string) bool { return toolName == "executeToolCode" }
+
+// A code-mode tool is listed only when the request can reach a code-mode client, so calling it
+// by name must be refused under the same rule.
+func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testing.T) {
+	m := newManagerWithInstructions(t)
+	addCodeModeClient(t, m, "codey")
+	m.toolsManager.SetCodeMode(fakeCodeMode{})
+	name := "executeToolCode"
+	request := &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name}},
+	}
+	for _, tc := range []struct {
+		name    string
+		include []string
+		wantErr bool
+	}{
+		{"not narrowed", nil, false},
+		{"narrowed to the code-mode client", []string{"codey"}, false},
+		{"narrowed away from the code-mode client", []string{"alpha"}, true},
+		{"no code-mode client at all, not narrowed", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.include != nil {
+				ctx.SetValue(schemas.MCPContextKeyIncludeClients, tc.include)
+			}
+			if tc.name == "no code-mode client at all, not narrowed" {
+				m.mu.Lock()
+				delete(m.clientMap, "codey-id")
+				m.mu.Unlock()
+			}
+			_, _, release, err := m.prepareToolExecution(ctx, request)
+			if tc.wantErr {
+				assert.ErrorContains(t, err, "not permitted")
+				return
+			}
+			require.NoError(t, err)
+			release()
+		})
+	}
+}
+
 func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
 	state := m.clientMap["id-tavily"]
@@ -516,6 +565,68 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 				return
 			}
 			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+// TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
+// Bifrost's client at the upstream authorization server, at config load too,
+// and no exchange client of its own: it always exchanges as the SSO app, so the
+// form sends neither use_idp_credentials nor client_id.
+func TestValidateMCPClientConfig_TokenExchangeIDJAG(t *testing.T) {
+	cfg := &schemas.MCPClientConfig{
+		ID:               "client-xaa",
+		Name:             "linear",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://mcp.linear.app/mcp"),
+		AuthType:         schemas.MCPAuthTypeTokenExchange,
+		TokenExchange: &schemas.MCPTokenExchangeConfig{
+			Audience: "https://linear.app", UseIdPCredentials: true, Profile: schemas.TokenExchangeProfileIDJAG,
+		},
+	}
+	require.ErrorContains(t, validateMCPClientConfig(cfg), "resource_client_id")
+	cfg.TokenExchange.ResourceClientID = schemas.NewSecretVar("bifrost-at-linear")
+	require.NoError(t, validateMCPClientConfig(cfg))
+
+	cfg.TokenExchange.UseIdPCredentials = false
+	require.NoError(t, validateMCPClientConfig(cfg), "an id_jag client needs no use_idp_credentials or client_id")
+}
+
+// mcp-go's error for an input request it had no handler for.
+func unfulfilledInputError(kind string) error {
+	return fmt.Errorf("multi round-trip: %w", fmt.Errorf("fulfilling input request %q: %w", "req-1", errors.New("no "+kind+" handler configured")))
+}
+
+// Only mcp-go's own failure to fulfil an input request is explained; an upstream error that merely
+// mentions "multi round-trip:" keeps its own reason.
+func TestDescribeUnservableInput_OnlyMcpGoInputFailures(t *testing.T) {
+	for kind, want := range map[string]string{"elicitation": "input from the user (elicitation)", "sampling": "an LLM completion (sampling)", "roots": "the client's filesystem roots (roots)"} {
+		explained, ok := DescribeUnservableInput(unfulfilledInputError(kind), "docs")
+		require.True(t, ok, kind)
+		assert.Equal(t, fmt.Sprintf("MCP server %q asked for %s, which Bifrost cannot provide", "docs", want), explained)
+	}
+	explained, ok := DescribeUnservableInput(unfulfilledInputError("future"), "docs")
+	require.True(t, ok, "an unknown kind of input request is still one Bifrost cannot provide")
+	assert.Contains(t, explained, "asked for input Bifrost cannot provide")
+
+	for _, upstream := range []string{"multi round-trip: rate limited, retry later", "transport error: multi round-trip: connection reset"} {
+		_, ok := DescribeUnservableInput(errors.New(upstream), "docs")
+		assert.False(t, ok, "an upstream error keeps its own reason: %s", upstream)
+	}
+}
+
+// DescribeUnservableInput runs only after a tool call failed; successful calls never reach it.
+func BenchmarkDescribeUnservableInput(b *testing.B) {
+	for name, err := range map[string]error{
+		"url elicitation": mcp.URLElicitationRequiredError{Elicitations: []mcp.ElicitationParams{{Message: "Sign in", URL: "https://example.com/auth"}}},
+		"input request":   unfulfilledInputError("elicitation"),
+		"ordinary error":  errors.New("upstream returned 500: internal error"),
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = DescribeUnservableInput(err, "docs")
+			}
 		})
 	}
 }

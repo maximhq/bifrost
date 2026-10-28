@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -139,13 +141,18 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 	const canCalendarAlign = useMemo(() => {
 		const hasAlignableBudget = formData.budgets.some(
-			(b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration),
+			(b) =>
+				b.max_limit !== undefined &&
+				b.max_limit !== null &&
+				(supportsCalendarAlignment(b.reset_duration) || isMultiUnitDuration(b.reset_duration)),
 		);
 		const hasAlignableRateLimit =
-			(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null && supportsCalendarAlignment(formData.tokenResetDuration)) ||
+			(formData.tokenMaxLimit !== undefined &&
+				formData.tokenMaxLimit !== null &&
+				(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
 			(formData.requestMaxLimit !== undefined &&
 				formData.requestMaxLimit !== null &&
-				supportsCalendarAlignment(formData.requestResetDuration));
+				(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
 		return hasAlignableBudget || hasAlignableRateLimit;
 	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration]);
 
@@ -385,25 +392,40 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										options={resetDurationOptions}
 									/>
 
-							{showCalendarAlignToggle && (
-								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-									<div className="space-y-0.5">
-										<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">
-											Align to calendar cycle
-										</Label>
-										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
-											Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
-										</p>
-									</div>
-									<Switch
-										id="customer-calendar-aligned-toggle"
-										checked={formData.calendarAligned}
-										onCheckedChange={handleCalendarAlignedChange}
-										data-testid="customer-calendar-aligned-toggle"
+									<CalendarAlignmentNotice
+										enabled={formData.calendarAligned}
+										durations={calendarWindowDurations([
+											{
+												budgets: formData.budgets,
+												rate_limit: {
+													token_max_limit: formData.tokenMaxLimit,
+													token_reset_duration: formData.tokenResetDuration,
+													request_max_limit: formData.requestMaxLimit,
+													request_reset_duration: formData.requestResetDuration,
+												},
+											},
+										])}
 									/>
-								</div>
-							)}
+									{showCalendarAlignToggle && (
+										<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+											<div className="space-y-0.5">
+												<Label htmlFor="customer-calendar-aligned-toggle" className="text-sm font-normal">
+													Align to calendar cycle
+												</Label>
+												<p className="text-muted-foreground text-xs">
+													Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
+													date. Single-unit day, week, month, quarter and year windows align to calendar boundaries. Other durations remain
+													rolling.
+												</p>
+											</div>
+											<Switch
+												id="customer-calendar-aligned-toggle"
+												checked={formData.calendarAligned}
+												onCheckedChange={handleCalendarAlignedChange}
+												data-testid="customer-calendar-aligned-toggle"
+											/>
+										</div>
+									)}
 								</>
 							)}
 

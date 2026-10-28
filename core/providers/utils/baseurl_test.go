@@ -151,3 +151,74 @@ func TestBuildPassthroughURLFromSecretKeepsResolvedSecretsOutOfErrors(t *testing
 		assert.Equal(t, "https://api.example.com/v1/x?a=1", got)
 	})
 }
+
+// BenchmarkBaseURLRequestPath compares the former string operations with the
+// SecretVar request path. Reference resolution and normalization happen once at
+// provider construction, outside the timed loop. The legacy cases model the
+// pre-change code with an already resolved URL, isolating the indirection cost.
+func BenchmarkBaseURLRequestPath(b *testing.B) {
+	const endpoint = "https://upstream.example.com/v1beta"
+	const path = "/batches/123:cancel"
+	const logPrefix = "gemini batch cancel url: "
+	b.Setenv("BIFROST_BENCH_BASE_URL", endpoint)
+	for _, tc := range []struct {
+		name string
+		base *schemas.SecretVar
+	}{
+		{"literal", schemas.NewSecretVar(endpoint)},
+		{"reference", schemas.NewSecretVar("env.BIFROST_BENCH_BASE_URL")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			base := tc.base.GetValue()
+			fullURL := base + path
+			b.Run("construct/before", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					benchmarkBaseURLResult = base + path
+				}
+			})
+			b.Run("construct/after", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					benchmarkBaseURLResult = tc.base.GetValue() + path
+				}
+			})
+			// The log argument is evaluated even when the logger discards debug
+			// messages; include the prefix concatenation used by the call sites.
+			b.Run("log/before", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					benchmarkBaseURLResult = logPrefix + fullURL
+				}
+			})
+			b.Run("log/after", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					benchmarkBaseURLResult = logPrefix + LoggableURL(tc.base, fullURL)
+				}
+			})
+			b.Run("passthrough/before", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var err error
+					benchmarkBaseURLResult, err = BuildPassthroughURL(base, path, "alt=media")
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run("passthrough/after", func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var err error
+					benchmarkBaseURLResult, err = BuildPassthroughURLFromSecret(tc.base, path, "alt=media")
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
+}
+
+var benchmarkBaseURLResult string

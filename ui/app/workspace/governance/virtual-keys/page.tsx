@@ -1,10 +1,12 @@
 import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetVirtualKeysQuery } from "@/lib/store";
+import { showLoadError } from "@/lib/utils/loadError";
 import { isValidVirtualKeyMetadataFilterKey } from "@/lib/utils/virtualKeyMetadata";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
@@ -46,6 +48,7 @@ export default function GovernanceVirtualKeysPage() {
 		data: virtualKeysData,
 		error: vkError,
 		isLoading: vkLoading,
+		refetch: refetchVirtualKeys,
 	} = useGetVirtualKeysQuery(
 		{
 			limit: PAGE_SIZE,
@@ -89,6 +92,12 @@ export default function GovernanceVirtualKeysPage() {
 
 	if (isLoading) {
 		return <FullPageLoader />;
+	}
+
+	if (showLoadError(vkError, virtualKeysData)) {
+		return (
+			<LoadErrorView entity="virtual keys" error={vkError} onRetry={() => void refetchVirtualKeys()} testId="virtual-keys-load-error" />
+		);
 	}
 
 	const handleSearchChange = (value: string) => {

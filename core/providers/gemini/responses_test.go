@@ -3,7 +3,9 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,6 +17,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -263,6 +267,53 @@ func TestGeminiResponsesStreamWithoutFinishReasonEndsIncomplete(t *testing.T) {
 	}
 }
 
+// The stream loop must treat a refused prompt's response.failed as the final chunk: sent with
+// the stream-end indicator (post-hooks finalize logging and the trace span on it) and followed
+// by nothing, since the finalizer has no terminal left to emit.
+func TestGeminiResponsesStreamPromptBlockedEndsOnFailed(t *testing.T) {
+	var finalTypes []schemas.ResponsesStreamResponseType
+	postHook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final && result != nil && result.ResponsesStreamResponse != nil {
+			finalTypes = append(finalTypes, result.ResponsesStreamResponse.Type)
+		}
+		return result, err
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: " + geminiPromptBlockedBody + "\n\n"))
+	}))
+	defer ts.Close()
+
+	stream, bErr := HandleGeminiResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{}, ts.URL+"/models/gemini-4-argon:streamGenerateContent?alt=sse", []byte(`{}`),
+		map[string]string{"Accept": "text/event-stream"}, nil, 30, false, false, schemas.Vertex, "gemini-4-argon",
+		postHook, nil, testNoopLogger{}, func(context.Context) {})
+	if bErr != nil {
+		t.Fatalf("stream setup failed: %v", bErr)
+	}
+	var got []schemas.ResponsesStreamResponseType
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("unexpected stream error: %+v", chunk.BifrostError.Error)
+		}
+		if chunk.BifrostResponsesStreamResponse != nil {
+			got = append(got, chunk.BifrostResponsesStreamResponse.Type)
+		}
+	}
+	want := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeFailed,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(finalTypes, []schemas.ResponsesStreamResponseType{schemas.ResponsesStreamResponseTypeFailed}) {
+		t.Fatalf("chunks sent with the stream-end indicator = %v, want only response.failed", finalTypes)
+	}
+}
+
 // Follow-up to #7601: OpenAI marks the output item that was being written when the
 // cap hit as status "incomplete". The response-level status was fixed, but the
 // truncated message item still reported "completed".
@@ -323,6 +374,88 @@ func TestGeminiResponsesStreamContentlessFinishReasonReachesTerminal(t *testing.
 	}
 	assertGeminiResponsesStatus(t, terminal.Response.Status, terminal.Response.IncompleteDetails,
 		schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonMaxOutputTokens)
+}
+
+// geminiPromptBlockedBody is the raw Vertex body for a prompt refused before generation:
+// no candidates, the reason carried only by promptFeedback.
+const geminiPromptBlockedBody = `{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"The prompt is blocked due to safety"},"usageMetadata":{"trafficType":"ON_DEMAND"},"modelVersion":"gemini-4-argon"}`
+
+// A blocked prompt used to normalize to status "completed" with empty output and no error,
+// indistinguishable from an empty answer. It reports failed with OpenAI's invalid_prompt code
+// (content_filter is not a valid ResponseError code) and keeps stop_reason content_filter.
+func TestGeminiResponsesPromptBlockedReportsFailed(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantStatus  string
+		wantMessage string
+	}{
+		{name: "message", body: geminiPromptBlockedBody, wantStatus: schemas.ResponsesResponseStatusFailed, wantMessage: "The prompt is blocked due to safety"},
+		{name: "reason only", body: `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"modelVersion":"gemini-4-argon"}`, wantStatus: schemas.ResponsesResponseStatusFailed, wantMessage: "PROHIBITED_CONTENT"},
+		{name: "unspecified reason is not a block", body: `{"promptFeedback":{"blockReason":"BLOCK_REASON_UNSPECIFIED"},"modelVersion":"gemini-4-argon"}`, wantStatus: schemas.ResponsesResponseStatusCompleted},
+		{name: "feedback beside a candidate is not a block", body: `{"promptFeedback":{"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]},"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"modelVersion":"gemini-4-argon"}`, wantStatus: schemas.ResponsesResponseStatusCompleted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var geminiResp GenerateContentResponse
+			if err := sonic.Unmarshal([]byte(tt.body), &geminiResp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			resp := geminiResp.ToResponsesBifrostResponsesResponse().WithDefaults()
+			if resp.Status == nil || *resp.Status != tt.wantStatus {
+				t.Fatalf("status = %s, want %q", derefStatus(resp.Status), tt.wantStatus)
+			}
+			if tt.wantMessage == "" {
+				if resp.Error != nil {
+					t.Fatalf("error = %+v, want nil", resp.Error)
+				}
+				return
+			}
+			if resp.Error == nil || resp.Error.Code != "invalid_prompt" || resp.Error.Message != tt.wantMessage {
+				t.Fatalf("error = %+v, want code invalid_prompt message %q", resp.Error, tt.wantMessage)
+			}
+			if resp.StopReason == nil || *resp.StopReason != "content_filter" {
+				t.Fatalf("stop_reason = %s, want content_filter", derefStatus(resp.StopReason))
+			}
+			if len(resp.Output) != 0 {
+				t.Fatalf("output = %d items, want none", len(resp.Output))
+			}
+		})
+	}
+}
+
+// The streamed block chunk must close the stream itself with a response.failed terminal
+// carrying the reason, rather than leaving the finalizer to report an unexplained incomplete.
+func TestGeminiResponsesStreamPromptBlockedReportsFailed(t *testing.T) {
+	state := acquireGeminiResponsesStreamState()
+	defer releaseGeminiResponsesStreamState(state)
+	var chunk GenerateContentResponse
+	if err := sonic.Unmarshal([]byte(geminiPromptBlockedBody), &chunk); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	events, bErr := chunk.ToBifrostResponsesStream(0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+	if len(events) == 0 {
+		t.Fatal("no events emitted for the blocked chunk")
+	}
+	terminal := events[len(events)-1]
+	if terminal.Type != schemas.ResponsesStreamResponseTypeFailed {
+		t.Fatalf("terminal event type = %q, want %q", terminal.Type, schemas.ResponsesStreamResponseTypeFailed)
+	}
+	if terminal.Response == nil || terminal.Response.Status == nil || *terminal.Response.Status != schemas.ResponsesResponseStatusFailed {
+		t.Fatalf("terminal status = %+v, want failed", terminal.Response)
+	}
+	if terminal.Response.Error == nil || terminal.Response.Error.Code != "invalid_prompt" || terminal.Response.Error.Message != "The prompt is blocked due to safety" {
+		t.Fatalf("terminal error = %+v, want invalid_prompt with the block message", terminal.Response.Error)
+	}
+	if terminal.Response.StopReason == nil || *terminal.Response.StopReason != "content_filter" {
+		t.Fatalf("terminal stop_reason = %s, want content_filter", derefStatus(terminal.Response.StopReason))
+	}
+	if extra := FinalizeGeminiResponsesStream(state, chunk.UsageMetadata, len(events)); len(extra) != 0 {
+		t.Fatalf("finalize emitted %d events after the terminal, want none", len(extra))
+	}
 }
 
 // responsesToolOutputHasRefKey reports whether any object at any depth of raw has a "$ref"
@@ -1400,6 +1533,127 @@ func BenchmarkGeminiResponsesResponseRoundTrip(b *testing.B) {
 	}
 }
 
+// response.function_call_arguments.done is {type, sequence_number, item_id, output_index,
+// arguments}. It used to carry a partial item with no type, and strict Responses clients
+// (opencode v2) validate item.type on every event, so every Gemini tool turn aborted. The
+// genai and anthropic subtests pin that the reverse converters still recover each call
+// from output_item.added once the done event stops carrying it.
+func TestGeminiResponsesStreamFunctionCallArgumentsDoneShape(t *testing.T) {
+	sig := []byte("gemini-thought-signature")
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	events, bErr := (&GenerateContentResponse{ModelVersion: "gemini-3-flash-preview", Candidates: []*Candidate{{
+		Content: &Content{Role: "model", Parts: []*Part{
+			{Text: "Writing the probe."},
+			{FunctionCall: &FunctionCall{ID: "call_a", Name: "write_file", Args: json.RawMessage(`{"path":"/tmp/probe.txt","content":"OK"}`)}, ThoughtSignature: sig},
+			{FunctionCall: &FunctionCall{ID: "call_b", Name: "read_file", Args: json.RawMessage(`{"path":"/tmp/probe.txt"}`)}},
+		}},
+		FinishReason: FinishReasonStop,
+	}}}).ToBifrostResponsesStream(0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream: %v", bErr)
+	}
+	wantArgs := []string{`{"path":"/tmp/probe.txt","content":"OK"}`, `{"path":"/tmp/probe.txt"}`}
+
+	// /v1/responses marshals the event as is; /openai/v1/responses marshals WithDefaults().
+	for route, render := range map[string]func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse{
+		"v1 responses":        func(ev *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse { return ev },
+		"openai v1 responses": (*schemas.BifrostResponsesStreamResponse).WithDefaults,
+	} {
+		t.Run(route, func(t *testing.T) {
+			addedIDs := map[int64]string{}
+			var doneArgs []string
+			for _, ev := range events {
+				wire, err := schemas.Marshal(render(ev))
+				if err != nil {
+					t.Fatalf("marshal %s: %v", ev.Type, err)
+				}
+				if item := gjson.GetBytes(wire, "item"); item.Exists() && (item.Get("type").Type != gjson.String || item.Get("type").Str == "") {
+					t.Fatalf("%s carries an item without a string type: %s", ev.Type, wire)
+				}
+				if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && gjson.GetBytes(wire, "item.type").Str == "function_call" {
+					addedIDs[gjson.GetBytes(wire, "output_index").Int()] = gjson.GetBytes(wire, "item.id").Str
+				}
+				if ev.Type != schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone {
+					continue
+				}
+				if gjson.GetBytes(wire, "item").Exists() {
+					t.Fatalf("function_call_arguments.done must not carry an item: %s", wire)
+				}
+				index := gjson.GetBytes(wire, "output_index")
+				if !index.Exists() || gjson.GetBytes(wire, "item_id").Str == "" || gjson.GetBytes(wire, "item_id").Str != addedIDs[index.Int()] {
+					t.Fatalf("done event does not point at its output_item.added (%v): %s", addedIDs, wire)
+				}
+				doneArgs = append(doneArgs, gjson.GetBytes(wire, "arguments").Str)
+			}
+			if !reflect.DeepEqual(doneArgs, wantArgs) {
+				t.Fatalf("done arguments = %q, want %q", doneArgs, wantArgs)
+			}
+		})
+	}
+
+	t.Run("genai", func(t *testing.T) {
+		out := NewBifrostToGeminiStreamState()
+		var calls []*Part
+		for _, ev := range events {
+			g := ToGeminiResponsesStreamResponse(ev, out)
+			if g == nil || len(g.Candidates) == 0 || g.Candidates[0].Content == nil {
+				continue
+			}
+			for _, p := range g.Candidates[0].Content.Parts {
+				if p.FunctionCall != nil {
+					calls = append(calls, p)
+				}
+			}
+		}
+		if len(calls) != 2 {
+			t.Fatalf("want two functionCall parts, got %+v", calls)
+		}
+		for i, want := range []struct {
+			name, id string
+			sig      []byte
+		}{{"write_file", "call_a", sig}, {"read_file", "call_b", nil}} {
+			fc := calls[i].FunctionCall
+			if fc.Name != want.name || !strings.HasPrefix(fc.ID, want.id) || string(fc.Args) != wantArgs[i] {
+				t.Fatalf("call %d = %s %s %s, want %s %s… %s", i, fc.Name, fc.ID, fc.Args, want.name, want.id, wantArgs[i])
+			}
+			if !bytes.Equal(calls[i].ThoughtSignature, want.sig) {
+				t.Fatalf("call %d thoughtSignature = %q, want %q", i, calls[i].ThoughtSignature, want.sig)
+			}
+		}
+	})
+
+	t.Run("anthropic", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		names := map[int]string{}
+		inputs := map[int]string{}
+		var order []int
+		for _, ev := range events {
+			for _, out := range anthropic.ToAnthropicResponsesStreamResponse(ctx, ev) {
+				if out.Index == nil {
+					continue
+				}
+				if out.ContentBlock != nil && out.ContentBlock.Type == anthropic.AnthropicContentBlockTypeToolUse && out.ContentBlock.Name != nil {
+					names[*out.Index] = *out.ContentBlock.Name
+					order = append(order, *out.Index)
+				}
+				if out.Delta != nil && out.Delta.PartialJSON != nil {
+					inputs[*out.Index] += *out.Delta.PartialJSON
+				}
+			}
+		}
+		if len(order) != 2 {
+			t.Fatalf("want two tool_use blocks, got %v", names)
+		}
+		for i, want := range []string{"write_file", "read_file"} {
+			if names[order[i]] != want || inputs[order[i]] != wantArgs[i] {
+				t.Fatalf("tool_use %d = %s %s, want %s %s", i, names[order[i]], inputs[order[i]], want, wantArgs[i])
+			}
+		}
+	})
+}
+
 // A native tool decoded from a request re-emits its ingress bytes, so an edit to a typed
 // field after decoding does not reach the wire until raw is cleared (the nativeToolJSON
 // contract); a value whose raw is cleared marshals from its fields again.
@@ -1476,6 +1730,508 @@ func TestToGeminiResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 			}
 			if len(out.Contents) != 1 || out.Contents[0].Role != "user" {
 				t.Fatalf("expected only the user turn in contents, got %+v", out.Contents)
+			}
+		})
+	}
+}
+
+// /genai clients send Vertex's string session_id or the Gemini API's int64 one. Either form rides
+// as prompt_cache_key, so only a Vertex key with session routing puts it back on the wire.
+func TestGenAISessionIDRidesAsPromptCacheKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const contents = `"model":"vertex/gemini-3.8-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}]`
+	for _, tc := range []struct {
+		name, field, want string
+	}{
+		{"string", `"session_id":"prefix-1"`, "prefix-1"},
+		{"camelCase is not read", `"sessionId":"prefix-2"`, ""},
+		{"Gemini API number", `"session_id":12345`, "12345"},
+		{"null", `"session_id":null`, ""},
+		{"empty", `"session_id":""`, ""},
+		{"absent", `"labels":{}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var in GeminiGenerationRequest
+			if err := sonic.Unmarshal([]byte("{"+contents+","+tc.field+"}"), &in); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := ""
+			if key := in.ToBifrostResponsesRequest(ctx).Params.PromptCacheKey; key != nil {
+				got = *key
+			}
+			if got != tc.want {
+				t.Fatalf("prompt_cache_key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a non-string, non-number value is rejected", func(t *testing.T) {
+		var in GeminiGenerationRequest
+		if err := sonic.Unmarshal([]byte(`{"session_id":true}`), &in); err == nil {
+			t.Fatal("want an error for a boolean session_id")
+		}
+	})
+
+	t.Run("marshals in the form it was received", func(t *testing.T) {
+		for body, want := range map[string]string{
+			`{"session_id":12345}`: `"session_id":12345`,
+			`{"session_id":"abc"}`: `"session_id":"abc"`,
+		} {
+			var in GeminiGenerationRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatalf("unmarshal %s: %v", body, err)
+			}
+			out, err := providerUtils.MarshalSorted(&in)
+			if err != nil || !strings.Contains(string(out), want) {
+				t.Fatalf("marshal %s = %s, %v; want it to contain %s", body, out, err, want)
+			}
+		}
+	})
+
+	// The Gemini API's session_id is an int64, so a string prompt_cache_key must never reach it.
+	t.Run("Gemini API requests never carry it", func(t *testing.T) {
+		chat, err := ToGeminiChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.8-flash",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params:   &schemas.ChatParameters{PromptCacheKey: new("prefix-1")},
+		})
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		responses, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.8-flash",
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+			Params:   &schemas.ResponsesParameters{PromptCacheKey: new("prefix-1")},
+		})
+		if err != nil {
+			t.Fatalf("responses: %v", err)
+		}
+		for name, req := range map[string]*GeminiGenerationRequest{"chat": chat, "responses": responses} {
+			body, err := providerUtils.MarshalSorted(req)
+			if err != nil || strings.Contains(string(body), "ession") {
+				t.Fatalf("%s body = %s, %v; want no session id", name, body, err)
+			}
+		}
+	})
+}
+
+// Regression tests for issue #8546: Gemini/Vertex received the full "<id>_ts_<sig>" string
+// as functionCall.id / functionResponse.id.
+//
+// Bifrost embeds a thought signature into the tool-call id on the way out to the client,
+// because the Anthropic and OpenAI wire formats have no per-tool-call signature field. On
+// the way back to Gemini the signature is lifted into Part.ThoughtSignature, but the joined
+// id was forwarded unchanged, so Gemini saw a ~500-character id with the base64 signature
+// in it as plain text -- and a model asked to reference a call by its id reproduced the
+// whole string. The id Gemini issued is the base id, so that is what must go back.
+//
+// The same stripping is already applied for OpenAI; see the utils.StripThoughtSignature
+// call sites in core/providers/openai.
+
+// thoughtSignatureCallID builds the client-facing id Bifrost hands out for a call that
+// carried a thought signature, and returns it alongside the raw signature bytes.
+func thoughtSignatureCallID(t *testing.T, baseID string, raw []byte) (string, []byte) {
+	t.Helper()
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	return baseID + thoughtSignatureSeparator + encoded, raw
+}
+
+// TestResponsesStripsThoughtSignatureFromGeminiIDs covers the /anthropic/v1/messages ->
+// Gemini path named in the issue: the id on the wire is the base id, while the signature
+// still reaches Gemini through thoughtSignature.
+func TestResponsesStripsThoughtSignatureFromGeminiIDs(t *testing.T) {
+	callID, raw := thoughtSignatureCallID(t, "call_1", []byte{0x01, 0x02, 0x03})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	out, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-3-pro-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What is the weather in Tokyo?")},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(`{"location":"Tokyo"}`),
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Name:   schemas.Ptr("get_weather"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature":22}`),
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	call := findGeminiFunctionCallPart(t, out, "get_weather")
+	assert.Equal(t, "call_1", call.FunctionCall.ID,
+		"Gemini must receive the id it issued, not the signature-joined one")
+	assert.Equal(t, raw, []byte(call.ThoughtSignature),
+		"the signature must still reach Gemini through thoughtSignature")
+
+	response := findGeminiFunctionResponsePart(t, out)
+	assert.Equal(t, "call_1", response.FunctionResponse.ID,
+		"the response id must be stripped the same way so it still pairs with the call")
+
+	// Asserted on the serialized payload, not only the structs: the id was the one field
+	// the signature ever travelled through, so any id that still carries it puts the
+	// separator back on the wire.
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), thoughtSignatureSeparator,
+		"no id on the wire may carry the thought-signature separator")
+}
+
+// TestChatCompletionsStripsThoughtSignatureFromGeminiIDs covers the chat-completions path.
+// chat.go embeds the signature into the id it returns to the client there too, so a client
+// echoing that id back reaches the same defect in the request converter.
+func TestChatCompletionsStripsThoughtSignatureFromGeminiIDs(t *testing.T) {
+	callID, raw := thoughtSignatureCallID(t, "call_1", []byte{0x0a, 0x0b, 0x0c})
+
+	out, err := ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is the weather in Tokyo?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr(callID),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: `{"location":"Tokyo"}`,
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(callID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"temperature":"22C"}`)},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	call := findGeminiFunctionCallPart(t, out, "get_weather")
+	assert.Equal(t, "call_1", call.FunctionCall.ID)
+	assert.Equal(t, raw, []byte(call.ThoughtSignature))
+
+	response := findGeminiFunctionResponsePart(t, out)
+	assert.Equal(t, "call_1", response.FunctionResponse.ID)
+	// The call-id-to-name map is keyed on the full id the client sent, so stripping the
+	// wire id must not cost the response its tool name.
+	assert.Equal(t, "get_weather", response.FunctionResponse.Name)
+
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), thoughtSignatureSeparator)
+}
+
+// TestResponsesPairsStrippedFunctionResponsesWithTheirCalls guards the invariant that makes
+// the strip safe. Vertex drops functionCall.id / functionResponse.id and pairs results with
+// calls by position, so convertResponsesMessagesToGeminiContents reorders each batch of
+// responses to follow the calls using those ids. Stripping only one of the two sides would
+// leave every id unmatched and silently fall back to input order.
+func TestResponsesPairsStrippedFunctionResponsesWithTheirCalls(t *testing.T) {
+	firstID, _ := thoughtSignatureCallID(t, "call_1", []byte{0x01})
+	secondID, _ := thoughtSignatureCallID(t, "call_2", []byte{0x02})
+
+	functionCall := func(callID, name, args string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr(callID),
+				Name:      schemas.Ptr(name),
+				Arguments: schemas.Ptr(args),
+			},
+		}
+	}
+	functionOutput := func(callID, name, output string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr(callID),
+				Name:   schemas.Ptr(name),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: schemas.Ptr(output),
+				},
+			},
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	out, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-3-pro-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather and time in Tokyo?")},
+			},
+			functionCall(firstID, "get_weather", `{"location":"Tokyo"}`),
+			functionCall(secondID, "get_time", `{"timezone":"Asia/Tokyo"}`),
+			// Supplied in the opposite order to the calls, so input order alone cannot
+			// produce the expected result.
+			functionOutput(secondID, "get_time", `{"time":"09:00"}`),
+			functionOutput(firstID, "get_weather", `{"temperature":22}`),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	var responseIDs []string
+	for _, content := range out.Contents {
+		for _, part := range content.Parts {
+			if part != nil && part.FunctionResponse != nil {
+				responseIDs = append(responseIDs, part.FunctionResponse.ID)
+			}
+		}
+	}
+	assert.Equal(t, []string{"call_1", "call_2"}, responseIDs,
+		"responses must be reordered to follow their calls, matched on the stripped ids")
+}
+
+// TestVertexEntryPointStripsThoughtSignatureFromGeminiIDs covers the other host that reaches
+// these converters. Vertex has no converters of its own: core/providers/vertex/vertex.go
+// calls ToGeminiChatCompletionRequestWithImageURLSchemes and
+// ToGeminiResponsesRequestWithImageURLSchemes, which delegate to the two functions fixed
+// here. This drives the chat entry point Vertex uses so that delegation stays asserted
+// rather than assumed.
+func TestVertexEntryPointStripsThoughtSignatureFromGeminiIDs(t *testing.T) {
+	callID, raw := thoughtSignatureCallID(t, "call_1", []byte{0x0d, 0x0e})
+
+	out, err := ToGeminiChatCompletionRequestWithImageURLSchemes(nil, &schemas.BifrostChatRequest{
+		Model: "gemini-3-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:   schemas.Ptr(callID),
+						Type: schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: `{"location":"Tokyo"}`,
+						},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(callID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"temperature":"22C"}`)},
+			},
+		},
+	}, "http", "https", "gs")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	call := findGeminiFunctionCallPart(t, out, "get_weather")
+	assert.Equal(t, "call_1", call.FunctionCall.ID)
+	assert.Equal(t, raw, []byte(call.ThoughtSignature))
+	assert.Equal(t, "call_1", findGeminiFunctionResponsePart(t, out).FunctionResponse.ID)
+}
+
+func findGeminiFunctionCallPart(t *testing.T, req *GeminiGenerationRequest, name string) *Part {
+	t.Helper()
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part != nil && part.FunctionCall != nil && part.FunctionCall.Name == name {
+				return part
+			}
+		}
+	}
+	require.FailNowf(t, "function call not found", "no functionCall part named %q", name)
+	return nil
+}
+
+func findGeminiFunctionResponsePart(t *testing.T, req *GeminiGenerationRequest) *Part {
+	t.Helper()
+	for _, content := range req.Contents {
+		for _, part := range content.Parts {
+			if part != nil && part.FunctionResponse != nil {
+				return part
+			}
+		}
+	}
+	require.FailNow(t, "no functionResponse part found")
+	return nil
+}
+
+// BenchmarkResponsesSignatureBearingCallIDs measures the request-path cost of the strip on
+// the shape that pays for it: a history of signature-bearing tool calls and their outputs,
+// which is the common case once a Gemini 3 conversation has used a tool. The strip is one
+// strings.Cut per call and per output, returning a substring of the existing id, so it adds
+// no allocation of its own.
+func BenchmarkResponsesSignatureBearingCallIDs(b *testing.B) {
+	const turns = 8
+	sig := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, 256))
+
+	input := []schemas.ResponsesMessage{{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo?")},
+	}}
+	for i := 0; i < turns; i++ {
+		callID := fmt.Sprintf("call_%d%s%s", i, thoughtSignatureSeparator, sig)
+		input = append(input,
+			schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr(callID),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(`{"location":"Tokyo"}`),
+				},
+			},
+			schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(callID),
+					Name:   schemas.Ptr("get_weather"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature":22}`),
+					},
+				},
+			},
+		)
+	}
+
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-3-pro-preview",
+		Input:    input,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := ToGeminiResponsesRequest(ctx, req)
+		if err != nil || out == nil {
+			b.Fatalf("conversion failed: %v", err)
+		}
+	}
+}
+
+// Long decode: a hop that hits the per-call cap ends with finishReason CONTINUATION and a
+// continuationToken the client resends. Dropping either makes an SDK's automatic
+// continuation read a truncated hop as a finished answer.
+func TestGeminiContinuationResponseRoundTrip(t *testing.T) {
+	upstream := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hop one"}]},"finishReason":"CONTINUATION","continuationToken":"tok-1"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":65536,"totalTokenCount":65540}}`
+	var resp GenerateContentResponse
+	if err := sonic.Unmarshal([]byte(upstream), &resp); err != nil {
+		t.Fatalf("decode upstream: %v", err)
+	}
+
+	bifrostResp := resp.ToResponsesBifrostResponsesResponse()
+	if bifrostResp.StopReason == nil {
+		t.Error("bifrost stop reason = nil, want continuation")
+	} else if *bifrostResp.StopReason != "continuation" {
+		t.Errorf("bifrost stop reason = %q, want continuation (Bifrost-format reasons are lowercase)", *bifrostResp.StopReason)
+	}
+
+	out, err := sonic.Marshal(ToGeminiResponsesResponse(bifrostResp))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := gjson.GetBytes(out, "candidates.0.finishReason").String(); got != "CONTINUATION" {
+		t.Errorf("finishReason = %q, want CONTINUATION; body %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "candidates.0.continuationToken").String(); got != "tok-1" {
+		t.Errorf("continuationToken = %q, want tok-1; body %s", got, out)
+	}
+}
+
+func TestGeminiContinuationStreamRoundTrip(t *testing.T) {
+	chunks := []*GenerateContentResponse{
+		{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{Text: "hop one"}}}}}},
+		{
+			Candidates:    []*Candidate{{FinishReason: FinishReasonContinuation, ContinuationToken: "tok-1"}},
+			UsageMetadata: &GenerateContentResponseUsageMetadata{PromptTokenCount: 4, CandidatesTokenCount: 65536, TotalTokenCount: 65540},
+		},
+	}
+	forward := &GeminiResponsesStreamState{}
+	forward.flush()
+	reverse := NewBifrostToGeminiStreamState()
+
+	var finish FinishReason
+	var token string
+	seq := 0
+	for _, chunk := range chunks {
+		events, bifrostErr := chunk.ToBifrostResponsesStream(seq, forward)
+		if bifrostErr != nil {
+			t.Fatalf("forward conversion: %v", bifrostErr)
+		}
+		seq += len(events)
+		for _, event := range events {
+			out := ToGeminiResponsesStreamResponse(event, reverse)
+			if out == nil {
+				continue
+			}
+			for _, candidate := range out.Candidates {
+				if candidate.FinishReason != "" {
+					finish = candidate.FinishReason
+				}
+				if candidate.ContinuationToken != "" {
+					token = candidate.ContinuationToken
+				}
+			}
+		}
+	}
+	if finish != FinishReasonContinuation {
+		t.Errorf("finishReason = %q, want CONTINUATION", finish)
+	}
+	if token != "tok-1" {
+		t.Errorf("continuationToken = %q, want tok-1", token)
+	}
+}
+
+// The next hop resends the original request plus only the latest token, in either spelling.
+func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for name, body := range map[string]string{
+		"camelCase":  `{"model":"gemini/gemini-4-argon","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":262144},"continuationToken":"tok-1"}`,
+		"snake_case": `{"model":"gemini/gemini-4-argon","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":262144},"continuation_token":"tok-1"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var in GeminiGenerationRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			out, err := ToGeminiResponsesRequest(ctx, in.ToBifrostResponsesRequest(ctx))
+			if err != nil {
+				t.Fatalf("ToGeminiResponsesRequest: %v", err)
+			}
+			wire, err := providerUtils.MarshalSorted(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := gjson.GetBytes(wire, "continuationToken").String(); got != "tok-1" {
+				t.Errorf("continuationToken = %q, want tok-1; body %s", got, wire)
+			}
+			if gjson.GetBytes(wire, "continuation_token").Exists() {
+				t.Errorf("snake_case continuation_token must not reach the wire; body %s", wire)
 			}
 		})
 	}

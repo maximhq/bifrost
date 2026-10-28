@@ -35,6 +35,9 @@ const (
 	// TraceAttrDimensions holds the map[string]string of request dimensions
 	// parsed from x-bf-dim-* headers, keyed by bare dimension name.
 	TraceAttrDimensions = "bifrost.dimensions"
+	// TraceAttrTraceState holds the inbound W3C tracestate. Vendor data such as Datadog's
+	// propagating tags lives there, not in traceparent.
+	TraceAttrTraceState = "tracestate"
 )
 
 // GetStringAttr returns a string attribute, or "" when absent or another type.
@@ -49,10 +52,11 @@ func GetBoolAttr(attrs map[string]any, key string) bool {
 	return v
 }
 
-// ContentLoggingDisabledForTrace reports whether the request behind this trace was made with a
-// virtual key that turned content logging off (AttrBifrostContentLoggingDisabled on the root
-// span). Every connector ORs this into its own disable_content_logging: the key can only tighten
-// what a connector exports, never loosen it. Nil-safe, so a connector can call it on any trace.
+// ContentLoggingDisabledForTrace reports whether governance turned content logging off for the
+// request behind this trace, through its virtual key or a project it was scoped to
+// (AttrBifrostContentLoggingDisabled on the root span). Every connector ORs this into its own
+// disable_content_logging: governance can only tighten what a connector exports, never loosen it.
+// Nil-safe, so a connector can call it on any trace.
 func ContentLoggingDisabledForTrace(t *Trace) bool {
 	if t == nil || t.RootSpan == nil {
 		return false
@@ -100,6 +104,12 @@ func GetFloat64Attr(attrs map[string]any, key string) float64 {
 // TraceSessionID returns the session ID trace attribute, or "" when absent.
 func TraceSessionID(attrs map[string]any) string {
 	v, _ := attrs[TraceAttrSessionID].(string)
+	return v
+}
+
+// TraceTraceState returns the inbound W3C tracestate, or "" when absent.
+func TraceTraceState(attrs map[string]any) string {
+	v, _ := attrs[TraceAttrTraceState].(string)
 	return v
 }
 
@@ -573,6 +583,12 @@ func redactSpanAttributes(span *Span, inputReplacements map[string]string, outpu
 	if span.LLM != nil {
 		span.LLM.redact(inputReplacements, outputReplacements)
 	}
+	if span.A2A != nil {
+		cp := *span.A2A
+		cp.RawRequest = ApplyLiteralReplacements(cp.RawRequest, inputReplacements)
+		cp.RawResponse = ApplyLiteralReplacements(cp.RawResponse, outputReplacements)
+		span.A2A = &cp
+	}
 }
 
 // Span represents a single operation within a trace
@@ -588,6 +604,7 @@ type Span struct {
 	StatusMsg  string          // Optional status message (for errors)
 	Attributes map[string]any  // Additional attributes for the span
 	LLM        *LLMSpanData    `json:"-"`
+	A2A        *A2ASpanData    `json:"-"`
 	Enrichment *SpanEnrichment // Governance/identity dimensions read off the request context
 	Events     []SpanEvent     // Events that occurred during the span
 	mu         sync.Mutex      // Mutex for thread-safe attribute operations
@@ -657,6 +674,7 @@ func (s *Span) snapshotForExport() *Span {
 	cp.Status = s.Status
 	cp.StatusMsg = s.StatusMsg
 	cp.LLM = s.LLM
+	cp.A2A = s.A2A
 	cp.Enrichment = s.Enrichment
 	clear(cp.Attributes)
 	for k, v := range s.Attributes {
@@ -844,6 +862,7 @@ func (s *Span) Reset() {
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
 	s.LLM = nil
+	s.A2A = nil
 	s.Enrichment = nil
 	// Reuse the attribute map across pool cycles: tracing/store.go clears and
 	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
@@ -853,6 +872,9 @@ func (s *Span) Reset() {
 	} else {
 		clear(s.Attributes)
 	}
+	// Events can hold bounded A2A bodies. Drop their references before pooling
+	// the backing array so an idle span cannot retain a previous request's content.
+	clear(s.Events)
 	s.Events = s.Events[:0]
 }
 
@@ -896,6 +918,8 @@ const (
 	SpanKindTranscription SpanKind = "transcription"
 	// SpanKindInternal represents internal operations (key selection, etc.)
 	SpanKindInternal SpanKind = "internal"
+	// SpanKindRelay represents one relay call to a non-LLM upstream API.
+	SpanKindRelay SpanKind = "relay.call"
 )
 
 // SpanStatus represents the status of a span's operation
@@ -1149,12 +1173,21 @@ const (
 	// OTel MCP semconv.
 	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
 
+	// MCP client this span talked to; the span name carries it only as a composite.
+	AttrBifrostMCPClientName = "bifrost.mcp.client.name"
+
+	// A tool call that reported failure in its result; the span status stays ok.
+	AttrBifrostMCPToolIsError = "bifrost.mcp.tool.is_error"
+
 	// A2A (Agent Gateway) span attributes. There is no A2A semconv yet. The
 	// Bifrost operation name covers protocol and gateway-owned operations, while
 	// a2a.method.name is present only for strict-v1 JSON-RPC methods.
 	AttrBifrostA2AOperationName = "bifrost.a2a.operation.name"
 	AttrA2AMethodName           = "a2a.method.name"
 	AttrA2ATaskID               = "a2a.task.id"
+	AttrA2ATaskState            = "a2a.task.state"
+	AttrA2AMessageID            = "a2a.message.id"
+	AttrA2AArtifactID           = "a2a.artifact.id"
 	AttrAgentName               = "gen_ai.agent.name"
 	AttrConversationID          = "gen_ai.conversation.id"
 
@@ -1167,6 +1200,22 @@ const (
 	// (JSONRPC / GRPC / HTTP+JSON). Bifrost-namespaced because network.transport
 	// carries OSI-level values (tcp/pipe), not A2A protocol bindings.
 	AttrBifrostA2AUpstreamTransport = "bifrost.a2a.upstream.transport"
+
+	// Relay span attributes. A relay call is plain HTTP, so the method and status code use
+	// the OTel HTTP semconv names; the rest is Bifrost-namespaced.
+	AttrHTTPRequestMethod              = "http.request.method"
+	AttrBifrostRelayName               = "bifrost.relay.name"
+	AttrBifrostRelayRoutePath          = "bifrost.relay.route.path" // the matched route glob, "" for none
+	AttrBifrostRelayBillable           = "bifrost.relay.billable"
+	AttrBifrostRelayCounted            = "bifrost.relay.counted" // the call was priced and charged
+	AttrBifrostRelayStreamed           = "bifrost.relay.streamed"
+	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
+	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
+	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
+
+	// RelayMethodLabelOther is the method label for a request method outside the set a relay
+	// route can name, so a relay that skips the route check cannot grow a metric's series.
+	RelayMethodLabelOther = "_OTHER"
 
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)
@@ -1220,10 +1269,12 @@ const (
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
 	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
 
-	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's virtual
-	// key turned content logging off. Connectors read it through ContentLoggingDisabledForTrace and
-	// strip content the way their own disable_content_logging would; it is never set to false, so a
-	// key that keeps content on cannot loosen a connector's own setting.
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when governance turned
+	// content logging off for the request: its virtual key did, or a project it was scoped to did.
+	// Connectors read it through ContentLoggingDisabledForTrace and strip content the way their own
+	// disable_content_logging would. A key that keeps content on never writes it. It may read false
+	// when a project that keeps content on overrides a key that turned it off; a connector reads
+	// false the same as absent, so nothing can loosen a connector's own setting.
 	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
 
 	AttrBifrostProviderName        = "bifrost.provider.name"
@@ -1262,6 +1313,11 @@ const (
 	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, decision, llm, session, skipped)
 	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; decision-model confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
+
+	// Stored prompt the prompts plugin applied.
+	AttrBifrostPromptID      = "bifrost.prompt.id"
+	AttrBifrostPromptName    = "bifrost.prompt.name"
+	AttrBifrostPromptVersion = "bifrost.prompt.version"
 
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors
 	// classify identically to the metrics. Absent on success.
@@ -1329,7 +1385,9 @@ func IsSensitiveHeader(name string) bool {
 	switch normalized {
 	case "authorization", "proxy-authorization", "cookie", "set-cookie",
 		// Bifrost's own virtual key header: a credential that no generic pattern below names.
-		"x-bf-vk":
+		"x-bf-vk",
+		// Azure AI Speech's key header, which also carries a virtual key.
+		"ocp-apim-subscription-key":
 		return true
 	}
 
@@ -1342,4 +1400,17 @@ func IsSensitiveHeader(name string) bool {
 		strings.HasPrefix(normalized, "x-amzn-oidc-") ||
 		strings.HasSuffix(normalized, "-token") ||
 		strings.HasSuffix(normalized, "_token")
+}
+
+// relayMethodLabels are the request methods a relay route can name (plus OPTIONS, which a
+// browser preflight sends); every other method is reported as RelayMethodLabelOther.
+var relayMethodLabels = map[string]struct{}{"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {}, "OPTIONS": {}}
+
+// RelayMethodLabel bounds a relay call's HTTP method to a fixed label set for metrics, as the
+// OTel HTTP semconv does for http.request.method.
+func RelayMethodLabel(method string) string {
+	if _, ok := relayMethodLabels[strings.ToUpper(strings.TrimSpace(method))]; ok {
+		return strings.ToUpper(strings.TrimSpace(method))
+	}
+	return RelayMethodLabelOther
 }

@@ -20,6 +20,7 @@ type FireworksProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	disableStore        bool                  // Whether to force store=false on outgoing Responses API requests
 }
 
 // NewFireworksProvider creates a new Fireworks AI provider instance.
@@ -54,6 +55,7 @@ func NewFireworksProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+		disableStore:        config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
 	}, nil
 }
 
@@ -250,6 +252,10 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 		)
 	}
 
+	if provider.disableStore {
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+	}
+
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -299,6 +305,10 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			provider.logger,
 			postHookSpanFinalizer,
 		)
+	}
+
+	if provider.disableStore {
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(

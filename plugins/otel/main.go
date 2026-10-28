@@ -127,8 +127,9 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
-	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
-	// requires store_raw_request_response and is suppressed by disable_content_logging.
+	// ExportRawPayloads attaches captured provider or agent bodies to operation
+	// spans. Off by default; requires the corresponding raw-storage setting and
+	// is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
 
 	// ExcludedAttributes lists span-attribute names to drop before export, matched
@@ -959,13 +960,15 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace, t.overheadBreakdownEnabled)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 				p.recordA2AMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordRelayMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
 			// Free when unconfigured: an empty list returns the trace unchanged.
+			disableContent := t.disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
 			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, disableContent, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// Again after conversion: it adds root-span attributes of its own
 			// (session.id, request id, instance attrs, captured headers).
 			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)
@@ -1363,6 +1366,61 @@ func (p *OtelPlugin) recordA2AMetricsFromTrace(ctx context.Context, exporter *Me
 			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
 		}
 		exporter.RecordA2AOperationDuration(ctx, durationSeconds, a2aAttrs...)
+	}
+}
+
+// buildRelaySpanAttrs builds the metric dimensions of one relay span: the relay, the HTTP
+// method and matched route, the status code, and the governance identity. The path itself is
+// not a dimension, since an unmatched path is caller input of unbounded cardinality.
+func buildRelaySpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	out := []attribute.KeyValue{
+		attribute.String(schemas.AttrBifrostRelayName, schemas.GetStringAttr(attrs, schemas.AttrBifrostRelayName)),
+		attribute.String(schemas.AttrHTTPRequestMethod, schemas.RelayMethodLabel(schemas.GetStringAttr(attrs, schemas.AttrHTTPRequestMethod))),
+	}
+	if route := schemas.GetStringAttr(attrs, schemas.AttrBifrostRelayRoutePath); route != "" {
+		out = append(out, attribute.String(schemas.AttrBifrostRelayRoutePath, route))
+	}
+	if code := schemas.GetIntAttr(attrs, schemas.AttrHTTPResponseStatusCode); code > 0 {
+		out = append(out, attribute.Int(schemas.AttrHTTPResponseStatusCode, int(code)))
+	}
+	for spanKey, labelKey := range mcpGovernanceLabelMap {
+		if v := schemas.GetStringAttr(attrs, spanKey); v != "" {
+			out = append(out, attribute.String(labelKey, v))
+		}
+	}
+	return out
+}
+
+// recordRelayMetricsFromTrace records the duration and cost metrics once per relay span.
+// Called from Inject alongside recordMCPMetricsFromTrace and recordA2AMetricsFromTrace.
+func (p *OtelPlugin) recordRelayMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
+		return
+	}
+	for _, span := range trace.Spans {
+		if span == nil || span.Kind != schemas.SpanKindRelay {
+			continue
+		}
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostRelayName) == "" {
+			continue
+		}
+		relayAttrs := buildRelaySpanAttrs(span)
+		if span.Status == schemas.SpanStatusError {
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			if errorType == "" {
+				errorType = "_OTHER"
+			}
+			relayAttrs = append(relayAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
+		}
+		var durationSeconds float64
+		if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
+		}
+		exporter.RecordRelayOperationDuration(ctx, durationSeconds, relayAttrs...)
+		if cost, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayCost); ok && cost > 0 {
+			exporter.RecordRelayCost(ctx, cost, relayAttrs...)
+		}
 	}
 }
 

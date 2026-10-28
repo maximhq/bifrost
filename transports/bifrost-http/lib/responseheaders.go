@@ -53,8 +53,8 @@ func ForwardProviderResponseHeaders(ctx *fasthttp.RequestCtx, headers map[string
 	}
 }
 
-// HTTP response header names for the routed identity. Set on every successful
-// response from any integration so callers can recover the actual provider /
+// HTTP response header names for the routed identity. Set on success and error
+// responses from any integration so callers can recover the actual provider /
 // model that handled the request — even when the integration converts the
 // body to a provider-native shape (Anthropic, OpenAI, Bedrock) that has no
 // place to surface Bifrost's `extra_fields`.
@@ -65,7 +65,7 @@ func ForwardProviderResponseHeaders(ctx *fasthttp.RequestCtx, headers map[string
 // BifrostContext because it isn't a field on the response struct.
 //
 // Naming follows the existing `x-bf-*` request-side convention (see
-// `x-bf-vk`, `x-bf-key-id`, etc.).
+// `x-bf-vk`, `x-bf-api-key-id`, etc.).
 const (
 	HeaderBifrostProvider      = "x-bifrost-provider"
 	HeaderBifrostOriginalModel = "x-bifrost-original-model"
@@ -132,6 +132,10 @@ const (
 	HeaderBifrostRetryAfterMs            = "x-bifrost-retry-after-ms"
 )
 
+// HeaderMCPSessionID is the MCP Streamable HTTP session id the /mcp gateway answers initialize with.
+// A browser MCP client reads it to send it back on later requests.
+const HeaderMCPSessionID = "mcp-session-id"
+
 // ExposedResponseHeaders is the Access-Control-Expose-Headers value for allowed cross-origin
 // requests: every response header this gateway writes about its own handling. Browsers hide any
 // response header not listed, and with client.extra_fields_placement = "headers" these headers
@@ -149,7 +153,7 @@ var ExposedResponseHeaders = strings.Join([]string{
 	HeaderBifrostCacheThreshold, HeaderBifrostCacheProviderUsed, HeaderBifrostCacheModelUsed, HeaderBifrostCacheInputTokens,
 	HeaderBifrostLatency, HeaderBifrostPricingRequestType, HeaderBifrostConvertedRequestType,
 	HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
-	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs,
+	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs, HeaderMCPSessionID,
 }, ", ")
 
 // extraFieldsKey is the top-level JSON key every Bifrost response and error carries its metadata under.

@@ -271,7 +271,7 @@ func newDecisionRequest(model string, input schemas.DecisionInput) *schemas.Bifr
 }
 
 func textPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func imagePart(url string) schemas.DecisionInputPart {

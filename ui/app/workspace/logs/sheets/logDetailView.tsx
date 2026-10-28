@@ -58,6 +58,12 @@ import {
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import {
+	GUARDRAIL_MATCH_ACTION_BADGE,
+	GUARDRAIL_MATCH_ACTION_LABEL,
+	guardrailMatchAction,
+	guardrailMatchActionHint,
+} from "@/lib/utils/guardrailMatchAction";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { isJson } from "@/lib/utils/validation";
@@ -70,12 +76,16 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
+import { CopyInlineButton, HeroStat, StatusPill, statusCodeBadgeClass } from "../views/logHeroStat";
+import { FallbackChainBanner, FallbackChainTimeline, useFallbackChain } from "../views/fallbackChain";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView, { LogChatFileBlockView } from "../views/logChatMessageView";
 import LogEntryDetailsView from "../views/logEntryDetailsView";
 import LogLevelTabs from "../views/logLevelTabs";
 import OCRView from "../views/ocrView";
+import PassthroughBodyBox from "../views/passthroughBodyBox";
+import PassthroughTag from "../views/passthroughTag";
 import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
@@ -89,6 +99,10 @@ import {
 	parseRoutingDecisionLine,
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
+	isParsedPassthroughLog,
+	isPassthroughLog,
+	passthroughLogParams,
+	showsPassthroughTag,
 } from "./logDetailView.utils";
 import LiveSessionView from "../views/liveSessionView";
 import {
@@ -340,7 +354,6 @@ const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
 };
 
 // Helper to detect passthrough operations
-const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
 
 // Helper to detect batch operations (they carry no messages or tool declarations)
 const isBatchOperation = (object: string) => object.startsWith("batch_");
@@ -361,19 +374,6 @@ const isContainerOperation = (object: string) => {
 	return containerTypes.includes(object?.toLowerCase());
 };
 
-const statusPillStyles: Record<string, string> = {
-	success: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
-	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
-	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
-	cancelled: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
-};
-const statusDotStyles: Record<string, string> = {
-	success: "bg-chart-success",
-	error: "bg-chart-error",
-	processing: "bg-blue-500",
-	cancelled: "bg-gray-400",
-};
-
 const batchStatusBadgeStyles: Record<string, string> = {
 	completed: "bg-chart-success/15 text-chart-success-ink",
 	ended: "bg-chart-success/15 text-chart-success-ink",
@@ -383,74 +383,6 @@ const batchStatusBadgeStyles: Record<string, string> = {
 	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 };
 const batchStatusBadgeDefault = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
-
-function StatusPill({ status }: { status: Status }) {
-	return (
-		<span
-			className={cn(
-				"inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase",
-				statusPillStyles[status] ?? statusPillStyles.cancelled,
-			)}
-		>
-			<span className={cn("h-1.5 w-1.5 rounded-sm", statusDotStyles[status] ?? statusDotStyles.cancelled)} />
-			{status}
-		</span>
-	);
-}
-
-// Colors an HTTP status code badge by response class.
-function statusCodeBadgeClass(code: number): string {
-	if (code >= 200 && code < 300) return "border-chart-success/30 bg-chart-success/10 text-chart-success-ink";
-	if (code >= 300 && code < 400)
-		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
-	if (code >= 400 && code < 500)
-		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
-	return "border-chart-error/30 bg-chart-error/10 text-chart-error-ink";
-}
-
-function HeroStat({
-	label,
-	value,
-	sub,
-	mono = false,
-	valueClass,
-	hasRightBorder = false,
-}: {
-	label: string;
-	value: ReactNode;
-	sub?: ReactNode;
-	mono?: boolean;
-	valueClass?: string;
-	hasRightBorder?: boolean;
-}) {
-	return (
-		<div className={cn("border-border/70 border-b px-5 py-3 md:border-b-0", hasRightBorder && "md:border-r")}>
-			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{label}</div>
-			<div className={cn("mt-0.5 truncate text-[18px] font-semibold tabular-nums", mono && "font-mono text-[15px]", valueClass)}>
-				{value}
-			</div>
-			{sub ? <div className="text-muted-foreground mt-0.5 truncate text-[11px]">{sub}</div> : null}
-		</div>
-	);
-}
-
-function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
-	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
-	return (
-		<button
-			type="button"
-			onClick={(e) => {
-				e.stopPropagation();
-				copy(text);
-			}}
-			className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-6 w-6 items-center justify-center rounded-sm transition"
-			aria-label="Copy"
-			data-testid={testId}
-		>
-			<Clipboard className="h-3.5 w-3.5" />
-		</button>
-	);
-}
 
 // Decision logs store the state as the user message and the answers as the
 // assistant message; label them by what they actually are.
@@ -823,9 +755,10 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	const fallbackChain = useFallbackChain(log);
 	// A downstream build can draw its own routing record at the top of the Routing tab.
 	const RoutingPanel = getLogRoutingPanel();
-	const isPassthrough = isPassthroughOperation(log.object);
+	const isPassthrough = isPassthroughLog(log);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
@@ -954,14 +887,13 @@ export function LogDetailView({
 			})
 			.filter((r) => r.message || r.rawFallback || r.errorMessage);
 	}, [batchRawResponse]);
-	const passthroughParams = isPassthrough
-		? (log.params as {
-				method?: string;
-				path?: string;
-				raw_query?: string;
-				status_code?: number;
-			})
-		: null;
+	const passthroughParams = passthroughLogParams(log);
+	// A passthrough row whose raw bodies the gateway parsed renders like a typed request; the raw
+	// bodies move to the Original Payload tab. Rows that did not parse keep the raw-body view.
+	const isParsedPassthrough = isParsedPassthroughLog(log);
+	// Model parameters: a passthrough row keeps its own method/path/status params and carries the
+	// parsed model parameters under model_params.
+	const modelParams = isPassthrough ? passthroughParams?.model_params : log.params;
 	// Only errors and passthrough requests carry a real HTTP status code; others have none.
 	// Non-HTTP errors (timeouts, network, marshal) default to 0; treat that as no status
 	// so the header doesn't render a misleading red "0" badge.
@@ -975,7 +907,7 @@ export function LogDetailView({
 		.filter((m) => m.type === "additional_tools" && Array.isArray(m.tools))
 		.flatMap((m) => m.tools as any[]);
 	const inputDeclaredTools = flattenDeclaredTools(inputDeclaredToolEntries);
-	const declaredTools = dedupeDeclaredTools([...flattenDeclaredTools((log.params?.tools as any[]) ?? []), ...inputDeclaredTools]);
+	const declaredTools = dedupeDeclaredTools([...flattenDeclaredTools((modelParams?.tools as any[]) ?? []), ...inputDeclaredTools]);
 	let toolsParameter = null;
 	if (declaredTools.length) {
 		try {
@@ -998,6 +930,10 @@ export function LogDetailView({
 	const displayErrorMessage = log.error_details?.error.message || errorMessageFallback;
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
+	// Multipart uploads are logged as their form fields and file sizes; the file bytes are not stored.
+	const passthroughRequestTitle = passthroughParams?.multipart_summary
+		? "Request Body (form fields; file contents not stored)"
+		: "Request Body";
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
@@ -1011,13 +947,17 @@ export function LogDetailView({
 		return 0;
 	})();
 
+	const showToolsTab = isPassthrough
+		? isParsedPassthrough && declaredTools.length > 0
+		: !log.list_models_output && !isBatch && !isEmbedding;
+	const showRawTab = !isPassthrough || isParsedPassthrough;
 	const availableTabs = [
 		showBatchDetailsTab && "details",
 		showTabs && !isBatch && "messages",
-		showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && "tools",
+		showTabs && showToolsTab && "tools",
 		showTabs && "routing",
 		"plugins",
-		!isPassthrough && "raw",
+		showRawTab && "raw",
 	].filter((t): t is string => Boolean(t));
 	const defaultTab = showBatchDetailsTab ? "details" : showTabs && !isBatch ? "messages" : showTabs ? "routing" : "plugins";
 	const activeTab = tabParam && availableTabs.includes(tabParam) ? tabParam : defaultTab;
@@ -1118,6 +1058,7 @@ export function LogDetailView({
 				</div>
 			</div>
 			<div className="flex flex-col gap-4 px-4 pb-4 md:px-8 md:pb-8">
+				{fallbackChain && <FallbackChainBanner chain={fallbackChain} currentId={log.id} onOpenLog={onOpenLog} />}
 				<div className="border-border rounded-sm border">
 					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
 						<div className="min-w-0 flex-1">
@@ -1131,6 +1072,7 @@ export function LogDetailView({
 								>
 									{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 								</Badge>
+								{showsPassthroughTag(log) && <PassthroughTag testId="logdetails-passthrough-tag" />}
 								<StatusPill status={log.status as Status} />
 								{statusCode != null && (
 									<Badge
@@ -1388,13 +1330,13 @@ export function LogDetailView({
 								<LogEntryDetailsView
 									className="w-full"
 									label="Latency"
-									tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
+									tooltip="Time this call took end to end: upstream plus Bifrost overhead."
 									value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
 								/>
 								<LogEntryDetailsView
 									className="w-full"
 									label="Upstream Latency"
-									tooltip="Time spent waiting on the provider, summed across every attempt."
+									tooltip="Time this call spent waiting on the provider, including its retries."
 									value={
 										log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>
 									}
@@ -1466,10 +1408,13 @@ export function LogDetailView({
 									className="w-full"
 									label="Type"
 									value={
-										<div
-											className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
-										>
-											{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
+										<div className="flex flex-wrap items-center gap-2">
+											<div
+												className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
+											>
+												{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
+											</div>
+											{showsPassthroughTag(log) && <PassthroughTag />}
 										</div>
 									}
 								/>
@@ -1876,18 +1821,26 @@ export function LogDetailView({
 										{(passthroughParams.status_code ?? 0) !== 0 && (
 											<LogEntryDetailsView className="w-full" label="Status Code" value={passthroughParams.status_code} />
 										)}
+										{passthroughParams.parsed_type && (
+											<LogEntryDetailsView
+												className="w-full"
+												label="Parsed As"
+												value={
+													RequestTypeLabels[passthroughParams.parsed_type as keyof typeof RequestTypeLabels] ??
+													passthroughParams.parsed_type
+												}
+											/>
+										)}
+										{passthroughParams.base_provider && (
+											<LogEntryDetailsView className="w-full" label="Wire Format" value={passthroughParams.base_provider} />
+										)}
 									</>
 								)}
 
-								{log.params &&
-									Object.keys(log.params).length > 0 &&
-									Object.entries(log.params)
-										.filter(([key]) => {
-											const passthroughKeys = ["method", "path", "raw_query", "status_code"];
-											return (
-												key !== "tools" && key !== "instructions" && key !== "audio" && !(isPassthrough && passthroughKeys.includes(key))
-											);
-										})
+								{modelParams &&
+									Object.keys(modelParams).length > 0 &&
+									Object.entries(modelParams)
+										.filter(([key]) => key !== "tools" && key !== "instructions" && key !== "audio")
 										.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
 										.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 							</div>
@@ -2277,6 +2230,66 @@ export function LogDetailView({
 								)}
 							</>
 						)}
+						{!isContainer &&
+							!isPassthrough &&
+							((log.guardrail_debug?.interventions?.length ?? 0) > 0 || (log.guardrail_debug?.detections?.length ?? 0) > 0) && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Guardrail Matches" />
+										<div className="space-y-4">
+											{[
+												...(log.guardrail_debug?.interventions ?? []).map((match) => ({
+													match,
+													action: guardrailMatchAction(match, true),
+												})),
+												...(log.guardrail_debug?.detections ?? []).map((match) => ({ match, action: guardrailMatchAction(match, false) })),
+											].map(({ match, action }, index) => (
+												<div
+													key={`${action}-${match.rule_id ?? match.rule_name ?? "guardrail"}-${index}`}
+													className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+												>
+													<LogEntryDetailsView
+														className="w-full"
+														label="Action"
+														value={
+															<Badge variant={GUARDRAIL_MATCH_ACTION_BADGE[action]} title={guardrailMatchActionHint(match, action)}>
+																{GUARDRAIL_MATCH_ACTION_LABEL[action]}
+															</Badge>
+														}
+													/>
+													{match.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={match.rule_name} />}
+													{match.phase && (
+														<LogEntryDetailsView
+															className="w-full"
+															label="Phase"
+															value={
+																<Badge variant="secondary" className="uppercase">
+																	{match.phase}
+																</Badge>
+															}
+														/>
+													)}
+													{match.guardrail_name && (
+														<LogEntryDetailsView className="w-full" label="Guardrail" value={match.guardrail_name} />
+													)}
+													{match.guardrail_provider && (
+														<LogEntryDetailsView className="w-full" label="Guardrail Provider" value={match.guardrail_provider} />
+													)}
+													{match.assessments && match.assessments.length > 0 && (
+														<LogEntryDetailsView
+															className="w-full md:col-span-3"
+															label="Assessments"
+															value={match.assessments.join("; ")}
+														/>
+													)}
+													{match.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={match.reason} />}
+												</div>
+											))}
+										</div>
+									</div>
+								</>
+							)}
 						{!isContainer && !isPassthrough && log.guardrail_debug?.judge_calls && log.guardrail_debug.judge_calls.length > 0 && (
 							<>
 								<DottedSeparator />
@@ -2395,7 +2408,12 @@ export function LogDetailView({
 											{Object.entries(log.metadata)
 												.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 												.map(([key, value]) => (
-													<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+													<LogEntryDetailsView
+														key={key}
+														className="w-full"
+														label={key}
+														value={value == null ? "-" : typeof value === "object" ? JSON.stringify(value) : String(value)}
+													/>
 												))}
 										</div>
 									</div>
@@ -2426,7 +2444,7 @@ export function LogDetailView({
 							</TabsTrigger>
 						)}
 
-						{showTabs && !isPassthrough && !log.list_models_output && !isBatch && !isEmbedding && (
+						{showTabs && showToolsTab && (
 							<TabsTrigger value="tools" className="px-3">
 								Tools
 								{declaredTools.length ? (
@@ -2454,9 +2472,10 @@ export function LogDetailView({
 								</span>
 							) : null}
 						</TabsTrigger>
-						{!isPassthrough && (
+						{showRawTab && (
 							<TabsTrigger value="raw" className="px-3">
-								Raw JSON
+								{/* A passthrough row's tab holds the bodies exactly as they crossed the wire, not Bifrost's JSON. */}
+								{isPassthrough ? "Original Payload" : "Raw JSON"}
 							</TabsTrigger>
 						)}
 					</TabsList>
@@ -2614,8 +2633,10 @@ export function LogDetailView({
 								Content logging has been disabled for this request.
 							</div>
 						)}
-						{/* Passthrough just renders the raw json, so there's nothing to filter */}
-						<div className={cn("flex justify-end", (log.content_hidden || isPassthrough || isEmbedding) && "hidden")}>
+						{/* An unparsed passthrough row just renders the raw json, so there's nothing to filter */}
+						<div
+							className={cn("flex justify-end", (log.content_hidden || (isPassthrough && !isParsedPassthrough) || isEmbedding) && "hidden")}
+						>
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild>
 									<button
@@ -2677,19 +2698,23 @@ export function LogDetailView({
 						</div>
 						{(log.ocr_input || log.ocr_output) && <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />}
 						{(log.speech_input || log.speech_output) && (
-							<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
+							<SpeechView
+								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
+								speechOutput={log.speech_output}
+								isStreaming={log.stream}
+							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (
 							<TranscriptionView
-								transcriptionInput={log.transcription_input}
-								transcriptionOutput={log.transcription_output}
+								transcriptionInput={applyRedactionMappingToValue(log.transcription_input, activeInputRevealMapping)}
+								transcriptionOutput={applyRedactionMappingToValue(log.transcription_output, activeOutputRevealMapping)}
 								isStreaming={log.stream}
 							/>
 						)}
 						{(log.image_generation_input || log.image_edit_input || log.image_variation_input || log.image_generation_output) && (
 							<ImageView
-								imageInput={log.image_generation_input}
-								imageEditInput={log.image_edit_input}
+								imageInput={applyRedactionMappingToValue(log.image_generation_input, activeInputRevealMapping)}
+								imageEditInput={applyRedactionMappingToValue(log.image_edit_input, activeInputRevealMapping)}
 								imageVariationInput={log.image_variation_input}
 								imageOutput={log.image_generation_output}
 								requestType={log.object}
@@ -2697,7 +2722,7 @@ export function LogDetailView({
 						)}
 						{(log.video_generation_input || videoOutput || videoListOutput) && (
 							<VideoView
-								videoInput={log.video_generation_input}
+								videoInput={applyRedactionMappingToValue(log.video_generation_input, activeInputRevealMapping)}
 								videoOutput={videoOutput}
 								videoListOutput={videoListOutput}
 								requestType={log.object}
@@ -2711,85 +2736,28 @@ export function LogDetailView({
 							/>
 						)}
 
-						{isPassthrough && passthroughRequestBody && (
-							<CollapsibleBox
-								title="Request Body"
-								onCopy={() => {
-									try {
-										return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
-									} catch {
-										return passthroughRequestBody || "";
-									}
-								}}
-							>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={450}
-									wrap={true}
-									code={(() => {
-										try {
-											return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
-										} catch {
-											return passthroughRequestBody || "";
-										}
-									})()}
-									lang="json"
-									readonly={true}
-									options={{
-										collapsibleBlocks: true,
-										showVerticalScrollbar: true,
-										scrollBeyondLastLine: false,
-										lineNumbers: "off",
-										alwaysConsumeMouseWheel: false,
-									}}
-								/>
-							</CollapsibleBox>
+						{isPassthrough && !isParsedPassthrough && passthroughRequestBody && (
+							<PassthroughBodyBox
+								title={passthroughRequestTitle}
+								body={passthroughRequestBody}
+								testId="logdetails-passthrough-request-body"
+							/>
 						)}
-						{isPassthrough && passthroughResponseBody && log.status !== "processing" && (
-							<CollapsibleBox
-								title="Response Body"
-								onCopy={() => {
-									try {
-										return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
-									} catch {
-										return passthroughResponseBody || "";
-									}
-								}}
-							>
-								<CodeEditor
-									className="z-0 w-full"
-									shouldAdjustInitialHeight={true}
-									maxHeight={450}
-									wrap={true}
-									code={(() => {
-										try {
-											return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
-										} catch {
-											return passthroughResponseBody || "";
-										}
-									})()}
-									lang="json"
-									readonly={true}
-									options={{
-										collapsibleBlocks: true,
-										showVerticalScrollbar: true,
-										scrollBeyondLastLine: false,
-										lineNumbers: "off",
-										alwaysConsumeMouseWheel: false,
-									}}
-								/>
-							</CollapsibleBox>
+						{isPassthrough && !isParsedPassthrough && passthroughResponseBody && log.status !== "processing" && (
+							<PassthroughBodyBox title="Response Body" body={passthroughResponseBody} testId="logdetails-passthrough-response-body" />
 						)}
 
 						{(() => {
 							const questions = decisionQuestions(log.object, log.params);
 							return questions ? (
-								<DecisionQuestionsBox value={applyRedactionMappingToValue(questions.value, activeInputRevealMapping)} count={questions.count} />
+								<DecisionQuestionsBox
+									value={applyRedactionMappingToValue(questions.value, activeInputRevealMapping)}
+									count={questions.count}
+								/>
 							) : null;
 						})()}
 
-						{!isPassthrough &&
+						{(!isPassthrough || isParsedPassthrough) &&
 							!log.live_session &&
 							((log.input_history && log.input_history.length > 0) ||
 								(log.output_message && !log.error_details?.error.message) ||
@@ -3118,9 +3086,11 @@ export function LogDetailView({
 								</div>
 								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
 									{displayErrorMessage ??
-										(statusCode
-											? `The provider returned an error (HTTP ${statusCode}) without a message.`
-											: "The provider returned an error without a message.")}
+										(log.content_hidden
+											? `The error message was not stored because content logging is disabled for this request${statusCode ? ` (HTTP ${statusCode})` : ""}.`
+											: statusCode
+												? `The provider returned an error (HTTP ${statusCode}) without a message.`
+												: "The provider returned an error without a message.")}
 								</div>
 								{log.error_details?.error.error != null ? (
 									<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
@@ -3219,6 +3189,7 @@ export function LogDetailView({
 					</TabsContent>
 
 					<TabsContent value="routing" className="space-y-3">
+						{fallbackChain && <FallbackChainTimeline chain={fallbackChain} currentId={log.id} onOpenLog={onOpenLog} />}
 						{RoutingPanel && <RoutingPanel log={log} />}
 						{log.attempt_trail && log.attempt_trail.length > 1 && (
 							<CollapsibleBox
@@ -3248,7 +3219,9 @@ export function LogDetailView({
 														) : (
 															<span className="text-chart-success-ink">success</span>
 														)}
-														{record.status_code ? <span className="text-muted-foreground tabular-nums"> · {record.status_code}</span> : null}
+														{record.status_code ? (
+															<span className="text-muted-foreground tabular-nums"> · {record.status_code}</span>
+														) : null}
 													</td>
 												</tr>
 											))}
@@ -3277,6 +3250,16 @@ export function LogDetailView({
 					</TabsContent>
 
 					<TabsContent value="raw" className="space-y-3">
+						{isParsedPassthrough && passthroughRequestBody && (
+							<PassthroughBodyBox
+								title={passthroughRequestTitle}
+								body={passthroughRequestBody}
+								testId="logdetails-passthrough-request-body"
+							/>
+						)}
+						{isParsedPassthrough && passthroughResponseBody && log.status !== "processing" && (
+							<PassthroughBodyBox title="Response Body" body={passthroughResponseBody} testId="logdetails-passthrough-response-body" />
+						)}
 						{rawRequest && (
 							<>
 								<div className="text-muted-foreground text-[12px]">

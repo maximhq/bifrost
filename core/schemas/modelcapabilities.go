@@ -77,6 +77,7 @@ type ModelCapabilities struct {
 	// is the scope sub-feature.
 	SupportsAssistantPrefill         *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsSystemMessages           *bool `json:"supports_system_messages,omitempty"`
+	SupportsDeveloperRole            *bool `json:"supports_developer_role,omitempty"` // false ⇒ developer messages are sent as system
 	SupportsFunctionCalling          *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling  *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice               *bool `json:"supports_tool_choice,omitempty"`
@@ -198,6 +199,10 @@ type ModelCapabilities struct {
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
 
+	// Model accepts thinking.display:"updates" (beta thinking-display-updates). Per model, not per surface:
+	// Bedrock rejects it on Opus 4.6 and the 4.5 generation.
+	SupportsThinkingDisplayUpdates *bool `json:"supports_thinking_display_updates,omitempty"`
+
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`
 
@@ -278,6 +283,9 @@ type ModelCapabilities struct {
 
 	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
 	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// Tool-schema `pattern` is accepted at all; false ⇒ the keyword is dropped before dispatch.
+	SupportsSchemaPattern *bool `json:"supports_schema_pattern,omitempty"`
 
 	// String `format` values tool schemas may carry; any other is dropped before dispatch.
 	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`

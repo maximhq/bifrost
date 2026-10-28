@@ -3,9 +3,11 @@ package logging
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/postgresconn"
@@ -115,6 +118,64 @@ func TestProcessBatchConnectionErrorDoesNotFanOutPerRow(t *testing.T) {
 	}
 	if dropped := plugin.droppedRequests.Load(); dropped != N {
 		t.Fatalf("expected %d dropped requests after retries were exhausted, got %d", N, dropped)
+	}
+}
+
+// TestProcessBatchSQLiteBusyRetriesWholeBatch pins the writer's handling of a
+// contended SQLite writer lock. SQLITE_BUSY (or SQLITE_LOCKED) says nothing
+// about the rows in the batch, so the batch must be retried whole with the
+// backoff and land once the lock clears. Fanning out into per-row inserts
+// instead turns one lock wait into one per row (each up to busy_timeout), which
+// is what put the SQLite writer minutes behind under a parallel load.
+func TestProcessBatchSQLiteBusyRetriesWholeBatch(t *testing.T) {
+	for name, busyErr := range map[string]error{
+		"busy":   sqlite3.Error{Code: sqlite3.ErrBusy},
+		"locked": sqlite3.Error{Code: sqlite3.ErrLocked},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var attempts atomic.Int32
+			store := &failingBatchStore{
+				LogStore: newTestStore(t),
+				fail: func(int) error {
+					if attempts.Add(1) == 1 {
+						return fmt.Errorf("write logs: %w", busyErr)
+					}
+					return nil
+				},
+			}
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			t.Cleanup(func() { _ = plugin.Cleanup() })
+
+			const N = 20
+			batch := make([]*writeQueueEntry, 0, N)
+			for i := 0; i < N; i++ {
+				batch = append(batch, &writeQueueEntry{log: makeTestLog(fmt.Sprintf("busy-%s-%d", name, i))})
+			}
+			if unwritten := plugin.processBatch(context.Background(), batch); len(unwritten) != 0 {
+				t.Fatalf("expected every entry written, %d handed back", len(unwritten))
+			}
+
+			sizes := store.sizes()
+			for _, size := range sizes {
+				if size != N {
+					t.Fatalf("SQLite %s fanned out to a %d-row insert; attempts were %v", name, size, sizes)
+				}
+			}
+			if len(sizes) != 2 {
+				t.Fatalf("expected one failed whole-batch attempt and one successful retry, got attempts %v", sizes)
+			}
+			if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+				t.Fatalf("expected 0 dropped requests, got %d", dropped)
+			}
+			for i := 0; i < N; i++ {
+				if _, err := store.FindByID(context.Background(), fmt.Sprintf("busy-%s-%d", name, i)); err != nil {
+					t.Fatalf("row %d missing after retry: %v", i, err)
+				}
+			}
+		})
 	}
 }
 
@@ -2261,5 +2322,158 @@ func TestOmitBinaryBody(t *testing.T) {
 				t.Fatalf("omitBinaryBody(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// deferredGuardrailRow builds a row through storeOrEnqueueEntry for a request
+// whose output-monitor guardrail result is still pending. The request already
+// carries input-phase guardrail state, which the result must supersede.
+func deferredGuardrailRow(t *testing.T, plugin *LoggerPlugin) (*logstore.Log, *schemas.DeferredGuardrailResult) {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	deferred := schemas.NewDeferredGuardrailResult()
+	ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, deferred)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		ReversibleMappings: schemas.RedactionMapsByPhase{Input: map[string]string{"[EMAIL_1]": "alex@example.com"}},
+	})
+	entry := &logstore.Log{
+		ID:                   "req-monitor",
+		GuardrailDebugParsed: &schemas.BifrostGuardrailMetadata{Detections: []schemas.BifrostGuardrailDetection{{Phase: "input"}}},
+	}
+	plugin.storeOrEnqueueEntry(ctx, entry, nil)
+	return entry, deferred
+}
+
+// monitorGuardrailResult is a complete request guardrail state: the input
+// detection and mapping plus what the output-monitor evaluation added.
+func monitorGuardrailResult() (*schemas.BifrostGuardrailMetadata, schemas.RedactionData) {
+	metadata := &schemas.BifrostGuardrailMetadata{Detections: []schemas.BifrostGuardrailDetection{{Phase: "input"}, {Phase: "output", RuleName: "monitor"}}}
+	redaction := schemas.RedactionData{ReversibleMappings: schemas.RedactionMapsByPhase{
+		Input:  map[string]string{"[EMAIL_1]": "alex@example.com"},
+		Output: map[string]string{"[EMAIL_2]": "sam@example.com"},
+	}}
+	return metadata, redaction
+}
+
+// TestDeferredGuardrailRowWaitsForResult verifies a row with a pending
+// output-monitor result reaches the writer only once the result lands, carrying
+// the result's guardrail metadata and redaction data in place of what it was
+// built with.
+func TestDeferredGuardrailRowWaitsForResult(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+	_, deferred := deferredGuardrailRow(t, plugin)
+	if len(plugin.writeQueue) != 0 {
+		t.Fatal("row was written before its guardrail result landed")
+	}
+
+	metadata, redaction := monitorGuardrailResult()
+	deferred.Complete(metadata, redaction, nil)
+	if len(plugin.writeQueue) != 1 {
+		t.Fatalf("expected the row to be written once after the result, got %d writes", len(plugin.writeQueue))
+	}
+	written := (<-plugin.writeQueue).log
+	if written.DeferredGuardrail != nil {
+		t.Fatal("written row still references the pending result")
+	}
+	if len(written.GuardrailDebugParsed.Detections) != 2 {
+		t.Fatalf("expected input and output detections, got %+v", written.GuardrailDebugParsed.Detections)
+	}
+	if written.RedactionData == nil || written.RedactionData.ReversibleMappings.Output["[EMAIL_2]"] != "sam@example.com" ||
+		written.RedactionData.ReversibleMappings.Input["[EMAIL_1]"] != "alex@example.com" {
+		t.Fatalf("expected the result's input and output mappings, got %+v", written.RedactionData)
+	}
+}
+
+// TestDeferredGuardrailRowAppendsMonitorPluginLogs verifies the evaluation's
+// plugin log lines land on the row after the request's own, under the same
+// plugin group, and that a row with no request plugin logs still gets them.
+func TestDeferredGuardrailRowAppendsMonitorPluginLogs(t *testing.T) {
+	monitorLogs := []schemas.PluginLogEntry{{PluginName: "guardrails", Level: schemas.LogLevelInfo, Message: "[output-monitor] completed", Timestamp: 2}}
+	for name, requestLogs := range map[string][]schemas.PluginLogEntry{
+		"with request logs": {{PluginName: "guardrails", Level: schemas.LogLevelInfo, Message: "[input] evaluated", Timestamp: 1}},
+		"without":           nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			deferred := schemas.NewDeferredGuardrailResult()
+			ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, deferred)
+			plugin.storeOrEnqueueEntry(ctx, &logstore.Log{ID: "req-monitor-logs", PluginLogs: serializePluginLogs(requestLogs)}, nil)
+
+			metadata, redaction := monitorGuardrailResult()
+			deferred.Complete(metadata, redaction, monitorLogs)
+			written := (<-plugin.writeQueue).log
+			var grouped map[string][]schemas.PluginLogEntry
+			if err := json.Unmarshal([]byte(written.PluginLogs), &grouped); err != nil {
+				t.Fatalf("plugin logs are not valid JSON: %q", written.PluginLogs)
+			}
+			want := append(append([]schemas.PluginLogEntry{}, requestLogs...), monitorLogs...)
+			if !reflect.DeepEqual(grouped["guardrails"], want) {
+				t.Fatalf("expected request lines then monitor lines %+v, got %+v", want, grouped["guardrails"])
+			}
+		})
+	}
+}
+
+// TestDeferredGuardrailRowWrittenDuringShutdown verifies a held row whose result
+// lands after Cleanup has stopped new producers is still written, and that the
+// shutdown release writes a still-held row even though the writer is closing.
+func TestDeferredGuardrailRowWrittenDuringShutdown(t *testing.T) {
+	t.Run("result lands while closing", func(t *testing.T) {
+		plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+		_, deferred := deferredGuardrailRow(t, plugin)
+		plugin.closed.Store(true)
+		metadata, redaction := monitorGuardrailResult()
+		deferred.Complete(metadata, redaction, nil)
+		if len(plugin.writeQueue) != 1 {
+			t.Fatalf("expected the held row to be written after closing, got %d writes", len(plugin.writeQueue))
+		}
+	})
+	t.Run("release while closing", func(t *testing.T) {
+		plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+		deferredGuardrailRow(t, plugin)
+		plugin.closed.Store(true)
+		plugin.releaseHeldGuardrailRows()
+		if len(plugin.writeQueue) != 1 {
+			t.Fatalf("expected the release to write the held row after closing, got %d writes", len(plugin.writeQueue))
+		}
+	})
+}
+
+// TestDeferredGuardrailHiddenRowGetsNoRedactionData verifies the result follows
+// the row's content policy: a row whose content is hidden carries no mappings.
+func TestDeferredGuardrailHiddenRowGetsNoRedactionData(t *testing.T) {
+	disabled := true
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2), disableContentLogging: &disabled}
+	_, deferred := deferredGuardrailRow(t, plugin)
+
+	metadata, redaction := monitorGuardrailResult()
+	deferred.Complete(metadata, redaction, nil)
+	written := (<-plugin.writeQueue).log
+	if written.RedactionData != nil {
+		t.Fatalf("hidden row must not carry redaction mappings, got %+v", written.RedactionData)
+	}
+	if len(written.GuardrailDebugParsed.Detections) != 2 {
+		t.Fatalf("detections are recorded regardless of content policy, got %+v", written.GuardrailDebugParsed.Detections)
+	}
+}
+
+// TestReleaseHeldGuardrailRowsWritesRowOnce verifies shutdown writes a held row
+// as it was built and a result landing afterwards does not write it again.
+func TestReleaseHeldGuardrailRowsWritesRowOnce(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+	entry, deferred := deferredGuardrailRow(t, plugin)
+
+	plugin.releaseHeldGuardrailRows()
+	if len(plugin.writeQueue) != 1 {
+		t.Fatalf("expected the held row to be written on release, got %d writes", len(plugin.writeQueue))
+	}
+	metadata, redaction := monitorGuardrailResult()
+	deferred.Complete(metadata, redaction, nil)
+	if len(plugin.writeQueue) != 1 {
+		t.Fatalf("a result after release must not write the row again, got %d writes", len(plugin.writeQueue))
+	}
+	if written := (<-plugin.writeQueue).log; written != entry || len(written.GuardrailDebugParsed.Detections) != 1 {
+		t.Fatalf("released row must be written as built, got %+v", written.GuardrailDebugParsed)
 	}
 }

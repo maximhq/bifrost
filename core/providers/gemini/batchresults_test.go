@@ -256,6 +256,126 @@ func TestGeminiGenerateContentToBatchResultBody(t *testing.T) {
 	})
 }
 
+// TestGeminiBatchResult_ThinkingTokens verifies that thinking tokens (thoughtsTokenCount)
+// are added to completion_tokens and surfaced under completion_tokens_details.reasoning_tokens
+// in both file-based and inline batch result processing.
+func TestGeminiBatchResult_ThinkingTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		promptTokens         int32
+		candidatesTokens     int32
+		thoughtsTokens       int32
+		totalTokens          int32
+		cachedTokens         int32
+		wantPromptTokens     int
+		wantCompletionTokens int
+		wantTotalTokens      int
+		wantReasoningTokens  int
+		wantCachedTokens     int
+	}{
+		{
+			name:                 "WithThinkingTokens",
+			promptTokens:         100,
+			candidatesTokens:     50,
+			thoughtsTokens:       400,
+			totalTokens:          550,
+			wantPromptTokens:     100,
+			wantCompletionTokens: 450, // 50 candidates + 400 thoughts
+			wantTotalTokens:      550,
+			wantReasoningTokens:  400,
+		},
+		{
+			name:                 "WithThinkingTokensAndCachedTokens",
+			promptTokens:         120,
+			candidatesTokens:     60,
+			thoughtsTokens:       300,
+			totalTokens:          480,
+			cachedTokens:         40,
+			wantPromptTokens:     120,
+			wantCompletionTokens: 360, // 60 candidates + 300 thoughts
+			wantTotalTokens:      480,
+			wantReasoningTokens:  300,
+			wantCachedTokens:     40,
+		},
+		{
+			name:                 "ZeroThinkingTokensUnchanged",
+			promptTokens:         10,
+			candidatesTokens:     20,
+			thoughtsTokens:       0,
+			totalTokens:          30,
+			wantPromptTokens:     10,
+			wantCompletionTokens: 20,
+			wantTotalTokens:      30,
+			wantReasoningTokens:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resp := &GenerateContentResponse{
+				Candidates: []*Candidate{{
+					Content:      &Content{Parts: []*Part{{Text: "result"}}},
+					FinishReason: FinishReasonStop,
+				}},
+				UsageMetadata: &GenerateContentResponseUsageMetadata{
+					PromptTokenCount:        tt.promptTokens,
+					CandidatesTokenCount:    tt.candidatesTokens,
+					ThoughtsTokenCount:      tt.thoughtsTokens,
+					TotalTokenCount:         tt.totalTokens,
+					CachedContentTokenCount: tt.cachedTokens,
+				},
+			}
+
+			// Test direct body builder
+			body := geminiGenerateContentToBatchResultBody(resp)
+			usage, ok := body["usage"].(map[string]interface{})
+			require.True(t, ok)
+			assert.EqualValues(t, tt.wantPromptTokens, usage["prompt_tokens"])
+			assert.EqualValues(t, tt.wantCompletionTokens, usage["completion_tokens"])
+			assert.EqualValues(t, tt.wantTotalTokens, usage["total_tokens"])
+
+			if tt.wantReasoningTokens > 0 {
+				details, ok := usage["completion_tokens_details"].(map[string]interface{})
+				require.True(t, ok, "completion_tokens_details should be present")
+				assert.EqualValues(t, tt.wantReasoningTokens, details["reasoning_tokens"])
+			} else {
+				assert.Nil(t, usage["completion_tokens_details"])
+			}
+
+			if tt.wantCachedTokens > 0 {
+				details, ok := usage["prompt_tokens_details"].(map[string]interface{})
+				require.True(t, ok, "prompt_tokens_details should be present")
+				assert.EqualValues(t, tt.wantCachedTokens, details["cached_tokens"])
+			}
+
+			// Test inline batch response path
+			inline := GeminiInlinedResponse{
+				Metadata: &GeminiBatchMetadata{Key: "custom-key"},
+				Response: resp,
+			}
+			inlineItem := geminiInlineResponseToBatchResultItem(inline, "fallback")
+			require.NotNil(t, inlineItem.Response)
+			inlineUsage, ok := inlineItem.Response.Body["usage"].(map[string]interface{})
+			require.True(t, ok)
+			assert.EqualValues(t, tt.wantCompletionTokens, inlineUsage["completion_tokens"])
+		})
+	}
+
+	t.Run("NilUsageMetadata", func(t *testing.T) {
+		resp := &GenerateContentResponse{
+			Candidates: []*Candidate{{FinishReason: FinishReasonStop}},
+		}
+		body := geminiGenerateContentToBatchResultBody(resp)
+		assert.Nil(t, body["usage"])
+	})
+}
+
+// TestGeminiResourcePath verifies URI resource path formatting for Gemini models and batch operations.
 func TestGeminiResourcePath(t *testing.T) {
 	t.Parallel()
 

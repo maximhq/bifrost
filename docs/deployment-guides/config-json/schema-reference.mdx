@@ -21,12 +21,15 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `source_of_truth` | string | Startup reconciliation mode for DB-backed `config.json`: `"split"` or `"config.json"` | [Source of Truth](/deployment-guides/config-json/source-of-truth) |
 | `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
+| `agents` | array | Declarative A2A registrations, authentication, access grants, and permitted runtime origins | [Agents](#agents) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
 | `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams, roles and business units | [Governance](/deployment-guides/config-json/governance) |
 | `alerting` | object | Alert channels, CEL-based rules, history retention, and webhook network controls *(enterprise only)* | [Alerting](/deployment-guides/config-json/alerting) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Access Profiles](/enterprise/access-profiles) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
+| `load_balancer_config` | object | Adaptive routing settings: provider and key selection, redirects, fallback pruning, routing history *(enterprise only)* | [Adaptive Routing](/enterprise/adaptive-routing/overview#settings) |
+| `circuit_breaker_config` | object | Circuit breaker policies that move traffic from a primary provider and model to a fallback *(enterprise only)* | [Circuit Breaker](/enterprise/circuit-breaker) |
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database - SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
@@ -35,6 +38,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
 | `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
+| `warp` | object | Warp settings: models, behaviour and limits, log search, and topics | [Warp](/features/warp#configure-warp) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
 ---
@@ -108,6 +112,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
 | `mcp_external_client_url` | string \| EnvVar | - | Public base URL used as `redirect_uri` against upstream MCP OAuth providers; supports `"env.MY_VAR"` |
+| `a2a_private_allowlist` | array of strings | `[]` | Private hosts, IPs, or CIDRs permitted for Agent Gateway card, OAuth, and runtime connections; link-local and metadata addresses stay blocked |
 | `a2a_external_client_url` | string or secret reference | - | Public base URL required for Agent Gateway protocol operations; management remains available when unset |
 | `skills_external_client_url` | string or secret reference | - | Public base URL required for skills marketplace registration and serving; skill management and downloads remain available when unset |
 
@@ -115,11 +120,49 @@ Full documentation: [Client Configuration](/deployment-guides/config-json/client
 
 ---
 
+## `agents`
+
+Declare A2A registrations in the top-level `agents` array. Registrations are reconciled by name at startup; see [registration and source-of-truth behavior](/features/agent-gateway/registration#register-from-deployment-configuration).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | string | Required | Registration name used in gateway routes. |
+| `agent_card_url` | string | Required | Absolute HTTP(S) agent card URL. |
+| `enabled` | boolean | `true` | Enable the registration. |
+| `allow_by_default` | boolean | `false` | Allow identified callers without an explicit agent grant. |
+| `credential_origins` | array of strings | `[]` | Up to 32 unique additional runtime origins. Include scheme and optional port, without a path, userinfo, query, or fragment. The card origin is automatically permitted. |
+| `discovery_auth` | object | None | Authentication and TLS settings for card discovery. |
+| `runtime_auth` | object | None | Authentication and TLS settings for runtime requests. |
+| `forward_accepted_credential` | boolean | `false` | Forward the accepted caller credential to the agent. |
+| `forward_accepted_credential_overrides_auth` | boolean | `false` | Prefer the forwarded credential on a header collision. |
+| `virtual_key_ids` | array of strings | `[]` | Exact set of virtual keys granted access to this registration. |
+
+For a card at `https://cards.example.com/.well-known/agent-card.json` advertising `https://research.internal:9000`, configure both the network permission and the additional origin:
+
+```json
+{
+  "client": {
+    "a2a_private_allowlist": ["research.internal"]
+  },
+  "agents": [
+    {
+      "name": "library-research",
+      "agent_card_url": "https://cards.example.com/.well-known/agent-card.json",
+      "credential_origins": ["https://research.internal:9000"]
+    }
+  ]
+}
+```
+
+Origin approval applies even without configured runtime credentials. It does not grant private-network access. See [Additional agent endpoints](/features/agent-gateway/authentication#additional-agent-endpoints) for authentication examples and the dashboard equivalent.
+
+---
+
 ## `providers`
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -311,6 +354,22 @@ Full documentation: [Cluster](/deployment-guides/config-json/cluster).
 
 ---
 
+## `load_balancer_config`
+
+Enterprise-only. Supports `direction_selection_enabled`, `route_selection_enabled`, `append_fallbacks_to_pinned`, `reroute_failed_directions`, `reroute_target`, `prune_failed_fallbacks`, `history_enabled`, `history_retention_days`, and `snapshot_persist_interval_seconds`. Only the keys you list are applied; settings saved from the dashboard or API take precedence.
+
+Full documentation: [Adaptive Routing settings](/enterprise/adaptive-routing/overview#settings).
+
+---
+
+## `circuit_breaker_config`
+
+Enterprise-only. One sub-key: `policies` (array). A policy is inactive unless `enabled` is `true`.
+
+Full documentation: [Circuit Breaker](/enterprise/circuit-breaker).
+
+---
+
 ## `config_store`, `logs_store`, `vector_store`
 
 Storage backends. Each has `enabled` (boolean), `type` (string), and `config` (object).
@@ -386,6 +445,16 @@ Declares the catalog of MCP servers Bifrost connects to. Each entry in `client_c
 }
 ```
 
+Global fields on the `mcp` object:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `client_configs` | array | MCP servers to connect to (fields below) |
+| `tool_manager_config` | object | Tool execution timeout, agent depth, code mode binding level, and auto tool injection. See [Global Tool Manager Settings](/mcp/connecting-to-servers#global-tool-manager-settings). |
+| `virtual_mcps` | array | See [`mcp.virtual_mcps`](#mcp-virtual_mcps) |
+| `tool_sync_interval` | string \| integer | Global tool-list sync interval as a Go duration string in whole minutes (for example `"10m"`). `"0s"`/omitted uses the default of 10 minutes. |
+| `max_protocol_version` | string | Newest MCP protocol version Bifrost offers MCP servers: `"auto"` (newest supported, currently `"2026-07-28"`), `"2026-07-28"`, `"2025-11-25"`, or `"2025-06-18"`. Servers can still negotiate an older version. Omitted keeps the stored value: upgraded deployments with existing MCP servers start at `"2025-06-18"`, fresh installs and deployments without a config store at `"auto"`. See [Max Protocol Version](/mcp/connecting-to-servers#max-protocol-version). |
+
 Common fields on each `client_configs` entry:
 
 | Field | Type | Description |
@@ -403,6 +472,7 @@ Common fields on each `client_configs` entry:
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
 | `require_public_target` | boolean | Server-managed, default `false`. Set to `true` when the client was registered over the management API without an admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as `true` it is never cleared by the API or by config.json reconciliation; declaring it `true` here is honored. |
 | `tool_sync_interval` | string \| integer | Per-client tool-list sync interval as a Go duration string in whole seconds (for example `"5m"` or `"90s"`), or a legacy non-negative integer in nanoseconds that is a whole number of seconds. `"0s"`/omitted falls back to the global `mcp.tool_sync_interval`. |
+| `max_protocol_version` | string | Per-client cap on the MCP protocol version: `"auto"`, `"2026-07-28"`, `"2025-11-25"`, or `"2025-06-18"`. Omitted follows the global `mcp.max_protocol_version`. |
 | `tool_execution_timeout` | integer | Per-client tool execution timeout in seconds. `0`/omitted falls back to the global `client.mcp_tool_execution_timeout`. |
 | `allow_by_default` | boolean | When `true`, any caller can use this client without an explicit assignment, with all tools allowed. An explicit assignment for a caller takes precedence for that caller, including an empty tool list. |
 | `allow_on_all_virtual_keys` | boolean | Deprecated alias of `allow_by_default`, read only when `allow_by_default` is absent. |
@@ -514,6 +584,28 @@ The global outbound proxy from the dashboard's Proxy page. `enable_for_scim` *(e
 ```
 
 Full documentation: [Client → Global Proxy](/deployment-guides/config-json/client#global-proxy).
+
+---
+
+## `warp`
+
+The settings from the dashboard's Warp page: the models Warp runs on, its behaviour and limits, log search, and topics. It takes the same fields as `PUT /api/warp/config` and is validated the same way. Applied when new or changed under split mode, and on every startup under `source_of_truth: "config.json"`. The `warp` feature flag under `feature_flags` is set separately.
+
+```json
+{
+  "warp": {
+    "enabled": true,
+    "provider": "anthropic",
+    "model": "claude-sonnet-5-5",
+    "embedding_provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimension": 1536,
+    "topic_discovery_min_requests": 100
+  }
+}
+```
+
+Full documentation: [Warp → Configure Warp](/features/warp#configure-warp).
 
 ---
 

@@ -3,6 +3,7 @@ package sidekiq
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,6 +70,7 @@ type Runner struct {
 	handlers map[string]HandlerFunc
 	// summarizers holds the optional per-kind progress extractors, guarded by mu.
 	summarizers map[string]SummarizeFunc
+	quiet       map[string]struct{} // kinds whose completed jobs are left out of listings, guarded by mu
 	mu          sync.RWMutex
 
 	// runnerID fences job mutations to the node that claimed the job.
@@ -108,6 +110,7 @@ func New(store Store, logger schemas.Logger, maxConcurrent int, runnerID string)
 		logger:            logger,
 		handlers:          make(map[string]HandlerFunc),
 		summarizers:       make(map[string]SummarizeFunc),
+		quiet:             make(map[string]struct{}),
 		runnerID:          runnerID,
 		heartbeatInterval: HeartbeatInterval,
 		inflight:          make(map[string]struct{}),
@@ -137,6 +140,29 @@ func (r *Runner) RegisterSummarizer(kind string, fn SummarizeFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.summarizers[kind] = fn
+}
+
+// RegisterQuietOnSuccess marks a kind as routine: a job of it that completed is
+// left out of job listings, while one waiting, running, failed or cancelled is
+// still shown. For work queued on a timer, which would otherwise fill a
+// listing with runs nobody has to act on.
+func (r *Runner) RegisterQuietOnSuccess(kind string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.quiet[kind] = struct{}{}
+}
+
+// QuietOnSuccessKinds returns the kinds registered with RegisterQuietOnSuccess,
+// sorted.
+func (r *Runner) QuietOnSuccessKinds() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	kinds := make([]string, 0, len(r.quiet))
+	for kind := range r.quiet {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 // Summarize returns the progress of a job of the given kind and whether the kind has a summarizer.

@@ -271,6 +271,18 @@ func (f *HTTPClientFactory) GetFasthttpClient(purpose ClientPurpose) *fasthttp.C
 	return client
 }
 
+// IsLiveFasthttpClient reports whether client was handed out by GetFasthttpClient. Its
+// Transport forwards every request to the factory's inner client, so replacing the
+// transport or the dialer would take the request (for every holder of the shared
+// client) off the factory's proxy.
+func IsLiveFasthttpClient(client *fasthttp.Client) bool {
+	if client == nil {
+		return false
+	}
+	_, ok := client.Transport.(*liveFasthttpTransport)
+	return ok
+}
+
 // fasthttpClientKey identifies an inner fasthttp client. rawPath selects the variant
 // that sends the request path exactly as written; fasthttp applies that setting from
 // the client that sends the request, so it cannot be a per-request choice.
@@ -353,6 +365,25 @@ type DialPolicy struct {
 // it checked or an error to refuse the target.
 func NewDialPolicy(dial func(ctx context.Context, netw, addr string) (net.Conn, error), resolveTarget func(ctx context.Context, host string) ([]net.IP, error)) *DialPolicy {
 	return &DialPolicy{dial: dial, resolveTarget: resolveTarget}
+}
+
+// DialContext connects under the policy, tunneling to a validated IP when a
+// proxy is configured. The proxy never resolves the destination itself.
+func (p *DialPolicy) DialContext(ctx context.Context, netw, addr string, proxyURL *url.URL) (net.Conn, error) {
+	if proxyURL == nil {
+		return p.dial(ctx, netw, addr)
+	}
+	if factory := defaultFactory.Load(); factory != nil {
+		factory.mu.RLock()
+		configuredURL := factory.proxyURLForPurpose(ClientPurposeAPI)
+		if configuredURL != nil && configuredURL.String() == proxyURL.String() {
+			config := *factory.proxyConfig
+			factory.mu.RUnlock()
+			return policyProxyDial(p, proxyURL, &config, config.proxyTLS())(ctx, netw, addr)
+		}
+		factory.mu.RUnlock()
+	}
+	return policyProxyDial(p, proxyURL, &GlobalProxyConfig{}, nil)(ctx, netw, addr)
 }
 
 // SSRFPolicy is the standard policy for user-controlled URLs: public targets only,

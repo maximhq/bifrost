@@ -8,6 +8,7 @@ import {
 	MCPTopToolsResponse,
 	Pagination,
 } from "@/lib/types/logs";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
 // Helper function to build MCP filter params
@@ -47,6 +48,8 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;

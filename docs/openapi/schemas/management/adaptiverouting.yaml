@@ -1,0 +1,56 @@
+# Schemas for Adaptive Routing management (Enterprise).
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+AdaptiveRoutingConfig:
+  type: object
+  description: |
+    The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the
+    body is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must
+    be sent. Unknown fields are ignored.
+  required:
+    - history_retention_days
+    - snapshot_persist_interval_seconds
+  properties:
+    direction_selection_enabled:
+      type: boolean
+      description: Adaptive provider selection. Reads `true` on a fresh install.
+    route_selection_enabled:
+      type: boolean
+      description: Adaptive key selection. Reads `true` on a fresh install.
+    append_fallbacks_to_pinned:
+      type: boolean
+      description: Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install.
+    reroute_failed_directions:
+      type: boolean
+      description: Redirect requests that name a failing provider. Reads `false` on a fresh install.
+    reroute_target:
+      type: string
+      enum:
+        - pool
+        - fallbacks
+      default: pool
+      description: |
+        Where a redirected request goes. `pool` picks among the eligible providers adaptive routing
+        scores; `fallbacks` takes the request's first configured fallback that is not failing.
+        An omitted or empty value is stored as `pool`. Any other value is rejected with `400`.
+    prune_failed_fallbacks:
+      type: boolean
+      description: Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install.
+    history_enabled:
+      type: boolean
+      description: Record routing history. Reads `true` on a fresh install.
+    history_retention_days:
+      type: integer
+      minimum: 1
+      maximum: 30
+      default: 7
+      description: Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`.
+    snapshot_persist_interval_seconds:
+      type: integer
+      minimum: 5
+      maximum: 86400
+      default: 300
+      description: How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -61,24 +62,22 @@ const (
 //   - Duration string: "500ms", "5s", "1m" — parsed via time.ParseDuration (preferred)
 //   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
-	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama).
-	// Accepts a plain URL or a SecretVar reference ("env.VAR" / "vault.path"), like CACertPEM and
-	// ProxyConfig.URL; read the dialable URL with BaseURL.GetValue().
-	BaseURL                        *SecretVar        `json:"base_url,omitempty"`                       // Base URL for the provider (optional, supports env.*)
-	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional)
-	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
-	MaxRetries                     int               `json:"max_retries"`                              // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
-	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
-	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
-	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
-	KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`  // Idle keep-alive for pooled connections; set below the upstream server's keep-alive to avoid reusing connections it has already closed. Default: 30s
-	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
-	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
-	HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
-	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
-	AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
+	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
+	BaseURL                        *SecretVar           `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]SecretVar `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional; values support env.* and vault.* references)
+	DefaultRequestTimeoutInSeconds int                  `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
+	MaxRetries                     int                  `json:"max_retries"`                              // Maximum number of retries
+	RetryBackoffInitial            time.Duration        `json:"retry_backoff_initial"`                    // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
+	RetryBackoffMax                time.Duration        `json:"retry_backoff_max"`                        // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	InsecureSkipVerify             bool                 `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
+	CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
+	StreamIdleTimeoutInSeconds     int                  `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
+	KeepAliveTimeoutInSeconds      int                  `json:"keep_alive_timeout_in_seconds,omitempty"`  // Idle keep-alive for pooled connections; set below the upstream server's keep-alive to avoid reusing connections it has already closed. Default: 30s
+	MaxConnsPerHost                int                  `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
+	EnforceHTTP2                   bool                 `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
+	HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
+	BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
+	AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig. base_url accepts
@@ -92,21 +91,21 @@ type NetworkConfig struct {
 func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
-		BaseURL                        *SecretVar        `json:"base_url,omitempty"`
-		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
-		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
-		MaxRetries                     int               `json:"max_retries"`
-		RetryBackoffInitial            json.RawMessage   `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
-		RetryBackoffMax                json.RawMessage   `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
-		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
-		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
-		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
-		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
-		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
-		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
-		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
-		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
-		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
+		BaseURL                        *SecretVar           `json:"base_url,omitempty"`
+		ExtraHeaders                   map[string]SecretVar `json:"extra_headers,omitempty"`
+		DefaultRequestTimeoutInSeconds int                  `json:"default_request_timeout_in_seconds"`
+		MaxRetries                     int                  `json:"max_retries"`
+		RetryBackoffInitial            json.RawMessage      `json:"retry_backoff_initial"` // string ("500ms") or int (milliseconds)
+		RetryBackoffMax                json.RawMessage      `json:"retry_backoff_max"`     // string ("5s") or int (milliseconds)
+		InsecureSkipVerify             bool                 `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      *SecretVar           `json:"ca_cert_pem,omitempty"`
+		StreamIdleTimeoutInSeconds     int                  `json:"stream_idle_timeout_in_seconds,omitempty"`
+		KeepAliveTimeoutInSeconds      int                  `json:"keep_alive_timeout_in_seconds,omitempty"`
+		MaxConnsPerHost                int                  `json:"max_conns_per_host,omitempty"`
+		EnforceHTTP2                   bool                 `json:"enforce_http2,omitempty"`
+		HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"`
+		BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`
+		AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -196,6 +195,21 @@ func parseNetworkBackoffDuration(data json.RawMessage, fieldName string) (time.D
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
+// extraHeadersAsStrings serializes header values the way CACertPEM is: an env.* or
+// vault.* reference stays a reference and a literal stays literal. This keeps the
+// stored and API shape a plain string map, so existing config.json files and DB rows
+// load unchanged and a resolved secret never leaves the process.
+func extraHeadersAsStrings(headers map[string]SecretVar) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[name] = SecretVarAsString(&value)
+	}
+	return out
+}
+
 // MarshalJSON customizes JSON marshaling for NetworkConfig. base_url and ca_cert_pem
 // are emitted in their SecretVar wire form (the "env.VAR"/"vault.path" reference when
 // configured as one, never the resolved value). RetryBackoffInitial and RetryBackoffMax
@@ -222,7 +236,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 
 	alias := NetworkConfigAlias{
 		BaseURL:                        SecretVarAsString(nc.BaseURL),
-		ExtraHeaders:                   nc.ExtraHeaders,
+		ExtraHeaders:                   extraHeadersAsStrings(nc.ExtraHeaders),
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,
 		// Convert time.Duration (nanoseconds) to milliseconds
@@ -249,6 +263,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 // masked too, so the copy exposes only the reference. A literal base_url is left
 // readable, since it is not a secret and the UI displays it. Both SecretVars are
 // cloned so the copy never shares pointers with the original.
+// ExtraHeaders values are fully masked, preserving secret references.
 func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc == nil {
 		return nil
@@ -264,7 +279,44 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 			redacted.BaseURL = nc.BaseURL.Clone()
 		}
 	}
+	if nc.ExtraHeaders != nil {
+		redacted.ExtraHeaders = make(map[string]SecretVar, len(nc.ExtraHeaders))
+		for name, value := range nc.ExtraHeaders {
+			redacted.ExtraHeaders[name] = *value.FullyRedacted()
+		}
+	}
 	return &redacted
+}
+
+// RestoreRedactedExtraHeaders returns incoming with every masked literal value replaced by
+// the stored value of the same header name, so saving a form that echoed the redacted
+// config keeps the real secrets. Edited values and env/vault references are kept as sent.
+// A masked value with no stored header of that name (a new or renamed header) is an
+// error, since saving it would send the mask upstream as the header value.
+func RestoreRedactedExtraHeaders(incoming, stored map[string]SecretVar) (map[string]SecretVar, error) {
+	if incoming == nil {
+		return nil, nil
+	}
+	restored := make(map[string]SecretVar, len(incoming))
+	var unrestorable []string
+	for name, value := range incoming {
+		// Only the exact FullyRedacted placeholder counts; a literal like "*" is a real value.
+		if !value.IsFromSecret() && strings.EqualFold(value.GetValue(), "<REDACTED>") {
+			storedValue, ok := stored[name]
+			if !ok {
+				unrestorable = append(unrestorable, name)
+				continue
+			}
+			restored[name] = storedValue
+			continue
+		}
+		restored[name] = value
+	}
+	if len(unrestorable) > 0 {
+		slices.Sort(unrestorable)
+		return nil, fmt.Errorf("masked value for extra header %s cannot be restored because no stored header has that name; re-enter the value", strings.Join(unrestorable, ", "))
+	}
+	return restored, nil
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
@@ -627,6 +679,7 @@ type ProviderConfig struct {
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
 	InjectedTools           []InjectedTool        `json:"injected_tools,omitempty"`
+	Passthrough             *PassthroughPolicy    `json:"passthrough,omitempty"` // Routes the HTTP passthrough endpoints may forward; nil forwards every route
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
@@ -691,9 +744,9 @@ type InjectedTool struct {
 // InjectedToolNameWebSearch is the injected tool name that replaces native web search.
 const InjectedToolNameWebSearch = "web_search"
 
-// OpenAIConfig holds OpenAI-specific provider configuration.
+// OpenAIConfig holds OpenAI Responses API configuration, honoured by the OpenAI and Fireworks providers.
 type OpenAIConfig struct {
-	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+	DisableStore bool `json:"disable_store"` // When true, forces store=false on outgoing OpenAI and Fireworks Responses requests (default: false)
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
@@ -743,7 +796,7 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	// Create a defensive copy of ExtraHeaders to prevent data races
 	if config.NetworkConfig.ExtraHeaders != nil {
-		headersCopy := make(map[string]string, len(config.NetworkConfig.ExtraHeaders))
+		headersCopy := make(map[string]SecretVar, len(config.NetworkConfig.ExtraHeaders))
 		maps.Copy(headersCopy, config.NetworkConfig.ExtraHeaders)
 		config.NetworkConfig.ExtraHeaders = headersCopy
 	}

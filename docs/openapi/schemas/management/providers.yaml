@@ -16,7 +16,13 @@ NetworkConfig:
       type: object
       additionalProperties:
         type: string
-      description: Additional headers to include in requests
+      description: Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400.
+    extra_headers_secret_vars:
+      type: object
+      readOnly: true
+      additionalProperties:
+        $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Response only. The same headers as `extra_headers`, as SecretVar objects (`value`, `ref`, `type`) so clients can tell literals from `env`/`vault` references without parsing prefixes. Literal values are `<REDACTED>`. Ignored on input; send `extra_headers` to change headers.
     default_request_timeout_in_seconds:
       type: integer
       description: Default timeout for requests
@@ -61,13 +67,13 @@ ProxyConfig:
       type: string
       enum: [none, http, socks5, environment]
     url:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     username:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     password:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     ca_cert_pem:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
 
 AzureKeyConfig:
   type: object
@@ -88,6 +94,14 @@ AzureKeyConfig:
       items:
         type: string
       description: List of scopes to use for authentication
+    use_speech_endpoints:
+      type: boolean
+      default: false
+      description: Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI. An alias can override it with its own use_speech_endpoints.
+    use_voice_live_endpoints:
+      type: boolean
+      default: false
+      description: Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it. An alias can override it with its own use_voice_live_endpoints.
 
 VertexKeyConfig:
   type: object
@@ -105,6 +119,10 @@ VertexKeyConfig:
       type: boolean
       default: false
       description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    use_session_routing:
+      type: boolean
+      default: false
+      description: Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.
     aws_workload_identity:
       type: object
       description: >-
@@ -175,6 +193,35 @@ BedrockKeyConfig:
                 type: string
               is_default:
                 type: boolean
+
+SageMakerKeyConfig:
+  type: object
+  description: AWS SageMaker real-time endpoint key configuration. A pre-minted token in Key.value takes precedence and is sent as is; otherwise Bifrost mints the SageMaker bearer token from these AWS credentials (leave access_key and secret_key empty to use the default AWS credential chain). Passthrough signs requests with AWS credentials and rejects keys that set Key.value.
+  properties:
+    access_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    secret_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_token:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    region:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    role_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    external_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_name:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    endpoints:
+      type: object
+      description: Runtime host override (VPC endpoint, FIPS or dual-stack host)
+      properties:
+        runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+      additionalProperties: false
+  required:
+    - region
+  additionalProperties: false
 
 VllmKeyConfig:
   type: object
@@ -345,7 +392,8 @@ Key:
       description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
-      description: Weight for load balancing
+      minimum: 0
+      description: Weight for load balancing. A negative weight is rejected with 400. A key with weight 0 is picked only when no other eligible key has a positive weight; when every weight is 0, keys are picked uniformly.
     aliases:
       type: object
       propertyNames:
@@ -360,6 +408,8 @@ Key:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
+    sagemaker_key_config:
+      $ref: '#/SageMakerKeyConfig'
     vllm_key_config:
       $ref: '#/VllmKeyConfig'
     ollama_key_config:
@@ -412,7 +462,7 @@ AllowedRequests:
       type: boolean
     decisions:
       type: boolean
-      description: Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API
+      description: Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation
     speech:
       type: boolean
     speech_stream:

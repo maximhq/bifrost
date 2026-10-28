@@ -6,6 +6,8 @@ icon: "plus"
 
 You need a running A2A agent and its agent card URL. Bifrost must be able to reach both the card and the endpoints advertised in it.
 
+For private-network agents, first add the required destinations in [Agent Settings → Private Network Allowlist](./configuration#permit-private-agent-destinations). If the card and runtime use different origins, configure [Additional agent endpoints](./authentication#additional-agent-endpoints) in the registration too.
+
 Before calling agents through Bifrost, set **Agents → Agent Settings → External Client URL** as described in [Gateway settings and transports](./configuration#set-the-public-base-url). You can register and manage agents while this setting is empty, but their gateway protocol endpoints remain disabled.
 
 We used our `library-research` agent, which answers questions about software libraries, for these screenshots. Follow the steps with your own A2A agent and replace the example name, domain, and credentials with yours.
@@ -51,6 +53,8 @@ The card's requirements select the request authentication fields. Fill in the cr
 
 The [authentication guide](./authentication) explains auto-selection, overrides, and what happens when two credentials use the same header.
 
+Under **Additional agent endpoints**, select **Allow** for trusted addresses discovered in the card, or **Add endpoint** to enter another runtime origin. The card's own origin is permitted automatically. Include the scheme and port, such as `https://research.internal:9000`. Private destinations also need permission in **Agent Settings → Private Network Allowlist**.
+
 <Frame>
   <img
     src="/media/agent-gateway/ui-registration-auth.png"
@@ -62,7 +66,7 @@ The [authentication guide](./authentication) explains auto-selection, overrides,
 <Step title="Grant access and create">
 Select the virtual keys allowed to call the agent. Leave **Allow any virtual key** off for a restricted agent, or turn it on to allow identified callers without an explicit agent grant.
 
-Expand **Advanced** if you need to allow extension URIs for your A2A integration. Leave them empty for a basic registration. See [Advanced registration options](#advanced-registration-options) for their behavior.
+Bifrost discovers supported A2A extensions from the agent card. No manual extension list is required. See [A2A extensions](#a2a-extensions) for negotiation behavior.
 
 Select **Create**, then reopen the registration to copy its gateway endpoints. Point your client at the Bifrost agent card, rather than the original server card, so discovery returns the gateway routes.
 
@@ -154,7 +158,7 @@ Declarations reconcile by registration name at startup. Under the default `split
 <Accordion title="Manage registrations through the API">
 The [API reference](/api-reference/agent-gateway/register-agent) documents registration and card inspection endpoints. Management requests use dashboard or API authentication; that is separate from the credential used to call an agent.
 
-`PUT /api/agents/{name}` replaces the registration. Include the settings and collections you intend to keep. Omitting authentication, extension URIs, or virtual-key IDs can remove them. The registration name stays fixed; use a new registration if you need a different route name.
+`PUT /api/agents/{name}` replaces the registration. Include the settings and collections you intend to keep. Omitting authentication or virtual-key IDs can remove them. The registration name stays fixed; use a new registration if you need a different route name.
 </Accordion>
 
 ## Make your first request
@@ -189,14 +193,10 @@ curl http://localhost:8080/agents/a2a/library-research/json-rpc \
 
 The agent may return a message or a task. See [Messages, tasks, and events](./messages-and-tasks) to continue the conversation or follow a task's progress.
 
-## Advanced registration options
+## A2A extensions
 
-<AccordionGroup>
-<Accordion title="Extension URIs">
-A2A extensions describe extra protocol behavior identified by a URI. Allow the extensions your integration needs and the agent supports in `agents[].extension_uris`. Your client must still request the extension through A2A negotiation. Adding an arbitrary URI does not implement it.
+Bifrost reads extension declarations from the upstream agent card and advertises those it can safely relay. Your client must still request extensions through A2A negotiation. Required extensions must be requested before an operation can proceed; requests for undeclared extensions are rejected before reaching the agent.
 
-If the card declares a required extension you have not allowed, registration or discovery can fail. A request for an unsupported extension is rejected before its protocol operation reaches the agent. Registration accepts at most 32 extension URIs, with each URI at most 2048 bytes; negotiated extension payloads are limited to 64 KiB.
-</Accordion>
-</AccordionGroup>
+The card may declare at most 32 extensions, with absolute URIs no longer than 2048 bytes. Negotiated extension payloads are limited to 64 KiB. Invalid required declarations fail discovery; optional declarations that cannot be safely relayed are omitted.
 
 Next, review [Authentication](./authentication) for card fetching, agent credentials, and caller forwarding. Then configure [Agent access](./access-control) for your callers.

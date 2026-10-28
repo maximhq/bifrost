@@ -26,13 +26,15 @@ import {
 // Tones come from the chart color system in globals.css: the semantic palette
 // for status and the teal token ramp for the split bar, so the strip matches
 // the dashboard charts in both themes.
-const positive = "text-chart-success-ink";
-const negative = "text-chart-error-ink";
-const warning = "text-chart-warning-ink";
+// They are exported so the relay strip (relay-logs/views/relayMetricStrip.tsx)
+// draws its tiles in the same palette rather than keeping a copy of it.
+export const positive = "text-chart-success-ink";
+export const negative = "text-chart-error-ink";
+export const warning = "text-chart-warning-ink";
 // The neutrals come from the theme tokens rather than the mock's own greys: the
 // strip sits inside a `bg-card` panel, and a hard-coded warm near-black surface
 // read as a foreign block against the app's cooler card colour in dark mode.
-const muted = "text-muted-foreground";
+export const muted = "text-muted-foreground";
 const track = "bg-muted";
 const fill = "bg-chart-success";
 const tokensIn = "bg-chart-token-input";
@@ -40,7 +42,7 @@ const tokensOut = "bg-chart-token-output";
 
 // The palette stays here rather than in metricStrip.utils so the formatters hold
 // no Tailwind classes and can be tested on their own.
-const toneClass: Record<ChangeTone, string> = { positive, negative, muted };
+export const toneClass: Record<ChangeTone, string> = { positive, negative, muted };
 
 // The sparkline is decorative shape, not a readable chart: it answers "which way
 // is this going" beside a number that already gives the magnitude. Fixed 56x16 to
@@ -105,7 +107,7 @@ interface SparkDotProps {
  * clipped by the strip's rounded overflow-hidden surface - the app's Radix
  * tooltip portals out of the card instead.
  */
-function Sparkline({ points, className, bucketSizeSeconds, rows }: SparklineProps) {
+export function Sparkline({ points, className, bucketSizeSeconds, rows }: SparklineProps) {
 	const [active, setActive] = useState<number | null>(null);
 
 	// A flat series has no range to scale against. Widening the domain by one
@@ -161,12 +163,12 @@ function Sparkline({ points, className, bucketSizeSeconds, rows }: SparklineProp
 }
 
 /** Marks a value the sparkline averaged, so it is not read as an exact total. */
-function averaged(point: SparkPoint, text: string): string {
+export function averaged(point: SparkPoint, text: string): string {
 	return point.buckets > 1 ? `avg ${text}` : text;
 }
 
 /** A single-value meter, used for the two success rates. */
-function RatioBar({ percent, tooltip }: { percent: number; tooltip: React.ReactNode }) {
+export function RatioBar({ percent, tooltip }: { percent: number; tooltip: React.ReactNode }) {
 	return (
 		<ShapeTooltip content={tooltip}>
 			<div className={cn("h-[5px] w-14 overflow-hidden rounded-[3px]", track)}>
@@ -200,7 +202,7 @@ function StackedBar({ first, second, tooltip }: { first: number; second: number;
  * the total are what the segment already shows, so the breakdown can never
  * contradict the number above it the way a separately queried count could.
  */
-function splitByRate(total: number, rate: number): { passed: number; failed: number } {
+export function splitByRate(total: number, rate: number): { passed: number; failed: number } {
 	const passed = Math.round((total * rate) / 100);
 	return { passed, failed: Math.max(0, total - passed) };
 }
@@ -211,7 +213,7 @@ function splitByRate(total: number, rate: number): { passed: number; failed: num
 const FOOTER_NUMBER_FORMAT = { ...COMPACT_NUMBER_FORMAT, maximumFractionDigits: 1 } as const;
 
 /** Exact figures for the readouts, where the strip itself shows compact ones. */
-const formatCount = (n: number) => Math.round(n).toLocaleString();
+export const formatCount = (n: number) => Math.round(n).toLocaleString();
 
 interface MetricStripProps {
 	stats?: LogStatsResponse;

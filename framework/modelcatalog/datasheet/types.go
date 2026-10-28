@@ -237,6 +237,10 @@ type Options struct {
 	OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
 
+	// Per-token video output rate, for providers that meter video in tokens (BytePlus Seedance).
+	// Takes precedence over OutputCostPerToken for video output tokens.
+	OutputCostPerVideoToken *float64 `json:"output_cost_per_video_token,omitempty"`
+
 	// Costs - Other.
 	//
 	// SearchContextCostPerQuery is stored as a single float64, but the upstream datasheet
@@ -470,6 +474,8 @@ func normalizeProvider(p string) string {
 		return string(schemas.Runway)
 	case strings.Contains(p, "fireworks_ai"):
 		return string(schemas.Fireworks)
+	case strings.Contains(p, "github_copilot"):
+		return string(schemas.GithubCopilot)
 	default:
 		return p
 	}
@@ -603,6 +609,24 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 		if !slices.Contains(supported, name) {
 			supported = append(supported, name)
 		}
+	}
+
+	// A row with no model_parameters list (93 Bedrock rows in the 2026-10-20
+	// datasheet, e.g. apac.anthropic.claude-sonnet-4-6) declares no parameter
+	// surface at all, so the loop below contributes nothing and the allowlist
+	// shrinks to the capability flags. compat's should_drop_params then strips
+	// max_tokens/temperature/top_p and the provider silently substitutes its
+	// own defaults (bedrock fills MaxTokens from the model default). An
+	// undisclosed parameter list means "unknown", not "unsupported": keep the
+	// universally-supported sampling and token-limit params in the allowlist.
+	// An explicit empty list ([]) is a declared empty surface and gets no defaults.
+	if parsed.ModelParameters == nil {
+		addParam("temperature")
+		addParam("top_p")
+		addParam("stop")
+		addParam("max_tokens")
+		addParam("max_completion_tokens")
+		addParam("max_output_tokens")
 	}
 
 	for _, mp := range parsed.ModelParameters {
@@ -859,6 +883,7 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond1024p: entry.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: entry.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          entry.OutputCostPerVideoToken,
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
@@ -995,6 +1020,7 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond1024p: pricing.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: pricing.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          pricing.OutputCostPerVideoToken,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,

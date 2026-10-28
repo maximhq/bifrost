@@ -166,3 +166,42 @@ func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 		})
 	}
 }
+
+// Media in a Responses tool output reaches Cohere as a placeholder, as on the Chat path.
+func TestToCohereResponsesRequest_ToolOutputNamesMedia(t *testing.T) {
+	req, err := cohere.ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+		Provider: schemas.Cohere,
+		Model:    "command-a-03-2025",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("c1"), Name: schemas.Ptr("chart"), Arguments: schemas.Ptr(`{}`)},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("c1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("chart below")},
+						{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")}},
+						{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("JVBERi0xLjQK"), FileType: schemas.Ptr("application/pdf"), Filename: schemas.Ptr("report.pdf")}},
+					}},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	var toolMsg *cohere.CohereMessage
+	for i := range req.Messages {
+		if req.Messages[i].Role == "tool" {
+			toolMsg = &req.Messages[i]
+		}
+	}
+	require.NotNil(t, toolMsg, "no tool message")
+	wire, err := schemas.MarshalSorted(toolMsg)
+	require.NoError(t, err)
+	for _, want := range []string{"chart below", "[image/png", "[application/pdf report.pdf"} {
+		require.Contains(t, string(wire), want)
+	}
+	require.NotContains(t, string(wire), "image_url", "no image part may reach a Cohere tool message")
+}

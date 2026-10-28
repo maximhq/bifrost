@@ -225,17 +225,18 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if err := providerUtils.CheckOperationAllowed(schemas.Typesafe, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
 		return nil, err
 	}
-	var authHeaders map[string]string
+	headers := make(map[string]string, 2)
 	if key.Value.GetValue() != "" {
-		authHeaders = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+		headers["Authorization"] = "Bearer " + key.Value.GetValue()
 	}
+	SetImagesHeader(headers, request, provider.networkConfig.BetaHeaderOverrides)
 	return HandleTypesafeDecisionRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest),
 		request,
 		ToTypesafeDecisionRequest,
-		authHeaders,
+		headers,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		parseTypesafeError,

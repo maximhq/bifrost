@@ -202,6 +202,17 @@ const server = http.createServer((req, res) => {
 				if (truncated) socket.end(); // Graceful EOF without a Connection: close header.
 			});
 		}
+		if (model === "upstream-extra-content") {
+			const chunk = (choice) => ({ id: "chatcmpl-extra-content", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, ...choice }] });
+			const payload = [
+				chunk({ delta: { role: "assistant", content: "hello" } }),
+				chunk({ delta: { extra_content: { spans: [[0, 5, [1, 2, 3, 4]]] } } }),
+				chunk({ delta: {}, finish_reason: "stop" }),
+				chunk({ delta: { extra_content: { spans: [[0, 5]] } } }),
+			].map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(payload);
+		}
 		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
 		// "toString" must be an unknown model, not an inherited function.
 		const name = model.split("~")[0];

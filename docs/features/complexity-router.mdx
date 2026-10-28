@@ -74,10 +74,10 @@ Any decision model Bifrost serves natively can classify. In the UI, pick a provi
 | OpenRouter decision models | `openrouter` | A model OpenRouter serves for decisions, such as `~typesafe/jev-latest` |
 | OpenAI decision models | `openai`, or a custom provider with `base_provider_type: openai` | `gpt-6-luna` |
 | Clef | [`cloudflare`](/providers/supported-providers/cloudflare#4-decisions) | `@cf/cloudflare/clef-flash` (UI default), `@cf/cloudflare/clef`, or `@cf/cloudflare/clef-omni` |
-| Perplexity deciders | [`perplexity`](/providers/supported-providers/perplexity#3-decisions) | `pplx-decider-v1.1-27b` (UI default) or `pplx-decider-v1-27b` |
+| Perplexity deciders | [`perplexity`](/providers/supported-providers/perplexity#3-decisions) | `pplx-decider-latest` (UI default), `pplx-decider-flash-latest`, or a versioned name such as `pplx-decider-v1.2` |
 | Ollama System One models | [`ollama`](/providers/supported-providers/ollama#6-decisions) | A pulled `nimble`, `tev1`, `clef`, `clef-flash`, or `laya` model, such as `tev1:0.8b` |
 | Microsoft-Decision-1 | [`azure`](/providers/supported-providers/azure#10-decisions) | `Microsoft-Decision-1` (UI default), aliased to your deployment |
-| Databricks ai_decide | [`databricks`](/providers/supported-providers/databricks#decisions) | `ai_decide` (the only one, shown fixed in the UI) |
+| Databricks decision models | [`databricks`](/providers/supported-providers/databricks#decisions) | `ai_decide` (UI default) or a System One model, such as `system.ai.openjev-qwen35-4b` |
 | Laya | Your [custom provider](/providers/self-hosted-decision-models#laya) | `english`, `multilingual`, or `typed-decisions` |
 | Nimble | Your [custom provider](/providers/self-hosted-decision-models#nimble) | `nimble-latest` |
 
@@ -320,7 +320,7 @@ Navigate to **Models > Complexity Router**. On **Classifier**, choose **Decision
 - **Restore defaults** (footer) resets all three tiers.
 - **Edit model configuration** (header) opens **Model configuration**:
   - **Provider** lists only providers that serve decision models.
-  - **Model** lists only that provider's decision models, starting on its default (`jev-latest`, `gpt-6-luna`, `~typesafe/jev-latest`, `@cf/cloudflare/clef-flash`, `pplx-decider-v1.1-27b`, or `Microsoft-Decision-1`; Ollama starts empty, and Databricks shows `ai_decide` fixed). A Laya or Nimble provider offers its listed models, or the known checkpoints if it lists none.
+  - **Model** lists only that provider's decision models, starting on its default (`jev-latest`, `gpt-6-luna`, `~typesafe/jev-latest`, `@cf/cloudflare/clef-flash`, `pplx-decider-latest`, `Microsoft-Decision-1`, or `ai_decide`; Ollama starts empty). A Laya or Nimble provider offers its listed models, or the known checkpoints if it lists none.
   - **Max messages to send** (`previous_message_count`) and **Classification timeout (ms)**.
   - If the provider is missing, failing, or has no enabled key, a warning links to the fix and **Save** stays disabled.
 

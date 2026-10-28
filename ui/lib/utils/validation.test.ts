@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { BaseProviderNames } from "../types/config";
 import {
 	getPasswordPolicyFailures,
-	hasCopilotApiToken,
-	isRedacted,
-	isRequestTypeDisabled,
 	isSecretReference,
 	isValidBaseURL,
+	isRedacted,
+	isRequestTypeDisabled,
 	isValidVertexAuthCredentials,
 } from "./validation";
 
@@ -34,27 +33,6 @@ describe("getPasswordPolicyFailures", () => {
 
 	it("accepts a strong newly entered password", () => {
 		expect(getPasswordPolicyFailures("StrongPassword1!", false)).toEqual([]);
-	});
-});
-describe("hasCopilotApiToken", () => {
-	// key.value is read as a bare string in some places in the provider form and as a
-	// SecretVar object in others, so a helper that only understands one shape reports "no
-	// token" for a key that has one, and the App-credential labels then contradict the
-	// section note telling the operator they can leave those fields blank.
-	it("recognises a bare string token", () => {
-		expect(hasCopilotApiToken("tid=abc")).toBe(true);
-	});
-
-	it("recognises a SecretVar literal token", () => {
-		expect(hasCopilotApiToken({ value: "tid=abc", ref: "" })).toBe(true);
-	});
-
-	it("recognises a SecretVar reference token", () => {
-		expect(hasCopilotApiToken({ value: "", ref: "COPILOT_TOKEN", type: "env" })).toBe(true);
-	});
-
-	it.each([undefined, null, "", "   ", { value: "", ref: "" }, { value: "  ", ref: "  " }, {}])("treats %p as no token", (input) => {
-		expect(hasCopilotApiToken(input as never)).toBe(false);
 	});
 });
 describe("isValidVertexAuthCredentials", () => {
@@ -122,8 +100,16 @@ describe("isRequestTypeDisabled", () => {
 	it("allows everything when no base format is picked", () => {
 		expect(isRequestTypeDisabled(undefined, "decisions")).toBe(false);
 	});
-});
 
+	it("offers passthrough only on bases whose passthrough route a custom provider can use", () => {
+		for (const base of ["openai", "anthropic", "gemini"] as const) {
+			expect(isRequestTypeDisabled(base, "passthrough")).toBe(false);
+			expect(isRequestTypeDisabled(base, "passthrough_stream")).toBe(false);
+		}
+		expect(isRequestTypeDisabled("cohere", "passthrough")).toBe(true);
+		expect(isRequestTypeDisabled("bedrock", "passthrough_stream")).toBe(true);
+	});
+});
 describe("isSecretReference", () => {
 	it.each(["env.UPSTREAM_URL", "vault.bifrost/upstream/url"])("accepts %s", (value) => {
 		expect(isSecretReference(value)).toBe(true);

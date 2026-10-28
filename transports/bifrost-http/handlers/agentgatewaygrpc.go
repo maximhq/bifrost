@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"google.golang.org/grpc"
@@ -191,8 +192,29 @@ func (s *AgentGatewayGRPCServer) startTrace(ctx context.Context, fullMethod stri
 	if tracer == nil {
 		return ctx, noop
 	}
-	requestID := uuid.New().String()
-	traceID := tracer.CreateTrace("", requestID)
+	md, _ := metadata.FromIncomingContext(ctx)
+	requestID := firstGRPCMetadataValue(md, "x-request-id")
+	if requestID == "" {
+		requestID = uuid.New().String()
+	}
+	inheritedTraceID := ""
+	if parent := tracing.ParseTraceparent(firstGRPCMetadataValue(md, "traceparent")); parent != nil {
+		inheritedTraceID = parent.TraceID
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyParentSpanID, parent.ParentID)
+	}
+	traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+	if inheritedTraceID != "" {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyExportTraceID, inheritedTraceID)
+	}
+	headers := make(map[string]string, len(md))
+	for key, values := range md {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		}
+	}
+	if sessionID := lib.ResolveSessionIDFromHeaders(headers); sessionID != "" {
+		tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
+	}
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyTraceID, traceID)
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, requestID)
 	spanCtx, rootSpan := tracer.StartSpan(ctx, fullMethod, schemas.SpanKindHTTPRequest)

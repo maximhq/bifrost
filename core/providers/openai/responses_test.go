@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -963,17 +964,18 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 					}
 				}
 
-				// Verify that original message fields are preserved.
-				// Note: Status is stripped by the sanitizer for all item types,
-				// including message types, since OpenAI rejects status on input.
+				// Verify that original message fields are preserved. An assistant message
+				// that keeps its id is a ResponseOutputMessageParam, so its status is
+				// required and kept alongside the id (#8593).
 				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
 					t.Errorf("Expected ID to be preserved")
 				}
 				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
 					t.Errorf("Expected Type to be preserved")
 				}
-				if resultMsg.Status != nil {
-					t.Errorf("Expected Status to be stripped (OpenAI rejects status on input)")
+				if tt.message.ID != nil && tt.message.Status != nil &&
+					(resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
+					t.Errorf("Expected Status to be preserved with the ID on an assistant output message")
 				}
 			} else {
 				// For other cases, verify message is preserved as-is
@@ -2778,6 +2780,32 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// An assistant message with an id is a ResponseOutputMessageParam, where id and
+			// status are both required. Keeping the id while dropping the status leaves an
+			// item that matches neither input shape, which strict validators reject (#8593).
+			name: "status kept on assistant output message with id",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_replayed"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hello")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"msg_replayed"` {
+					t.Errorf("id: got %s, want \"msg_replayed\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\" (id without status is not a valid input item)", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "status stripped from reasoning",
 			input: schemas.ResponsesMessage{
 				Type:   &reasoningType,
@@ -2886,6 +2914,80 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 				}
 				if _, ok := item["status"]; ok {
 					t.Error("status present in wire request for web_search_call")
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A web_search_call with a native OpenAI "ws_" id and a valid status is replayed
+			// as is: OpenAI rejects it without status ("Missing required parameter:
+			// input[N].status") and Codex-style backends without id (#8382).
+			name: "native web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// OpenAI defines "incomplete" for an interrupted web search, and requires
+			// status on a replayed web_search_call just like the other values.
+			name: "native incomplete web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("incomplete"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"incomplete"` {
+					t.Errorf("status: got %s, want \"incomplete\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// Gemini synthesizes "ws_<n>" for an ID-less search call and marks it completed.
+			// OpenAI does not know that id and answers 400 "Item with id ... not found".
+			name: "gemini synthetic ws_<n> web_search_call stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_0"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A "ws_" id with a status OpenAI does not define is not a native item.
+			name: "web_search_call with ws_ id and foreign status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("pending"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
 				}
 			},
 			origMutable: true,
@@ -3090,13 +3192,18 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Store original pointers to verify immutability
-			origStatus := tc.input.Status
-			origID := tc.input.ID
-
 			req := &schemas.BifrostResponsesRequest{
 				Model: "gpt-4o",
 				Input: []schemas.ResponsesMessage{tc.input},
+			}
+			// Snapshot the request's own item, since tc.input is only copied into it
+			origStatus, origID := req.Input[0].Status, req.Input[0].ID
+			var origStatusVal, origIDVal string
+			if origStatus != nil {
+				origStatusVal = *origStatus
+			}
+			if origID != nil {
+				origIDVal = *origID
 			}
 
 			converted := ToOpenAIResponsesRequest(nil, req)
@@ -3129,10 +3236,10 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 			// Verify caller's input is unmutated
 			if tc.origMutable {
-				if tc.input.Status != origStatus {
+				if req.Input[0].Status != origStatus || (origStatus != nil && *origStatus != origStatusVal) {
 					t.Error("original input status was mutated")
 				}
-				if tc.input.ID != origID {
+				if req.Input[0].ID != origID || (origID != nil && *origID != origIDVal) {
 					t.Error("original input ID was mutated")
 				}
 			} else {
@@ -4464,8 +4571,10 @@ func TestComputerCallHistoryActionsForGAComputerTool(t *testing.T) {
 	}
 
 	t.Run("computer_use_preview keeps action", func(t *testing.T) {
-		preview := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputerUsePreview,
-			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"}}
+		preview := schemas.ResponsesTool{
+			Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"},
+		}
 		got := wireCall(t, preview, call(false))
 		if _, ok := got["action"]; !ok {
 			t.Fatalf("computer_use_preview history must keep action: %v", got)
@@ -4503,8 +4612,10 @@ func TestComputerCallHistoryActionsForGAComputerTool(t *testing.T) {
 	})
 
 	t.Run("zoom history on computer_use_preview", func(t *testing.T) {
-		preview := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeComputerUsePreview,
-			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"}}
+		preview := schemas.ResponsesTool{
+			Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser"},
+		}
 		msg := zoomCall()
 		got := wireCall(t, preview, msg)
 		assertScreenshot(t, "action", got["action"])
@@ -4806,4 +4917,298 @@ func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
 	if strings.Contains(string(data), `"max_characters"`) {
 		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
 	}
+}
+
+// The web_search_call branch runs for every input item, so the benchmark covers a history
+// without web searches (the common case) and the same history with one search per turn.
+func BenchmarkToOpenAIResponsesRequestInput(b *testing.B) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	history := func(withSearch bool) []schemas.ResponsesMessage {
+		var input []schemas.ResponsesMessage
+		for i := 0; i < 8; i++ {
+			input = append(input, schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("what is new in the news today?"),
+				},
+			})
+			if withSearch {
+				input = append(input, schemas.ResponsesMessage{
+					Type:   &webSearchCallType,
+					ID:     schemas.Ptr("ws_bench"),
+					Status: schemas.Ptr("completed"),
+				})
+			}
+			input = append(input, schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_bench"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("here is a summary")},
+					},
+				},
+			})
+		}
+		return input
+	}
+	for name, withSearch := range map[string]bool{"plain-history": false, "web-search-history": true} {
+		b.Run(name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    history(withSearch),
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet pins the Responses side of the
+// supports_mid_conversation_system_messages gate: system/developer items after the leading run
+// become <system-reminder> user items only when the datasheet row says false.
+func TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet(t *testing.T) {
+	const model = "accounts/fireworks/models/qwen3p8-max"
+	msg := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+		}
+	}
+	input := []schemas.ResponsesMessage{
+		msg(schemas.ResponsesInputMessageRoleDeveloper, "be brief"),
+		msg(schemas.ResponsesInputMessageRoleUser, "hi"),
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("answer in french")},
+			}},
+		},
+		msg(schemas.ResponsesInputMessageRoleSystem, "stay polite"),
+		msg(schemas.ResponsesInputMessageRoleUser, "how are you"),
+	}
+	newReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: schemas.Fireworks, Model: model, Input: slices.Clone(input)}
+	}
+
+	t.Run("datasheet_false_inlines_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+		req := newReq()
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Len(t, out.Input.OpenAIResponsesRequestInputArray, 5)
+		items := out.Input.OpenAIResponsesRequestInputArray
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *items[0].Role)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[2].Role)
+		require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *items[2].Content.ContentBlocks[0].Text)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[3].Role)
+		require.Equal(t, "<system-reminder>\nstay polite\n</system-reminder>\n", *items[3].Content.ContentStr)
+		// The caller's input is not rewritten.
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *req.Input[2].Role)
+		require.Equal(t, "answer in french", *req.Input[2].Content.ContentBlocks[0].Text)
+	})
+
+	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
+
+	t.Run("custom_provider_falls_back_to_base_row", func(t *testing.T) {
+		installProviderCapabilityRecords(t, model, map[schemas.ModelProvider]*schemas.ModelCapabilities{
+			schemas.Fireworks: {SupportsMidConversationSystem: schemas.Ptr(false)},
+		})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Fireworks)
+		req := newReq()
+		req.Provider = "my-fireworks"
+		out := ToOpenAIResponsesRequest(ctx, req)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
+}
+
+func developerResponsesRequest(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+			},
+			{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Be brief.")},
+			},
+			{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			},
+		},
+	}
+}
+
+func TestToOpenAIResponsesRequest_DeveloperRoleAsSystem(t *testing.T) {
+	stubDeveloperRoleDatasheet(t)
+	req := developerResponsesRequest(schemas.Fireworks, "glm-5")
+	result := ToOpenAIResponsesRequest(nil, req)
+	require.NotNil(t, result)
+	input := result.Input.OpenAIResponsesRequestInputArray
+	require.Len(t, input, 3)
+	require.Equal(t, schemas.ResponsesMessageTypeAdditionalTools, *input[0].Type)
+	require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *input[1].Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *input[2].Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *req.Input[1].Role)
+
+	result = ToOpenAIResponsesRequest(nil, developerResponsesRequest(schemas.Fireworks, "qwen3-dev"))
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *result.Input.OpenAIResponsesRequestInputArray[1].Role)
+}
+
+// TestToOpenAIResponsesRequest_DeveloperRoleAndMidConversationSystem is the Responses side of
+// TestToOpenAIChatRequest_DeveloperRoleAndMidConversationSystem.
+func TestToOpenAIResponsesRequest_DeveloperRoleAndMidConversationSystem(t *testing.T) {
+	const model = "test-model"
+	msg := func(role schemas.ResponsesMessageRoleType, s string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(s)},
+		}
+	}
+	const (
+		dev  = schemas.ResponsesInputMessageRoleDeveloper
+		sys  = schemas.ResponsesInputMessageRoleSystem
+		user = schemas.ResponsesInputMessageRoleUser
+	)
+	input := []schemas.ResponsesMessage{
+		msg(dev, "lead dev"),
+		msg(sys, "lead sys"),
+		msg(user, "hi"),
+		msg(dev, "mid dev"),
+		msg(sys, "mid sys"),
+		msg(user, "bye"),
+	}
+	tests := []struct {
+		name           string
+		developerRole  bool
+		midConvSystem  bool
+		wantRoles      []schemas.ResponsesMessageRoleType
+		wantMidInlined bool
+	}{
+		{"both_supported", true, true, []schemas.ResponsesMessageRoleType{dev, sys, user, dev, sys, user}, false},
+		{"developer_unsupported", false, true, []schemas.ResponsesMessageRoleType{sys, sys, user, sys, sys, user}, false},
+		{"mid_conversation_unsupported", true, false, []schemas.ResponsesMessageRoleType{dev, sys, user, user, user, user}, true},
+		{"both_unsupported", false, false, []schemas.ResponsesMessageRoleType{sys, sys, user, user, user, user}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+				SupportsDeveloperRole:         schemas.Ptr(tt.developerRole),
+				SupportsMidConversationSystem: schemas.Ptr(tt.midConvSystem),
+			})
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: model, Input: slices.Clone(input)}
+			out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			items := out.Input.OpenAIResponsesRequestInputArray
+			require.Len(t, items, len(tt.wantRoles))
+			for i, want := range tt.wantRoles {
+				require.Equal(t, want, *items[i].Role, "item %d", i)
+			}
+			require.Equal(t, "lead dev", *items[0].Content.ContentStr)
+			if tt.wantMidInlined {
+				require.Equal(t, "<system-reminder>\nmid dev\n</system-reminder>\n", *items[3].Content.ContentStr)
+				require.Equal(t, "<system-reminder>\nmid sys\n</system-reminder>\n", *items[4].Content.ContentStr)
+			} else {
+				require.Equal(t, "mid dev", *items[3].Content.ContentStr)
+			}
+			require.Equal(t, dev, *req.Input[0].Role)
+			require.Equal(t, dev, *req.Input[3].Role)
+		})
+	}
+}
+
+// TestInlineResponsesMidConversationSystem_NilContent is the Responses side of
+// TestInlineChatMidConversationSystem_NilContent.
+func TestInlineResponsesMidConversationSystem_NilContent(t *testing.T) {
+	out := inlineResponsesMidConversationSystem([]schemas.ResponsesMessage{
+		{Role: new(schemas.ResponsesInputMessageRoleSystem)},
+		{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: new(schemas.ResponsesInputMessageRoleDeveloper)},
+	})
+	require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *out[0].Role)
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *out[2].Role)
+	require.Nil(t, out[2].Content)
+}
+
+// TestToOpenAIResponsesRequest_MidConversationSystemSkipsMetadataItems pins that metadata-only
+// items (additional_tools, configuration_update) ahead of the opening instructions do not end the
+// leading run, so the opening developer message keeps its role while later ones are inlined.
+func TestToOpenAIResponsesRequest_MidConversationSystemSkipsMetadataItems(t *testing.T) {
+	const model = "test-model"
+	installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+	msg := func(role schemas.ResponsesMessageRoleType, s string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(s)},
+		}
+	}
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper)},
+			msg(schemas.ResponsesInputMessageRoleDeveloper, "be brief"),
+			msg(schemas.ResponsesInputMessageRoleUser, "hi"),
+			msg(schemas.ResponsesInputMessageRoleDeveloper, "answer in french"),
+		},
+	}
+	items := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req).Input.OpenAIResponsesRequestInputArray
+	require.Len(t, items, 4)
+	require.Equal(t, schemas.ResponsesMessageTypeAdditionalTools, *items[0].Type)
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *items[1].Role)
+	require.Equal(t, "be brief", *items[1].Content.ContentStr)
+	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[3].Role)
+	require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *items[3].Content.ContentStr)
+}
+
+// TestToOpenAIResponsesRequest_DisableStoreContextKey pins that the disable-store context flag forces
+// store=false on the converted request, including a passthrough extra_params store, without touching
+// the caller's request that fallbacks to other providers share.
+func TestToOpenAIResponsesRequest_DisableStoreContextKey(t *testing.T) {
+	newReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Fireworks,
+			Model:    "accounts/fireworks/models/qwen3p8-max",
+			Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ResponsesParameters{Store: schemas.Ptr(true), ExtraParams: map[string]interface{}{"store": true}},
+		}
+	}
+
+	t.Run("flag_set_forces_store_false", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		out := ToOpenAIResponsesRequest(ctx, req)
+		require.False(t, *out.Store)
+		require.Equal(t, false, out.ExtraParams["store"])
+		require.True(t, *req.Params.Store)
+		require.Equal(t, true, req.Params.ExtraParams["store"])
+	})
+
+	t.Run("flag_unset_keeps_store", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.True(t, *out.Store)
+		require.Equal(t, true, out.ExtraParams["store"])
+	})
 }

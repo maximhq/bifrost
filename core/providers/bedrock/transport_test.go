@@ -23,6 +23,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -227,29 +228,7 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	// Server: returns 200 + correct headers, writes a truncated EventStream
 	// prelude (not a valid frame), then forcibly resets the TCP connection —
 	// producing a *net.OpError on the client's read side.
-	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Write a partial EventStream frame header (3 bytes, not a valid frame).
-		_, _ = w.Write([]byte{0x00, 0x00, 0x00})
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			return
-		}
-		conn, _, _ := hj.Hijack()
-		// RST instead of FIN — guarantees a *net.OpError on the client read.
-		if tc, ok := conn.(*net.TCPConn); ok {
-			_ = tc.SetLinger(0)
-		}
-		conn.Close()
-	}))
-	ts.Start()
+	ts := newMidStreamResetServer()
 	defer ts.Close()
 
 	provider := newTestProviderWithServer(t, ts)
@@ -284,6 +263,168 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	require.NotNil(t, errChunk.BifrostError.Error)
 	assert.Equal(t, schemas.ErrProviderNetworkError, errChunk.BifrostError.Error.Message,
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
+}
+
+
+// newMidStreamResetServer returns a server that answers 200, writes a truncated
+// EventStream prelude (not a valid frame), then resets the TCP connection, which
+// produces a *net.OpError on the client's read side.
+func newMidStreamResetServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte{0x00, 0x00, 0x00})
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		// RST instead of FIN — guarantees a *net.OpError on the client read.
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		conn.Close()
+	}))
+}
+
+// TestStream_MidStreamDrop_IsUpstreamError verifies that a connection dropped after
+// the 200 reaches clients as a 502 upstream failure. Without a status the error
+// resolves to 400, which the Anthropic surface reports as invalid_request_error, a
+// type clients do not retry.
+func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
+	content := "hello"
+	streams := map[string]func(*BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError){
+		"text": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostTextCompletionRequest{
+				Model: "mistral.mistral-7b-instruct-v0:2",
+				Input: &schemas.TextCompletionInput{PromptStr: &content},
+			})
+		},
+		"chat": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testChatRequest())
+		},
+		"responses": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostResponsesRequest{
+				Model: "anthropic.claude-sonnet-4-5",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: &content},
+				}},
+			})
+		},
+	}
+	for name, stream := range streams {
+		t.Run(name, func(t *testing.T) {
+			ts := newMidStreamResetServer()
+			defer ts.Close()
+
+			streamChan, bifrostErr := stream(newTestProviderWithServer(t, ts))
+			require.Nil(t, bifrostErr)
+
+			var streamErr *schemas.BifrostError
+			for chunk := range streamChan {
+				if chunk != nil && chunk.BifrostError != nil && streamErr == nil {
+					streamErr = chunk.BifrostError
+				}
+			}
+
+			require.NotNil(t, streamErr, "expected an error chunk from the stream")
+			assert.False(t, streamErr.IsBifrostError)
+			require.NotNil(t, streamErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
+			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
+	})
+	}
+}
+       
+// TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
+// closes before responding reaches clients as a 502 upstream failure. Without a
+// status the error resolves to 400, which reads as a malformed request.
+func TestRequest_ConnectionFailure_IsUpstreamError(t *testing.T) {
+	requests := map[string]func(*BedrockProvider) *schemas.BifrostError{
+		"converse": func(p *BedrockProvider) *schemas.BifrostError {
+			req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+			require.NoError(t, err)
+			_, _, _, bifrostErr := p.executeBedrockRequest(req)
+			return bifrostErr
+		},
+		"agent runtime": func(p *BedrockProvider) *schemas.BifrostError {
+			_, _, _, bifrostErr := p.completeAgentRuntimeRequest(testBedrockCtx(), []byte(`{}`), "/rerank", testBedrockKey())
+			return bifrostErr
+		},
+		"stream": func(p *BedrockProvider) *schemas.BifrostError {
+			_, bifrostErr := p.makeStreamingRequest(testBedrockCtx(), []byte(`{}`), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+			return bifrostErr
+		},
+		"list models": func(p *BedrockProvider) *schemas.BifrostError {
+			_, bifrostErr := p.listModelsByKey(testBedrockCtx(), testBedrockKey(), &schemas.BifrostListModelsRequest{Provider: schemas.Bedrock})
+			return bifrostErr
+		},
+	}
+	for name, send := range requests {
+		t.Run(name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					http.Error(w, "hijack not supported", http.StatusInternalServerError)
+					return
+				}
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}))
+			defer ts.Close()
+
+			bifrostErr := send(newTestProviderWithServer(t, ts))
+
+			require.NotNil(t, bifrostErr)
+			assert.False(t, bifrostErr.IsBifrostError)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *bifrostErr.StatusCode)
+			require.NotNil(t, bifrostErr.Error)
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, schemas.ProviderConnectionFailed, *bifrostErr.Error.Type)
+			assert.Contains(t, []string{schemas.ErrProviderNetworkError, schemas.ErrProviderDoRequest}, bifrostErr.Error.Message)
+		})
+	}
+}
+
+func TestNewRequestError(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		isBifrostError bool
+		status         int
+		errType        string
+		message        string
+	}{
+		{"cancelled", context.Canceled, false, 0, schemas.RequestCancelled, schemas.ErrRequestCancelled},
+		{"deadline", context.DeadlineExceeded, true, http.StatusGatewayTimeout, schemas.RequestTimedOut, schemas.ErrProviderRequestTimedOut},
+		{"network", &net.OpError{Op: "dial", Err: io.EOF}, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderNetworkError},
+		{"other", io.ErrUnexpectedEOF, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderDoRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostErr := newRequestError(tc.err, 25*time.Millisecond)
+
+			assert.Equal(t, tc.isBifrostError, bifrostErr.IsBifrostError)
+			if tc.status == 0 {
+				assert.Nil(t, bifrostErr.StatusCode)
+			} else {
+				require.NotNil(t, bifrostErr.StatusCode)
+				assert.Equal(t, tc.status, *bifrostErr.StatusCode)
+			}
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, tc.errType, *bifrostErr.Error.Type)
+			assert.Equal(t, tc.message, bifrostErr.Error.Message)
+			assert.Equal(t, int64(25), bifrostErr.ExtraFields.Latency)
+		})
+	}
 }
 
 // writeEventStreamException encodes a well-formed AWS EventStream exception
@@ -778,6 +919,50 @@ func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 }
 
+// TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy pins that
+// network_config.insecure_skip_verify only reaches targets: net/http would handshake
+// with an https:// proxy using TLSClientConfig, so without the hop dialer the proxy's
+// certificate would go unchecked although proxy_config.skip_tls_verify is off.
+func TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "bedrock-tls")
+	for _, enforceHTTP2 := range []bool{true, false} {
+		recorder.Reset()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				InsecureSkipVerify:             true,
+				EnforceHTTP2:                   enforceHTTP2,
+			},
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar("https://127.0.0.1:" + recorder.Port()),
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		for name, client := range map[string]*http.Client{"client": provider.client, "realtime": provider.realtimeClient} {
+			resp, err := client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+			if err == nil {
+				resp.Body.Close()
+				t.Errorf("enforce_http2=%v %s: an https proxy whose certificate is not trusted was used", enforceHTTP2, name)
+			}
+		}
+		assert.Empty(t, recorder.Seen(), "enforce_http2=%v: the unverified proxy saw traffic", enforceHTTP2)
+
+		// With the proxy's CA in proxy_config, the same proxy is verified and used.
+		config.ProxyConfig.CACertPEM = schemas.NewSecretVar(recorder.CAPEM)
+		trusted, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		resp, err := trusted.client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+		require.NoError(t, err, "enforce_http2=%v: the trusted https proxy was refused", enforceHTTP2)
+		resp.Body.Close()
+		assert.NotEmpty(t, recorder.Seen(), "enforce_http2=%v: the trusted proxy saw no traffic", enforceHTTP2)
+	}
+}
+
 func TestBedrockTransportTLSCACert(t *testing.T) {
 	testCACert := generateTestCACert(t)
 
@@ -838,6 +1023,9 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 	// TLSNextProto should NOT be set when HTTP/2 is enforced, allowing ALPN negotiation
 	assert.Nil(t, transport.TLSNextProto)
+	// Nova Sonic needs HTTP/2, which this transport already speaks, so it shares the pool
+	assert.Same(t, transport, provider.realtimeClient.Transport)
+	assert.Zero(t, provider.realtimeClient.Timeout, "a realtime session outlives the request timeout")
 }
 
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
@@ -858,6 +1046,12 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it gets a transport of its own
+	realtimeTransport, ok := provider.realtimeClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, transport, realtimeTransport)
+	assert.True(t, realtimeTransport.ForceAttemptHTTP2)
+	assert.Nil(t, realtimeTransport.TLSNextProto)
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the

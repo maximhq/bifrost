@@ -25,7 +25,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -228,6 +227,9 @@ var decisionParamsKnownFields = map[string]bool{
 	// The deprecated map form's input. Next to "input" it is dropped, not
 	// forwarded as a provider extension that could override the real state.
 	"state": true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
 }
 
 // Known fields for DecisionMapFormRequest, the deprecated /v1/decisions body.
@@ -386,6 +388,8 @@ var transcriptionParamsKnownFields = map[string]bool{
 	"prompt":          true,
 	"response_format": true,
 	"file_format":     true,
+
+	"timestamp_granularities[]": true,
 }
 
 var batchCreateParamsKnownFields = map[string]bool{
@@ -661,6 +665,9 @@ type DecisionHandlerRequest struct {
 	Questions        []schemas.DecisionQuestion `json:"questions"`
 	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
 	BifrostParams
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 }
 
 // DecisionMapFormRequest is a /v1/decisions request in the deprecated map
@@ -1033,7 +1040,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	enrichListModelsResponse(resp, h.config.ModelCatalog)
+	h.config.ModelCatalog.EnrichListModelsResponse(resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1066,7 +1073,7 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	enrichModelRetrieveResponse(resp, h.config.ModelCatalog)
+	h.config.ModelCatalog.EnrichModelRetrieveResponse(resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1099,43 +1106,6 @@ func modelRetrieveTarget(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, strin
 		return "", "", errors.New("provider is required: prefix the model with it or pass ?provider=")
 	}
 	return provider, model, nil
-}
-
-// enrichModelRetrieveResponse applies the same catalog metadata list models applies,
-// so one model reads the same either way.
-func enrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse, catalog *modelcatalog.ModelCatalog) {
-	if resp == nil || catalog == nil {
-		return
-	}
-
-	provider, modelName := schemas.ParseModelString(resp.ID, "")
-	pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
-	if pricingEntry == nil && resp.Alias != nil {
-		pricingEntry = catalog.GetPricingEntryForModel(*resp.Alias, provider)
-	}
-	modelcatalog.ApplyModelInfo(&resp.Model, pricingEntry)
-}
-
-func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
-	if resp == nil || len(resp.Data) == 0 {
-		return
-	}
-
-	if catalog == nil {
-		return
-	}
-
-	for i := range resp.Data {
-		modelEntry := resp.Data[i]
-		provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
-		pricingEntry := catalog.GetPricingEntryForModel(modelName, provider)
-		if pricingEntry == nil && modelEntry.Alias != nil {
-			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
-		}
-		// Same mapping ctx.GetModelInfo hands to plugins, so the two never drift.
-		modelcatalog.ApplyModelInfo(&modelEntry, pricingEntry)
-		resp.Data[i] = modelEntry
-	}
 }
 
 // prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
@@ -1482,8 +1452,15 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 // object keyed by name rather than a list. mapForm reports which, so the
 // response is rendered in the same form.
 func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *schemas.BifrostDecisionRequest, mapForm bool, err error) {
+	files, err := readDecisionMultipart(ctx)
+	if err != nil {
+		return nil, false, err
+	}
 	handlerReq, base, decodeErr := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
 	if decodeErr != nil {
+		if files != nil {
+			return nil, true, fmt.Errorf("a multipart decision request needs the input form in its request part")
+		}
 		req, err := prepareDecisionMapFormRequest(ctx, config)
 		return req, true, err
 	}
@@ -1495,6 +1472,9 @@ func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *
 	if len(handlerReq.Questions) == 0 {
 		return nil, false, fmt.Errorf("questions are required for decision")
 	}
+	if err := attachDecisionFiles(&handlerReq.Input, files); err != nil {
+		return nil, false, err
+	}
 	return &schemas.BifrostDecisionRequest{
 		Provider:         base.Provider,
 		Model:            base.ModelName,
@@ -1503,7 +1483,63 @@ func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *
 		SafetyIdentifier: handlerReq.SafetyIdentifier,
 		Fallbacks:        base.Fallbacks,
 		ExtraParams:      base.ExtraParams,
+
+		PromptCacheKey:     handlerReq.PromptCacheKey,
+		PromptCacheOptions: handlerReq.PromptCacheOptions,
 	}, false, nil
+}
+
+// readDecisionMultipart reads a multipart decision request: the JSON in its "request"
+// part replaces the body, so it decodes exactly as a JSON request does, and the file
+// parts are returned for attachDecisionFiles. A JSON request returns no files.
+func readDecisionMultipart(ctx *fasthttp.RequestCtx) (map[string][]byte, error) {
+	boundary := ctx.Request.Header.MultipartFormBoundary()
+	if len(boundary) == 0 {
+		return nil, nil
+	}
+	request, files, err := lib.ReadMultipartRequest(ctx.Request.Body(), string(boundary))
+	if err != nil {
+		return nil, err
+	}
+	ctx.Request.SetBody(request)
+	ctx.Request.Header.SetContentType("application/json")
+	return files, nil
+}
+
+// attachDecisionFiles gives each image part sent by reference the bytes of the file
+// part its name points at. files is nil for a JSON request, where no part can name a
+// file. Only what the request cannot be built from is rejected, each a 400 Typesafe's
+// own multipart rules also give: a name with no file part, two parts naming one file,
+// and a file part no image part names. A file part takes precedence over data.
+func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) error {
+	used := make(map[string]string, len(files))
+	for m := range input.Messages {
+		parts := input.Messages[m].Content.Parts
+		for i := range parts {
+			part := &parts[i]
+			if !part.IsAsset() || part.Name == nil {
+				continue
+			}
+			if files == nil {
+				return fmt.Errorf("input_image part %q names file part %q, which needs a multipart request", *part.ID, *part.Name)
+			}
+			data, ok := files[*part.Name]
+			if !ok {
+				return fmt.Errorf("input_image part %q names part %q, which the request does not carry", *part.ID, *part.Name)
+			}
+			if other, taken := used[*part.Name]; taken {
+				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
+			}
+			used[*part.Name] = *part.ID
+			part.Data.File = data
+		}
+	}
+	for name := range files {
+		if _, ok := used[name]; !ok {
+			return fmt.Errorf("multipart part %q is not named by any input_image part", name)
+		}
+	}
+	return nil
 }
 
 // prepareDecisionMapFormRequest prepares a BifrostDecisionRequest from a
@@ -1632,6 +1668,8 @@ func toDecisionMapFormResponse(resp *schemas.BifrostDecisionResponse) *DecisionM
 			answer.Value = *native.Choice
 		case native.Score != nil:
 			answer.Value = *native.Score
+		case native.Box != nil:
+			answer.Value = *native.Box
 		}
 		answers[name] = answer
 	}
@@ -1883,6 +1921,10 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	}
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		transcriptionParams.ResponseFormat = &responseFormatValues[0]
+	}
+	// Repeated "timestamp_granularities[]" fields, matching the OpenAI SDK's encoding and the /openai route.
+	if granularityValues := form.Value["timestamp_granularities[]"]; len(granularityValues) > 0 {
+		transcriptionParams.TimestampGranularities = granularityValues
 	}
 	if transcriptionParams.ExtraParams == nil {
 		transcriptionParams.ExtraParams = make(map[string]interface{})
