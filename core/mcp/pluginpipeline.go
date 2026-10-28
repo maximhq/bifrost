@@ -482,7 +482,7 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 		// gate — notably BifrostContextKeyMCPExtraHeaders — are visible to the wire
 		// call. BifrostContext.Value walks parent-ward only, so the outer ctx cannot
 		// see writes made to its gateCtx child.
-		detailed, opErr := retrieveExternalToolsDetailed(gateCtx, conn, clientName, m.logger)
+		detailed, opErr := retrieveExternalToolsDetailed(gateCtx, conn, clientName, m.logger, &m.skippedToolWarned)
 		if opErr != nil {
 			return nil, opErr
 		}

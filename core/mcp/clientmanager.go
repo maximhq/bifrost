@@ -1654,6 +1654,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	m.logger.Debug("%s Closed client transport connection for MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
 	// Clear client tool map
 	client.ToolMap = make(map[string]schemas.ChatTool)
+	m.forgetSkippedToolWarnings(client.ExecutionConfig.Name)
 
 	delete(m.clientMap, id)
 	m.dropPerCallConn(id)
@@ -4120,4 +4121,16 @@ func unmatchedToolSelections(selected schemas.WhiteList, toolMap map[string]sche
 		}
 	}
 	return unmatched
+}
+
+// forgetSkippedToolWarnings drops the invalid-tool warning record of a removed client, so a
+// client added later under the same name warns about its invalid tools again.
+func (m *MCPManager) forgetSkippedToolWarnings(clientName string) {
+	prefix := clientName + "\x00"
+	m.skippedToolWarned.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
+			m.skippedToolWarned.Delete(key)
+		}
+		return true
+	})
 }
