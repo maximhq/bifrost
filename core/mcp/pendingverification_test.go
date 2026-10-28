@@ -170,6 +170,7 @@ func TestSetState_PendingVerification_NotOverwritten(t *testing.T) {
 // exchange was len-checking and had that bug.
 func TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	defer m.checkerManager.StopAll()
 
 	config := newPendingClientConfig("client-tokenexchange-zero-tools", schemas.MCPAuthTypeTokenExchange)
@@ -408,24 +409,24 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 	assert.NotContains(t, toolMap, "verifiedclient-lookup")
 }
 
-// TestSetClientTools_RecordsTheVerificationOnTheConfig pins that a client
+// TestSetClientDiscovery_RecordsTheVerificationOnTheConfig pins that a client
 // verified while the process is running reads as verified while the process is
 // running.
 //
-// SetClientTools is what the admin verification handlers call once the admin's
+// SetClientDiscovery is what the admin verification handlers call once the admin's
 // credential has been checked against the upstream: it installs the tools,
 // marks the client healthy, and fires the callback that persists those same
 // tools to the client's row. That row is what makes the client verified after
 // the next restart. Until then awaitsAdminVerification reads the manager's
-// in-memory config, which SetClientTools left untouched, so a per_user_headers
+// in-memory config, which SetClientDiscovery left untouched, so a per_user_headers
 // or token_exchange server verified a moment ago went on reading as never
 // verified: healthy, serving tools, refused by every path that consults the
 // predicate, and parked back in pending_verification by a disable and enable.
 //
-// Nothing automatic reaches SetClientTools for a client still awaiting its
+// Nothing automatic reaches SetClientDiscovery for a client still awaiting its
 // admin (the checker stays quiet for one and a refresh refuses it), so the only
 // callers that ever move a pending client here are the admin's own.
-func TestSetClientTools_RecordsTheVerificationOnTheConfig(t *testing.T) {
+func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 	cases := []struct {
 		name     string
 		authType schemas.MCPAuthType
@@ -477,7 +478,7 @@ func TestSetClientTools_RecordsTheVerificationOnTheConfig(t *testing.T) {
 			m.mu.Unlock()
 
 			// What the verify handlers do once the admin's credential checks out.
-			m.SetClientTools(config.ID, tc.tools, map[string]string{"lookup": "lookup"}, "")
+			m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tc.tools, ToolNameMapping: map[string]string{"lookup": "lookup"}})
 
 			m.mu.RLock()
 			recorded := m.clientMap[config.ID].ExecutionConfig

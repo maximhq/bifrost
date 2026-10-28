@@ -1530,7 +1530,13 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		agentPermits = append(agentPermits, agentGrant.AgentName)
 	}
 
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders))
+	endpointPermits := make([]string, 0, len(vk.RelayGrants))
+	for _, endpointGrant := range vk.RelayGrants {
+		endpointPermits = append(endpointPermits, endpointGrant.RelayName)
+	}
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits,
+		grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders),
+		grant.WithRelayPermits(endpointPermits))
 }
 
 // virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.
@@ -4799,6 +4805,10 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 // store resolves one permit per credential, so there is nothing to pick between, and one limit
 // reached twice is still one limit once the list is settled.
 func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	// A request naming no provider and no model (a relay call, an MCP tool execution) still walks
+	// the model-config scopes: only the all-models, all-providers tier can match then, and that
+	// tier is where a key's own budget and rate limit live since the model-config migration.
+	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
 	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
 	budgets = append(budgets, globalModelBudgets...)

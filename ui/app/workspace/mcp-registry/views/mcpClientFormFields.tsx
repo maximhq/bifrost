@@ -30,6 +30,7 @@ import {
 	SECRET_REQUIRED_FOR_METHOD_MESSAGE,
 } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { buildOAuthConfigPayload } from "./mcpClientOAuthPayload";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Info } from "lucide-react";
@@ -47,6 +48,7 @@ import {
 	type OpenAPICredentialField,
 	type OpenAPISourceMode,
 } from "./mcpClientOpenApiUtils";
+import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
@@ -494,7 +496,9 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 					satellites.openapi.sourceMode,
 					satellites.openapi.preview,
 					satellites.openapi.baseUrlChoice,
-					authType === "per_user_headers" ? Object.keys(perUserSchemeHeaders(satellites.openapi.preview, satellites.openapi.schemeHeaders)) : [],
+					authType === "per_user_headers"
+						? Object.keys(perUserSchemeHeaders(satellites.openapi.preview, satellites.openapi.schemeHeaders))
+						: [],
 				)
 			: undefined,
 		stdio_config: isStdio
@@ -514,21 +518,11 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 		tls_config: isStdio ? undefined : buildTLSConfigPayload(data.tls_config),
 		oauth_config:
 			authType === "oauth" || authType === "per_user_oauth"
-				? {
-						client_id: data.oauth_config?.client_id ?? emptySecretVar,
-						client_secret:
-							data.oauth_config?.client_secret?.value ||
-							data.oauth_config?.client_secret?.type === "env" ||
-							data.oauth_config?.client_secret?.type === "vault"
-								? data.oauth_config.client_secret
-								: undefined,
-						authorize_url: data.oauth_config?.authorize_url || undefined,
-						token_url: data.oauth_config?.token_url || undefined,
-						registration_url: data.oauth_config?.registration_url || undefined,
-						scopes: satellites.scopesText.trim() ? parseArrayFromText(satellites.scopesText) : undefined,
-						server_url: data.connection_string?.value || undefined,
-						resource: satellites.resourceText.trim() || undefined,
-					}
+				? buildOAuthConfigPayload(data.oauth_config, {
+						serverURL: data.connection_string?.value,
+						scopesText: satellites.scopesText,
+						resourceText: satellites.resourceText,
+					})
 				: undefined,
 		// Every network auth type can carry static admin headers on data.headers
 		// (per-user values are submitted separately by end users); STDIO has no
@@ -560,6 +554,8 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 			: ["*"],
 		// Extra headers only ride on the network transports.
 		allowed_extra_headers: isStdio ? undefined : parseArrayFromText(satellites.allowedExtraHeadersText),
+		// An openapi server is synthesized in process; there is no protocol to negotiate.
+		max_protocol_version: isOpenAPI ? undefined : data.max_protocol_version,
 	};
 }
 
@@ -902,6 +898,35 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								)}
 							/>
 						)}
+					{!isOpenAPI && (
+						<FormField
+							control={control}
+							name="max_protocol_version"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+									<div className="flex items-center gap-2">
+										<FormLabel>Max Protocol Version</FormLabel>
+										<TooltipProvider>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+												</TooltipTrigger>
+												<TooltipContent className="max-w-xs">
+													<p>
+														Newest MCP protocol version Bifrost offers this server. Pick an earlier version if the server misbehaves on the
+														latest one.
+													</p>
+												</TooltipContent>
+											</Tooltip>
+										</TooltipProvider>
+									</div>
+									<FormControl>
+										<MaxProtocolVersionSelect value={field.value} onChange={field.onChange} />
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+					)}
 				</div>
 			</div>
 
@@ -1120,9 +1145,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 						credentials={openapiConfig?.security_credentials ?? {}}
 						onCredentialChange={handleOpenAPICredentialChange}
 						perUserHeaders={
-							authType === "per_user_headers"
-								? { typed: openapi.schemeHeaders, onChange: openapi.setSchemeHeader }
-								: undefined
+							authType === "per_user_headers" ? { typed: openapi.schemeHeaders, onChange: openapi.setSchemeHeader } : undefined
 						}
 						selectedTools={selectedTools}
 						onSelectedToolsChange={(names) => {
@@ -1336,10 +1359,11 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 										resourceLabel="Resource"
 										resourceTestId="mcp-oauth-resource-input"
 										clientIdLabel="OAuth Client ID (optional)"
-										clientIdPlaceholder="your-client-id (auto-generated if empty)"
-										clientIdHelperText="Will be auto-generated via dynamic registration if left empty and provider supports it"
-										clientIdTooltip="Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with the OAuth provider if supported."
+										clientIdPlaceholder="your-client-id (registered automatically if empty)"
+										clientIdHelperText="Left empty, Bifrost registers itself: through its client metadata document where the provider supports it, otherwise by dynamic registration"
+										clientIdTooltip="Leave empty to let Bifrost register itself. It uses its client metadata document where the authorization server advertises support, and Dynamic Client Registration (RFC 7591) otherwise."
 										clientIdTestId="mcp-oauth-client-id"
+										clientMetadataDocumentTestId="mcp-oauth-use-client-metadata-document"
 										clientSecretLabel="OAuth Client Secret (optional for PKCE)"
 										clientSecretPlaceholder="your-client-secret"
 										clientSecretHelperText="Leave empty for public clients using PKCE"

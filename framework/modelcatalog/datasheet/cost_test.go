@@ -2190,6 +2190,67 @@ func TestComputeImageCost_PerPixelFallsBackToPerImage_WhenNoSize(t *testing.T) {
 	assert.InDelta(t, 0.10, cost, 1e-12)
 }
 
+func TestComputeImageCost_TokensWithoutTokenRateFallBackToPerImage(t *testing.T) {
+	// byteplus/dola-seedream-5-0-pro-260628: only per-image rates, but BytePlus
+	// still reports output tokens for the generated image.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerImage:  bifrost.Ptr(0.003),
+		OutputCostPerImage: bifrost.Ptr(0.045),
+	}
+	usage := &schemas.ImageUsage{
+		OutputTokens: 17424,
+		TotalTokens:  17424,
+		OutputTokensDetails: &schemas.ImageTokenDetails{
+			ImageTokens: 17424,
+			NImages:     1,
+		},
+	}
+	cost := computeImageCostTotal(&p, usage, "2816x1584", "", serviceTier{})
+	// No input images, 1 output image * $0.045
+	assert.InDelta(t, 0.045, cost, 1e-12)
+}
+
+func TestComputeImageCost_TokensWithZeroTokenRateFallBackToPerImage(t *testing.T) {
+	// openrouter/bytedance-seed/seedream-5-0-pro: explicit zero token rates next
+	// to a per-image rate.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+		OutputCostPerImage: bifrost.Ptr(0.003),
+	}
+	usage := &schemas.ImageUsage{
+		InputTokens:  120,
+		OutputTokens: 4096,
+		TotalTokens:  4216,
+		OutputTokensDetails: &schemas.ImageTokenDetails{
+			ImageTokens: 4096,
+			NImages:     2,
+		},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 2 output images * $0.003
+	assert.InDelta(t, 0.006, cost, 1e-12)
+}
+
+func TestComputeImageCost_InputTokensWithoutTokenRateFallBackToPerImage(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerImage:  bifrost.Ptr(0.003),
+		OutputCostPerImage: bifrost.Ptr(0.045),
+	}
+	usage := &schemas.ImageUsage{
+		InputTokens:    900,
+		NumInputImages: 2,
+		InputTokensDetails: &schemas.ImageTokenDetails{
+			TextTokens:  100,
+			ImageTokens: 800,
+		},
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 2 input images * $0.003 + 1 output image * $0.045
+	assert.InDelta(t, 0.051, cost, 1e-12)
+}
+
 func TestComputeImageCost_QualityBasedRates(t *testing.T) {
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
@@ -2461,6 +2522,89 @@ func TestCalculateCost_VideoLastFrameImageIsNotAClip(t *testing.T) {
 	}
 
 	assert.InDelta(t, 1.50, s.CalculateCost(resp, nil), 1e-9)
+}
+
+// Seedance bills on the task's completion_tokens, not on duration. Its datasheet
+// row carries output_cost_per_video_token and no per-second rate.
+func seedanceTokenPricedStore() *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("dreamina-seedance-2-0-260128", "byteplus", "video_generation"): {
+			Model: "dreamina-seedance-2-0-260128", Provider: "byteplus", Mode: "video_generation",
+			OutputCostPerVideoToken: bifrost.Ptr(0.000007),
+		},
+	})
+}
+
+func TestCalculateCost_VideoOutputTokensUseVideoTokenRate(t *testing.T) {
+	s := seedanceTokenPricedStore()
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("5"),
+			Size:    "720p",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"}},
+			Usage:   &schemas.VideoUsage{OutputTokens: 108900},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor("byteplus", "dreamina-seedance-2-0-260128"),
+			},
+		},
+	}
+
+	// 108900 tokens * $7.00 / 1M
+	assert.InDelta(t, 0.7623, s.CalculateCost(resp, nil), 1e-9)
+}
+
+func TestCalculateVideoCostDetails_UsesVideoTokenRate(t *testing.T) {
+	s := seedanceTokenPricedStore()
+	seconds := 5
+	dims := VideoPricingDimensions{
+		Model:        "dreamina-seedance-2-0-260128",
+		RequestType:  schemas.VideoGenerationRequest,
+		Seconds:      &seconds,
+		Size:         "720p",
+		OutputCount:  1,
+		OutputTokens: 108900,
+	}
+	details := s.CalculateVideoCostDetails(dims, "byteplus", nil)
+	assert.True(t, details.Priced)
+	assert.InDelta(t, 0.7623, details.Cost, 1e-9)
+}
+
+// A token count with no token rate on the row must not zero out a per-second rate.
+func TestCalculateCost_VideoOutputTokensWithoutTokenRateFallBackToPerSecond(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2", "openai", "video_generation"): {
+			Model: "sora-2", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond: bifrost.Ptr(0.10),
+		},
+	})
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("4"),
+			Size:    "1280x720",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"}},
+			Usage:   &schemas.VideoUsage{OutputTokens: 50000},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.40, s.CalculateCost(resp, nil), 1e-9)
+}
+
+func TestVideoDimensionsFromResponse_CarriesOutputTokens(t *testing.T) {
+	dims := VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{
+		Model: "dreamina-seedance-2-0-260128",
+		Usage: &schemas.VideoUsage{OutputTokens: 108900},
+	})
+	assert.Equal(t, 108900, dims.OutputTokens)
+
+	merged := VideoPricingDimensions{Model: "dreamina-seedance-2-0-260128"}.MergedWith(dims)
+	assert.Equal(t, 108900, merged.OutputTokens)
 }
 
 func TestVideoDimensionsFromResponse_IgnoresImageOutputs(t *testing.T) {
@@ -4635,6 +4779,33 @@ func TestCalculateCost_ImageGeneration_NilUsage_PerImagePricing(t *testing.T) {
 	cost := s.CalculateCost(resp, nil)
 	// 1 image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
+}
+
+func TestCalculateCost_ImageGeneration_ReportedTokensPerImagePricing(t *testing.T) {
+	// BytePlus Seedream reports output tokens but the datasheet row prices per image.
+	pricing := configstoreTables.TableModelPricing{
+		Model:              "dola-seedream-5-0-pro-260628",
+		Provider:           "byteplus",
+		Mode:               "image_generation",
+		InputCostPerImage:  bifrost.Ptr(0.003),
+		OutputCostPerImage: bifrost.Ptr(0.045),
+	}
+
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("dola-seedream-5-0-pro-260628", "byteplus", "image_generation"): pricing,
+	})
+
+	resp := makeImageResponse("byteplus", "dola-seedream-5-0-pro-260628", &schemas.ImageUsage{
+		OutputTokens: 17424,
+		TotalTokens:  17424,
+		OutputTokensDetails: &schemas.ImageTokenDetails{
+			ImageTokens: 17424,
+		},
+	})
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://example.com/a.jpeg"}}
+	cost := s.CalculateCost(resp, nil)
+	// 1 output image * $0.045
+	assert.InDelta(t, 0.045, cost, 1e-12)
 }
 
 func TestCalculateCost_ImageGeneration_NilUsage_InputAndOutputPerImage(t *testing.T) {

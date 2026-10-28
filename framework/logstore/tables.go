@@ -1985,6 +1985,10 @@ type MCPToolLog struct {
 	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
 	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
 
+	// Method is the MCP method for a prompt or resource read ("prompts/get", "resources/read"),
+	// whose prompt name or resource URI is in ToolName; nil for a tool call.
+	Method *string `gorm:"type:varchar(32)" json:"method,omitempty"`
+
 	// Virtual fields for JSON output - populated when needed
 	TeamIDsParsed           []string                `gorm:"-" json:"team_ids,omitempty"`
 	TeamNamesParsed         []string                `gorm:"-" json:"team_names,omitempty"`

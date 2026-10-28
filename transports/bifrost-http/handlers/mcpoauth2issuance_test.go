@@ -1252,3 +1252,22 @@ func TestHandleToken_GrantsFollowTheirFeature(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode())
 	assert.Contains(t, string(refused.Response.Body()), "unsupported_grant_type", "an extension grant needs its extension on")
 }
+
+// A metadata-document client's grant keeps the name it was consented under, and a refresh carries it.
+func TestIssueTokenPair_KeepsConsentedClientName(t *testing.T) {
+	h, _, _ := newIssuanceHandler(t)
+	host := newMetadataHost(t)
+	h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+	clientID := host.document("/named.json", nil, nil)
+
+	// Init attaches a server, so the store's queries can use the request as their context.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&fasthttp.Request{}, nil, nil)
+	assert.Equal(t, "Example MCP Client", h.consentedClientName(ctx, clientID))
+	assert.Empty(t, h.consentedClientName(ctx, "registered-client"), "a registered client is named by its client row")
+	assert.Empty(t, h.consentedClientName(ctx, host.server.URL+"/missing.json"), "an unresolvable document leaves no name")
+
+	_, _, rt, err := h.issueTokenPair(ctx, "family", clientID, "user", "sub", "mcp", "https://bifrost.example.com/mcp", "Example MCP Client")
+	require.NoError(t, err)
+	assert.Equal(t, "Example MCP Client", rt.ClientDisplayName)
+}

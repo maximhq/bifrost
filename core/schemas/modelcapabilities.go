@@ -284,6 +284,9 @@ type ModelCapabilities struct {
 	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
 	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
 
+	// Tool-schema `pattern` is accepted at all; false ⇒ the keyword is dropped before dispatch.
+	SupportsSchemaPattern *bool `json:"supports_schema_pattern,omitempty"`
+
 	// String `format` values tool schemas may carry; any other is dropped before dispatch.
 	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`
 
