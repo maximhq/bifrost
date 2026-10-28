@@ -297260,14 +297260,14 @@
           }
         },
         {
-          "name": "293.3 openrouter/openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914",
+          "name": "293.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('293.3 openrouter/openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914 succeeds', function () {",
+                  "pm.test('293.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -297293,7 +297293,7 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/openai/v1/models/openrouter%2Fopenai%2Fgpt-4o-mini",
+              "raw": "{{baseUrl}}/openai/v1/models/openai%2Fgpt-4o-mini",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -297301,7 +297301,7 @@
                 "openai",
                 "v1",
                 "models",
-                "openrouter%2Fopenai%2Fgpt-4o-mini"
+                "openai%2Fgpt-4o-mini"
               ]
             }
           }

@@ -245,11 +245,12 @@ func TestOpenAIModelMetadataRoundTrip(t *testing.T) {
 		`"max_input_tokens":1040500,` +
 		`"max_output_tokens":131072,` +
 		`"reasoning":{"supported_efforts":["low","high"]},` +
-		`"modalities":{"input":["text","image"],"output":["text"]}}]}`
+		`"modalities":{"input":["text","image"],"output":["text"]}},` +
+		`{"id":"kimi/k3-noctx","max_input_tokens":131072}]}`
 
 	var decoded OpenAIListModelsResponse
 	require.NoError(t, json.Unmarshal([]byte(upstream), &decoded))
-	require.Len(t, decoded.Data, 1)
+	require.Len(t, decoded.Data, 2)
 
 	bifrost := decoded.ToBifrostListModelsResponse(
 		schemas.ModelProvider("test"),
@@ -258,10 +259,10 @@ func TestOpenAIModelMetadataRoundTrip(t *testing.T) {
 		nil,
 		false,
 	)
-	require.Len(t, bifrost.Data, 1)
+	require.Len(t, bifrost.Data, 2)
 
 	openai := ToOpenAIListModelsResponse(bifrost)
-	require.Len(t, openai.Data, 1)
+	require.Len(t, openai.Data, 2)
 	roundTrip := openai.Data[0]
 
 	require.Equal(t, "test/kimi/k3", roundTrip.ID)
@@ -272,6 +273,13 @@ func TestOpenAIModelMetadataRoundTrip(t *testing.T) {
 	require.Equal(t, schemas.Ptr("K3"), roundTrip.DisplayName)
 	require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, roundTrip.Reasoning)
 	require.Equal(t, &OpenAIModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}}, roundTrip.Modalities)
+
+	// A model that reports only max_input_tokens keeps the legacy
+	// context_window fallback but must not gain a fabricated context_length.
+	noCtx := openai.Data[1]
+	require.Equal(t, "test/kimi/k3-noctx", noCtx.ID)
+	require.Equal(t, schemas.Ptr(131072), noCtx.ContextWindow)
+	require.Nil(t, noCtx.ContextLength)
 
 	retrieved := ToOpenAIModelRetrieveResponse(&schemas.BifrostModelRetrieveResponse{Model: bifrost.Data[0]})
 	require.Equal(t, "test/kimi/k3", retrieved.ID)

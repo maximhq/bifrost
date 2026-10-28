@@ -120,11 +120,13 @@ func ToOpenAIModelRetrieveResponse(response *schemas.BifrostModelRetrieveRespons
 	if response.OwnedBy != nil {
 		openaiModel.OwnedBy = *response.OwnedBy
 	}
+	// context_window keeps its legacy max_input_tokens fallback; context_length
+	// reports only an actual context length and is never derived from the input limit.
 	openaiModel.ContextWindow = response.ContextLength
 	if openaiModel.ContextWindow == nil {
 		openaiModel.ContextWindow = response.MaxInputTokens
 	}
-	openaiModel.ContextLength = openaiModel.ContextWindow
+	openaiModel.ContextLength = response.ContextLength
 	if response.Architecture != nil {
 		openaiModel.Modalities = &OpenAIModelModalities{
 			Input:  response.Architecture.InputModalities,
@@ -158,11 +160,13 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		if model.OwnedBy != nil {
 			openaiModel.OwnedBy = *model.OwnedBy
 		}
+		// context_window keeps its legacy max_input_tokens fallback; context_length
+		// reports only an actual context length and is never derived from the input limit.
 		openaiModel.ContextWindow = model.ContextLength
 		if openaiModel.ContextWindow == nil {
 			openaiModel.ContextWindow = model.MaxInputTokens
 		}
-		openaiModel.ContextLength = openaiModel.ContextWindow
+		openaiModel.ContextLength = model.ContextLength
 		if model.Architecture != nil {
 			openaiModel.Modalities = &OpenAIModelModalities{
 				Input:  model.Architecture.InputModalities,
