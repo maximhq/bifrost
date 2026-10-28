@@ -145,6 +145,36 @@ func TestArmRequestTimeout_ConcurrentCallsKeepADeadline(t *testing.T) {
 	}
 }
 
+// TestArmRequestTimeout_ChildStoppingLastClearsParent covers overlapping
+// requests on a parent ctx and a child derived from it. The child reads the
+// parent's arm through Value and shares it; when the child's stop is the last
+// one, the marker must be cleared on the parent that owns it, or the parent's
+// next request reuses the stopped timer and runs with no deadline.
+func TestArmRequestTimeout_ChildStoppingLastClearsParent(t *testing.T) {
+	parent, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	parent.SetValue(schemas.BifrostContextKeyRequestTimeout, 50*time.Millisecond)
+	child := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	defer child.Cancel()
+
+	stopParent, _ := armRequestTimeout(parent)
+	stopChild, _ := armRequestTimeout(child)
+	stopParent()
+	stopChild()
+
+	if arm, _ := parent.Value(requestTimeoutArmedKey{}).(*requestTimeoutArm); arm != nil {
+		t.Fatalf("parent still holds a stopped arm after the child's final stop: %+v", arm)
+	}
+
+	stopNext, _ := armRequestTimeout(parent)
+	defer stopNext()
+	select {
+	case <-parent.Done():
+	case <-time.After(time.Second):
+		t.Fatal("the parent's next request ran with no deadline")
+	}
+}
+
 // TestArmRequestTimeout_ConcurrentArmsStartOneTimer verifies concurrent first
 // arms on one ctx share a single timer rather than each starting their own,
 // and that the timer stops once every caller has stopped.
