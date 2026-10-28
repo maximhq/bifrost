@@ -82,6 +82,35 @@ func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
 	}
 }
 
+// TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases verifies that live alias entries
+// do not shadow the datasheet, which stays the source of Databricks' callable models.
+func TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", false, []string{"my-claude"})
+
+	got := mc.GetModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model", "my-claude"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
 // TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly verifies the
 // unfiltered Cloudflare catalog is its live /models response alone. The datasheet
 // carries the same Workers AI models under other ID shapes, which would otherwise

@@ -15,11 +15,13 @@ import (
 // responses-API models and omits the Sonar chat family, which is still callable
 // via /chat/completions. For these, the datasheet (not the live list) is the
 // authoritative superset, so live must be unioned with the full allowed
-// datasheet set rather than only the deprecated backfill.
+// datasheet set rather than only the deprecated backfill. Databricks lists only
+// the key's configured models and aliases, so the datasheet carries the rest.
 var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Perplexity: true,
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
+	schemas.Databricks: true,
 }
 
 // providersWithListModelsOnly enumerates providers whose unfiltered model list
