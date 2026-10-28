@@ -5609,6 +5609,21 @@ func (s *endpointJobStore) UpsertProviderJob(_ context.Context, job *cstables.Ta
 	return nil
 }
 
+// drainRelayLogWrite reads the processing-row insert PreRelayHook now always enqueues first, then
+// returns the terminal row PostRelayHook writes: an update reconciling that same row when a
+// pending entry existed, or an insert in the fallback case where none did.
+func drainRelayLogWrite(t testing.TB, queue chan *writeQueueEntry) *logstore.RelayLog {
+	t.Helper()
+	insert := <-queue
+	require.NotNil(t, insert.endpointLog, "PreRelayHook enqueues a processing row")
+	require.Equal(t, "processing", insert.endpointLog.Status)
+	terminal := <-queue
+	if terminal.endpointLogUpdate != nil {
+		return terminal.endpointLogUpdate
+	}
+	return terminal.endpointLog
+}
+
 func TestRelayLogRow(t *testing.T) {
 	plugin := policyTestPlugin(nil, nil, true)
 	plugin.writeQueue = make(chan *writeQueueEntry, 4)
@@ -5630,7 +5645,7 @@ func TestRelayLogRow(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 
-	entry := (<-plugin.writeQueue).endpointLog
+	entry := drainRelayLogWrite(t, plugin.writeQueue)
 	require.NotNil(t, entry)
 	require.Equal(t, "req-pte", entry.RequestID)
 	require.NotEqual(t, "req-pte", entry.ID, "the row id is generated: a caller's x-request-id may repeat")
@@ -5651,17 +5666,48 @@ func TestRelayLogRow(t *testing.T) {
 
 	// Content logging off: the row keeps the charge and drops the bodies and headers.
 	hidden := policyTestPlugin(boolPtr(true), nil, false)
-	hidden.writeQueue = make(chan *writeQueueEntry, 1)
+	hidden.writeQueue = make(chan *writeQueueEntry, 2)
 	ctx = policyCtx(false, nil)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-hidden")
 	_, _, err = hidden.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=private-text", Body: []byte(`secret`)})
 	require.NoError(t, err)
 	_, _, err = hidden.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 502}, nil)
 	require.NoError(t, err)
-	entry = (<-hidden.writeQueue).endpointLog
+	entry = drainRelayLogWrite(t, hidden.writeQueue)
 	require.Nil(t, entry.RequestBody)
 	require.Equal(t, "/search", entry.Path, "query values are caller content and are dropped with it")
 	require.Equal(t, logstore.RelayLogStatusError, entry.Status)
+}
+
+// PreRelayHook's processing row and PostRelayHook's terminal write share one ID and reconcile via
+// UPDATE, not a second INSERT — the same two-phase pattern LLM/chat logs use, so a relay call is
+// visible in Relay Logs while still in flight and a crash between the two still leaves a row.
+func TestRelayLogTwoPhaseWriteReconcilesSameRow(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 2)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-two-phase")
+
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+	require.NoError(t, err)
+	insert := <-plugin.writeQueue
+	require.NotNil(t, insert.endpointLog, "the processing row is an insert")
+	require.Nil(t, insert.endpointLogUpdate)
+	require.Equal(t, "processing", insert.endpointLog.Status)
+	processingID := insert.endpointLog.ID
+
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+	terminal := <-plugin.writeQueue
+	require.Nil(t, terminal.endpointLog, "the terminal write reconciles the processing row, it does not insert a second one")
+	require.NotNil(t, terminal.endpointLogUpdate)
+	require.Equal(t, processingID, terminal.endpointLogUpdate.ID, "same row id, so BatchUpdateRelayLogs reconciles it rather than orphaning a new row")
+	require.Equal(t, logstore.RelayLogStatusSuccess, terminal.endpointLogUpdate.Status)
+
+	// The processing insert and the entry PostRelayHook goes on to mutate must not be the same
+	// object: mergeVirtualKeyMetadata writes into MetadataParsed in place, which would otherwise
+	// race with the batch writer serializing the already-enqueued insert copy.
+	require.NotSame(t, insert.endpointLog, terminal.endpointLogUpdate)
 }
 
 // A refused or failed call has no reply to time, so the row takes the latency the error carries,
@@ -5678,7 +5724,7 @@ func TestRelayLogClampsUserAgent(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
 	require.NoError(t, err)
-	entry := (<-plugin.writeQueue).endpointLog
+	entry := drainRelayLogWrite(t, plugin.writeQueue)
 	require.NotNil(t, entry.UserAgent)
 	require.LessOrEqual(t, len(*entry.UserAgent), maxPersistedUserAgentLen, "the stored user agent fits its column")
 	require.Equal(t, "Claude Code", *entry.App, "the app is still detected from the full header")
@@ -5697,7 +5743,7 @@ func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
 	relayed := map[string]string{"content-type": "application/json", "x-tenant-id": "acme", "x-other": "no", "x-amz-target": "Textract.AnalyzeDocument"}
 	run := func(t *testing.T, plugin *LoggerPlugin, contentOff bool) *logstore.RelayLog {
 		t.Helper()
-		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		plugin.writeQueue = make(chan *writeQueueEntry, 2)
 		ctx := policyCtx(false, nil)
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-headers")
 		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
@@ -5716,7 +5762,7 @@ func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
 		}
 		_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "textract", StatusCode: 200, Headers: map[string]string{"x-amzn-requestid": "abc"}, Body: []byte(`{}`)}, nil)
 		require.NoError(t, err)
-		return (<-plugin.writeQueue).endpointLog
+		return drainRelayLogWrite(t, plugin.writeQueue)
 	}
 	wantMetadata := map[string]any{"x-tenant-id": "acme", "team": "platform", "environment": "staging", "cost_center": "r&d"}
 	wantMatched := map[string]string{"x-amz-target": "Textract.AnalyzeDocument", "x-api-key": schemas.RedactSensitiveHeaders(map[string]string{"x-api-key": "tvly-secret"})["x-api-key"]}
@@ -5738,7 +5784,7 @@ func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
 	require.Equal(t, wantMatched, entry.RequestHeadersParsed, "nor the matched headers")
 
 	plugin = policyTestPlugin(nil, nil, true)
-	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	plugin.writeQueue = make(chan *writeQueueEntry, 2)
 	ctx := policyCtx(false, nil)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-no-headers")
 	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"content-type": "application/json", "x-other": "no"})
@@ -5746,7 +5792,7 @@ func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "textract", StatusCode: 200}, nil)
 	require.NoError(t, err)
-	bare := (<-plugin.writeQueue).endpointLog
+	bare := drainRelayLogWrite(t, plugin.writeQueue)
 	require.Nil(t, bare.MetadataParsed, "with nothing configured and no label or dimension, no metadata")
 	require.Nil(t, bare.RequestHeadersParsed, "and with no matcher, no header")
 }
@@ -5762,7 +5808,7 @@ func TestRelayLogRefusalRecordsLatency(t *testing.T) {
 	denied.ExtraFields.Latency = 7
 	_, _, err = plugin.PostRelayHook(ctx, nil, denied)
 	require.NoError(t, err)
-	entry := (<-plugin.writeQueue).endpointLog
+	entry := drainRelayLogWrite(t, plugin.writeQueue)
 	require.Equal(t, logstore.RelayLogStatusError, entry.Status)
 	require.Equal(t, 403, entry.StatusCode)
 	require.NotNil(t, entry.Latency)
@@ -5774,7 +5820,7 @@ func TestRelayLogRefusalRecordsLatency(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = plugin.PostRelayHook(ctx, nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "dial failed"}})
 	require.NoError(t, err)
-	entry = (<-plugin.writeQueue).endpointLog
+	entry = drainRelayLogWrite(t, plugin.writeQueue)
 	require.NotNil(t, entry.Latency, "an error without a latency still measures from the row's start")
 	require.GreaterOrEqual(t, *entry.Latency, 0.0)
 }
@@ -5791,7 +5837,7 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 		ID: "relay-row", Timestamp: time.Now().UTC(), RelayName: "tavily", RequestID: "req-relay-backfill", Status: logstore.RelayLogStatusSuccess,
 		UpstreamLatency: &provisionalUp, OverheadLatency: &provisionalOv,
 	}
-	plugin.storeOrEnqueueRelayEntry(ctx, entry)
+	plugin.storeOrEnqueueRelayEntry(ctx, entry, false)
 	if _, parked := plugin.pendingRelayLogsToInject.Load(traceID); !parked {
 		t.Fatal("expected entry to be parked for Inject")
 	}
@@ -5819,7 +5865,7 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 
 	// No trace on the context: the row is written as it is.
 	direct := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
-	direct.storeOrEnqueueRelayEntry(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &logstore.RelayLog{ID: "no-trace", UpstreamLatency: &provisionalUp})
+	direct.storeOrEnqueueRelayEntry(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &logstore.RelayLog{ID: "no-trace", UpstreamLatency: &provisionalUp}, false)
 	queued = <-direct.writeQueue
 	require.Equal(t, float64(6), *queued.endpointLog.UpstreamLatency)
 }
@@ -5830,7 +5876,7 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 func TestRelayLogContentPolicy(t *testing.T) {
 	run := func(t *testing.T, plugin *LoggerPlugin, decision *bool) *logstore.RelayLog {
 		t.Helper()
-		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		plugin.writeQueue = make(chan *writeQueueEntry, 2)
 		ctx := policyCtx(false, nil)
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-policy")
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
@@ -5843,7 +5889,7 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		}
 		_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200, Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"ok":true}`)}, nil)
 		require.NoError(t, err)
-		return (<-plugin.writeQueue).endpointLog
+		return drainRelayLogWrite(t, plugin.writeQueue)
 	}
 
 	t.Run("on by default", func(t *testing.T) {

@@ -1572,6 +1572,54 @@ func (s *ClickHouseLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context
 	return inserted, nil
 }
 
+// BatchUpdateRelayLogs overlays each entry's non-zero fields onto its existing Relay Logs row via
+// read-modify-write and re-insert, mirroring BatchUpdate for Log: it overrides the embedded RDB
+// implementation, whose GORM UPDATE would be a heavyweight mutation here and would bypass
+// rmwLocks. Missing ids are skipped, matching the RDB semantics.
+func (s *ClickHouseLogStore) BatchUpdateRelayLogs(ctx context.Context, entries []*RelayLog) error {
+	byID := make(map[string][]*RelayLog, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		if _, seen := byID[entry.ID]; !seen {
+			ids = append(ids, entry.ID)
+		}
+		byID[entry.ID] = append(byID[entry.ID], entry)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	st, err := chParseSchema(s.db, &RelayLog{})
+	if err != nil {
+		return err
+	}
+	return forEachRMWChunk(ids, func(chunk []string) error {
+		defer s.lockRMWBatch("relay_logs", chunk)()
+		var rows []*RelayLog
+		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, r := range rows {
+			for _, src := range byID[r.ID] {
+				if err := src.SerializeFields(); err != nil {
+					return err
+				}
+				if err := chApplyStructUpdate(ctx, st, reflect.ValueOf(r).Elem(), reflect.ValueOf(src).Elem()); err != nil {
+					return err
+				}
+				// The overlay skips zero values; the final visibility is always written.
+				r.ContentHidden = src.ContentHidden
+			}
+		}
+		return s.chReinsert(ctx, &rows)
+	})
+}
+
 // DeleteRelayLogs deletes the identified rows with a lightweight delete.
 // DeleteRelayLogsBatch removes Relay Logs rows older than cutoff, as DeleteLogsBatch does for the
 // request logs, so the retention cleaner prunes relay rows on ClickHouse too.

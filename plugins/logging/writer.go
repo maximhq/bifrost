@@ -105,24 +105,38 @@ type pendingAgentInjectEntries struct {
 
 // pendingRelayInjectEntries is the Relay analogue of pendingAgentInjectEntries: the row parked by
 // PostRelayHook until Inject backfills upstream, overhead and the breakdown from the completed trace.
+// evictedRelayPartial is what cleanupStalePendingLogs leaves behind in evictedRelayPartials when
+// it drops a relay call's pending entry before PostRelayHook claimed it: the row id PreRelayHook's
+// processing INSERT already used, and when the marker was left, so a sweep can expire it if no
+// PostRelayHook ever arrives to consume it.
+type evictedRelayPartial struct {
+	rowID     string
+	evictedAt time.Time
+}
+
 type pendingRelayInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.RelayLog
 	createdAt time.Time
 	drained   bool
+	// isUpdate selects whether injectRelayEntries reconciles the parked row's processing insert
+	// (UPDATE) or writes a fresh row (INSERT) once the trace completes. A trace carries one relay
+	// call, so every row parked under the same key shares this.
+	isUpdate bool
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
 // Exactly one insert, partial update, transcript correction, MCP log or agent log is set.
 type writeQueueEntry struct {
-	realtimeInput *realtimeInputUpdate
-	log           *logstore.Log
-	logUpdate     *logstore.Log
-	mcpLog        *logstore.MCPToolLog
-	agentLog      *logstore.AgentLog
-	endpointLog   *logstore.RelayLog
-	callback      func(entry *logstore.Log)
-	mcpCallback   func(entry *logstore.MCPToolLog)
+	realtimeInput     *realtimeInputUpdate
+	log               *logstore.Log
+	logUpdate         *logstore.Log
+	mcpLog            *logstore.MCPToolLog
+	agentLog          *logstore.AgentLog
+	endpointLog       *logstore.RelayLog
+	endpointLogUpdate *logstore.RelayLog
+	callback          func(entry *logstore.Log)
+	mcpCallback       func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -476,6 +490,22 @@ func (p *LoggerPlugin) insertEndpointLogIndividually(ctx context.Context, log *l
 	return true
 }
 
+// updateEndpointLogIndividually is the per-row fallback for a partial Relay Logs update whose
+// batch failed with a row-level error. It reports false when ctx ended before the row was
+// written or dropped.
+func (p *LoggerPlugin) updateEndpointLogIndividually(ctx context.Context, log *logstore.RelayLog) bool {
+	err := p.store.BatchUpdateRelayLogs(ctx, []*logstore.RelayLog{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual update failed for relay log %s: %v", log.ID, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
 // updateLogIndividually is the per-row fallback for a partial log update whose
 // batch failed with a row-level error. It reports false when ctx ended before
 // the row was written or dropped.
@@ -507,6 +537,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
 	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	endpointLogs := make([]*logstore.RelayLog, 0)
+	endpointLogUpdates := make([]*logstore.RelayLog, 0)
 	for _, entry := range batch {
 		if entry.log != nil {
 			p.applyParsedPassthrough(entry.log)
@@ -526,6 +557,9 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		}
 		if entry.endpointLog != nil {
 			endpointLogs = append(endpointLogs, entry.endpointLog)
+		}
+		if entry.endpointLogUpdate != nil {
+			endpointLogUpdates = append(endpointLogUpdates, entry.endpointLogUpdate)
 		}
 	}
 
@@ -550,6 +584,12 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchUpdate(ctx, chunk)
 	}, p.updateLogIndividually)
+	// Same ordering rationale as the log update above: the queue is FIFO and PreRelayHook always
+	// enqueues the insert before PostRelayHook can enqueue its reconciling update, so the row
+	// exists by the time this runs.
+	unwrittenEndpointUpdates := writeWithRecovery(p, ctx, "relay log update", endpointLogUpdates, func(ctx context.Context, chunk []*logstore.RelayLog) error {
+		return p.store.BatchUpdateRelayLogs(ctx, chunk)
+	}, p.updateEndpointLogIndividually)
 	for _, entry := range batch {
 		if entry.realtimeInput != nil {
 			if err := p.writeRealtimeInputUpdate(ctx, entry.realtimeInput); err != nil {
@@ -570,7 +610,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	// than one log type is handed back whole if any part is unwritten; persisted
 	// parts are re-inserted as no-ops by conflict-safe insertion.
 	var unwritten []*writeQueueEntry
-	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent) + len(unwrittenEndpoint)
+	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent) + len(unwrittenEndpoint) + len(unwrittenEndpointUpdates)
 	skip := make(map[*writeQueueEntry]struct{}, unwrittenCount)
 	if unwrittenCount > 0 {
 		pending := make(map[any]struct{}, unwrittenCount)
@@ -589,13 +629,17 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		for _, e := range unwrittenEndpoint {
 			pending[e] = struct{}{}
 		}
+		for _, e := range unwrittenEndpointUpdates {
+			pending[e] = struct{}{}
+		}
 		for _, entry := range batch {
 			_, logPending := pending[entry.log]
 			_, updatePending := pending[entry.logUpdate]
 			_, mcpPending := pending[entry.mcpLog]
 			_, agentPending := pending[entry.agentLog]
 			_, endpointPending := pending[entry.endpointLog]
-			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) || (entry.endpointLog != nil && endpointPending) {
+			_, endpointUpdatePending := pending[entry.endpointLogUpdate]
+			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) || (entry.endpointLog != nil && endpointPending) || (entry.endpointLogUpdate != nil && endpointUpdatePending) {
 				skip[entry] = struct{}{}
 				unwritten = append(unwritten, entry)
 			}
@@ -716,7 +760,38 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 			return true
 		}
 		if pending.Timestamp.Before(cutoff) && (!pending.Streamed || pending.Timestamp.Before(streamCutoff)) {
-			p.pendingEndpointLogs.Delete(key)
+			// Unlike the LLM path, nothing needs inserting here: PreRelayHook already enqueued this
+			// row's processing INSERT, so it is already durable. The claim lock still matters,
+			// though — without it, a PostRelayHook racing this sweep could load the same pending
+			// entry after it was deleted, see no pending entry, and fall back to generating a fresh
+			// ID instead of the already-inserted row's, orphaning the processing row forever.
+			id, ok := key.(string)
+			if !ok {
+				p.pendingEndpointLogs.Delete(key)
+				return true
+			}
+			lock := p.pendingClaimLock(id)
+			lock.Lock()
+			if claimed, ok := p.pendingEndpointLogs.LoadAndDelete(key); ok {
+				if claimedEntry, ok := claimed.(*logstore.RelayLog); ok {
+					// Leaves behind only the row id, so a PostRelayHook that still arrives can
+					// reconcile the already-inserted row by UPDATE instead of inserting a duplicate
+					// with a fresh id.
+					p.evictedRelayPartials.Store(id, &evictedRelayPartial{rowID: claimedEntry.ID, evictedAt: time.Now()})
+				}
+			}
+			lock.Unlock()
+		}
+		return true
+	})
+	// Drop eviction markers whose request never finished at all: a PostRelayHook this late would
+	// find nothing left to reconcile onto worth the lookup, and DeleteRelayLogsBatch's retention
+	// cleaner will eventually remove the orphaned processing row itself. The same bound a streamed
+	// pending entry gets is reused, since that is the longest a legitimate late PostRelayHook could
+	// still be in flight.
+	p.evictedRelayPartials.Range(func(key, value any) bool {
+		if marker, ok := value.(*evictedRelayPartial); ok && marker.evictedAt.Before(streamCutoff) {
+			p.evictedRelayPartials.Delete(key)
 		}
 		return true
 	})
@@ -1058,6 +1133,27 @@ func (p *LoggerPlugin) enqueueEndpointLogEntry(entry *logstore.RelayLog) {
 	}
 }
 
+// enqueueEndpointLogUpdate pushes a partial Relay Logs update (ID plus the non-zero output fields)
+// to the write queue, mirroring enqueueLogUpdate. The batch writer applies it through
+// store.BatchUpdateRelayLogs after the batch's inserts, so it reconciles the processing row
+// PreRelayHook already inserted instead of inserting a duplicate.
+func (p *LoggerPlugin) enqueueEndpointLogUpdate(entry *logstore.RelayLog) {
+	if entry == nil || p.closed.Load() {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{endpointLogUpdate: entry}:
+	default:
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping relay log update %s", entry.ID)
+	}
+}
+
 // estimateWriteQueueEntrySize returns the estimated serialized payload size for
 // the log entry carried by a write queue item.
 func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
@@ -1087,23 +1183,10 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 		return size
 	}
 	if entry.endpointLog != nil {
-		size := len(entry.endpointLog.PluginLogs) + len(entry.endpointLog.ErrorDetails) + 512
-		for k, v := range entry.endpointLog.MetadataParsed {
-			size += len(k) + len(fmt.Sprint(v)) + 6
-		}
-		for _, body := range []*string{entry.endpointLog.RequestBody, entry.endpointLog.ResponseBody} {
-			if body != nil {
-				size += len(*body)
-			}
-		}
-		// Headers are still maps here (the store serializes them on write), so they are sized as
-		// such; the serialized columns are nil until then.
-		for _, headers := range []map[string]string{entry.endpointLog.RequestHeadersParsed, entry.endpointLog.ResponseHeadersParsed} {
-			for k, v := range headers {
-				size += len(k) + len(v) + 6
-			}
-		}
-		return size
+		return estimateRelayLogEntrySize(entry.endpointLog)
+	}
+	if entry.endpointLogUpdate != nil {
+		return estimateRelayLogEntrySize(entry.endpointLogUpdate)
 	}
 	if entry.mcpLog != nil {
 		return estimateMCPToolLogEntrySize(entry.mcpLog)
@@ -1177,6 +1260,31 @@ func estimateMCPToolLogEntrySize(log *logstore.MCPToolLog) int {
 		return 0
 	}
 	return len(log.Arguments) + len(log.Result) + len(log.ErrorDetails) + len(log.Metadata) + len(log.PluginLogs) + 512
+}
+
+// estimateRelayLogEntrySize returns a rough byte-size estimate for a Relay Logs entry based on its
+// serialized text fields, shared by the insert and update paths.
+func estimateRelayLogEntrySize(log *logstore.RelayLog) int {
+	if log == nil {
+		return 0
+	}
+	size := len(log.PluginLogs) + len(log.ErrorDetails) + 512
+	for k, v := range log.MetadataParsed {
+		size += len(k) + len(fmt.Sprint(v)) + 6
+	}
+	for _, body := range []*string{log.RequestBody, log.ResponseBody} {
+		if body != nil {
+			size += len(*body)
+		}
+	}
+	// Headers are still maps here (the store serializes them on write), so they are sized as such;
+	// the serialized columns are nil until then.
+	for _, headers := range []map[string]string{log.RequestHeadersParsed, log.ResponseHeadersParsed} {
+		for k, v := range headers {
+			size += len(k) + len(v) + 6
+		}
+	}
+	return size
 }
 
 // buildStaleMCPToolLogEntry converts a pending MCP processing row into a

@@ -2477,3 +2477,86 @@ func TestReleaseHeldGuardrailRowsWritesRowOnce(t *testing.T) {
 		t.Fatalf("released row must be written as built, got %+v", written.GuardrailDebugParsed)
 	}
 }
+
+// TestRelayLogCleanupLeavesEvictionMarker verifies that cleanupStalePendingLogs, when it drops a
+// relay call's stale pending entry, records the already-inserted row's id in evictedRelayPartials
+// instead of just discarding it.
+func TestRelayLogCleanupLeavesEvictionMarker(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending := &logstore.RelayLog{ID: "relay-row-evicted", RequestID: "req-relay-evicted", Timestamp: stale, Status: "processing"}
+	plugin.pendingEndpointLogs.Store("req-relay-evicted", pending)
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingEndpointLogs.Load("req-relay-evicted"); ok {
+		t.Fatal("expected stale pending relay entry to be removed from memory")
+	}
+	marker, ok := plugin.evictedRelayPartials.Load("req-relay-evicted")
+	if !ok {
+		t.Fatal("expected an eviction marker so a late PostRelayHook can reconcile instead of inserting a duplicate")
+	}
+	if m, ok := marker.(*evictedRelayPartial); !ok || m.rowID != "relay-row-evicted" {
+		t.Fatalf("expected marker to carry the already-inserted row id, got %+v", marker)
+	}
+}
+
+// TestRelayLogPostHookReconcilesAfterEviction verifies the full flow: PreRelayHook inserts a
+// processing row, eviction claims and drops the in-memory pending entry but leaves a marker, and a
+// PostRelayHook that still arrives reconciles the SAME row by UPDATE rather than inserting a
+// second one with a fresh id.
+func TestRelayLogPostHookReconcilesAfterEviction(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-relay-late")
+	if _, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"}); err != nil {
+		t.Fatalf("PreRelayHook() error = %v", err)
+	}
+
+	// Backdate the pending entry's timestamp so the sweep treats it as stale, as a real idle gap
+	// would, then evict it the way the background sweeper does.
+	pendingAny, ok := plugin.pendingEndpointLogs.Load("req-relay-late")
+	if !ok {
+		t.Fatal("expected PreRelayHook to park a pending entry")
+	}
+	pendingEntry := pendingAny.(*logstore.RelayLog)
+	rowID := pendingEntry.ID
+	pendingEntry.Timestamp = time.Now().Add(-pendingLogTTL - time.Minute)
+	plugin.cleanupStalePendingLogs()
+	if _, ok := plugin.pendingEndpointLogs.Load("req-relay-late"); ok {
+		t.Fatal("expected eviction to clear the in-memory pending entry")
+	}
+
+	if _, _, err := plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil); err != nil {
+		t.Fatalf("PostRelayHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindRelayLog(context.Background(), rowID)
+	if err != nil {
+		t.Fatalf("FindRelayLog() error = %v", err)
+	}
+	if row.Status != logstore.RelayLogStatusSuccess {
+		t.Fatalf("expected the reconciled row to reach status success, got %q", row.Status)
+	}
+
+	result, err := store.SearchRelayLogs(context.Background(), logstore.RelayLogFilters{RequestID: "req-relay-late"}, logstore.PaginationOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchRelayLogs() error = %v", err)
+	}
+	if len(result.Logs) != 1 {
+		t.Fatalf("expected exactly one row for the request, got %d (eviction must not orphan a duplicate insert)", len(result.Logs))
+	}
+}

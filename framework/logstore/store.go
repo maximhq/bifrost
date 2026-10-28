@@ -232,6 +232,11 @@ type LogStore interface {
 
 	// Relay log methods (Relay Logs).
 	BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error)
+	// BatchUpdateRelayLogs applies the non-zero fields of each entry onto the existing row with
+	// that ID; rows that do not exist are skipped, never inserted. content_hidden is the exception,
+	// as on BatchUpdate for Log: it is always written from the entry, since it carries the
+	// request's final visibility decision and must be able to clear a flag saved earlier.
+	BatchUpdateRelayLogs(ctx context.Context, entries []*RelayLog) error
 	FindRelayLog(ctx context.Context, id string) (*RelayLog, error)
 	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
 	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)

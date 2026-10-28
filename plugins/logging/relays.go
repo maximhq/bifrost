@@ -2,6 +2,7 @@ package logging
 
 import (
 	"errors"
+	"maps"
 	"net/url"
 	"strconv"
 	"strings"
@@ -84,6 +85,21 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	enabledByDefault := p.disableContentLogging == nil || !*p.disableContentLogging
 	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, enabledByDefault)
 	p.pendingEndpointLogs.Store(requestID, entry)
+	// Insert the processing row now, as PreLLMHook does for LLM/chat logs: a relay call is
+	// queryable in Relay Logs while it is still in flight, and a crash or restart mid-call still
+	// leaves this row behind instead of no trace at all. PostRelayHook reconciles it with an
+	// UPDATE (see storeOrEnqueueRelayEntry) rather than inserting a second row.
+	//
+	// A shallow copy of entry is enqueued, not entry itself: entry stays live in
+	// pendingEndpointLogs for PostRelayHook to load and mutate, including reassigning
+	// MetadataParsed via mergeVirtualKeyMetadata, which writes into the map in place. Enqueuing
+	// entry directly would let the batch writer's goroutine serialize that same map concurrently
+	// with that in-place write. MetadataParsed is cloned for the same reason; every other field
+	// PostRelayHook touches is either a fresh value assigned later (never on this copy) or an
+	// immutable *string/*float64 that reassignment, not mutation, replaces.
+	insertCopy := *entry
+	insertCopy.MetadataParsed = maps.Clone(entry.MetadataParsed)
+	p.enqueueEndpointLogEntry(&insertCopy)
 	return req, nil, nil
 }
 
@@ -97,8 +113,19 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	pending, _ := p.pendingEndpointLogs.LoadAndDelete(requestID)
 	entry, _ := pending.(*logstore.RelayLog)
+	// isUpdate tracks whether a processing row already exists under entry.ID: either the pending
+	// entry PreRelayHook stored, or the id an eviction sweep left behind after claiming and
+	// inserting it first. Either way the terminal write below must reconcile that row by UPDATE,
+	// never insert a second one.
+	isUpdate := entry != nil
 	if entry == nil {
 		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
+		if marker, ok := p.evictedRelayPartials.LoadAndDelete(requestID); ok {
+			if m, ok := marker.(*evictedRelayPartial); ok {
+				entry.ID = m.rowID
+				isUpdate = true
+			}
+		}
 	}
 	entry.ApplyGovernanceContext(ctx)
 	// Merged again here, as PostLLMHook does: the key's metadata is stamped by governance, which may
@@ -177,20 +204,29 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	if resp != nil && resp.Usage != nil && resp.Usage.Job != nil {
 		p.recordEndpointJob(entry, resp.Usage.Job)
 	}
-	p.storeOrEnqueueRelayEntry(ctx, entry)
+	// A processing row already exists under entry.ID whenever isUpdate is true — either the pending
+	// entry PreRelayHook stored, or the row an eviction sweep already inserted and left a marker
+	// for. Only a request id PreRelayHook never saw at all has nothing to reconcile.
+	p.storeOrEnqueueRelayEntry(ctx, entry, isUpdate)
 	return resp, bifrostErr, nil
 }
 
 // storeOrEnqueueRelayEntry parks the row for Inject() to backfill upstream, overhead and the
 // breakdown from the completed trace, as storeOrEnqueueAgentEntry does for A2A rows. A row with
-// no trace, or whose trace has already ended, is written as it is.
-func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, entry *logstore.RelayLog) {
+// no trace, or whose trace has already ended, is written as it is. isUpdate selects whether the
+// eventual write reconciles the processing row PreRelayHook already inserted (UPDATE) or inserts
+// a fresh row because none exists (INSERT).
+func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, entry *logstore.RelayLog, isUpdate bool) {
+	write := p.enqueueEndpointLogEntry
+	if isUpdate {
+		write = p.enqueueEndpointLogUpdate
+	}
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" || p.traceAlreadyEnded(ctx, traceID) {
-		p.enqueueEndpointLogEntry(entry)
+		write(entry)
 		return
 	}
-	existing, loaded := p.pendingRelayLogsToInject.LoadOrStore(traceID, &pendingRelayInjectEntries{entries: []*logstore.RelayLog{entry}, createdAt: time.Now()})
+	existing, loaded := p.pendingRelayLogsToInject.LoadOrStore(traceID, &pendingRelayInjectEntries{entries: []*logstore.RelayLog{entry}, createdAt: time.Now(), isUpdate: isUpdate})
 	if !loaded {
 		// The trace may have ended between the check above and this store; reclaim the slot.
 		if p.traceAlreadyEnded(ctx, traceID) {
@@ -201,7 +237,7 @@ func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, ent
 				late := orphaned.entries
 				orphaned.mu.Unlock()
 				for _, e := range late {
-					p.enqueueEndpointLogEntry(e)
+					write(e)
 				}
 			}
 		}
@@ -211,7 +247,7 @@ func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, ent
 	pending.mu.Lock()
 	if pending.drained {
 		pending.mu.Unlock()
-		p.enqueueEndpointLogEntry(entry)
+		write(entry)
 		return
 	}
 	pending.entries = append(pending.entries, entry)
@@ -244,6 +280,10 @@ func (p *LoggerPlugin) injectRelayEntries(trace *schemas.Trace, joinKey string) 
 		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
+	write := p.enqueueEndpointLogEntry
+	if pending.isUpdate {
+		write = p.enqueueEndpointLogUpdate
+	}
 	for _, entry := range entries {
 		if upOK || ovOK {
 			entry.UpstreamLatency = nil
@@ -275,7 +315,7 @@ func (p *LoggerPlugin) injectRelayEntries(trace *schemas.Trace, joinKey string) 
 		if len(overheadBreakdown) > 0 {
 			entry.OverheadBreakdownParsed = overheadBreakdown
 		}
-		p.enqueueEndpointLogEntry(entry)
+		write(entry)
 	}
 }
 

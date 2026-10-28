@@ -1326,6 +1326,7 @@ type LoggerPlugin struct {
 	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key or named project; attached in PostMCPHook only if content ends up visible
 	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
 	pendingEndpointLogs          sync.Map                       // Maps request id -> *logstore.RelayLog awaiting PostRelayHook
+	evictedRelayPartials         sync.Map                       // Maps requestID -> *evictedRelayPartial: the processing row's own id, already inserted, for a late PostRelayHook to reconcile by UPDATE instead of orphaning a duplicate INSERT
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
 	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
 	relayRetainWarnOnce          sync.Once                      // retain_content_in_object_storage is not honoured on relay rows; said once

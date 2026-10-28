@@ -432,6 +432,39 @@ func (s *RDBLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entri
 	return inserted, nil
 }
 
+// BatchUpdateRelayLogs applies partial updates to multiple existing Relay Logs rows in a single
+// transaction, mirroring RDBLogStore.BatchUpdate for Log: each entry must carry an ID; only its
+// non-zero fields are written (GORM Updates semantics), so a processing row's input columns are
+// left intact while PostRelayHook's output fields reconcile onto it. A row that does not match is
+// silently skipped rather than failing the batch — this is best-effort reconciliation (eviction
+// recovery), and callers rely on insert-before-update ordering so the row exists by the time this
+// runs.
+func (s *RDBLogStore) BatchUpdateRelayLogs(ctx context.Context, entries []*RelayLog) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, entry := range entries {
+			if entry == nil || entry.ID == "" {
+				continue
+			}
+			if err := entry.SerializeFields(); err != nil {
+				return err
+			}
+			if err := tx.Model(&RelayLog{}).Where("id = ?", entry.ID).Updates(entry).Error; err != nil {
+				return err
+			}
+			// Updates skips zero values, so a final "visible" (false) decision would never clear a
+			// hidden flag the processing row saved earlier; write it explicitly, as Log.BatchUpdate
+			// does for content_hidden.
+			if err := tx.Model(&RelayLog{}).Where("id = ?", entry.ID).UpdateColumn("content_hidden", entry.ContentHidden).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // FindRelayLog loads one row, ErrNotFound when it does not exist or is out of scope.
 func (s *RDBLogStore) FindRelayLog(ctx context.Context, id string) (*RelayLog, error) {
 	var entry RelayLog

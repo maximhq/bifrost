@@ -2592,6 +2592,10 @@ func (h *HybridLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, en
 	return h.inner.BatchCreateRelayLogsIfNotExists(ctx, entries)
 }
 
+func (h *HybridLogStore) BatchUpdateRelayLogs(ctx context.Context, entries []*RelayLog) error {
+	return h.inner.BatchUpdateRelayLogs(ctx, entries)
+}
+
 func (h *HybridLogStore) FindRelayLog(ctx context.Context, id string) (*RelayLog, error) {
 	return h.inner.FindRelayLog(ctx, id)
 }
