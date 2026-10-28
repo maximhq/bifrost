@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bytedance/sonic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -75,7 +74,7 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 		var body []byte
 		if cfg.Encoding == schemas.OAuthRequestEncodingJSON {
 			contentType = "application/json"
-			if body, err = sonic.Marshal(params); err != nil {
+			if body, err = schemas.MarshalSorted(params); err != nil {
 				return nil, configurationError("oauth token_exchange request could not be encoded: " + err.Error())
 			}
 		} else {
