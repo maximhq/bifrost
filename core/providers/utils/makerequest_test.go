@@ -505,6 +505,23 @@ type scriptedServer struct {
 	accepted atomic.Int32
 }
 
+type sliceContext struct {
+	parent context.Context
+	key    any
+	value  any
+	data   []byte
+}
+
+func (c sliceContext) Deadline() (time.Time, bool) { return c.parent.Deadline() }
+func (c sliceContext) Done() <-chan struct{}       { return c.parent.Done() }
+func (c sliceContext) Err() error                  { return c.parent.Err() }
+func (c sliceContext) Value(key any) any {
+	if key == c.key {
+		return c.value
+	}
+	return c.parent.Value(key)
+}
+
 func newScriptedServer(t *testing.T, handle func(conn net.Conn, br *bufio.Reader)) *scriptedServer {
 	t.Helper()
 	s := &scriptedServer{ln: fasthttputil.NewInmemoryListener()}
@@ -1064,12 +1081,14 @@ func TestContextTransport_DisableStaleConnectionRetries(t *testing.T) {
 		name                string
 		value               *bool
 		withoutCancellation bool
+		nonComparable       bool
 		wantDials           int32
 	}{
 		{name: "absent", wantDials: 2},
 		{name: "false", value: &falseValue, wantDials: 2},
 		{name: "true", value: &trueValue, wantDials: 1},
 		{name: "true without cancellation", value: &trueValue, withoutCancellation: true, wantDials: 1},
+		{name: "true non-comparable context", value: &trueValue, withoutCancellation: true, nonComparable: true, wantDials: 1},
 	}
 	for _, streamed := range []bool{false, true} {
 		mode := "buffered"
@@ -1155,7 +1174,16 @@ func TestContextTransport_DisableStaleConnectionRetries(t *testing.T) {
 
 				ctx := context.Context(context.Background())
 				if test.value != nil {
-					ctx = context.WithValue(ctx, schemas.BifrostContextKeyDisableStaleConnectionRetries, *test.value)
+					if test.nonComparable {
+						ctx = sliceContext{
+							parent: ctx,
+							key:    schemas.BifrostContextKeyDisableStaleConnectionRetries,
+							value:  *test.value,
+							data:   []byte("non-comparable context value"),
+						}
+					} else {
+						ctx = context.WithValue(ctx, schemas.BifrostContextKeyDisableStaleConnectionRetries, *test.value)
+					}
 				}
 				if !test.withoutCancellation {
 					cancelCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)

@@ -57,7 +57,11 @@ import (
 // requestContexts maps an in-flight *fasthttp.Request to its context. Requests are
 // pooled, so a binding must be removed once client.Do returns and before the
 // request is released; bindRequestContext's unbind does that.
-var requestContexts sync.Map // *fasthttp.Request -> context.Context
+var requestContexts sync.Map // *fasthttp.Request -> *requestContextBinding
+
+type requestContextBinding struct {
+	ctx context.Context
+}
 
 // bindRequestContext associates ctx with req for the duration of a client.Do call
 // so contextTransport can honor its deadline and cancellation. The returned unbind
@@ -67,19 +71,20 @@ func bindRequestContext(req *fasthttp.Request, ctx context.Context) (unbind func
 	if req == nil || ctx == nil {
 		return func() {}
 	}
-	requestContexts.Store(req, ctx)
+	binding := &requestContextBinding{ctx: ctx}
+	requestContexts.Store(req, binding)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			requestContexts.CompareAndDelete(req, ctx)
+			requestContexts.CompareAndDelete(req, binding)
 		})
 	}
 }
 
 func lookupRequestContext(req *fasthttp.Request) context.Context {
 	if v, ok := requestContexts.Load(req); ok {
-		if ctx, ok := v.(context.Context); ok {
-			return ctx
+		if binding, ok := v.(*requestContextBinding); ok {
+			return binding.ctx
 		}
 	}
 	return context.Background()
