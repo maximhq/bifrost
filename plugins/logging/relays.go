@@ -70,10 +70,19 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 		entry.RequestBody = boundedBody(req.Body)
 	}
 	// A streamed reply has no body until core/relay buffers it as it forwards bytes; that buffering
-	// only pays its cost when the content policy would keep the body anyway, so the decision is
-	// resolved once here and handed to core/relay as a plain bool, mirroring how bifrost.go stamps
-	// BifrostContextKeyShouldStoreRawInLogs for the LLM path.
-	ctx.SetValue(schemas.BifrostContextKeyShouldCaptureRelayContent, p.resolveContentPolicy(ctx).storeContent)
+	// only pays its cost when the content policy would keep the body anyway. This hook runs before
+	// governance's (builtin placement order 3 vs 4), so governance's per-key override
+	// (BifrostContextKeyGovernanceDisableContentLogging) is not on ctx yet here — only this plugin's
+	// own static setting is stamped. core/relay resolves the final decision from this plus
+	// governance's and the per-request override once every pre-hook, governance included, has run
+	// (see Stream's capture setup), so a virtual key that disagrees with the plugin's default is
+	// never missed the way an early, fully-resolved stamp would miss it.
+	// Deliberately not resolveContentPolicy(ctx): calling it here would read governance's and the
+	// per-request override's absence as "not disabled" rather than "not decided yet", which is the
+	// exact premature-resolution bug this comment is explaining. Only the plugin's own static
+	// layer is knowable this early.
+	enabledByDefault := p.disableContentLogging == nil || !*p.disableContentLogging
+	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, enabledByDefault)
 	p.pendingEndpointLogs.Store(requestID, entry)
 	return req, nil, nil
 }

@@ -67,7 +67,7 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 		counted:    billable && resp.StatusCode >= 200 && resp.StatusCode < 300,
 		finish:     finish,
 	}
-	if captureContent, _ := ctx.Value(schemas.BifrostContextKeyShouldCaptureRelayContent).(bool); captureContent {
+	if relayContentCaptureEnabled(ctx) {
 		s.capture = make([]byte, 0, min(maxStreamBodyCaptureLen, 4096))
 	}
 	if !s.counted {
@@ -87,6 +87,26 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 		s.runes = &providerUtils.RuneCounter{}
 	}
 	return s
+}
+
+// relayContentCaptureEnabled resolves whether a streamed reply's bytes should be buffered for the
+// log row, mirroring the logging plugin's resolveContentPolicy precedence (plugin default,
+// overridden by governance's per-key decision, overridden by the per-request header) without
+// importing plugins/logging: core/relay/span.go already reads
+// BifrostContextKeyGovernanceDisableContentLogging directly for the same reason. Called from
+// newStream, which runs after RunRelayPreHooks has completed every pre-hook including governance's,
+// so this sees the final decision rather than the early, plugin-only one PreRelayHook could offer.
+func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
+	enabled, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
+	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
+		enabled = !disabled
+	}
+	if allowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); allowed {
+		if disabled, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			enabled = !disabled
+		}
+	}
+	return enabled
 }
 
 // Read forwards the next bytes of the reply.
