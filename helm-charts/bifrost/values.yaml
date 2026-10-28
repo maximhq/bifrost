@@ -656,6 +656,9 @@ bifrost:
       #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
       #   # for this server only. Omit or set to 0 to use the global default.
       #   toolExecutionTimeout: "30s"
+      #   # Per-server cap on the MCP protocol version ("auto", "2026-07-28", "2025-11-25", "2025-06-18").
+      #   # Omit to use the global maxProtocolVersion.
+      #   maxProtocolVersion: "2025-11-25"
       #   # Require every connection to resolve to a public address (set automatically for
       #   # clients registered without an admin credential check; once true it is never cleared).
       #   requirePublicTarget: false
@@ -741,6 +744,7 @@ bifrost:
       #   authType: "per_user_headers"
       #   perUserHeaderKeys: ["Authorization"]
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
+    # maxProtocolVersion: "auto"   # Newest MCP protocol version offered to MCP servers ("auto", "2026-07-28", "2025-11-25", "2025-06-18"); unset keeps the stored value
     # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint
     # served at /mcp/<endpointSlug> and attach it to virtual keys.
     # virtualMcps:

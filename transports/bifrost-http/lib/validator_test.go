@@ -995,6 +995,32 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
+// use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
+func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {
+	client := `{
+		"name": "linear",
+		"connection_type": "http",
+		"connection_string": "https://mcp.linear.app/mcp",
+		"auth_type": "oauth",
+		"oauth_config": {
+			"authorize_url": "https://linear.app/oauth/authorize",
+			"token_url": "https://api.linear.app/oauth/token",
+			"use_client_metadata_document": true
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(`{"mcp": {"client_configs": [`+client+`]}}`), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected use_client_metadata_document to pass validation: %v", err)
+	}
+	var parsed schemas.MCPClientConfig
+	if err := json.Unmarshal([]byte(client), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.PendingOAuthConfig == nil || !parsed.PendingOAuthConfig.UseClientMetadataDocument {
+		t.Fatal("use_client_metadata_document did not reach the pending OAuth config")
+	}
+}
+
 func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	// Valid MCP client config with http connection type
 	validConfig := `{
@@ -2974,6 +3000,32 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 			t.Errorf("mcp with tool_sync_interval should be valid, got: %v", err)
 		}
 	})
+}
+
+// max_protocol_version is accepted globally (mcp) and per client, limited to the supported values.
+func TestSchemaMCPMaxProtocolVersion(t *testing.T) {
+	compiled := compileSchema(t)
+	config := func(global, client string) string {
+		return fmt.Sprintf(`{
+			"mcp": {
+				"max_protocol_version": %s,
+				"client_configs": [
+					{"name": "example", "connection_type": "http", "connection_string": "https://example.com/mcp", "max_protocol_version": %s}
+				]
+			}
+		}`, global, client)
+	}
+	for _, v := range []string{`"auto"`, `"2026-07-28"`, `"2025-11-25"`, `"2025-06-18"`} {
+		if err := validateConfig(t, compiled, config(v, v)); err != nil {
+			t.Errorf("max_protocol_version %s should be valid, got: %v", v, err)
+		}
+	}
+	if err := validateConfig(t, compiled, config(`"2024-11-05"`, `"auto"`)); err == nil {
+		t.Error("an unsupported global max_protocol_version must be rejected")
+	}
+	if err := validateConfig(t, compiled, config(`"auto"`, `"latest"`)); err == nil {
+		t.Error("an unsupported per-client max_protocol_version must be rejected")
+	}
 }
 
 func TestSchemaMCPClientEndpointSlug(t *testing.T) {

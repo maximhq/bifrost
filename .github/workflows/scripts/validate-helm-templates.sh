@@ -300,6 +300,14 @@ test_template "mcp: toolSyncInterval + codeModeBindingLevel (Gap 6)" \
   --set 'bifrost.mcp.clientConfigs[0].isCodeModeClient=true' \
   --set 'bifrost.mcp.clientConfigs[0].toolSyncInterval=5m'
 
+test_template "mcp: maxProtocolVersion global + per-client" \
+  --set bifrost.mcp.enabled=true \
+  --set bifrost.mcp.maxProtocolVersion=auto \
+  --set 'bifrost.mcp.clientConfigs[0].name=test' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=http://localhost:3000' \
+  --set 'bifrost.mcp.clientConfigs[0].maxProtocolVersion=2025-06-18'
+
 # Gap 7: Cluster with region
 test_template "cluster: region (Gap 7)" \
   --set bifrost.cluster.enabled=true \

@@ -1277,6 +1277,10 @@
                 }
               ]
             },
+            "maxProtocolVersion": {
+              "$ref": "#/$defs/mcpMaxProtocolVersion",
+              "description": "Newest MCP protocol version Bifrost offers to MCP servers. 'auto' uses the newest version Bifrost supports. Unset keeps the stored value. Renders into mcp.max_protocol_version."
+            },
             "virtualMcps": {
               "type": "array",
               "description": "Virtual MCPs: named bundles of tools from one or more MCP clients, served at /mcp/<endpointSlug> and attachable to virtual keys. Renders into mcp.virtual_mcps. Canonical key; supersedes the deprecated toolGroups alias.",
@@ -6963,6 +6967,11 @@
         }
       ]
     },
+    "mcpMaxProtocolVersion": {
+      "type": "string",
+      "enum": ["auto", "2026-07-28", "2025-11-25", "2025-06-18"],
+      "description": "An MCP protocol version cap: 'auto' (newest supported) or a revision."
+    },
     "otelEndpoint": {
       "type": "string",
       "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
@@ -8695,9 +8704,27 @@
           },
           "description": "Auto-execute list of tools"
         },
+        "promptsToExpose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompts served through the MCP gateway (omit for all, [] for none). Renders into prompts_to_expose."
+        },
+        "resourcesToExpose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource URIs and URI templates served through the MCP gateway (omit for all, [] for none). Renders into resources_to_expose."
+        },
         "toolSyncInterval": {
           "type": "string",
           "description": "Per-client override for tool sync interval"
+        },
+        "maxProtocolVersion": {
+          "$ref": "#/$defs/mcpMaxProtocolVersion",
+          "description": "Per-client cap on the MCP protocol version Bifrost offers this server. Omit to use the global mcp.maxProtocolVersion; 'auto' uses the newest version Bifrost supports. Renders into max_protocol_version."
         },
         "toolExecutionTimeout": {
           "type": ["string", "integer"],
