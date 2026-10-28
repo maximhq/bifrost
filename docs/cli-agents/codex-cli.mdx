@@ -212,16 +212,27 @@ delivery = { kind = "cookie", name = "auth-openid" }
 redirect_port = 43127
 ```
 
-The example uses an Okta custom authorization server. Include the scopes your
-SSO login requests, and `offline_access` where your identity provider needs it
-to issue refresh tokens, so Codex can refresh instead of sending people back to
-the browser.
+The example uses an Okta custom authorization server. `client_id` is the public
+client from step 1. On Okta that is the native app you created for Codex, not
+the app Bifrost uses for SSO. Include the scopes your SSO login requests, and
+`offline_access` where your identity provider needs it to issue refresh
+tokens, so Codex can refresh instead of sending people back to the browser.
 
 Codex sends the identity provider's access token, not the ID token, so it has
 to pass the same checks as the SSO provider configured in Bifrost. The issuer
 must match the SSO provider's issuer URL, and when the SSO provider sets an
 audience, the token's `aud` must equal it. For an Okta custom authorization
 server that audience is usually `api://default`.
+
+Bifrost then reads the user and their role from that same access token, not
+from the ID token your dashboard login uses. It looks up an existing user by
+`sub`, then by the `email` claim. It resolves the role from the claims your SSO
+provider's role mappings read, and teams from the `groups` claim. A token with
+no role claim keeps the user's current Bifrost role, so a person who already
+signed in to the dashboard only needs `email` in the token. A person with no
+Bifrost role and no role claim in the token gets `403`. Identity providers
+often leave `email`, `groups` and custom attributes out of access tokens by
+default, so check what yours issues before rolling this out.
 
 <AccordionGroup>
 <Accordion title="Microsoft Entra ID">
@@ -299,6 +310,36 @@ and the token's audience must match the **Audience** set in Bifrost, if any.
 The org authorization server (`/oauth2/v1/...`) does not work here, because
 Okta issues its access tokens for Okta's own APIs and does not support
 validating them elsewhere.
+
+A custom authorization server's access token carries only `sub`, `uid`, `cid`
+and `scp` by default. Claims you added to the SSO app's ID token do not carry
+over. Under **Security → API → Authorization Servers**, open the server, go to
+**Claims**, and add these with **Include in token type** set to
+**Access Token**:
+
+| Name | Value type | Value |
+|------|------------|-------|
+| `email` | Expression | `user.email` |
+| `groups` | Groups | **Matches regex** `.*`, or the filter your SSO app uses |
+| The attribute your Bifrost role mappings read | Expression | For example `user.bifrostRole` |
+
+Set `groups` to the **Groups** value type. With **Expression**, Okta evaluates
+`.*` as an expression that yields nothing and leaves the claim out of the token
+without any error.
+
+The `email` claim matters even when roles come from somewhere else. On a
+custom authorization server `sub` is the user's login, such as
+`jane@example.com`, while a user created by dashboard SSO is stored under the
+Okta user ID from the ID token. The `sub` lookup misses, and only `email` links
+the Codex sign-in to that user.
+
+Check the result on the server's **Token Preview** tab. Pick the Codex client,
+a user, the **Authorization Code** grant, and the scopes from `requirements.toml`.
+On the **token** tab, not **id_token**, confirm that `iss`, `aud`, `email`,
+`groups` and your role claim have the values Bifrost expects. If preview
+reports no matching policy, add a rule under the server's **Access Policies**
+that covers the Codex client with the Authorization Code and Refresh Token
+grants.
 
 </Accordion>
 </AccordionGroup>
@@ -393,6 +434,28 @@ bifrost models list
 When configuring Codex manually, confirm that `model_provider = "bifrost"`,
 `requires_openai_auth = false`, and `OPENAI_API_KEY` contains a Bifrost virtual
 key.
+
+When signing in with your identity provider, a `401` means Bifrost rejected the
+`auth-openid` token. Its issuer or audience does not match the SSO provider
+configured in Bifrost. On Okta, the usual cause is authorize and token URLs
+that point at the org authorization server (`/oauth2/v1/...`) instead of a
+custom one.
+
+### `403 Access denied: no application role or group mapping`
+
+Bifrost validated the identity provider token but found no role for the user.
+The access token has no claim that your role mappings read, and no existing
+Bifrost user with a role matched its `sub` or `email`. Add `email` and your
+role or group claims to the access token, as described for
+[your identity provider](#sign-in-with-your-identity-provider-enterprise), then
+restart Codex and sign in again so it gets a new token.
+
+### Sign-in fails with an `offline_access` or policy error
+
+The identity provider refused the scopes Codex requested. On Okta, give the
+Codex app the **Refresh Token** grant, and make sure the authorization server
+has an access policy rule for that client that allows the Authorization Code
+and Refresh Token grants.
 
 ## Next steps
 
