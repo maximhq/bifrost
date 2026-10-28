@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1486,6 +1487,273 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 	assert.Zero(t, store.wholeMap, "a chat request never copies the whole provider map")
 }
 
+// A request that names a model by a key alias is admitted when the virtual key's allowed-models
+// list names the model the alias resolves to (#6620), through the whole hook chain: the provider's
+// keys, with their aliases, reach the model check from the configured provider. A name that is
+// neither allowed nor an alias of an allowed model is still refused.
+func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		// k2 is restricted to other models, so key selection never picks it for these names and
+		// its missing alias must not veto the request.
+		schemas.OpenAI: {Keys: []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+			{ID: "k2", Models: schemas.WhiteList{"embedding-*"}},
+		}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-alias", mcpTestVKValue, "alias-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	// A direct key or a skip-key-selection credential bypasses key selection, so the alias is never
+	// resolved and the provider runs the name as sent: those requests are held to the literal name.
+	// The values are set with SetValue directly (the restricted-writes block is not enabled here).
+	const (
+		normal = iota
+		directKey
+		skipKeySelection
+	)
+	for _, tc := range []struct {
+		model   string
+		cred    int
+		blocked bool
+	}{
+		{"best-gpt", normal, false}, // an alias of the allowed model
+		{"gpt-4o", normal, false},   // the allowed model itself
+		{"gpt-4o-mini", normal, true},
+		{"not-an-alias", normal, true},
+		{"best-gpt", directKey, true},
+		{"gpt-4o", directKey, false},
+		{"best-gpt", skipKeySelection, true},
+		{"gpt-4o", skipKeySelection, false},
+	} {
+		t.Run(fmt.Sprintf("%s/cred%d", tc.model, tc.cred), func(t *testing.T) {
+			ctx := presentCtx(mcpTestVKValue)
+			switch tc.cred {
+			case directKey:
+				ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+			case skipKeySelection:
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			}
+			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: tc.model}}
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, err)
+			if tc.blocked {
+				require.NotNil(t, shortCircuit, "%q is neither allowed nor an alias of an allowed model", tc.model)
+				return
+			}
+			require.Nil(t, shortCircuit, "%q should be admitted", tc.model)
+		})
+	}
+}
+
+// A blacklist wins over a key alias (#6620 review): a virtual key that allows claude-* and blocks
+// claude-opus-4-6 refuses a request that names the blocked model through an alias, through the whole
+// hook chain, while an alias of a model it does not block is still admitted. A virtual key with no
+// blacklist pays nothing extra: it reads the provider no more often than the same request did
+// before the alias targets were consulted.
+func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
+	const plainVKValue = "sk-bf-plain-alias-vk"
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+			"best-model": {ModelID: "claude-opus-4-6"},
+			"good-model": {ModelID: "claude-sonnet-4-6"},
+		}}}},
+	}}}
+	blocking := buildProviderConfig("anthropic", []string{"regex:^claude-.*"})
+	blocking.BlacklistedModels = schemas.BlackList{"claude-opus-4-6"}
+	vk := buildVirtualKeyWithProviders("vk-blocking", mcpTestVKValue, "blocking-vk", []configstoreTables.TableVirtualKeyProviderConfig{blocking})
+	plain := buildVirtualKeyWithProviders("vk-plain", plainVKValue, "plain-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"regex:^claude-.*"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk, *plain},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	run := func(vkValue, model string) (blocked bool, lookups int) {
+		ctx := presentCtx(vkValue)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: model}}
+		before := store.single
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		return shortCircuit != nil, store.single - before
+	}
+	for _, tc := range []struct {
+		model   string
+		blocked bool
+	}{
+		{"best-model", true},         // an alias of the blacklisted model
+		{"claude-opus-4-6", true},    // the blacklisted model itself
+		{"good-model", false},        // an alias of a model the key does not block
+		{"claude-sonnet-4-6", false}, // an ordinary allowed model
+	} {
+		blocked, _ := run(mcpTestVKValue, tc.model)
+		assert.Equal(t, tc.blocked, blocked, tc.model)
+	}
+
+	// The key without a blacklist admits the alias of opus, and reads the provider for its model
+	// check no more often than a request that names no alias at all.
+	blocked, aliasLookups := run(plainVKValue, "best-model")
+	assert.False(t, blocked)
+	_, literalLookups := run(plainVKValue, "claude-opus-4-6")
+	t.Logf("provider lookups, no blacklist: alias request %d, literal request %d", aliasLookups, literalLookups)
+	assert.Equal(t, literalLookups, aliasLookups)
+}
+
+// Inline batch items reach the provider exactly as written: key selection resolves the request's
+// own model, never an item's. An item is therefore held to its literal name, so an alias of an
+// allowed model that is also a real upstream model cannot slip through as the allowed one.
+func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	batch := func(requestModel string, itemModels ...string) *schemas.BifrostRequest {
+		items := make([]schemas.BatchRequestItem, 0, len(itemModels))
+		for i, m := range itemModels {
+			items = append(items, schemas.BatchRequestItem{CustomID: fmt.Sprintf("item-%d", i), Params: map[string]any{"model": m}})
+		}
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Anthropic, Model: &requestModel, Requests: items}}
+	}
+	rawItems := func(requestModel string, items ...schemas.BatchRequestItem) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Anthropic, Model: &requestModel, Requests: items}}
+	}
+	for _, tc := range []struct {
+		name    string
+		req     *schemas.BifrostRequest
+		blocked bool
+	}{
+		{"item names the allowed model", batch("claude-sonnet-4-6", "claude-sonnet-4-6"), false},
+		{"item names an alias of the allowed model", batch("claude-sonnet-4-6", "claude-opus-4-6"), true},
+		{"the request's own model may be an alias", batch("claude-opus-4-6", "claude-sonnet-4-6"), false},
+		{"an item repeating the request's alias is still literal", batch("claude-opus-4-6", "claude-opus-4-6"), true},
+		{"an alias in the OpenAI-shaped body is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-opus-4-6"}}), true},
+		{"a non-string model next to no other model is not literal-checked", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": 123}}), false},
+		{"body allowed, params names a model that is not allowed, is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-sonnet-4-6"}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
+		{"body and params both naming the allowed model are admitted", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-sonnet-4-6"}, Params: map[string]any{"model": "claude-sonnet-4-6"}}), false},
+		{"an empty body model does not hide a params alias", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": ""}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
+		{"a non-string body model falls through to a string params alias, which is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": 123}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := presentCtx(mcpTestVKValue)
+			require.NoError(t, plugin.PreRequestHook(ctx, tc.req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, tc.req)
+			require.NoError(t, err)
+			if tc.blocked {
+				require.NotNil(t, shortCircuit, "an item that names an alias must be refused")
+				return
+			}
+			require.Nil(t, shortCircuit)
+		})
+	}
+}
+
+// An inline batch item runs the model as written, so an alias item is never resolved to its target
+// and an exhausted limit on that target must not block it; the batch request's own model is the one
+// pass that is resolved through the alias, and the literal marking must not outlive the item passes.
+func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"}),
+	})
+	provider := "anthropic"
+	exhausted := buildModelConfig("sonnet-exhausted", "claude-sonnet-4-6", &provider, buildBudgetWithUsage("b-sonnet-exhausted", 10.0, 10.0, "1d"), nil)
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*exhausted},
+		Budgets:      exhausted.Budgets,
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	batch := func(requestModel, itemModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Anthropic, Model: &requestModel,
+			Requests: []schemas.BatchRequestItem{{CustomID: "i", Params: map[string]any{"model": itemModel}}},
+		}}
+	}
+	run := func(req *schemas.BifrostRequest) (*schemas.BifrostContext, *schemas.LLMPluginShortCircuit) {
+		ctx := presentCtx(mcpTestVKValue)
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		return ctx, shortCircuit
+	}
+
+	// The item names the alias literally and the request's own model is the allowed target's sibling.
+	ctx, shortCircuit := run(batch("claude-opus-4-6", "claude-opus-4-6"))
+	// The request's own model is still resolved through the alias, so the exhausted target applies to it.
+	require.NotNil(t, shortCircuit, "the request's own alias model still answers to its target")
+	marked, _ := ctx.Value(literalLimitsContextKey).(bool)
+	assert.False(t, marked, "the literal marking must not outlive the item passes")
+
+	// Items alone, with the request's own model on an unlimited name, are admitted.
+	ctx, shortCircuit = run(batch("claude-haiku-4-5", "claude-opus-4-6"))
+	require.Nil(t, shortCircuit, "an item that runs as written takes no limit from the alias target")
+	marked, _ = ctx.Value(literalLimitsContextKey).(bool)
+	assert.False(t, marked, "the literal marking must not outlive the item passes")
+}
+
+// A literal check still honours the custom-provider exemption: an unrestricted allowlist on a
+// custom provider that cannot list models admits any name, since the catalog cannot know them.
+func TestBatchItemLiteralCheckKeepsCustomProviderExemption(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"acme": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-custom", mcpTestVKValue, "custom-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("acme", []string{"*"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	model := "private-model-the-catalog-does-not-know"
+	req := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Provider: "acme", Model: &model,
+		Requests: []schemas.BatchRequestItem{{CustomID: "item-0", Params: map[string]any{"model": model}}},
+	}}
+	ctx := presentCtx(mcpTestVKValue)
+	require.NoError(t, plugin.PreRequestHook(ctx, req))
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "an item on a custom provider that cannot list models must be admitted")
+}
+
 func BenchmarkPreLLMHookBatchCreate(b *testing.B) {
 	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
 	model := "gpt-4o"
@@ -1543,6 +1811,36 @@ func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
 					b.Fatal(err)
 				}
 			}
+		})
+	}
+}
+
+func TestBatchItemModels(t *testing.T) {
+	item := func(body, params map[string]any) schemas.BatchRequestItem {
+		return schemas.BatchRequestItem{Body: body, Params: params}
+	}
+	create := func(items ...schemas.BatchRequestItem) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Requests: items}}
+	}
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostRequest
+		want []string
+	}{
+		{"non-batch request", &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}, nil},
+		{"batch type without a create payload", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest}, nil},
+		{"no inline items", create(), nil},
+		{"duplicates collapse", create(item(nil, map[string]any{"model": "a"}), item(map[string]any{"model": "a"}, nil)), []string{"a"}},
+		{"empty model skipped", create(item(nil, map[string]any{"model": ""}), item(nil, map[string]any{"model": "a"})), []string{"a"}},
+		{"non-string model skipped", create(item(nil, map[string]any{"model": 123}), item(nil, map[string]any{"model": "a"})), []string{"a"}},
+		{"both maps naming different models returns both, body first", create(item(map[string]any{"model": "body"}, map[string]any{"model": "params"})), []string{"body", "params"}},
+		{"empty body model does not hide params model", create(item(map[string]any{"model": ""}, map[string]any{"model": "x"})), []string{"x"}},
+		{"mixed non-string body and string params", create(item(map[string]any{"model": 123}, map[string]any{"model": "x"})), []string{"x"}},
+		{"params used when body has no model", create(item(map[string]any{"x": 1}, map[string]any{"model": "params"})), []string{"params"}},
+		{"order is first seen", create(item(nil, map[string]any{"model": "b"}), item(map[string]any{"model": "a"}, nil), item(nil, map[string]any{"model": "b"})), []string{"b", "a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, BatchItemModels(tc.req))
 		})
 	}
 }

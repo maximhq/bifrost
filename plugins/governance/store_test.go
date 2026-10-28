@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2301,28 +2302,301 @@ func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
 
 	// The dated alias on openai reaches every tier. "exact-any" shares its key with "base-any"
 	// (provider-less configs collapse to the base model), so whichever was indexed last answers.
-	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName))
+	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName, nil))
 	require.Len(t, got, 5)
 	assert.Equal(t, []string{"exact-pair", "base-pair"}, got[:2])
 	assert.Contains(t, []string{"exact-any", "base-any"}, got[2])
 	assert.Equal(t, []string{"all-openai", "all-any"}, got[3:])
 
 	// The base name skips the dated pair but still finds its own.
-	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName))
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName, nil))
 	require.Len(t, got, 4)
 	assert.Equal(t, "base-pair", got[0])
 	assert.Equal(t, []string{"all-openai", "all-any"}, got[2:])
 
 	// A sibling model only reaches the wildcards.
-	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName)))
+	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName, nil)))
 
 	// Another provider skips the openai-scoped tiers entirely.
 	anthropic := "anthropic"
-	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic))
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic, nil))
 	assert.NotContains(t, got, "exact-pair")
 	assert.NotContains(t, got, "base-pair")
 	assert.NotContains(t, got, "all-openai")
 	assert.Contains(t, got, "all-any")
+}
+
+// A key alias names a model the keys resolve only after governance has run, so a limit set on the
+// model the alias stands for has to reach a request that names the alias. Targets the keys
+// disagree on all apply; a key that key selection never picks for the name does not count.
+func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
+	ctx := context.Background()
+	provider := "bedrock"
+	const sonnet, opus = "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"
+	anyModel := schemas.WhiteList{"*"}
+	mk := func(id, model string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	ids := func(mcs []*configstoreTables.TableModelConfig) []string {
+		out := make([]string, 0, len(mcs))
+		for _, mc := range mcs {
+			out = append(out, mc.ID)
+		}
+		return out
+	}
+	global := configstoreTables.ModelConfigScopeGlobal
+	withKeys := func(keys ...schemas.Key) *LocalGovernanceStore {
+		store := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("opus-limit", opus))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: keys},
+		}}
+		return store
+	}
+	off := false
+	// collect resolves the targets the way every entry point does, then walks the global scope.
+	collect := func(store *LocalGovernanceStore, model string, prov *string) []*configstoreTables.TableModelConfig {
+		return store.collectModelConfigsFor(ctx, global, "", model, prov, store.aliasTargets(ctx, prov, model))
+	}
+
+	t.Run("the alias reaches the limit of the model it stands for", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, sonnet, &provider)))
+	})
+	t.Run("keys that disagree apply every target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.ElementsMatch(t, []string{"sonnet-limit", "opus-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a key that cannot serve the name contributes nothing", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: schemas.WhiteList{"titan-*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Enabled: &off, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+	})
+	t.Run("no aliases leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel})
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+	})
+	t.Run("a lookup without a provider cannot resolve an alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Empty(t, collect(store, "claude-sonnet", nil))
+	})
+
+	t.Run("the real entry point finds the limit through the alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		budgets, _ := store.GlobalModelLimits(ctx, schemas.Bedrock, "claude-sonnet")
+		require.Len(t, budgets, 1)
+		assert.Equal(t, "b-sonnet-limit", budgets[0].ID)
+	})
+	t.Run("two keys that agree yield each limit once, and the alias name's own limit stays", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+		)
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"))
+
+		store = modelKeyStore(t, mk("sonnet-limit", sonnet), mk("alias-limit", "claude-sonnet"))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		assert.Equal(t, []string{"alias-limit", "sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a provider-less config on the target is found", func(t *testing.T) {
+		store := modelKeyStore(t, buildModelConfig("any-provider", sonnet, nil, buildBudget("b-any", 100.0, "1d"), nil))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		assert.Equal(t, []string{"any-provider"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a virtual-key-scoped config on the target is found when charging", func(t *testing.T) {
+		scoped := mk("vk-sonnet", sonnet)
+		scoped.Scope = configstoreTables.ModelConfigScopeVirtualKey
+		vkID := "vk-1"
+		scoped.ScopeID = &vkID
+		store := modelKeyStore(t, scoped)
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.Bedrock, "claude-sonnet")
+		assert.Equal(t, []string{"b-vk-sonnet"}, budgetIDs)
+	})
+	t.Run("a store that cannot see provider config leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		store.inMemoryStore = nil
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+		assert.Nil(t, store.aliasTargets(ctx, &provider, "claude-sonnet"))
+	})
+	t.Run("a provider missing from the in-memory store adds nothing", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		other := "openai"
+		assert.Empty(t, collect(store, "claude-sonnet", &other))
+	})
+
+	// A model that runs at the provider exactly as written is never resolved through a key alias,
+	// so the limits of the alias's target must not be added to it.
+	t.Run("a model that runs as written takes no alias target's limits", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		bifrostCtx := func(key, value any) *schemas.BifrostContext {
+			c := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			c.SetValue(key, value)
+			return c
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"), "an ordinary request is resolved through the alias")
+		for name, marked := range map[string]context.Context{
+			"literal marker":               context.WithValue(ctx, literalLimitsContextKey, true),
+			"literal on a bifrost context": bifrostCtx(literalLimitsContextKey, true),
+			"direct key":                   bifrostCtx(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"}),
+			"skip key selection":           bifrostCtx(schemas.BifrostContextKeySkipKeySelection, true),
+		} {
+			assert.Nil(t, store.aliasTargets(marked, &provider, "claude-sonnet"), name)
+			assert.Empty(t, ids(store.collectModelConfigsFor(marked, global, "", "claude-sonnet", &provider, store.aliasTargets(marked, &provider, "claude-sonnet"))), name)
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(bifrostCtx(literalLimitsContextKey, false), &provider, "claude-sonnet"), "an unmarked literal flag leaves the alias in force")
+	})
+	t.Run("an exhausted limit on the alias target does not reach the aliased name when it runs as written", func(t *testing.T) {
+		sonnetCfg := buildModelConfig("sonnet-cfg", "claude-sonnet-4-6", &provider, buildBudget("b-sonnet-cfg", 100.0, "1d"), nil)
+		store := modelKeyStore(t, sonnetCfg)
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+		}}
+		normal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		literal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		literal.SetValue(literalLimitsContextKey, true)
+
+		budgets, _, err := store.GatherLimits(normal, nil, schemas.Bedrock, "claude-opus-4-6")
+		require.NoError(t, err)
+		require.Len(t, budgets, 1, "the alias is resolved, so the target's limit applies")
+		budgets, _, err = store.GatherLimits(literal, nil, schemas.Bedrock, "claude-opus-4-6")
+		require.NoError(t, err)
+		assert.Empty(t, budgets, "the name runs as written, so the target's limit does not apply")
+
+		sonnetBudgets, _ := store.CollectModelScopedGovernanceIDs(normal, "", "", schemas.Bedrock, "claude-opus-4-6")
+		assert.Equal(t, []string{"b-sonnet-cfg"}, sonnetBudgets)
+		sonnetBudgets, _ = store.CollectModelScopedGovernanceIDs(literal, "", "", schemas.Bedrock, "claude-opus-4-6")
+		assert.Empty(t, sonnetBudgets)
+	})
+}
+
+// Resolving what an alias stands for takes the provider lookup, a shared read lock in production,
+// so it is done once per attempt and once per charge however many scopes and permits the walks
+// cover, not once per scope.
+func TestGovernanceStore_KeyAliasTargetsResolvedOncePerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := "bedrock"
+	const sonnet = "us.anthropic.claude-sonnet-4-6"
+	mk := func(id, model, scope, scopeID string) *configstoreTables.TableModelConfig {
+		mc := buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+		mc.Scope = scope
+		if scopeID != "" {
+			mc.ScopeID = &scopeID
+		}
+		return mc
+	}
+	counting := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Bedrock: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+	}}}
+	store := modelKeyStore(t,
+		mk("global-sonnet", sonnet, configstoreTables.ModelConfigScopeGlobal, ""),
+		mk("vk-a-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-a"),
+		mk("vk-b-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-b"),
+	)
+	store.inMemoryStore = counting
+
+	t.Run("GatherLimits with no access", func(t *testing.T) {
+		counting.single = 0
+		budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, "claude-sonnet")
+		require.NoError(t, err)
+		require.Len(t, budgets, 1)
+		assert.Equal(t, 1, counting.single)
+	})
+	t.Run("GatherLimits with two permits", func(t *testing.T) {
+		counting.single = 0
+		access := grant.NewAccess([]schemas.Permit{
+			permitWithProviders(grant.PermitVirtualKey, "vk-a", "a", "bedrock"),
+			permitWithProviders(grant.PermitVirtualKey, "vk-b", "b", "bedrock"),
+		}, nil, "", nil)
+		budgets, _, err := store.GatherLimits(ctx, access, schemas.Bedrock, "claude-sonnet")
+		require.NoError(t, err)
+		var got []string
+		for _, b := range budgets {
+			got = append(got, b.ID)
+		}
+		assert.ElementsMatch(t, []string{"b-global-sonnet", "b-vk-a-sonnet", "b-vk-b-sonnet"}, got)
+		assert.Equal(t, 1, counting.single, "the alias targets are resolved once for the whole attempt")
+	})
+	t.Run("CollectModelScopedGovernanceIDs", func(t *testing.T) {
+		counting.single = 0
+		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, "vk-a", "", schemas.Bedrock, "claude-sonnet")
+		assert.ElementsMatch(t, []string{"b-global-sonnet", "b-vk-a-sonnet"}, budgetIDs)
+		assert.Equal(t, 1, counting.single)
+	})
+}
+
+// lockedProviderStore reads the provider under a shared lock, as the production store does, so a
+// benchmark of the lookup includes what it costs there.
+type lockedProviderStore struct {
+	mockInMemoryStore
+	mu sync.RWMutex
+}
+
+func (s *lockedProviderStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	config, ok := s.configuredProviders[provider]
+	return config, ok
+}
+
+func BenchmarkGatherLimits_KeyAliases(b *testing.B) {
+	provider := "bedrock"
+	mc := buildModelConfig("sonnet-limit", "us.anthropic.claude-sonnet-4-6", &provider, buildBudget("b-sonnet-limit", 100.0, "1d"), nil)
+	cfg := &configstore.GovernanceConfig{ModelConfigs: []configstoreTables.TableModelConfig{*mc}, Budgets: mc.Budgets}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	aliased := schemas.KeyAliases{}
+	for a := 0; a < 20; a++ {
+		aliased[fmt.Sprintf("alias-%d", a)] = schemas.AliasConfig{ModelID: fmt.Sprintf("us.vendor.model-%d", a)}
+	}
+	aliased["claude-sonnet"] = schemas.AliasConfig{ModelID: "us.anthropic.claude-sonnet-4-6"}
+	plain := []schemas.Key{{Models: schemas.WhiteList{"*"}}, {Models: schemas.WhiteList{"*"}}}
+	withAliases := []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: aliased}, {Models: schemas.WhiteList{"*"}, Aliases: aliased}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct {
+		name  string
+		keys  []schemas.Key
+		noMem bool
+		model string
+		want  int
+	}{
+		// baseline and no_aliases name the canonical model too, so every row does the same limit work and the
+		// allocation difference between rows is the alias resolution alone.
+		{"baseline_no_store", nil, true, "us.anthropic.claude-sonnet-4-6", 1},
+		{"no_aliases", plain, false, "us.anthropic.claude-sonnet-4-6", 1},
+		{"aliases_unused", withAliases, false, "us.anthropic.claude-sonnet-4-6", 1},
+		{"alias_used", withAliases, false, "claude-sonnet", 1},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			if tc.noMem {
+				store.inMemoryStore = nil
+			} else {
+				store.inMemoryStore = &lockedProviderStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: tc.keys}}}}
+			}
+			budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			if err != nil || len(budgets) != tc.want {
+				b.Fatalf("%s: %d budgets (err %v), want %d", tc.name, len(budgets), err, tc.want)
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, _, _ = store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			}
+		})
+	}
 }
 
 // TestResolveAccessStampsVirtualKeyMetadata checks that resolving access publishes the key's

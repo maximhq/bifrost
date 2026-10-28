@@ -1749,3 +1749,131 @@ func TestIsRelayAllowed(t *testing.T) {
 		t.Fatalf("a union scope with the endpoint allows it")
 	}
 }
+
+// A blacklist wins over a key alias: naming a blocked model through an alias does not get it past
+// the permit, whether the alias is admitted by a pattern or by its own name.
+func TestAccess_AliasTargetHeldToBlacklist(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(provider, model string, visit func(string)) {
+		if provider == "bedrock" && model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	otherTarget := func(provider, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-sonnet-4-6")
+		}
+	}
+	regexPermit := func() *Permit {
+		return permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-opus-4-6")
+	}
+
+	t.Run("an alias of a blacklisted model is refused and the permit is named", func(t *testing.T) {
+		access := NewAccess(held(regexPermit()), nil, Intersect, allowAll).WithAliasTargets(bestToOpus)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+		assert.Len(t, access.DeniedPermitsForModel("bedrock", "best-model"), 1)
+		assert.False(t, access.IsModelAllowed("bedrock", "claude-opus-4-6"), "the literal blacklist still holds")
+	})
+	t.Run("without a source, or with another target, the alias is admitted", func(t *testing.T) {
+		assert.True(t, NewAccess(held(regexPermit()), nil, Intersect, allowAll).IsModelAllowed("bedrock", "best-model"))
+		assert.True(t, NewAccess(held(regexPermit()), nil, Intersect, allowAll).WithAliasTargets(otherTarget).IsModelAllowed("bedrock", "best-model"))
+	})
+	t.Run("an alias allowed by its own name is refused when its target is blacklisted", func(t *testing.T) {
+		p := permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"best-model"}, "claude-opus-4-6")
+		access := NewAccess(held(p), nil, Intersect, nil).WithAliasTargets(bestToOpus)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+	})
+	t.Run("a permit that blacklists nothing never consults the source", func(t *testing.T) {
+		calls := 0
+		counting := func(string, string, func(string)) { calls++ }
+		access := NewAccess(held(permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "regex:^claude-.*")), nil, Intersect, allowAll).WithAliasTargets(counting)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		assert.Zero(t, calls)
+	})
+	t.Run("a blacklist on an unrelated model admits the alias and consults the source once", func(t *testing.T) {
+		calls := 0
+		counting := func(provider, model string, visit func(string)) { calls++; bestToOpus(provider, model, visit) }
+		p := permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-haiku-4-5")
+		access := NewAccess(held(p), nil, Intersect, allowAll).WithAliasTargets(counting)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		assert.Equal(t, 1, calls)
+	})
+	t.Run("two base permits, only one blacklisting the target: the other still admits (any base permitting)", func(t *testing.T) {
+		open := permitWithModels(PermitVirtualKey, "vk2", "Open", "bedrock", "regex:^claude-.*")
+		access := NewAccess(held(regexPermit(), open), nil, Intersect, allowAll).WithAliasTargets(bestToOpus)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+	})
+}
+
+func BenchmarkAccess_IsModelAllowed_AliasTargets(b *testing.B) {
+	allowAll := func(string, string, []string) bool { return true }
+	source := func(provider, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	plain := func() *Permit {
+		return permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "regex:^claude-.*")
+	}
+	blocking := func() *Permit {
+		return permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-haiku-4-5")
+	}
+	for _, bc := range []struct {
+		name   string
+		access *Access
+	}{
+		{"no_source", NewAccess(held(plain()), nil, Intersect, allowAll)},
+		{"source_no_blacklist", NewAccess(held(plain()), nil, Intersect, allowAll).WithAliasTargets(source)},
+		{"source_blacklist_alias", NewAccess(held(blocking()), nil, Intersect, allowAll).WithAliasTargets(source)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			if !bc.access.IsModelAllowed("bedrock", "best-model") {
+				b.Fatal("best-model should be allowed")
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				bc.access.IsModelAllowed("bedrock", "best-model")
+			}
+		})
+	}
+}
+
+// Under a union the scoping permit may admit a model the base permit blacklists; the base permit must
+// then not serve it, whether named literally or through an alias whose target it blacklists.
+func TestAccess_UnionCandidateHeldToBaseBlacklistOfAliasTarget(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(_, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	base := NewPermit(PermitVirtualKey, "vk1", "VK", true, false, []schemas.ProviderPermit{{
+		Provider: "bedrock", AllowedModels: []string{"regex:^claude-.*"}, BlacklistedModels: []string{"claude-opus-4-6"}, KeyIDs: []string{"base-key"},
+	}}, nil)
+	scoping := NewPermit("other", "o1", "Other", true, false, []schemas.ProviderPermit{{
+		Provider: "bedrock", AllowedModels: []string{"*"}, KeyIDs: []string{"scope-key"},
+	}}, nil)
+	access := NewAccess(held(base), scoping, Union, allowAll).WithAliasTargets(bestToOpus)
+	for _, model := range []string{"best-model", "claude-opus-4-6"} {
+		assert.True(t, access.IsModelAllowed("bedrock", model), model)
+		for _, c := range access.ProvidersForModel(model) {
+			assert.NotContains(t, c.KeyIDs, "base-key", "%s must not be served through the base permit that blacklists it", model)
+		}
+	}
+}
+
+// A scoping permit that blacklists the alias's target refuses the alias under an intersection.
+func TestAccess_IntersectScopingBlacklistHoldsAliasTarget(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(_, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	base := permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "*")
+	scoping := permitWithBlacklist("other", "o1", "Other", "bedrock", []string{"regex:^claude-.*"}, "claude-opus-4-6")
+	access := NewAccess(held(base), scoping, Intersect, allowAll).WithAliasTargets(bestToOpus)
+	assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+	assert.False(t, access.IsModelAllowed("bedrock", "claude-opus-4-6"))
+	assert.True(t, NewAccess(held(base), scoping, Intersect, allowAll).IsModelAllowed("bedrock", "best-model"), "no source, no alias target")
+}

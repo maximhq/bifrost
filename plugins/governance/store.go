@@ -2364,6 +2364,50 @@ func extractModelAndProvider(request *EvaluationRequest) (string, *string) {
 	return request.Model, provider
 }
 
+type limitsContextKey struct{}
+
+// literalLimitsContextKey marks a context whose model runs at the provider exactly as written, so
+// no key alias is applied to it and no alias target's limits may be added.
+var literalLimitsContextKey = limitsContextKey{}
+
+// runsAsWritten reports whether the model on ctx reaches the provider exactly as the client named
+// it: the caller marked it literal, or the credential skips key selection, so no key alias is
+// ever applied.
+func runsAsWritten(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if literal, _ := ctx.Value(literalLimitsContextKey).(bool); literal {
+		return true
+	}
+	if _, direct := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); direct {
+		return true
+	}
+	skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	return skip
+}
+
+// aliasTargets returns the models the provider's eligible keys map the requested name to, or nil
+// when the lookup has no provider, the store cannot see provider config, or no key carries an
+// alias. It is resolved once per attempt and handed to the model-config walks, so the provider
+// lookup (a shared read lock in production) and the alias scan are not repeated per scope.
+func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *string, model string) []string {
+	if provider == nil || gs.inMemoryStore == nil {
+		return nil
+	}
+	cfg, ok := configuredProvider(gs.inMemoryStore, schemas.ModelProvider(*provider))
+	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || runsAsWritten(ctx) {
+		return nil
+	}
+	var targets []string
+	modelcatalog.KeyAliasTargets(model, cfg.Keys, func(target string) {
+		if !slices.Contains(targets, target) {
+			targets = append(targets, target)
+		}
+	})
+	return targets
+}
+
 // collectModelConfigsFor returns every model config that applies to a request for
 // (model, provider) within a single scope, across six tiers (most → least specific),
 // deduped by config ID. The model is canonicalised by modelConfigKeys, the same way it
@@ -2375,10 +2419,14 @@ func extractModelAndProvider(request *EvaluationRequest) (string, *string) {
 //  5. ("*", provider)              all models on this provider  (provider-level governance)
 //  6. ("*", nil)                   all models on all providers
 //
+// When targets is non-nil (the models a key alias resolves to), tiers 1-4 are repeated for each
+// target after the six tiers above, deduped by config ID, so a limit on the aliased model also
+// applies to a request that names the alias.
+//
 // This is the single source of truth for "which model configs apply"; every budget /
 // rate-limit check and usage-tracking site iterates it so the wildcard tiers are matched
 // consistently everywhere.
-func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scope, scopeID, model string, provider *string) []*configstoreTables.TableModelConfig {
+func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scope, scopeID, model string, provider *string, targets []string) []*configstoreTables.TableModelConfig {
 	var out []*configstoreTables.TableModelConfig
 	seen := make(map[string]bool)
 	add := func(mc *configstoreTables.TableModelConfig) {
@@ -2408,6 +2456,21 @@ func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scop
 		add(loadKey(modelConfigWildcard, provider)) // tier 5: all models on this provider
 	}
 	add(loadKey(modelConfigWildcard, nil)) // tier 6: all models, all providers
+	// A key alias is resolved only at key selection, after this lookup, so a limit set on the model
+	// an alias stands for would never meet a request that names the alias. targets are the models the
+	// eligible keys map the name to (see aliasTargets), resolved once per attempt by the caller; each
+	// is looked up the same way the name itself was, and the dedupe above keeps a limit reached twice
+	// as one.
+	for _, target := range targets {
+		if provider != nil {
+			targetCanonical, targetBase := gs.modelConfigKeys(target, provider)
+			add(loadKey(targetCanonical, provider))
+			add(loadKey(targetBase, provider))
+		}
+		targetCanonical, targetBase := gs.modelConfigKeys(target, nil)
+		add(loadKey(targetCanonical, nil))
+		add(loadKey(targetBase, nil))
+	}
 	return out
 }
 
@@ -3688,6 +3751,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 		}
 	}
 
+	targets := gs.aliasTargets(ctx, providerStr, model)
 	scopes := []struct{ name, id string }{
 		{configstoreTables.ModelConfigScopeGlobal, ""},
 		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
@@ -3696,7 +3760,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 		if scope.name != configstoreTables.ModelConfigScopeGlobal && scope.id == "" {
 			continue
 		}
-		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerStr, targets) {
 			addModelConfigIDs(mc)
 		}
 	}
@@ -3704,7 +3768,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 	// budgets, keyed by a user-access-profile association ID rather than the raw
 	// user/VK ID) — see RegisterExtraScopedIDsResolver.
 	for _, pair := range collectExtraScopedIDs(ctx, virtualKeyID, userID) {
-		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, pair.Scope, pair.ScopeID, model, providerStr, targets) {
 			addModelConfigIDs(mc)
 		}
 	}
@@ -4810,7 +4874,8 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 	// tier is where a key's own budget and rate limit live since the model-config migration.
 	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
-	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
+	targets := gs.aliasTargets(ctx, providerPtrFor(provider), model)
+	globalModelBudgets, globalModelRateLimits := gs.globalModelLimits(ctx, provider, model, targets)
 	budgets = append(budgets, globalModelBudgets...)
 	rateLimits = append(rateLimits, globalModelRateLimits...)
 	if access == nil {
@@ -4827,7 +4892,7 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 
 		// The holder's own model limits, gathered per permit because they are keyed by the
 		// permit's identity.
-		modelBudgets, modelRateLimits := gs.PermitModelLimits(ctx, permit, provider, model)
+		modelBudgets, modelRateLimits := gs.permitModelLimits(ctx, permit, provider, model, targets)
 		budgets = append(budgets, modelBudgets...)
 		rateLimits = append(rateLimits, modelRateLimits...)
 	}
@@ -4918,7 +4983,7 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 // refusal for the funnel to state with a reason rather than load balancing quietly running out of
 // options.
 func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
-	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
@@ -4931,17 +4996,17 @@ func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Con
 	if scope == "" || scopeID == "" {
 		return nil, nil
 	}
-	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
 // provider. The walk is collectModelConfigsFor's, filtered rather than reimplemented, so which
 // configs cover a pair has exactly one answer and routing's subset of it cannot drift from the
 // funnel's.
-func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string, targets []string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
 	for _, scope := range scopes {
-		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, &providerName, targets) {
 			if mc == nil || mc.Provider == nil {
 				continue
 			}
@@ -4960,14 +5025,14 @@ func (gs *LocalGovernanceStore) providerScopedModelLimitsInScopes(ctx context.Co
 // all-models budget covers a request whatever it runs. Batch creation is the case that carries no
 // top-level model, and skipping the walk there left the unscoped budget a key was created with
 // unchecked and never bumped.
-func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
+func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes []limitScope, provider schemas.ModelProvider, model string, targets []string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
 	providerName := string(provider)
 	var providerArg *string
 	if providerName != "" {
 		providerArg = &providerName
 	}
 	for _, scope := range scopes {
-		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerArg) {
+		for _, mc := range gs.collectModelConfigsFor(ctx, scope.name, scope.id, model, providerArg, targets) {
 			if mc == nil {
 				continue
 			}
@@ -4987,7 +5052,22 @@ func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes 
 // into the attempt's settled limits rather than storing them anywhere longer-lived, so one
 // attempt's limits are never charged to the next.
 func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
-	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(nil), provider, model)
+	return gs.globalModelLimits(ctx, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
+}
+
+// globalModelLimits is GlobalModelLimits with the alias targets already resolved, so a caller
+// gathering several scopes for one attempt resolves them once.
+func (gs *LocalGovernanceStore) globalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string, targets []string) ([]schemas.Limit, []schemas.Limit) {
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(nil), provider, model, targets)
+}
+
+// providerPtrFor is the provider argument of a model-config lookup: nil when no provider is named.
+func providerPtrFor(provider schemas.ModelProvider) *string {
+	if provider == "" {
+		return nil
+	}
+	name := string(provider)
+	return &name
 }
 
 // PermitModelLimits reports the permit holder's own model-config limits covering the pair, in the
@@ -4996,11 +5076,19 @@ func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider 
 // for the reasons on GlobalModelLimits.
 func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
 	if permit == nil || permit.ID() == "" {
+		return nil, nil
+	}
+	return gs.permitModelLimits(ctx, permit, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
+}
+
+// permitModelLimits is PermitModelLimits with the alias targets already resolved.
+func (gs *LocalGovernanceStore) permitModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string, targets []string) ([]schemas.Limit, []schemas.Limit) {
+	if permit == nil || permit.ID() == "" {
 		// A permit selects the scope, so no permit selects nothing: falling through would answer
 		// with the deployment's rows under a method that promised one holder's.
 		return nil, nil
 	}
-	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model)
+	return gs.modelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model, targets)
 }
 
 // ScopedModelLimits reports the model-config limits covering the pair in one named scope, attributed
@@ -5014,7 +5102,7 @@ func (gs *LocalGovernanceStore) ScopedModelLimits(ctx context.Context, scope, sc
 	if scope == "" || scopeID == "" {
 		return nil, nil
 	}
-	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model)
+	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // limitScope is one model-config scope to resolve limits from, with the holder kind its limits are

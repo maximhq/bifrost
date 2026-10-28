@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -50,6 +51,8 @@ type EvaluationRequest struct {
 	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
 	// not on the request and not in its body.
 	ModelUnseen bool `json:"model_unseen,omitempty"`
+	// LiteralModel marks a model checked as written, never widened by a key alias.
+	LiteralModel bool `json:"literal_model,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -163,10 +166,19 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
 		}
 	}
-	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !access.IsModelAllowed(string(provider), model) {
-		return &EvaluationResult{
-			Decision: DecisionModelBlocked,
-			Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) {
+		// A batch item's model, and any request whose credential bypasses key selection (a direct
+		// key, or a bearer that is the credential itself), reaches the provider as written: no key
+		// alias is resolved for it, so it is held to its literal name.
+		modelAccess := access
+		if evaluationRequest.LiteralModel || hasDirectKeyAuth(ctx) || bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
+			modelAccess = r.literalAccess(access)
+		}
+		if !modelAccess.IsModelAllowed(string(provider), model) {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+			}
 		}
 	}
 
@@ -306,4 +318,25 @@ func reasonFromErr(err error, decision Decision) string {
 		return err.Error()
 	}
 	return fmt.Sprintf("policy violation (%s)", decision)
+}
+
+// literalAccess is access matched without key aliases, for a model that reaches the provider as
+// written. The matcher resolves the provider's configuration as GovernancePlugin.modelMatcher does,
+// so the custom-provider exemption still applies, but on a copy with its keys cleared: key aliases
+// are the only thing IsModelAllowedForProvider reads them for. Without a catalog names already match
+// as written and access is returned as is.
+func (r *BudgetResolver) literalAccess(access schemas.Access) schemas.Access {
+	if r.modelCatalog == nil {
+		return access
+	}
+	return grant.NewAccess(access.Bases(), access.Scoping(), grant.CompositionMode(access.Mode()), func(provider, model string, allowed []string) bool {
+		var providerConfig *configstore.ProviderConfig
+		if r.governanceInMemoryStore != nil {
+			if config, ok := configuredProvider(r.governanceInMemoryStore, schemas.ModelProvider(provider)); ok {
+				config.Keys = nil // config is a copy; with no keys no alias can widen the match
+				providerConfig = &config
+			}
+		}
+		return r.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+	})
 }
