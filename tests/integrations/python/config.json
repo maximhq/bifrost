@@ -496,6 +496,24 @@
         "ttl": "1h"
       }
     },
+    "openrouter_openai_compat": {
+      "keys": [
+        {
+          "name": "OpenRouter API Key",
+          "value": "env.OPENROUTER_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "base_url": "https://openrouter.ai/api",
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "azure": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
