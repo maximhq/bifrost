@@ -409,6 +409,137 @@ func TestToBedrockInvokeAnthropicResponse_IncludesCacheFields(t *testing.T) {
 	assert.Equal(t, 0, result.Usage.CacheReadInputTokens)
 }
 
+// Regression for #9198: Invoke egress must preserve the cache-write TTL breakdown.
+func TestInvokeCacheCreationTTLUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		details *schemas.ChatCachedWriteTokenDetails
+	}{
+		{"five minute", &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 6016}},
+		{"one hour", &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens1h: 6016}},
+		{"mixed", &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 2048, CachedWriteTokens1h: 3968}},
+		{"explicit zero", &schemas.ChatCachedWriteTokenDetails{}},
+		{"flat counts only", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writes := 6016
+			if tc.details != nil {
+				writes = tc.details.CachedWriteTokens5m + tc.details.CachedWriteTokens1h
+			}
+			resp := &schemas.BifrostResponsesResponse{
+				Model: "us.anthropic.claude-opus-5-5",
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens: writes + 111, OutputTokens: 6,
+					InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+						CachedReadTokens: 100, CachedWriteTokens: writes, CachedWriteTokenDetails: tc.details,
+					},
+				},
+			}
+			checkUsage := func(t *testing.T, data []byte, path string) {
+				t.Helper()
+				usage := gjson.GetBytes(data, path)
+				assert.EqualValues(t, 11, usage.Get("input_tokens").Int())
+				assert.EqualValues(t, 6, usage.Get("output_tokens").Int())
+				assert.EqualValues(t, 100, usage.Get("cache_read_input_tokens").Int())
+				assert.EqualValues(t, writes, usage.Get("cache_creation_input_tokens").Int())
+				creation := usage.Get("cache_creation")
+				if tc.details == nil {
+					assert.False(t, creation.Exists(), "must not invent a TTL breakdown")
+					return
+				}
+				require.True(t, creation.IsObject(), "missing cache_creation in %s", data)
+				assert.True(t, creation.Get("ephemeral_5m_input_tokens").Exists())
+				assert.True(t, creation.Get("ephemeral_1h_input_tokens").Exists())
+				assert.EqualValues(t, tc.details.CachedWriteTokens5m, creation.Get("ephemeral_5m_input_tokens").Int())
+				assert.EqualValues(t, tc.details.CachedWriteTokens1h, creation.Get("ephemeral_1h_input_tokens").Int())
+			}
+			t.Run("invoke", func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				result, err := ToBedrockInvokeMessagesResponse(ctx, resp)
+				require.NoError(t, err)
+				data, err := sonic.Marshal(result)
+				require.NoError(t, err)
+				checkUsage(t, data, "usage")
+			})
+			for _, eventType := range []schemas.ResponsesStreamResponseType{
+				schemas.ResponsesStreamResponseTypeCreated,
+				schemas.ResponsesStreamResponseTypeCompleted,
+				schemas.ResponsesStreamResponseTypeIncomplete,
+			} {
+				t.Run(string(eventType), func(t *testing.T) {
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					_, result, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: eventType, Response: resp})
+					require.NoError(t, err)
+					event, ok := result.(*BedrockStreamEvent)
+					require.True(t, ok)
+					frames := event.ToEncodedEvents()
+					require.NotEmpty(t, frames)
+					chunk, ok := frames[0].Payload.(BedrockInvokeStreamChunkEvent)
+					require.True(t, ok)
+					path := "usage"
+					if eventType == schemas.ResponsesStreamResponseTypeCreated {
+						path = "message.usage"
+					}
+					checkUsage(t, chunk.Bytes, path)
+				})
+			}
+		})
+	}
+}
+
+func TestInvokeCacheCreationTTLUsageAbsent(t *testing.T) {
+	for _, usage := range []*schemas.ResponsesResponseUsage{nil, {InputTokens: 11, OutputTokens: 6}} {
+		resp := &schemas.BifrostResponsesResponse{Usage: usage}
+		result := toBedrockInvokeAnthropicResponse(resp, "anthropic.claude-opus-5-5")
+		data, err := sonic.Marshal(result)
+		require.NoError(t, err)
+		assert.False(t, gjson.GetBytes(data, "usage.cache_creation").Exists())
+		for _, eventType := range []schemas.ResponsesStreamResponseType{schemas.ResponsesStreamResponseTypeCreated, schemas.ResponsesStreamResponseTypeCompleted} {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			frames, err := toAnthropicInvokeStreamBytes(ctx, &schemas.BifrostResponsesStreamResponse{Type: eventType, Response: resp})
+			require.NoError(t, err)
+			require.NotEmpty(t, frames)
+			assert.False(t, gjson.GetBytes(frames[0], "message.usage.cache_creation").Exists())
+			assert.False(t, gjson.GetBytes(frames[0], "usage.cache_creation").Exists())
+		}
+	}
+}
+
+func BenchmarkInvokeCacheCreationTTLUsage(b *testing.B) {
+	for _, withDetails := range []bool{false, true} {
+		name := "without details"
+		usage := &schemas.ResponsesResponseUsage{InputTokens: 6027, OutputTokens: 6}
+		if withDetails {
+			name = "with details"
+			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+				CachedWriteTokens:       6016,
+				CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens1h: 6016},
+			}
+		}
+		resp := &schemas.BifrostResponsesResponse{Model: "us.anthropic.claude-opus-5-5", Usage: usage}
+		b.Run(name+"/invoke", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := sonic.Marshal(toBedrockInvokeAnthropicResponse(resp, resp.Model)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		for _, eventType := range []schemas.ResponsesStreamResponseType{schemas.ResponsesStreamResponseTypeCreated, schemas.ResponsesStreamResponseTypeCompleted} {
+			b.Run(name+"/"+string(eventType), func(b *testing.B) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				chunk := &schemas.BifrostResponsesStreamResponse{Type: eventType, Response: resp}
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := toAnthropicInvokeStreamBytes(ctx, chunk); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 // --- Regression tests for #5638: /invoke egress dropped the reasoning signature (and,
 // for Bedrock-originated reasoning, the thinking text itself) because neither the
 // non-streaming response builder nor the streaming signature event carried it. ---

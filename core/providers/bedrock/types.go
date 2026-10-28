@@ -853,7 +853,14 @@ type BedrockInvokeMessagesUsage struct {
 	OutputTokens             int                                       `json:"output_tokens"`
 	CacheCreationInputTokens int                                       `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int                                       `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation            *BedrockInvokeMessagesCacheCreation       `json:"cache_creation,omitempty"`
 	OutputTokensDetails      *BedrockInvokeMessagesOutputTokensDetails `json:"output_tokens_details,omitempty"` // Extended-thinking breakdown; absent on non-thinking responses
+}
+
+// BedrockInvokeMessagesCacheCreation breaks down cache writes by their TTL.
+type BedrockInvokeMessagesCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 // BedrockInvokeMessagesOutputTokensDetails breaks down output_tokens for extended-thinking responses.

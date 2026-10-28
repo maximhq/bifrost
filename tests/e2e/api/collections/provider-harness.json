@@ -296188,6 +296188,223 @@
           ]
         }
       ]
+    },
+    {
+      "name": "289. Bedrock Invoke Cache TTL Usage (#9198)",
+      "description": "Regression for #9198: Invoke responses dropped the cache_creation five-minute/one-hour breakdown even when Bifrost tracked it internally. Each request uses a fresh prefix to force a cache write. The streaming case decodes InvokeModel event payloads and checks the authoritative usage. Requires Bedrock access to Opus 5.5 with prompt caching; unexpected errors fail the assertions.",
+      "item": [
+        {
+          "name": "Bedrock Opus 5.5 cache TTL usage - 5m invoke - #9198",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('invokeCacheTTLPrefix', pm.variables.replaceIn('{{$guid}}')); "
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text();",
+                  "pm.test('cache TTL usage: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText).to.equal(200);",
+                  "});",
+                  "var usages = [pm.response.json().usage];",
+                  "pm.test('cache TTL usage: cache write carries the requested TTL breakdown', function () {",
+                  "  pm.expect(usages.length, 'no cache write usage: ' + rawText).to.be.above(0);",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, rawText).to.be.an('object');",
+                  "    pm.expect(usage.cache_creation, rawText).to.be.an('object');",
+                  "    var details = usage.cache_creation;",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.above(0);",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.equal(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens + details.ephemeral_1h_input_tokens, rawText).to.equal(usage.cache_creation_input_tokens);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{invokeCacheTTLPrefix}} {{cachePrefix}}\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"5m\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.anthropic.claude-opus-5-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.anthropic.claude-opus-5-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock Opus 5.5 cache TTL usage - 1h invoke - #9198",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('invokeCacheTTLPrefix', pm.variables.replaceIn('{{$guid}}')); "
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text();",
+                  "pm.test('cache TTL usage: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText).to.equal(200);",
+                  "});",
+                  "var usages = [pm.response.json().usage];",
+                  "pm.test('cache TTL usage: cache write carries the requested TTL breakdown', function () {",
+                  "  pm.expect(usages.length, 'no cache write usage: ' + rawText).to.be.above(0);",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, rawText).to.be.an('object');",
+                  "    pm.expect(usage.cache_creation, rawText).to.be.an('object');",
+                  "    var details = usage.cache_creation;",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.above(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.equal(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens + details.ephemeral_1h_input_tokens, rawText).to.equal(usage.cache_creation_input_tokens);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{invokeCacheTTLPrefix}} {{cachePrefix}}\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"1h\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.anthropic.claude-opus-5-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.anthropic.claude-opus-5-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock Opus 5.5 cache TTL usage - 1h streaming - #9198",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('invokeCacheTTLPrefix', pm.variables.replaceIn('{{$guid}}')); "
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text();",
+                  "pm.test('cache TTL usage: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText).to.equal(200);",
+                  "});",
+                  "var matches = rawText.match(/\"bytes\"\\s*:\\s*\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "var events = matches.map(function (m) {",
+                  "  var b64 = m.match(/:\\s*\"([^\"]+)\"/)[1];",
+                  "  return JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));",
+                  "});",
+                  "pm.test('cache TTL usage: complete Invoke stream', function () {",
+                  "  pm.expect(events.some(function (e) { return e.type === 'message_start'; }), rawText).to.equal(true);",
+                  "  pm.expect(events.some(function (e) { return e.type === 'message_stop'; }), rawText).to.equal(true);",
+                  "});",
+                  "var start = events.filter(function (e) { return e.type === 'message_start'; })[0];",
+                  "var terminal = events.filter(function (e) { return e.type === 'message_delta'; })[0];",
+                  "var usages = [terminal && terminal.usage];",
+                  "var startUsage = start && start.message && start.message.usage;",
+                  "if (startUsage && startUsage.cache_creation_input_tokens > 0) { usages.push(startUsage); }",
+                  "pm.test('cache TTL usage: cache write carries the requested TTL breakdown', function () {",
+                  "  pm.expect(usages.length, 'no cache write usage: ' + rawText).to.be.above(0);",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, rawText).to.be.an('object');",
+                  "    pm.expect(usage.cache_creation, rawText).to.be.an('object');",
+                  "    var details = usage.cache_creation;",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.above(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.equal(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens + details.ephemeral_1h_input_tokens, rawText).to.equal(usage.cache_creation_input_tokens);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{invokeCacheTTLPrefix}} {{cachePrefix}}\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"1h\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.anthropic.claude-opus-5-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.anthropic.claude-opus-5-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
