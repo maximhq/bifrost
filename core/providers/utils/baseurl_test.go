@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"encoding/json"
+	"errors"
+	"net"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -149,6 +152,74 @@ func TestBuildPassthroughURLFromSecretKeepsResolvedSecretsOutOfErrors(t *testing
 			schemas.NewSecretVar("env.BIFROST_TEST_PASSTHROUGH_BASE_URL"), "/v1/x", "a=1")
 		require.NoError(t, err)
 		assert.Equal(t, "https://api.example.com/v1/x?a=1", got)
+	})
+
+	t.Run("a rejected caller path keeps its own diagnostic", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_PASSTHROUGH_BASE_URL", "https://secret-host.example.com")
+		_, err := BuildPassthroughURLFromSecret(
+			schemas.NewSecretVar("env.BIFROST_TEST_PASSTHROUGH_BASE_URL"), "//other-host/x", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `invalid passthrough path "//other-host/x"`, "the caller's mistake must not read as a base_url failure")
+		assert.NotContains(t, err.Error(), "secret-host")
+	})
+}
+
+// TestRedactBaseURL covers the free-text redaction used for errors that quote the
+// endpoint: every form of a reference-resolved base_url is replaced by the reference,
+// and a literal base_url is left readable.
+func TestRedactBaseURL(t *testing.T) {
+	const ref = "env.BIFROST_TEST_REDACT_BASE_URL"
+
+	t.Run("literal and nil base_url are left as-is", func(t *testing.T) {
+		text := "dial tcp: lookup api.example.com: no such host"
+		assert.Equal(t, text, RedactBaseURL(schemas.NewSecretVar("https://api.example.com"), text))
+		assert.Equal(t, text, RedactBaseURL(nil, text))
+	})
+
+	t.Run("every form of the resolved endpoint becomes the reference", func(t *testing.T) {
+		t.Setenv("BIFROST_TEST_REDACT_BASE_URL", "https://secret-host.internal:8443/tenants/acme/")
+		base := schemas.NewSecretVar(ref)
+		for _, tc := range []struct{ text, want string }{
+			{`Post "https://secret-host.internal:8443/tenants/acme/v1/chat": EOF`, `Post "` + ref + `/v1/chat": EOF`},
+			{"failed to dial upstream websocket wss://secret-host.internal:8443/tenants/acme/v1/realtime?model=m: refused", "failed to dial upstream websocket wss://" + ref + "/v1/realtime?model=m: refused"},
+			{"dial tcp secret-host.internal:8443: connect: connection refused", "dial tcp " + ref + ": connect: connection refused"},
+			{"lookup secret-host.internal on 127.0.0.53:53: no such host", "lookup " + ref + " on 127.0.0.53:53: no such host"},
+		} {
+			got := RedactBaseURL(base, tc.text)
+			assert.Equal(t, tc.want, got)
+			assert.NotContains(t, got, "secret-host")
+			assert.NotContains(t, got, "acme")
+		}
+	})
+
+	t.Run("an unresolved reference has nothing to redact", func(t *testing.T) {
+		base := schemas.NewSecretVar("env.BIFROST_TEST_REDACT_BASE_URL_UNSET")
+		assert.Equal(t, "connection refused", RedactBaseURL(base, "connection refused"))
+	})
+}
+
+// TestRedactBaseURLError covers the BifrostError form: the message and the carried
+// error's text are redacted, and the carried error still unwraps for errors.As.
+func TestRedactBaseURLError(t *testing.T) {
+	t.Setenv("BIFROST_TEST_REDACT_BASE_URL", "http://secret-host.internal:11434")
+	base := schemas.NewSecretVar("env.BIFROST_TEST_REDACT_BASE_URL")
+	dnsErr := &net.DNSError{Err: "no such host", Name: "secret-host.internal"}
+	bifrostErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, dnsErr)
+
+	RedactBaseURLError(bifrostErr, base)
+
+	body, err := json.Marshal(bifrostErr)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "secret-host")
+	assert.Contains(t, string(body), "env.BIFROST_TEST_REDACT_BASE_URL")
+	var unwrapped *net.DNSError
+	assert.True(t, errors.As(bifrostErr.Error.Error, &unwrapped), "the original error must stay reachable")
+
+	t.Run("nil error and literal base_url are no-ops", func(t *testing.T) {
+		RedactBaseURLError(nil, base)
+		literal := NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, dnsErr)
+		RedactBaseURLError(literal, schemas.NewSecretVar("http://secret-host.internal:11434"))
+		assert.Same(t, error(dnsErr), literal.Error.Error)
 	})
 }
 

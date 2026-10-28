@@ -1387,6 +1387,60 @@ func LoggableURL(baseURL *schemas.SecretVar, fullURL string) string {
 	return ref
 }
 
+// RedactBaseURL returns text with everything a base_url resolved from an env./vault.
+// reference resolved to replaced by the reference itself. It is LoggableURL for free
+// text that may quote the endpoint without it being a prefix - a dial error names the
+// wss:// form of the URL, a DNS error only its host - so every form is replaced: the
+// resolved URL, the URL without its scheme, the host with and without its port. A
+// literal base_url is operator-visible configuration and is returned as-is.
+func RedactBaseURL(baseURL *schemas.SecretVar, text string) string {
+	if !baseURL.IsFromSecret() {
+		return text
+	}
+	resolved := strings.TrimRight(strings.TrimSpace(baseURL.GetValue()), "/")
+	if resolved == "" {
+		return text
+	}
+	ref := baseURL.GetRawRef()
+	// Longest form first: the replacer tries its pairs in order at each position and never
+	// rescans replaced text, so a shorter form cannot split a longer match or the reference.
+	pairs := []string{resolved, ref}
+	if parsed, err := url.Parse(resolved); err == nil && parsed.Host != "" {
+		for _, form := range []string{strings.TrimRight(parsed.Host+parsed.EscapedPath(), "/"), parsed.Host, parsed.Hostname()} {
+			if form != "" {
+				pairs = append(pairs, form, ref)
+			}
+		}
+	}
+	return strings.NewReplacer(pairs...).Replace(text)
+}
+
+// redactedError carries an error whose text had a secret-backed base URL redacted. It
+// unwraps to the original, so errors.Is and errors.As (timeouts, net errors) still work.
+type redactedError struct {
+	text string
+	err  error
+}
+
+func (e *redactedError) Error() string { return e.text }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// RedactBaseURLError applies RedactBaseURL to bifrostErr's message and to the text of
+// the error it carries, in place. Connection errors quote the host they dialed (see
+// MakeRequestWithContext and DoStreamingRequest), and ErrorField.MarshalJSON sends that
+// text to the caller.
+func RedactBaseURLError(bifrostErr *schemas.BifrostError, baseURL *schemas.SecretVar) {
+	if bifrostErr == nil || bifrostErr.Error == nil || !baseURL.IsFromSecret() {
+		return
+	}
+	bifrostErr.Error.Message = RedactBaseURL(baseURL, bifrostErr.Error.Message)
+	if err := bifrostErr.Error.Error; err != nil {
+		if text := RedactBaseURL(baseURL, err.Error()); text != err.Error() {
+			bifrostErr.Error.Error = &redactedError{text: text, err: err}
+		}
+	}
+}
+
 // ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
 // It merges with any existing TLSConfig (e.g., from ConfigureProxy).
 func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
@@ -1894,14 +1948,15 @@ var passthroughPathDelimiters = strings.NewReplacer("%", "%25", "?", "%3F", "#",
 // scheme-relative authority and send the operator's credential to a caller-chosen host. The
 // transport validates the path before dispatch; this is the last check before the dial.
 // BuildPassthroughURLFromSecret is BuildPassthroughURL for a base_url held as a
-// SecretVar. The error BuildPassthroughURL returns quotes the base URL, and the
-// passthrough routes hand that to the caller as a 400 -- fine for a literal,
-// which is operator-visible configuration, but a base_url resolved from an
-// env./vault. reference is not. Such a failure names the reference instead.
+// SecretVar. The errors BuildPassthroughURL returns can quote the base URL, and the
+// passthrough routes hand them to the caller as a 400 -- fine for a literal, which
+// is operator-visible configuration, but a base_url resolved from an env./vault.
+// reference is not. Such an error names the reference in place of the resolved
+// value, and keeps the rest of its text, so a rejected caller path still says so.
 func BuildPassthroughURLFromSecret(baseURL *schemas.SecretVar, path, rawQuery string) (string, error) {
 	requestURL, err := BuildPassthroughURL(baseURL.GetValue(), path, rawQuery)
 	if err != nil && baseURL.IsFromSecret() {
-		return "", fmt.Errorf("invalid provider base url resolved from %s", baseURL.GetRawRef())
+		return "", errors.New(RedactBaseURL(baseURL, err.Error()))
 	}
 	return requestURL, err
 }

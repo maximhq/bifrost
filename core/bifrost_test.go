@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -8851,4 +8852,68 @@ func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
 	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
 		t.Fatalf("plugins after remove = %d, want 1", n)
 	}
+}
+
+// TestProviderConnectionErrorRedactsSecretBaseURL pins the core disclosure boundary: a
+// connection error quotes the address it dialed, and when base_url was resolved from an
+// env. reference that address must not reach the caller, for unary and streaming
+// requests alike. The reference is named instead.
+func TestProviderConnectionErrorRedactsSecretBaseURL(t *testing.T) {
+	const ref = "env.BIFROST_TEST_REDACTED_BASE_URL"
+	// A closed listener: dialing it fails at once with "connection refused" and its address.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	t.Setenv("BIFROST_TEST_REDACTED_BASE_URL", "http://"+addr)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, ref)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+	request := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+			},
+		}
+	}
+	assertRedacted := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil {
+			t.Fatal("expected a connection error")
+		}
+		body, err := json.Marshal(bifrostErr)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(body), addr) {
+			t.Fatalf("the resolved address reached the caller: %s", body)
+		}
+		if !strings.Contains(string(body), ref) {
+			t.Fatalf("the error should name the reference: %s", body)
+		}
+	}
+
+	t.Run("unary", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		_, bifrostErr := client.ChatCompletionRequest(ctx, request())
+		assertRedacted(t, bifrostErr)
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, request())
+		if stream != nil {
+			drainChatStream(stream)
+		}
+		assertRedacted(t, bifrostErr)
+	})
 }

@@ -319,8 +319,12 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	upstreamFromPool := true
 
 	var proxyConfig *schemas.ProxyConfig
+	var baseURL *schemas.SecretVar
 	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(req.Provider); cfgErr == nil && providerCfg != nil {
 		proxyConfig = providerCfg.ProxyConfig
+		if providerCfg.NetworkConfig != nil {
+			baseURL = providerCfg.NetworkConfig.BaseURL
+		}
 	}
 
 	// Validate the pinned upstream matches the current request's provider/key.
@@ -338,7 +342,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		headers := mergeWebSocketHeaders(ctx, wsProvider.WebSocketHeaders(key))
 		upstream, err = bfws.DialUpstream(wsURL, headers, req.Provider, key.ID, proxyConfig)
 		if err != nil {
-			logger.Warn("failed to dial upstream WS connection for %s with forwarded headers: %v, falling back to HTTP bridge", req.Provider, err)
+			logger.Warn("failed to dial upstream WS connection for %s with forwarded headers: %s, falling back to HTTP bridge", req.Provider, providerUtils.RedactBaseURL(baseURL, err.Error()))
 			return false
 		}
 		upstreamFromPool = false
@@ -354,7 +358,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 		upstream, err = h.pool.Get(poolKey, headers, proxyConfig)
 		if err != nil {
-			logger.Warn("failed to get upstream WS connection for %s: %v, falling back to HTTP bridge", req.Provider, err)
+			logger.Warn("failed to get upstream WS connection for %s: %s, falling back to HTTP bridge", req.Provider, providerUtils.RedactBaseURL(baseURL, err.Error()))
 			return false
 		}
 		session.SetUpstream(upstream)
