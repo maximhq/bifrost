@@ -483,6 +483,8 @@ mcpConfig := &schemas.MCPConfig{
 - A call that carries a token is sent once: it is not retried on transient errors, and a failure does not trigger a reconnect or credential refresh.
 - The provider runs after `PreMCPHook` plugins, so it can read values a hook set on the context; this holds for nested code mode calls too.
 - Admin tool discovery, health checks and tool sync run with no caller. They never consult the provider and always use the configured credential. A per-call client's fresh dial for a tool call is part of that call, so its `initialize` and `server/discover` carry the call's token.
+- Per-user auth types (`per_user_oauth`, `per_user_headers`, `token_exchange`) still resolve the user's own credential first, and a call without one fails with the usual authorization-required error. When the credential exists, the call's token replaces its `Authorization`.
+- The token travels like every other credential, over the scheme in the client's connection URL. Use `https://` for remote servers.
 - Tokens are not cached or stored by Bifrost; cache them in your provider if minting is expensive.
 
 ### Tools To Execute Semantics

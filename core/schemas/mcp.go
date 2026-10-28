@@ -284,8 +284,10 @@ type MCPConfig struct {
 // falls back to a token a hook set on BifrostMCPRequest.OutboundToken, then to the extra
 // headers and the configured credential; return "" for servers that take no bearer. An error
 // fails that tool call before anything is sent upstream; the caller sees a fixed message and
-// the error is logged. A call that fails with a token is not retried or reconnected.
-// Implementations must be safe for concurrent use.
+// the error is logged. A call that carries a token is sent once and never triggers a reconnect.
+// Per-user auth types still resolve the user's own credential first and fail without it; the
+// token then replaces its Authorization. The token goes over whatever scheme the client's URL
+// uses, like every other credential. Implementations must be safe for concurrent use.
 type OutboundMCPTokenProvider interface {
 	GetTokenForUpstream(ctx context.Context, serverName string) (string, error)
 }
