@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2323,6 +2324,106 @@ func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
 	assert.NotContains(t, got, "base-pair")
 	assert.NotContains(t, got, "all-openai")
 	assert.Contains(t, got, "all-any")
+}
+
+// A key alias names a model the keys resolve only after governance has run, so a limit set on the
+// model the alias stands for has to reach a request that names the alias. Targets the keys
+// disagree on all apply; a key that key selection never picks for the name does not count.
+func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
+	ctx := context.Background()
+	provider := "bedrock"
+	const sonnet, opus = "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"
+	anyModel := schemas.WhiteList{"*"}
+	mk := func(id, model string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	ids := func(mcs []*configstoreTables.TableModelConfig) []string {
+		out := make([]string, 0, len(mcs))
+		for _, mc := range mcs {
+			out = append(out, mc.ID)
+		}
+		return out
+	}
+	global := configstoreTables.ModelConfigScopeGlobal
+	withKeys := func(keys ...schemas.Key) *LocalGovernanceStore {
+		store := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("opus-limit", opus))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: keys},
+		}}
+		return store
+	}
+	off := false
+
+	t.Run("the alias reaches the limit of the model it stands for", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Equal(t, []string{"sonnet-limit"}, ids(store.collectModelConfigsFor(ctx, global, "", "claude-sonnet", &provider)))
+		assert.Equal(t, []string{"sonnet-limit"}, ids(store.collectModelConfigsFor(ctx, global, "", sonnet, &provider)))
+	})
+	t.Run("keys that disagree apply every target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.ElementsMatch(t, []string{"sonnet-limit", "opus-limit"}, ids(store.collectModelConfigsFor(ctx, global, "", "claude-sonnet", &provider)))
+	})
+	t.Run("a key that cannot serve the name contributes nothing", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: schemas.WhiteList{"titan-*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Enabled: &off, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.Empty(t, store.collectModelConfigsFor(ctx, global, "", "claude-sonnet", &provider))
+	})
+	t.Run("no aliases leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel})
+		assert.Empty(t, store.collectModelConfigsFor(ctx, global, "", "claude-sonnet", &provider))
+	})
+	t.Run("a lookup without a provider cannot resolve an alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Empty(t, store.collectModelConfigsFor(ctx, global, "", "claude-sonnet", nil))
+	})
+}
+
+func BenchmarkCollectModelConfigsFor_KeyAliases(b *testing.B) {
+	provider := "bedrock"
+	mk := func(id, model string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	cfg := &configstore.GovernanceConfig{}
+	for _, mc := range []*configstoreTables.TableModelConfig{mk("sonnet-limit", "us.anthropic.claude-sonnet-4-6")} {
+		cfg.ModelConfigs = append(cfg.ModelConfigs, *mc)
+		cfg.Budgets = append(cfg.Budgets, mc.Budgets...)
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	aliased := schemas.KeyAliases{}
+	for a := 0; a < 20; a++ {
+		aliased[fmt.Sprintf("alias-%d", a)] = schemas.AliasConfig{ModelID: fmt.Sprintf("us.vendor.model-%d", a)}
+	}
+	aliased["claude-sonnet"] = schemas.AliasConfig{ModelID: "us.anthropic.claude-sonnet-4-6"}
+	global := configstoreTables.ModelConfigScopeGlobal
+	for _, tc := range []struct {
+		name  string
+		keys  []schemas.Key
+		model string
+		want  int
+	}{
+		{"no_aliases", []schemas.Key{{Models: schemas.WhiteList{"*"}}, {Models: schemas.WhiteList{"*"}}}, "claude-sonnet", 0},
+		{"alias", []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: aliased}, {Models: schemas.WhiteList{"*"}, Aliases: aliased}}, "claude-sonnet", 1},
+		{"canonical_with_aliases_configured", []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: aliased}}, "us.anthropic.claude-sonnet-4-6", 1},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: tc.keys}}}
+			if got := len(store.collectModelConfigsFor(context.Background(), global, "", tc.model, &provider)); got != tc.want {
+				b.Fatalf("%s: %d configs, want %d", tc.name, got, tc.want)
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = store.collectModelConfigsFor(context.Background(), global, "", tc.model, &provider)
+			}
+		})
+	}
 }
 
 // TestResolveAccessStampsVirtualKeyMetadata checks that resolving access publishes the key's

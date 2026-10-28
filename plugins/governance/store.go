@@ -2408,6 +2408,22 @@ func (gs *LocalGovernanceStore) collectModelConfigsFor(ctx context.Context, scop
 		add(loadKey(modelConfigWildcard, provider)) // tier 5: all models on this provider
 	}
 	add(loadKey(modelConfigWildcard, nil)) // tier 6: all models, all providers
+	// A key alias is resolved only at key selection, after this lookup, so a limit set on the model
+	// an alias stands for would never meet a request that names the alias. Every target an eligible
+	// key maps the name to is looked up the same way the name itself was; the dedupe above keeps a
+	// limit reached twice as one. A provider without aliases pays the loop in HasKeyAliases.
+	if provider != nil && gs.inMemoryStore != nil {
+		if cfg, ok := configuredProvider(gs.inMemoryStore, schemas.ModelProvider(*provider)); ok && modelcatalog.HasKeyAliases(cfg.Keys) {
+			modelcatalog.KeyAliasTargets(model, cfg.Keys, func(target string) {
+				targetCanonical, targetBase := gs.modelConfigKeys(target, provider)
+				add(loadKey(targetCanonical, provider))
+				add(loadKey(targetBase, provider))
+				targetCanonical, targetBase = gs.modelConfigKeys(target, nil)
+				add(loadKey(targetCanonical, nil))
+				add(loadKey(targetBase, nil))
+			})
+		}
+	}
 	return out
 }
 
