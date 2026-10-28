@@ -137,6 +137,7 @@ type sdkClient interface {
 type upstreamCandidate struct {
 	client    sdkClient
 	transport string
+	tenant    string
 }
 
 type clientGeneration struct {
@@ -1302,7 +1303,7 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 			candidateErrors = append(candidateErrors, clientErr)
 			continue
 		}
-		candidates = append(candidates, upstreamCandidate{client: client, transport: selectedTransport})
+		candidates = append(candidates, upstreamCandidate{client: client, transport: selectedTransport, tenant: iface.Tenant})
 	}
 	if len(candidates) == 0 {
 		httpClient.CloseIdleConnections()
@@ -2582,7 +2583,7 @@ var _ a2asrv.RequestHandler = (*proxyRequestHandler)(nil)
 // separate. The downstream A2A-Version copy is dropped here because the gateway's
 // own SDK client stamps the version it speaks upstream; forwarding the downstream
 // copy would duplicate the header.
-func (h *proxyRequestHandler) upstreamContext(ctx context.Context) (context.Context, error) {
+func (h *proxyRequestHandler) upstreamContext(ctx context.Context, interfaceTenant string) (context.Context, error) {
 	bifrostCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok {
 		bifrostCtx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -2593,6 +2594,11 @@ func (h *proxyRequestHandler) upstreamContext(ctx context.Context) (context.Cont
 		return nil, err
 	}
 	headers = withAcceptedCredential(bifrostCtx, headers, h.config.forwardAcceptedCredential, h.config.forwardAcceptedCredentialOverridesAuth)
+	// Preserve the selected client's namespace for work that must happen
+	// before the SDK mutates the request (embedded push persistence).
+	if interfaceTenant != "" {
+		ctx = a2a.AttachTenant(ctx, interfaceTenant)
+	}
 	return a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams(upstreamServiceParams(ctx, headers))), nil
 }
 
@@ -2728,18 +2734,23 @@ func forwardUpstream[T any](
 				defer cancelCall()
 				defer stopRuntimeWatch()
 
-				upstreamCtx, authErr := h.upstreamContext(callCtx)
+				upstreamCtx, authErr := h.upstreamContext(callCtx, lease.candidate.tenant)
 				endPhaseSpan(prep)
 				prep = phaseSpan{}
 				if authErr != nil {
 					return zero, nil, authErr
 				}
-				callStart := time.Now()
+				// These callbacks also access local push state. They measure SDK
+				// calls separately so database work stays in gateway overhead.
+				var callStart time.Time
+				switch envelope.RequestType {
+				case schemas.A2ARequestTypeCreateTaskPushConfig, schemas.A2ARequestTypeDeleteTaskPushConfig,
+					schemas.A2ARequestTypeSendMessage:
+				default:
+					callStart = time.Now()
+				}
 				value, callErr := call(upstreamCtx, lease.candidate.client)
-				// Push config mutations measure their SDK calls separately because the
-				// callback also persists local state. Other calls accumulate their full
-				// upstream duration here, including each retry.
-				if envelope.RequestType != schemas.A2ARequestTypeCreateTaskPushConfig && envelope.RequestType != schemas.A2ARequestTypeDeleteTaskPushConfig {
+				if !callStart.IsZero() {
 					schemas.AddUpstreamLatency(gateCtx, time.Since(callStart))
 				}
 				advanceAfterFailure(lease, callErr)
@@ -2904,7 +2915,7 @@ func forwardUpstreamStream(ctx context.Context, h *proxyRequestHandler, envelope
 			stopRuntimeWatch := context.AfterFunc(h.runtime.ctx, cancelStream)
 			defer stopRuntimeWatch()
 			var streamErr error
-			upstreamCtx, authErr := h.upstreamContext(streamCtx)
+			upstreamCtx, authErr := h.upstreamContext(streamCtx, lease.candidate.tenant)
 			endPhaseSpan(prep)
 			if authErr != nil {
 				opErr = authErr
@@ -2914,8 +2925,9 @@ func forwardUpstreamStream(ctx context.Context, h *proxyRequestHandler, envelope
 			// Each pull on the upstream iterator blocks on the provider socket;
 			// time spent inside the loop body (yielding downstream, observing
 			// events) is Bifrost/downstream work and is excluded.
+			upstream := call(upstreamCtx, lease.candidate.client)
 			pullStart := time.Now()
-			for event, eventErr := range call(upstreamCtx, lease.candidate.client) {
+			for event, eventErr := range upstream {
 				schemas.AddUpstreamLatency(gateCtx, time.Since(pullStart))
 				if eventErr != nil {
 					streamErr = eventErr
@@ -3121,14 +3133,27 @@ func (h *proxyRequestHandler) SendMessage(ctx context.Context, req *a2a.SendMess
 		return nil, err
 	}
 	// Envelope first so plugin/log visibility reflects the client's request;
-	// the rewrite below replaces any embedded push callback with Bifrost's
+	// the rewrite inside the lease replaces any embedded push callback with Bifrost's
 	// ingress and a minted credential before the request goes upstream.
 	envelope := h.messageEnvelope(schemas.A2ARequestTypeSendMessage, req)
-	settlePush, err := h.rewriteEmbeddedPushConfig(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+	var settlePush func(context.Context, a2a.TaskID)
 	result, err := forwardUpstream(ctx, h, envelope, func(ctx context.Context, client sdkClient) (a2a.SendMessageResult, error) {
+		if settlePush == nil {
+			var err error
+			settlePush, err = h.rewriteEmbeddedPushConfig(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+		} else if req.Tenant == "" {
+			// Empty is not an explicit tenant in the SDK. Do not let a retry
+			// move a default-namespace registration to a namespaced interface.
+			tenant, _ := a2a.TenantFrom(ctx)
+			if tenant != req.Config.PushConfig.Tenant {
+				return nil, fmt.Errorf("%w: retry changed the push configuration tenant", a2a.ErrInvalidParams)
+			}
+		}
+		callStart := time.Now()
+		defer func() { schemas.AddUpstreamLatency(ctx, time.Since(callStart)) }()
 		return client.SendMessage(ctx, req)
 	}, describeSendMessageResult)
 	if settlePush != nil {
@@ -3184,19 +3209,21 @@ func (h *proxyRequestHandler) SendStreamingMessage(ctx context.Context, req *a2a
 	}
 	envelope := h.messageEnvelope(schemas.A2ARequestTypeSendStreamingMessage, req)
 	return func(yield func(a2a.Event, error) bool) {
-		settlePush, err := h.rewriteEmbeddedPushConfig(ctx, req)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		if settlePush != nil {
-			// The stream context may already be canceled when iteration ends, so
-			// cleanup must not ride it. Binding below settles this closure first
-			// when a task-bearing event is observed.
-			defer settlePush(context.WithoutCancel(ctx), "")
-		}
+		var settlePush func(context.Context, a2a.TaskID)
+		// The stream context may be canceled when iteration ends. A task-bearing
+		// event settles the registration first; otherwise discard the pending row.
+		defer func() {
+			if settlePush != nil {
+				settlePush(context.WithoutCancel(ctx), "")
+			}
+		}()
 
 		upstream := forwardUpstreamStream(ctx, h, envelope, func(ctx context.Context, client sdkClient) iter.Seq2[a2a.Event, error] {
+			var err error
+			settlePush, err = h.rewriteEmbeddedPushConfig(ctx, req)
+			if err != nil {
+				return func(yield func(a2a.Event, error) bool) { yield(nil, err) }
+			}
 			return client.SendStreamingMessage(ctx, req)
 		})
 		for event, err := range upstream {

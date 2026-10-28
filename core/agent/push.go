@@ -412,6 +412,18 @@ func (h *proxyRequestHandler) rewriteEmbeddedPushConfig(ctx context.Context, req
 	if err := validatePushCallbackAuth(original.Auth); err != nil {
 		return nil, err
 	}
+	// Called inside the forwarding lease. upstreamContext supplies that
+	// client's interface tenant, falling back to the inbound context; an
+	// explicit request tenant takes precedence, just as in the SDK.
+	tenant := req.Tenant
+	if tenant == "" {
+		tenant, _ = a2a.TenantFrom(ctx)
+	}
+	if original.Tenant != "" && original.Tenant != tenant {
+		return nil, fmt.Errorf("%w: embedded push configuration tenant must match the message tenant", a2a.ErrInvalidParams)
+	}
+	req.Tenant = tenant
+	original.Tenant = tenant
 	token, hash, err := mintPushIngressToken()
 	if err != nil {
 		return nil, err
