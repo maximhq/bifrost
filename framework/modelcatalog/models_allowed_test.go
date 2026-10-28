@@ -2,6 +2,7 @@ package modelcatalog
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -197,12 +198,17 @@ func TestKeyAliasTargets(t *testing.T) {
 		{"an empty target is skipped", "claude-sonnet", []schemas.Key{{Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: ""}}, Models: anyModel}}, nil},
 		{"a target equal to the name is skipped", "claude-sonnet", []schemas.Key{{Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: "claude-sonnet"}}, Models: anyModel}}, nil},
 		{"an unknown name has no targets", "claude-opus", []schemas.Key{{Aliases: sonnet, Models: anyModel}}, nil},
+		{"an exact-name hit suppresses the case-insensitive scan", "claude-sonnet", []schemas.Key{{Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: "x"}, "Claude-Sonnet": {ModelID: "y"}}, Models: anyModel}}, []string{"x"}},
+		{"differently-cased matches all visit", "CLAUDE-SONNET", []schemas.Key{{Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: "x"}, "Claude-Sonnet": {ModelID: "y"}}, Models: anyModel}}, []string{"x", "y"}},
 		{"keys without aliases have no targets", "claude-sonnet", []schemas.Key{{Models: anyModel}}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := collect(tc.model, tc.keys)
-			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			slices.Sort(got)
+			want := slices.Clone(tc.want)
+			slices.Sort(want)
+			if len(got) != len(want) || !slices.Equal(got, want) {
 				t.Errorf("KeyAliasTargets(%q) = %v, want %v", tc.model, got, tc.want)
 			}
 		})

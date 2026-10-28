@@ -1562,6 +1562,9 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 		}
 		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Anthropic, Model: &requestModel, Requests: items}}
 	}
+	rawItems := func(requestModel string, items ...schemas.BatchRequestItem) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Anthropic, Model: &requestModel, Requests: items}}
+	}
 	for _, tc := range []struct {
 		name    string
 		req     *schemas.BifrostRequest
@@ -1571,6 +1574,9 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 		{"item names an alias of the allowed model", batch("claude-sonnet-4-6", "claude-opus-4-6"), true},
 		{"the request's own model may be an alias", batch("claude-opus-4-6", "claude-sonnet-4-6"), false},
 		{"an item repeating the request's alias is still literal", batch("claude-opus-4-6", "claude-opus-4-6"), true},
+		{"an alias in the OpenAI-shaped body is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-opus-4-6"}}), true},
+		{"a non-string model next to no other model is not literal-checked", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": 123}}), false},
+		{"a non-string body model falls through to a string params alias, which is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": 123}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := presentCtx(mcpTestVKValue)
@@ -1673,6 +1679,34 @@ func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
 					b.Fatal(err)
 				}
 			}
+		})
+	}
+}
+
+func TestBatchItemModels(t *testing.T) {
+	item := func(body, params map[string]any) schemas.BatchRequestItem {
+		return schemas.BatchRequestItem{Body: body, Params: params}
+	}
+	create := func(items ...schemas.BatchRequestItem) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Requests: items}}
+	}
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostRequest
+		want []string
+	}{
+		{"non-batch request", &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}, nil},
+		{"batch type without a create payload", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest}, nil},
+		{"no inline items", create(), nil},
+		{"duplicates collapse", create(item(nil, map[string]any{"model": "a"}), item(map[string]any{"model": "a"}, nil)), []string{"a"}},
+		{"empty model skipped", create(item(nil, map[string]any{"model": ""}), item(nil, map[string]any{"model": "a"})), []string{"a"}},
+		{"non-string model skipped", create(item(nil, map[string]any{"model": 123}), item(nil, map[string]any{"model": "a"})), []string{"a"}},
+		{"body wins over params", create(item(map[string]any{"model": "body"}, map[string]any{"model": "params"})), []string{"body"}},
+		{"params used when body has no model", create(item(map[string]any{"x": 1}, map[string]any{"model": "params"})), []string{"params"}},
+		{"order is first seen", create(item(nil, map[string]any{"model": "b"}), item(map[string]any{"model": "a"}, nil), item(nil, map[string]any{"model": "b"})), []string{"b", "a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, BatchItemModels(tc.req))
 		})
 	}
 }
