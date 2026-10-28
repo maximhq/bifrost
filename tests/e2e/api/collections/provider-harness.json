@@ -297308,19 +297308,20 @@
           }
         },
         {
-          "name": "280.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914",
+          "name": "293.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('280.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914 succeeds', function () {",
+                  "pm.test('293.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
                   "var body = pm.response.json();",
-                  "var entry = (body.data || []).filter(function (m) { return m.id === 'openrouter/openai/gpt-4o-mini'; })[0];",
+                  "// ToAnthropicListModelsResponse strips the provider prefix, so the OpenRouter row openrouter/openai/gpt-4o-mini is listed as openai/gpt-4o-mini here.",
+                  "var entry = (body.data || []).filter(function (m) { return m.id === 'openai/gpt-4o-mini'; })[0];",
                   "pm.test('the upstream label reaches the Anthropic drop-in listing (#8914)', function () {",
                   "  pm.expect(entry, 'model not listed: ' + pm.response.text().slice(0, 2000)).to.be.an('object');",
                   "  pm.expect(entry['display_name'], 'display_name missing on ' + JSON.stringify(entry)).to.be.a('string').and.not.equal('');",

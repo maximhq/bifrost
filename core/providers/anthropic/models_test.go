@@ -9,7 +9,9 @@ import (
 // TestToAnthropicListModelsResponseDisplayName pins the label precedence in
 // the Anthropic drop-in listing (#8914): DisplayName wins when present, Name
 // is the fallback for providers that populate only it, and a row with neither
-// carries no label.
+// carries no label. It also pins that IDs are emitted with the provider
+// prefix stripped (ParseModelString), which the provider-harness 293.4 case
+// for /anthropic/v1/models relies on when it filters by id.
 func TestToAnthropicListModelsResponseDisplayName(t *testing.T) {
 	t.Parallel()
 
@@ -23,6 +25,13 @@ func TestToAnthropicListModelsResponseDisplayName(t *testing.T) {
 	got := ToAnthropicListModelsResponse(response).Data
 	if len(got) != 4 {
 		t.Fatalf("expected 4 entries, got %d", len(got))
+	}
+
+	if got[0].ID != "openai/gpt-4o-mini" {
+		t.Fatalf("openrouter prefix must be stripped, got id %q", got[0].ID)
+	}
+	if got[1].ID != "claude-haiku-4-5" {
+		t.Fatalf("anthropic prefix must be stripped, got id %q", got[1].ID)
 	}
 
 	if got[0].DisplayName != "OpenAI: GPT-4o-mini" {
