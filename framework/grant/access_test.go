@@ -1804,3 +1804,36 @@ func TestAccess_AliasTargetHeldToBlacklist(t *testing.T) {
 		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
 	})
 }
+
+func BenchmarkAccess_IsModelAllowed_AliasTargets(b *testing.B) {
+	allowAll := func(string, string, []string) bool { return true }
+	source := func(provider, model string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	plain := func() *Permit {
+		return permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "regex:^claude-.*")
+	}
+	blocking := func() *Permit {
+		return permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-haiku-4-5")
+	}
+	for _, bc := range []struct {
+		name   string
+		access *Access
+	}{
+		{"no_source", NewAccess(held(plain()), nil, Intersect, allowAll)},
+		{"source_no_blacklist", NewAccess(held(plain()), nil, Intersect, allowAll).WithAliasTargets(source)},
+		{"source_blacklist_alias", NewAccess(held(blocking()), nil, Intersect, allowAll).WithAliasTargets(source)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			if !bc.access.IsModelAllowed("bedrock", "best-model") {
+				b.Fatal("best-model should be allowed")
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				bc.access.IsModelAllowed("bedrock", "best-model")
+			}
+		})
+	}
+}

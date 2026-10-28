@@ -720,7 +720,7 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 		}
 		found = true
 		if a.permitsModel(pp, model) {
-			return a.aliasTargetsNotBlacklisted(p, provider, model)
+			return a.aliasTargetsNotBlacklisted(pps, provider, model)
 		}
 	}
 	// A provider the permit lists keeps its own model rules even under allow-all; only a provider it
@@ -732,16 +732,29 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 }
 
 // aliasTargetsNotBlacklisted reports that no model model can become through a key alias is blacklisted
-// by the permit. It does nothing, and costs one scan of the permit's provider permits, unless the
-// permit blacklists something for provider and an alias source is set.
-func (a *Access) aliasTargetsNotBlacklisted(p schemas.Permit, provider, model string) bool {
-	if a.aliasTargets == nil || !blacklistsAnything(p, provider) {
+// by the provider permits pps. It reads the permits already fetched by the caller and does nothing,
+// allocating nothing, unless an alias source is set and a permit blacklists something for provider.
+func (a *Access) aliasTargetsNotBlacklisted(pps []schemas.ProviderPermit, provider, model string) bool {
+	if a.aliasTargets == nil {
+		return true
+	}
+	blacklists := false
+	for i := range pps {
+		if pps[i].Provider == provider && len(pps[i].BlacklistedModels) > 0 {
+			blacklists = true
+			break
+		}
+	}
+	if !blacklists {
 		return true
 	}
 	ok := true
 	a.aliasTargets(provider, model, func(target string) {
-		if ok && blacklistsModel(p, provider, target) {
-			ok = false
+		for i := range pps {
+			if pps[i].Provider == provider && pps[i].BlacklistedModels.IsBlocked(target) {
+				ok = false
+				return
+			}
 		}
 	})
 	return ok
