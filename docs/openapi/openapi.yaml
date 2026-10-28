@@ -1454,6 +1454,8 @@ paths:
     $ref: "./paths/management/relays.yaml#/relay-by-name"
   /api/relays/usage-preview:
     $ref: "./paths/management/relays.yaml#/relays-usage-preview"
+  /api/relays/openapi-spec:
+    $ref: "./paths/management/relays.yaml#/relays-openapi-spec"
   /api/relays/{name}/access-profiles:
     $ref: "./paths/management/relays.yaml#/relay-access-profiles"
   /api/relay-logs:

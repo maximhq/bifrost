@@ -2,6 +2,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
+import { getErrorMessage, useFetchRelayOpenAPISpecMutation } from "@/lib/store";
+import { relayOpenAPISpecUrlSchema } from "@/lib/types/schemas";
 import { useCallback, useRef, useState } from "react";
 import { specFingerprint, type OpenAPISourceMode } from "../../mcp-registry/views/mcpClientOpenApiUtils";
 import { OpenAPISpecSource } from "../../mcp-registry/views/openApiSpecSource";
@@ -12,23 +14,25 @@ interface OpenAPIImportDialogProps {
 	onImport: (result: OpenAPIImport) => void;
 }
 
-// Relays read the document in the browser, so only the two client-side sources apply.
-const RELAY_SOURCE_MODES: OpenAPISourceMode[] = ["paste", "upload"];
-
 /**
- * Turns an OpenAPI or Swagger document (pasted or uploaded, JSON or YAML) into routes, an auth
- * suggestion and a base URL hint. The document is parsed as soon as it settles, like the MCP
- * OpenAPI source, and the summary is what Import hands over. Nothing is saved until the relay is.
+ * Turns an OpenAPI or Swagger document (pasted, uploaded or fetched from a URL; JSON or YAML) into
+ * routes, an auth suggestion and a base URL hint, through the same source picker as an MCP OpenAPI
+ * server. A pasted or uploaded document is parsed as soon as it settles; a URL is fetched by the
+ * gateway on request (the browser cannot fetch most spec URLs itself) and parsed here the same way.
+ * The summary is what Import hands over. Nothing is saved until the relay is.
  */
 export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDialogProps) {
 	const [mode, setMode] = useState<OpenAPISourceMode>("paste");
 	const [text, setText] = useState("");
+	const [specUrl, setSpecUrl] = useState("");
+	const [specUrlError, setSpecUrlError] = useState<string>();
+	const [fetchSpec] = useFetchRelayOpenAPISpecMutation();
 	const [fileName, setFileName] = useState<string | null>(null);
 	const [parseError, setParseError] = useState<string | null>(null);
 	const [isParsing, setIsParsing] = useState(false);
 	const [preview, setPreview] = useState<{ key: string; result: OpenAPIImport } | null>(null);
 
-	const sourceKey = specFingerprint(mode, text, undefined);
+	const sourceKey = specFingerprint(mode, text, specUrl);
 	const isCurrent = preview?.key === sourceKey;
 
 	// Each parse gets a sequence number; a result from an older attempt (the YAML parser loading
@@ -36,25 +40,41 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 	// it can never overwrite a newer preview and leave Import disabled.
 	const parseSeq = useRef(0);
 	const parse = useCallback(async () => {
+		const checked = mode === "url" ? relayOpenAPISpecUrlSchema.safeParse(specUrl) : undefined;
+		if (checked && !checked.success) {
+			setSpecUrlError(checked.error.issues[0]?.message ?? "Enter an absolute http(s) URL");
+			return;
+		}
+		const url = checked?.data ?? "";
 		const seq = ++parseSeq.current;
 		setIsParsing(true);
 		setParseError(null);
+		setSpecUrlError(undefined);
 		try {
-			const doc = await parseOpenAPIText(text);
+			// A fetched document resolves relative servers against the URL it was read from.
+			const source = mode === "url" ? await fetchSpec({ spec_url: url }).unwrap() : undefined;
 			if (seq !== parseSeq.current) return;
-			setPreview({ key: sourceKey, result: importOpenAPI(doc) });
+			const doc = await parseOpenAPIText(source?.spec ?? text);
+			if (seq !== parseSeq.current) return;
+			setPreview({ key: sourceKey, result: importOpenAPI(doc, source?.spec_url) });
 		} catch (e) {
 			if (seq !== parseSeq.current) return;
 			setPreview(null);
-			setParseError(e instanceof Error ? e.message : "The document could not be read");
+			setParseError(e instanceof Error ? e.message : getErrorMessage(e) || "The document could not be read");
 		} finally {
 			if (seq === parseSeq.current) setIsParsing(false);
 		}
-	}, [text, sourceKey]);
+	}, [mode, specUrl, text, sourceKey, fetchSpec]);
 
 	const reset = () => {
+		// A fetch still in flight belongs to the dialog being closed: retire it so its result or error
+		// never reaches a reopened dialog, and stop the spinner so Fetch spec is usable again at once.
+		parseSeq.current++;
+		setIsParsing(false);
 		setMode("paste");
 		setText("");
+		setSpecUrl("");
+		setSpecUrlError(undefined);
 		setFileName(null);
 		setParseError(null);
 		setPreview(null);
@@ -82,16 +102,21 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 				</DialogHeader>
 				<div data-testid="relay-openapi-source">
 					<OpenAPISpecSource
-						modes={RELAY_SOURCE_MODES}
 						mode={mode}
 						onModeChange={(next) => {
 							setMode(next);
 							setParseError(null);
+							setSpecUrlError(undefined);
 						}}
 						specText={text}
 						onSpecTextChange={setText}
-						specUrl=""
-						onSpecUrlChange={() => {}}
+						specUrl={specUrl}
+						onSpecUrlChange={(next) => {
+							setSpecUrl(next);
+							setSpecUrlError(undefined);
+						}}
+						specUrlError={specUrlError}
+						urlHint="Bifrost fetches the document once to read its operations; neither the document nor the URL is stored."
 						fileName={fileName}
 						onFileSelected={(file, content) => {
 							setFileName(file.name);

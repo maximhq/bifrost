@@ -2225,6 +2225,10 @@ export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) =>
 	if (message) ctx.addIssue({ code: "custom", message, path: ["units_path"] });
 });
 
+// The relay route import's URL source. The gateway fetches it, so only an absolute http(s) URL is sent;
+// anything else is refused on the field rather than as a fetch error.
+export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, "Enter an absolute http(s) URL");
+
 // Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
 const relayGlob = z
 	.string()

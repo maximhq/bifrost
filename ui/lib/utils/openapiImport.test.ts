@@ -40,6 +40,58 @@ describe("openapiImport", () => {
 		expect(baseUrlFromServers({ paths: {} })).toBeUndefined();
 	});
 
+	it("resolves relative servers against the URL a fetched document was read from", () => {
+		const doc = { servers: [{ url: "./api/" }] };
+		expect(baseUrlFromServers(doc)).toBeUndefined();
+		expect(baseUrlFromServers(doc, "https://docs.example.com/v2/openapi.json")).toBe("https://docs.example.com/v2/api");
+		expect(baseUrlFromServers({ servers: [{ url: "/v1" }] }, "https://docs.example.com/spec.yaml")).toBe("https://docs.example.com/v1");
+		// An absolute server still wins, and a templated one is still skipped.
+		expect(
+			baseUrlFromServers({ servers: [{ url: "https://{env}.example.com" }, { url: "https://api.example.com/" }] }, "https://x.test/s"),
+		).toBe("https://api.example.com");
+		// Swagger 2 without a host takes the document's host, with its basePath.
+		expect(baseUrlFromServers({ swagger: "2.0", basePath: "/v3" }, "https://pets.example.com/swagger.json")).toBe(
+			"https://pets.example.com/v3",
+		);
+		// Only the missing host is taken from where the document was fetched; a declared scheme stands.
+		expect(baseUrlFromServers({ swagger: "2.0", schemes: ["http"], basePath: "/v1" }, "https://docs.example.com/swagger.json")).toBe(
+			"http://docs.example.com/v1",
+		);
+		expect(baseUrlFromServers({ swagger: "2.0", schemes: ["http", "https"] }, "http://docs.example.com:8080/swagger.json")).toBe(
+			"https://docs.example.com:8080",
+		);
+		expect(importOpenAPI({ ...petstore, servers: [{ url: "/v9" }] }, "https://api.example.com/openapi.json").baseUrl).toBe(
+			"https://api.example.com/v9",
+		);
+	});
+
+	it("takes the OpenAPI 3 default server, /, for a fetched document that lists none", () => {
+		const url = "https://api.example.com/docs/openapi.json";
+		expect(baseUrlFromServers({ openapi: "3.0.0" }, url)).toBe("https://api.example.com");
+		expect(baseUrlFromServers({ openapi: "3.1.0", servers: [] }, url)).toBe("https://api.example.com");
+		// Without the URL there is nothing to resolve against; a listed but templated server is not "none".
+		expect(baseUrlFromServers({ openapi: "3.0.0" })).toBeUndefined();
+		expect(baseUrlFromServers({ openapi: "3.0.0", servers: [{ url: "https://{region}.example.com" }] }, url)).toBeUndefined();
+	});
+
+	it("leaves a server's query out of the suggested base URL, which cannot carry one, and says so", () => {
+		const relative = { openapi: "3.0.0", servers: [{ url: "./api?version=2" }], paths: {} };
+		expect(baseUrlFromServers(relative, "https://example.com/openapi.json")).toBe("https://example.com/api");
+		const absolute = { openapi: "3.0.0", servers: [{ url: "https://api.example.com/v1/?version=2#x" }], paths: {} };
+		expect(baseUrlFromServers(absolute)).toBe("https://api.example.com/v1");
+		for (const [doc, url] of [
+			[relative, "https://example.com/openapi.json"],
+			[absolute, undefined],
+		] as const) {
+			const result = importOpenAPI(doc, url);
+			expect(
+				result.warnings.some((w) => w.includes("?version=2") && w.includes("base URL")),
+				JSON.stringify(result.warnings),
+			).toBe(true);
+		}
+		expect(importOpenAPI({ ...petstore }).warnings.some((w) => w.includes("query"))).toBe(false);
+	});
+
 	it("maps security schemes onto relay auth types", () => {
 		expect(authFromSecuritySchemes(petstore).auth).toEqual({ type: "header", header_name: "X-Api-Key" });
 		expect(authFromSecuritySchemes({ components: { securitySchemes: { b: { type: "http", scheme: "bearer" } } } }).auth).toEqual({

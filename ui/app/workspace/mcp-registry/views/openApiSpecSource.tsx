@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Info, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
 	detectSpecLanguage,
 	formatBytes,
@@ -45,6 +45,8 @@ export interface OpenAPISpecSourceProps {
 	compact?: boolean;
 	/** Which sources to offer; a surface without a server-side fetch leaves out "url". */
 	modes?: OpenAPISourceMode[];
+	/** What happens to a fetched document on this surface, under the URL field; defaults to the MCP wording. */
+	urlHint?: ReactNode;
 }
 
 const ALL_SOURCE_MODES: OpenAPISourceMode[] = ["paste", "url", "upload"];
@@ -77,6 +79,7 @@ export function OpenAPISpecSource({
 	disabled,
 	compact,
 	modes = ALL_SOURCE_MODES,
+	urlHint,
 }: OpenAPISpecSourceProps) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
@@ -189,7 +192,7 @@ export function OpenAPISpecSource({
 						aria-invalid={!!specUrlError}
 					/>
 					<p className="text-muted-foreground text-xs">
-						Bifrost fetches the document once and stores it with the server; the URL is kept as its source.
+						{urlHint ?? "Bifrost fetches the document once and stores it with the server; the URL is kept as its source."}
 					</p>
 				</TabsContent>
 

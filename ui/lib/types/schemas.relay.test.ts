@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { relayFormSchema, relayRouteFormSchema, relayUsageBaseSchema, relayUsageUnitsPathError } from "./schemas";
+import {
+	relayFormSchema,
+	relayOpenAPISpecUrlSchema,
+	relayRouteFormSchema,
+	relayUsageBaseSchema,
+	relayUsageUnitsPathError,
+} from "./schemas";
 import { emptyRelayForm } from "@/lib/utils/relayForm";
 
 // The form refuses what the gateway refuses, so the error shows on the field rather than as a
@@ -85,5 +91,14 @@ describe("relay form validation", () => {
 			relayUsageBaseSchema.safeParse({ cost_per_request: null, cost_per_unit: null, units_source: null, units_measure: null }).success,
 		).toBe(true);
 		expect(relayUsageBaseSchema.safeParse({ cost_per_unit: -1 }).success).toBe(false);
+	});
+
+	it("accepts only an absolute http(s) URL as the OpenAPI import's URL source", () => {
+		for (const bad of ["", "   ", "/openapi.json", "openapi.json", "ftp://example.com/spec.json", "http://[::1", "https://"]) {
+			expect(relayOpenAPISpecUrlSchema.safeParse(bad).success, bad).toBe(false);
+		}
+		expect(relayOpenAPISpecUrlSchema.safeParse(" https://exa.ai/docs/exa-spec.json ").data).toBe("https://exa.ai/docs/exa-spec.json");
+		expect(relayOpenAPISpecUrlSchema.safeParse("http://127.0.0.1:8080/openapi.yaml").success).toBe(true);
+		expect(relayOpenAPISpecUrlSchema.safeParse("http://[::1]/spec.json").success).toBe(true);
 	});
 });
