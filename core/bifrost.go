@@ -6045,11 +6045,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		stampRequestedRoute(ctx, requested)
 	}
 
-	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
-	ctx.ResetUpstreamLatency()
-	// Whole-request start for top-down overhead (total minus upstream). On ctx so
-	// tryRequest can stamp the response before post-hooks, where logging reads it.
-	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
+	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
+	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
+	if continuation == nil {
+		ctx.ResetUpstreamLatency()
+		// Whole-request start for top-down overhead (total minus upstream). On ctx so
+		// tryRequest can stamp the response before post-hooks, where logging reads it.
+		ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, time.Now())
+	}
 	// Backstop for the returned body if a post-hook replaced the response.
 	defer func() {
 		ctx.StampUpstreamLatency()
@@ -6446,6 +6449,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// Each attempt gets its own log row; mark where its window begins.
+	ctx.MarkAttemptStart()
 	provider, model, _ := req.GetRequestFields()
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {
@@ -6734,6 +6739,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 //
 // firstTokenTimeout is this attempt's TTFT deadline; 0 disables it.
 func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, firstTokenTimeout time.Duration) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Each attempt gets its own log row; mark where its window begins.
+	ctx.MarkAttemptStart()
+	ctx.MarkStreamAttemptStart()
 	provider, model, _ := req.GetRequestFields()
 	pq, err := bifrost.getProviderQueue(provider)
 	if err != nil {

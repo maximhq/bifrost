@@ -3545,9 +3545,9 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 }
 
 // agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
-// the in-process echo tool, and a turn that carries the tool result answers. It records the
-// model of every request it serves.
-func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+// the in-process echo tool, and a turn that carries the tool result answers. Each turn stalls for
+// turnDelay before answering. It records the model of every request it serves.
+func agentLoopServer(t *testing.T, turnDelay time.Duration) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	var models []string
@@ -3560,6 +3560,7 @@ func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
 		mu.Lock()
 		models = append(models, parsed.Model)
 		mu.Unlock()
+		time.Sleep(turnDelay)
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(string(body), `"role":"tool"`) {
 			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
@@ -3615,7 +3616,7 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 // the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
 // routed model.
 func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
-	server, models := agentLoopServer(t)
+	server, models := agentLoopServer(t, 0)
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
 	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
@@ -3660,7 +3661,7 @@ func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
 		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
 	}))
 	t.Cleanup(primary.Close)
-	fallback, models := agentLoopServer(t)
+	fallback, models := agentLoopServer(t, 0)
 
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
