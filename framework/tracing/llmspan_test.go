@@ -258,6 +258,26 @@ func TestPopulateErrorAttributesUsesResponsesNamespace(t *testing.T) {
 	}
 }
 
+// Usage Bifrost estimated for a cancelled stream is marked on the span, so a
+// consumer can tell it apart from provider-reported counts.
+func TestPopulateErrorAttributesMarksEstimatedBilledUsage(t *testing.T) {
+	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "Request cancelled: client disconnected"}}
+	bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{PromptTokens: 25, CompletionTokens: 62, TotalTokens: 87, Estimated: true}
+
+	attrs := PopulateErrorAttributes(bifrostErr)
+	if got := attrs[schemas.AttrBifrostUsageEstimated]; got != true {
+		t.Errorf("attribute %s = %v, want true", schemas.AttrBifrostUsageEstimated, got)
+	}
+	if got := attrs[schemas.AttrOutputTokens]; got != 62 {
+		t.Errorf("attribute %s = %v, want 62", schemas.AttrOutputTokens, got)
+	}
+
+	bifrostErr.ExtraFields.BilledUsage.Estimated = false
+	if _, ok := PopulateErrorAttributes(bifrostErr)[schemas.AttrBifrostUsageEstimated]; ok {
+		t.Errorf("attribute %s present on provider-reported usage", schemas.AttrBifrostUsageEstimated)
+	}
+}
+
 func TestPopulateErrorAttributesWithoutBilledUsageEmitsNoTokens(t *testing.T) {
 	msg := "401 before the model ran"
 	bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}}

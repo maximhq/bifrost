@@ -996,6 +996,12 @@ const (
 	AttrOutputTokens = "gen_ai.usage.output_tokens"
 	AttrUsageCost    = "gen_ai.usage.cost"
 
+	// AttrBifrostUsageEstimated is set on a failed request whose token counts
+	// Bifrost estimated because the provider never reported them (a stream
+	// cancelled or timed out before its usage frame). Under bifrost.* because
+	// OTel has no convention for it.
+	AttrBifrostUsageEstimated = "bifrost.usage.estimated"
+
 	// Cost breakdown, under bifrost.* rather than gen_ai.*: OTel has no cost
 	// convention and closed the proposal for one (semantic-conventions#1062),
 	// leaving cost to the observability platform. AttrUsageCost above predates

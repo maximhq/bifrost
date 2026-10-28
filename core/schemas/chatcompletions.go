@@ -1968,6 +1968,7 @@ type BifrostLLMUsage struct {
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	ReasoningTokens         int                          `json:"reasoning_tokens,omitempty"` // SGLang's top-level spelling; folded by NormalizeReasoningTokens
 	TotalTokens             int                          `json:"total_tokens"`
+	Estimated               bool                         `json:"estimated,omitempty"` // counts Bifrost estimated on a cancelled/timed-out stream's BilledUsage; never set on provider-reported usage
 	// AudioSeconds carries duration-based audio usage when a provider reports
 	// seconds instead of tokens.
 	AudioSeconds *float64 `json:"audio_seconds,omitempty"`

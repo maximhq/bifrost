@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1942,4 +1943,129 @@ func TestChatStreamRawCaptureIsBoundedByBytes(t *testing.T) {
 	if capturedBytes > limit {
 		t.Errorf("captured raw response is %d bytes, above the %d byte ceiling; an upstream streaming non-forwarding frames can grow this without bound", capturedBytes, limit)
 	}
+}
+
+// A client that disconnects mid-stream cancels the request before the upstream's
+// trailing usage frame, the only place an OpenAI-compatible upstream reports
+// usage. The cancel must still bill the prompt and the output already streamed,
+// marked as estimated. See https://github.com/maximhq/bifrost/issues/9219.
+
+// stallingSSEServer writes prelude and then holds the stream open until Bifrost
+// closes the connection, like an upstream that is still generating.
+func stallingSSEServer(t *testing.T, prelude string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Consume the body first: net/http only notices the client hanging up once it has.
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.WriteString(w, prelude); err != nil {
+			t.Errorf("failed writing SSE prelude: %v", err)
+			return
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+}
+
+// billingCapturePostHook records the usage a failed request bills.
+func billingCapturePostHook(billed *atomic.Pointer[schemas.BifrostLLMUsage]) schemas.PostHookRunner {
+	return func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if err != nil && err.ExtraFields.BilledUsage != nil {
+			billed.Store(err.ExtraFields.BilledUsage)
+		}
+		return resp, err
+	}
+}
+
+// cancelAfterChunks reads n chunks, cancels the request like a disconnecting
+// client, and drains the stream so the cancellation's post-hook has run.
+func cancelAfterChunks(t *testing.T, stream chan *schemas.BifrostStreamChunk, cancel context.CancelFunc, n int) {
+	t.Helper()
+	timeout := time.NewTimer(20 * time.Second)
+	defer timeout.Stop()
+	for received := 0; received < n; {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				t.Fatalf("stream closed after %d of %d chunks", received, n)
+			}
+			if chunk != nil && chunk.BifrostError != nil {
+				t.Fatalf("unexpected stream error before the cancel: %+v", chunk.BifrostError)
+			}
+			received++
+		case <-timeout.C:
+			t.Fatalf("timed out after %d of %d chunks", received, n)
+		}
+	}
+	cancel()
+	collectChunks(t, stream)
+}
+
+func assertEstimatedCancelUsage(t *testing.T, usage *schemas.BifrostLLMUsage, wantOutput int) {
+	t.Helper()
+	if usage == nil {
+		t.Fatal("cancelled stream billed nothing: BilledUsage is nil")
+	}
+	if usage.PromptTokens <= 0 {
+		t.Errorf("PromptTokens = %d, want an estimate from the request", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != wantOutput {
+		t.Errorf("CompletionTokens = %d, want %d (the output streamed before the cancel)", usage.CompletionTokens, wantOutput)
+	}
+	if usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
+		t.Errorf("TotalTokens = %d, want %d", usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
+	}
+	if !usage.Estimated {
+		t.Error("usage Bifrost filled in must be marked Estimated")
+	}
+}
+
+func TestChatStreamCancelBillsUnreportedUsage(t *testing.T) {
+	server := stallingSSEServer(t,
+		`data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`+"\n\n"+
+			chatChunk("w0 ", nil)+chatChunk("w1 ", nil)+chatChunk("w2 ", nil))
+	defer server.Close()
+
+	var billed atomic.Pointer[schemas.BifrostLLMUsage]
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	stream, bifrostErr := newStreamTestProvider(server.URL).ChatCompletionStream(ctx, billingCapturePostHook(&billed), nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	cancelAfterChunks(t, stream, cancel, 4) // role + 3 content chunks
+	assertEstimatedCancelUsage(t, billed.Load(), 3)
+}
+
+func TestResponsesStreamCancelBillsUnreportedUsage(t *testing.T) {
+	delta := func(text string) string {
+		return "event: response.output_text.delta\n" +
+			`data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"` + text + `"}` + "\n\n"
+	}
+	server := stallingSSEServer(t, "event: response.created\n"+
+		`data: {"type":"response.created","sequence_number":0,"response":{"id":"r1","object":"response","created_at":1,"model":"repro-model","status":"in_progress"}}`+"\n\n"+
+		delta("w0 ")+delta("w1 ")+delta("w2 "))
+	defer server.Close()
+
+	var billed atomic.Pointer[schemas.BifrostLLMUsage]
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := newStreamTestProvider(server.URL).ResponsesStream(ctx, billingCapturePostHook(&billed), nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	cancelAfterChunks(t, stream, cancel, 4) // response.created + 3 text deltas
+	assertEstimatedCancelUsage(t, billed.Load(), 3)
 }

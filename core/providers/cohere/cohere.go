@@ -617,7 +617,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// mid-stream cancel captures nothing (the API emits no incremental usage);
 		// this still bills correctly when usage has arrived before teardown.
 		streamUsage := &schemas.BifrostLLMUsage{}
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
+		providerUtils.RegisterStreamUsageHandle(ctx, streamUsage)
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -906,6 +906,10 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		defer stopCancellation()
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+
+		// Usage only arrives with the final event, so the handle stays empty; registering
+		// it lets a mid-stream cancel/timeout bill the prompt and the output streamed so far.
+		providerUtils.RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
 
 		chunkIndex := 0
 
