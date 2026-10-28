@@ -734,7 +734,7 @@ func HandleOpenAITextCompletionStreaming(
 		usage := &schemas.BifrostLLMUsage{}
 		// Register the accumulating usage handle so a mid-stream
 		// cancel/timeout can bill for tokens the provider already processed.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		providerUtils.RegisterStreamUsageHandle(ctx, usage)
 		// Whether a usage frame has arrived at or after finish_reason; gates the
 		// wait_for_usage break. A bool rather than a usage.TotalTokens test, so an upstream
 		// that legitimately reports zero tokens still terminates.
@@ -1462,7 +1462,7 @@ func HandleOpenAIChatCompletionStreaming(
 		usage := &schemas.BifrostLLMUsage{}
 		// Register the accumulating usage handle so a mid-stream
 		// cancel/timeout can bill for tokens the provider already processed.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		providerUtils.RegisterStreamUsageHandle(ctx, usage)
 
 		lastChunkTime := startTime
 
@@ -2377,6 +2377,11 @@ func HandleOpenAIResponsesStreaming(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+
+		// Usage arrives only on the terminal response event, so the handle stays
+		// empty; registering it lets a mid-stream cancel/timeout bill the prompt and
+		// the output streamed so far instead of nothing.
+		providerUtils.RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
 
 		lastChunkTime := startTime
 

@@ -634,6 +634,10 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
+		// Usage only arrives with the final event, so the handle stays empty; registering
+		// it lets a mid-stream cancel/timeout bill the prompt and the output streamed so far.
+		providerUtils.RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
+
 		lastChunkTime := startTime
 		chunkIndex := 0
 
@@ -983,6 +987,10 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
+
+		// Usage only arrives with the final event, so the handle stays empty; registering
+		// it lets a mid-stream cancel/timeout bill the prompt and the output streamed so far.
+		providerUtils.RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
 
 		lastChunkTime := startTime
 		chunkIndex := 0
@@ -1394,6 +1402,10 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
+
+		// Usage only arrives with the final event, so the handle stays empty; registering
+		// it lets a mid-stream cancel/timeout bill the prompt and the output streamed so far.
+		providerUtils.RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		sequenceNumber := 0

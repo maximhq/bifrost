@@ -63,14 +63,16 @@ const pricingUrl =
 // deterministically has billable usage, so cost MUST be > 0. Only native Anthropic
 // qualifies: its message_start event carries input_tokens + cache tokens immediately
 // (https://platform.claude.com/docs/en/api/messages-streaming).
-// Everyone else delivers usage only in a terminal event, so an early cancel may
-// legitimately have none — for those we require only that the error row exists.
+// Everyone else delivers usage only in a terminal event. Since #9219 a cancel after
+// the first byte still bills Bifrost's estimate of the prompt and the output streamed
+// so far, so their rows must carry tokens, and a cost wherever the datasheet prices
+// the model; /metrics is only checked for the early-usage providers.
 // Notably Bedrock (Converse) is NOT early-usage: per the ConverseStream response
 // schema the `usage` field lives solely in the terminal `metadata`
 // (ConverseStreamMetadataEvent), after messageStop — messageStart carries only role
 // (https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html).
-// So a Bedrock stream cancelled before metadata has nothing to bill, same as the
-// OpenAI family — the fix still bills Bedrock whenever metadata arrives before failure.
+// So a Bedrock stream cancelled before metadata has no reported usage, same as the
+// OpenAI family, and bills the estimate instead.
 const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
 
 // An early-usage cancel carries the message_start usage that logs and governance bill;
@@ -657,17 +659,25 @@ if (skipCostCheck) {
               r.costDetail = v.detail;
               r.costCheck = v.verdict;
             }
+          } else if (!(tokens > 0)) {
+            // Usage only arrives in a terminal event here, but a stream cancelled after
+            // its first byte still bills Bifrost's estimate of the prompt and the output
+            // streamed so far (#9219), so the row must carry tokens.
+            r.costCheck = "FAIL";
+            r.costDetail = `cancelled ${r.provider} ${kind} logged no tokens (cost=$${cost} tokens=${tokens})`;
+            costFailures++;
+          } else if (cost > 0) {
+            const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
+            if (v.fail) costFailures++;
+            r.costDetail = v.detail;
+            r.costCheck = v.verdict;
+          } else if (resolvePricingEntry(sheet, row.model, row.provider)) {
+            r.costCheck = "FAIL";
+            r.costDetail = `cancelled ${r.provider} ${kind} logged ${tokens} tokens but no cost for a priced model`;
+            costFailures++;
           } else {
-            // Presence not required. If a cost WAS recorded, still verify its accuracy.
-            if (cost > 0 && tokens > 0) {
-              const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
-              if (v.fail) costFailures++;
-              r.costDetail = v.detail;
-              r.costCheck = v.verdict;
-            } else {
-              r.costCheck = "PASS";
-              r.costDetail = `status=${row.status} cost=$${cost} (cost-presence not required for ${r.provider} ${kind})`;
-            }
+            r.costCheck = "PASS";
+            r.costDetail = `status=${row.status} tokens=${tokens} (no datasheet entry, cost not checked)`;
           }
         }
         console.error(

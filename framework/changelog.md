@@ -1,3 +1,4 @@
+- fix: failed-request spans carry `bifrost.usage.estimated` when the billed usage of a cancelled stream was estimated (#9219)
 - feat: added Azure Blob object storage for logs and skills with connection-string or default Azure identity authentication, JSON/gzip and Parquet support
 - fix: MCP OAuth discovery uses protected resource metadata only when its resource matches the MCP server URL (RFC 9728)
 - fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)

@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -485,5 +486,81 @@ func TestStreamErrorStatusMapsAnthropicErrorTypes(t *testing.T) {
 		if got := streamErrorStatus(tc.errType); got != tc.want {
 			t.Errorf("streamErrorStatus(%q) = %d, want %d", tc.errType, got, tc.want)
 		}
+	}
+}
+
+// A client that disconnects mid-stream: message_start already reported the
+// prompt exactly, but its output count is a placeholder and the real one only
+// arrives in message_delta at the end. The cancel must keep the reported prompt
+// and bill the output streamed so far, marked as estimated.
+// See https://github.com/maximhq/bifrost/issues/9219.
+func TestAnthropicChatStreamCancelBillsStreamedOutput(t *testing.T) {
+	const textDelta = "event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello world "}}` + "\n\n"
+	prelude := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_repro","type":"message","role":"assistant","model":"claude-repro","content":[],"usage":{"input_tokens":30,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		textDelta + textDelta + textDelta
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Consume the body first: net/http only notices the client hanging up once it has.
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(prelude)); err != nil {
+			t.Errorf("failed writing SSE prelude: %v", err)
+			return
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // still generating when the client leaves
+	}))
+	defer server.Close()
+
+	var billed *schemas.BifrostLLMUsage
+	capture := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if err != nil && err.ExtraFields.BilledUsage != nil {
+			billed = err.ExtraFields.BilledUsage
+		}
+		return resp, err
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	stream, bifrostErr := newTruncationTestProvider(server.URL).ChatCompletionStream(ctx, capture, nil,
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")}, truncationChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	for seen := false; !seen; {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				t.Fatal("stream closed before the streamed text arrived")
+			}
+			seen = chunksContainContent([]*schemas.BifrostStreamChunk{chunk}, "hello world ")
+		case <-time.After(20 * time.Second):
+			t.Fatal("timed out waiting for the streamed text")
+		}
+	}
+	// The three deltas are written in one flush; let the provider forward them all.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	collectTruncationChunks(t, stream) // the post-hook ran before the stream closed
+
+	if billed == nil {
+		t.Fatal("cancelled stream billed nothing: BilledUsage is nil")
+	}
+	if billed.PromptTokens != 30 {
+		t.Errorf("PromptTokens = %d, want the 30 message_start reported", billed.PromptTokens)
+	}
+	// 3 deltas of 12 ASCII bytes: ceil(36/4) = 9 tokens, above the placeholder 1.
+	if billed.CompletionTokens != 9 {
+		t.Errorf("CompletionTokens = %d, want 9 (the output streamed before the cancel)", billed.CompletionTokens)
+	}
+	if billed.TotalTokens != 39 {
+		t.Errorf("TotalTokens = %d, want 39", billed.TotalTokens)
+	}
+	if !billed.Estimated {
+		t.Error("usage Bifrost filled in must be marked Estimated")
 	}
 }

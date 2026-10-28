@@ -622,7 +622,7 @@ func HandleGeminiChatCompletionStream(
 		// tokens already processed. Gemini's usageMetadata is cumulative, so the
 		// latest non-nil copy below is the running total.
 		streamUsage := &schemas.BifrostLLMUsage{}
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
+		providerUtils.RegisterStreamUsageHandle(ctx, streamUsage)
 
 	readLoop:
 		for {
@@ -1162,7 +1162,7 @@ func HandleGeminiResponsesStream(
 		// Running usage handle so a mid-stream cancel/timeout can bill for
 		// tokens already processed. Gemini's usageMetadata is cumulative.
 		streamUsage := &schemas.BifrostLLMUsage{}
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
+		providerUtils.RegisterStreamUsageHandle(ctx, streamUsage)
 
 		for {
 			// If context was cancelled/timed out, let defer handle it

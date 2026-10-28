@@ -1054,7 +1054,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for tokens already processed Mutated in place below;
 		// the deferred HandleStreamCancellation/Timeout reads it from context.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		providerUtils.RegisterStreamUsageHandle(ctx, usage)
 
 		// Fold cached tokens into prompt/total exactly once at stream end. The EOF
 		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
@@ -1727,7 +1727,7 @@ func HandleAnthropicResponsesStream(
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for Anthropic Responses usage already reported by message_start
 		// or message_delta events before the stream was interrupted.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+		providerUtils.RegisterStreamUsageHandle(ctx, billedUsage)
 
 		usageNormalized := false
 		normalizeBilledUsage := func() {

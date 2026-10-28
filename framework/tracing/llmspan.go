@@ -170,6 +170,11 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 		if u.TotalTokens > 0 {
 			attrs[schemas.AttrTotalTokens] = u.TotalTokens
 		}
+		// Lets a consumer tell Bifrost's estimate for a cancelled stream apart
+		// from counts the provider reported.
+		if u.Estimated {
+			attrs[schemas.AttrBifrostUsageEstimated] = true
+		}
 
 		if d := u.PromptTokensDetails; d != nil {
 			// The nested cached-write detail keys are namespaced per request

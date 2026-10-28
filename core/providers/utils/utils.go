@@ -3700,6 +3700,13 @@ func ProcessAndSendResponse(
 	responseChan chan *schemas.BifrostStreamChunk,
 	postHookSpanFinalizer func(context.Context),
 ) {
+	// Count the output this attempt received so a later cancel/timeout can bill
+	// it (RegisterStreamUsageHandle). Before post-hooks: this is what the
+	// provider generated, whatever a plugin does to the chunk afterwards.
+	if tally, ok := ctx.Value(schemas.BifrostContextKeyStreamOutputTally).(*streamOutputTally); ok {
+		tally.observe(response)
+	}
+
 	// Accumulate chunk for tracing (common for all providers)
 	if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
 		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
@@ -4151,8 +4158,9 @@ func HandleStreamCancellation(
 	}
 
 	// Bill for tokens the provider already processed before the client
-	// disconnected.
+	// disconnected, estimating what it had not reported yet.
 	attachBilledUsageFromContext(ctx, cancelErr)
+	estimateUnreportedStreamUsage(ctx, cancelErr, jsonBody)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
@@ -4239,8 +4247,10 @@ func HandleStreamTimeout(
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
-	// Bill for tokens the provider already processed before the deadline.
+	// Bill for tokens the provider already processed before the deadline,
+	// estimating what it had not reported yet.
 	attachBilledUsageFromContext(ctx, timeoutErr)
+	estimateUnreportedStreamUsage(ctx, timeoutErr, jsonBody)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)

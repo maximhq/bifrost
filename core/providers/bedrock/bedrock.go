@@ -1206,6 +1206,10 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.Body, provider.logger)
 		defer stopCancellation()
 
+		// Usage only arrives with the final event, so the handle stays empty; registering
+		// it lets a mid-stream cancel/timeout bill the prompt and the output streamed so far.
+		providerUtils.RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
+
 		// Process AWS Event Stream format
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
@@ -1553,7 +1557,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		usage := &schemas.BifrostLLMUsage{}
 		// Register the accumulating usage handle so a mid-stream
 		// cancel/timeout can bill for tokens the provider already processed.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		providerUtils.RegisterStreamUsageHandle(ctx, usage)
 
 		// Fold cached tokens into PromptTokens exactly once at stream end. The EOF
 		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
@@ -1985,7 +1989,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for Bedrock Responses usage already reported by stream events
 		// before the stream was interrupted.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+		providerUtils.RegisterStreamUsageHandle(ctx, billedUsage)
 
 		usageNormalized := false
 		normalizeUsage := func() {

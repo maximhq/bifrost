@@ -4349,3 +4349,30 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkProcessAndSendResponseStreamChunk measures the per-chunk path every
+// streaming provider takes, with the usage handle registered as a provider
+// registers it (the output tally rides along).
+func BenchmarkProcessAndSendResponseStreamChunk(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	RegisterStreamUsageHandle(ctx, &schemas.BifrostLLMUsage{})
+	passThrough := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+	content := " token"
+	response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ID:    "chatcmpl-bench",
+		Model: "gpt-4o",
+		Choices: []schemas.BifrostResponseChoice{{
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+			},
+		}},
+	}}
+	responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+	b.ReportAllocs()
+	for b.Loop() {
+		ProcessAndSendResponse(ctx, passThrough, response, responseChan, nil)
+		<-responseChan
+	}
+}
