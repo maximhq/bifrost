@@ -25,15 +25,18 @@ When you use passthrough endpoints, the request still flows through Bifrost core
 - `/bedrock_passthrough`
   Default provider: `bedrock` (restricted to three operations, see [Bedrock Passthrough](#bedrock-passthrough))
 
+A custom provider built on `openai`, `anthropic`, `gemini` or `bedrock` is reached on its base provider's endpoint with the `x-model-provider: <custom-provider-name>` header, once it has allowed routes (see [Route allowlist](#route-allowlist)).
+
 ---
 
 ## How It Works
 
 1. Send your request to a passthrough endpoint (OpenAI, Anthropic, Azure, or GenAI passthrough).
 2. The integration strips the passthrough prefix and forwards the remaining provider-native path/body.
-3. **Bifrost picks the provider key.** Client-supplied provider credentials (`authorization`, `api-key`, `x-api-key`, `x-goog-api-key`) are stripped from the request, and Bifrost selects a key from its own key config for the resolved provider and model.
-4. Bifrost handles provider execution through core inference and plugin pipelines.
-5. Response status, headers, and body are returned as passthrough output (for both stream and non-stream requests).
+3. Bifrost checks the method and path against the provider's [route allowlist](#route-allowlist) and refuses a route it does not allow with `403`, before any key is selected.
+4. **Bifrost picks the provider key.** Client-supplied provider credentials (`authorization`, `api-key`, `x-api-key`, `x-goog-api-key`) are stripped from the request, and Bifrost selects a key from its own key config for the resolved provider and model.
+5. Bifrost handles provider execution through core inference and plugin pipelines.
+6. Response status, headers, and body are returned as passthrough output (for both stream and non-stream requests).
 
 <Warning>
 **Authenticate to Bifrost with your Bifrost virtual key, not your provider API key.** Passthrough is not a credential proxy — provider keys in the incoming request are never forwarded upstream. Bifrost always injects the key it selects from its configured keys.
@@ -88,6 +91,98 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
   - URL path containing `/projects/{PROJECT_ID}/locations/{LOCATION}/`
   - Request body `model` containing a Vertex resource path
   - OAuth token pattern typically used for Vertex (`Bearer ya29...`)
+
+---
+
+## Route allowlist
+
+Each provider has a list of passthrough routes Bifrost forwards to it. A request whose method and path match no rule is refused with `403` before a key is selected.
+
+| Mode | Built-in provider | Custom provider | Saved as |
+|---|---|---|---|
+| **All routes** | Default | Opt-in | Built-in: no policy. Custom: `[{"path": "/**"}]` |
+| **Custom** | Opt-in | Opt-in | Your rules |
+| **Off** | Opt-in | Default | Built-in: `[]`. Custom: no policy |
+
+The **Passthrough** tab is shown for OpenAI, Anthropic, Azure, Gemini and Vertex, and for custom providers built on `openai`, `anthropic`, `gemini` or `bedrock`. `/chatgpt_passthrough` is not affected.
+
+### Rules
+
+Each rule has a `path` and optional `methods`. A request is forwarded when any rule matches.
+
+- `path` is the path after the endpoint prefix, as the client calls it: `/v1/chat/completions` for `/openai_passthrough/v1/chat/completions`.
+- `*` matches within one segment, so `/v1/files/*` matches `/v1/files/file-abc` but not `/v1/files/file-abc/content`. It can also match part of a segment: `*:generateContent`.
+- A final `/**` matches the path and everything below it. `/**` alone matches every route.
+- `methods` takes `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` and `OPTIONS`. Omit it to allow any method.
+- Paths must start with `/` and must not contain `?`, `#`, `%`, `\`, `[`, `]`, or empty, `.` or `..` segments. `**` is allowed only as the last segment.
+
+### Configuration
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Providers** and select the provider.
+2. Open the **Passthrough** tab and pick a mode under **Allowed routes**.
+3. For **Custom**, add a row per rule with its **Methods** and **Path**.
+4. Click **Save Passthrough**.
+
+![Passthrough allowed routes](../media/ui-provider-passthrough-routes.png)
+
+</Tab>
+<Tab title="API">
+
+`PUT /api/providers/{provider}` replaces the provider's network and concurrency settings with what you send, so read the current config, set `passthrough`, and send it back. Omitting `passthrough` keeps the saved policy; `"passthrough": null` restores the default.
+
+```bash
+curl -s 'http://localhost:8080/api/providers/openai' \
+  | jq 'del(.name, .keys, .provider_status, .status, .description, .config_hash) | .passthrough = {"allowed_routes": [{"methods": ["POST"], "path": "/v1/chat/completions"}, {"methods": ["GET"], "path": "/v1/files/**"}]}' \
+  | curl --location --request PUT 'http://localhost:8080/api/providers/openai' \
+      --header 'Content-Type: application/json' \
+      --data @-
+```
+
+An invalid rule returns `400` with `Invalid passthrough config: ...`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "openai": {
+      "keys": [{ "name": "openai-key", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1.0 }],
+      "passthrough": {
+        "allowed_routes": [
+          { "methods": ["POST"], "path": "/v1/chat/completions" },
+          { "methods": ["GET"], "path": "/v1/files/**" }
+        ]
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `passthrough.allowed_routes` | array | Yes | Rules; an empty array forwards nothing |
+| `allowed_routes[].path` | string | Yes | Path after the endpoint prefix |
+| `allowed_routes[].methods` | array of strings | No | HTTP methods; omit for any |
+
+</Tab>
+</Tabs>
+
+### Custom providers
+
+A custom provider forwards no passthrough routes until you pick **All routes** or **Custom**. Call its base provider's endpoint with the `x-model-provider` header:
+
+```bash
+curl -X POST http://localhost:8080/openai_passthrough/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-model-provider: my-openai-compatible" \
+  -d '{"model": "my-model", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+If the provider sets [`allowed_requests`](../providers/custom-providers#allowed-request-types), it must also allow `passthrough`, and `passthrough_stream` for streaming routes; otherwise an allowed route is refused with `400` `passthrough is not supported by <name> provider`. Saving routes in the UI turns both on. With the API or `config.json`, set them yourself.
 
 ---
 

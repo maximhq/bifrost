@@ -259,6 +259,10 @@ Custom providers can be built on these supported providers:
 - `replicate` - Replicate
 - `typesafe` - TypeSafe (decisions and model listing only; see [TypeSafe](/providers/supported-providers/typesafe#custom-typesafe-providers))
 
+### Passthrough
+
+A custom provider built on `openai`, `anthropic`, `gemini` or `bedrock` can be called through its base provider's passthrough endpoint with the `x-model-provider: <custom-provider-name>` header. Passthrough is off until you allow routes in the provider's **Passthrough** tab or its `passthrough.allowed_routes`. See [Route allowlist](/integrations/passthrough#route-allowlist).
+
 ### Authentication (OAuth-minted keys)
 
 A custom provider on the `openai` base normally carries a static API key in each key's `value`. Upstreams that sit behind an identity provider and issue short-lived access tokens can instead be given an `oauth_key_config` on the key: leave `value` empty and Bifrost obtains the token from the token endpoint, sends it as the bearer, caches it per credential, collapses concurrent requests onto one mint, and refreshes it a minute before it expires. A rejected credential is backed off rather than retried on every request. The same machinery serves Databricks OAuth M2M; it applies to the standard `openai` provider too.
