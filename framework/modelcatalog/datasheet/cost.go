@@ -523,6 +523,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)
+	input.tier.voiceLive = extraFields.PricingSurface == schemas.PricingSurfaceVoiceLive
 
 	// A video is billed once, at settlement — the job may still be queued, may
 	// produce different dimensions than were asked for, and may fail outright. This
@@ -910,12 +911,18 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 			CachedReadTokens:        u.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       u.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: u.InputTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: u.InputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   u.InputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if u.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
 			AudioTokens:     u.OutputTokensDetails.AudioTokens,
+
+			StandardSpeechAudioTokens: u.OutputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   u.OutputTokensDetails.CustomSpeechAudioTokens,
 		}
 		if u.OutputTokensDetails.NumSearchQueries != nil {
 			usage.CompletionTokensDetails.NumSearchQueries = u.OutputTokensDetails.NumSearchQueries
@@ -1062,16 +1069,36 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	} else if outputAudioTokens > completionTokens {
 		outputAudioTokens = completionTokens
 	}
-	if inputAudioTokens > 0 && pricing.InputCostPerAudioToken != nil {
+	// An Azure Voice Live turn prices its audio at the model's Voice Live rates, and only there is
+	// the audio Azure Speech handled priced at the standard and custom speech rates.
+	inputAudioRate, outputAudioRate := pricing.InputCostPerAudioToken, pricing.OutputCostPerAudioToken
+	var inputStandardRate, outputStandardRate, inputCustomRate, outputCustomRate *float64
+	if tier.voiceLive {
+		if pricing.InputCostPerAudioTokenVoiceLive != nil {
+			inputAudioRate = pricing.InputCostPerAudioTokenVoiceLive
+		}
+		if pricing.OutputCostPerAudioTokenVoiceLive != nil {
+			outputAudioRate = pricing.OutputCostPerAudioTokenVoiceLive
+		}
+		inputStandardRate, outputStandardRate = pricing.InputCostPerStandardSpeechAudioTokenVoiceLive, pricing.OutputCostPerStandardSpeechAudioTokenVoiceLive
+		inputCustomRate, outputCustomRate = pricing.InputCostPerCustomSpeechAudioTokenVoiceLive, pricing.OutputCostPerCustomSpeechAudioTokenVoiceLive
+	}
+	if inputAudioTokens > 0 {
 		if inputAudioTokens > nonCachedPrompt {
 			inputAudioTokens = nonCachedPrompt
 		}
-		inputAudioCost = float64(inputAudioTokens) * *pricing.InputCostPerAudioToken
-		textInputCost -= float64(inputAudioTokens) * inputRate
+		details := usage.PromptTokensDetails
+		cost, priced := audioTokenCost(inputAudioTokens, details.StandardSpeechAudioTokens, details.CustomSpeechAudioTokens,
+			inputAudioRate, inputStandardRate, inputCustomRate)
+		inputAudioCost = cost
+		textInputCost -= float64(priced) * inputRate
 	}
-	if outputAudioTokens > 0 && pricing.OutputCostPerAudioToken != nil {
-		outputAudioCost = float64(outputAudioTokens) * *pricing.OutputCostPerAudioToken
-		textOutputCost -= float64(outputAudioTokens) * outputRate
+	if outputAudioTokens > 0 {
+		details := usage.CompletionTokensDetails
+		cost, priced := audioTokenCost(outputAudioTokens, details.StandardSpeechAudioTokens, details.CustomSpeechAudioTokens,
+			outputAudioRate, outputStandardRate, outputCustomRate)
+		outputAudioCost = cost
+		textOutputCost -= float64(priced) * outputRate
 	}
 
 	// Search query cost (billed on the output side)
@@ -1117,6 +1144,42 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		}
 	}
 	return cost
+}
+
+// audioTokenCost prices one side's audio tokens. The parts Azure Voice Live handled with Azure Speech
+// use the standard or custom speech rate, falling back to audioRate; the rest use audioRate. A part
+// with no rate keeps the text rate, so priced counts only the tokens moved off it.
+func audioTokenCost(tokens, standardSpeech, customSpeech int, audioRate, standardRate, customRate *float64) (cost float64, priced int) {
+	// Every turn outside Voice Live carries no speech parts: all audio is priced at audioRate.
+	if standardSpeech <= 0 && customSpeech <= 0 {
+		if audioRate == nil {
+			return 0, 0
+		}
+		return float64(tokens) * *audioRate, tokens
+	}
+	standardSpeech = min(max(standardSpeech, 0), tokens)
+	customSpeech = min(max(customSpeech, 0), tokens-standardSpeech)
+	if standardRate == nil {
+		standardRate = audioRate
+	}
+	if customRate == nil {
+		customRate = audioRate
+	}
+	parts := [...]struct {
+		tokens int
+		rate   *float64
+	}{
+		{standardSpeech, standardRate},
+		{customSpeech, customRate},
+		{tokens - standardSpeech - customSpeech, audioRate},
+	}
+	for _, part := range parts {
+		if part.tokens > 0 && part.rate != nil {
+			cost += float64(part.tokens) * *part.rate
+			priced += part.tokens
+		}
+	}
+	return cost, priced
 }
 
 // computeBatchTextCost handles token usage returned by batch result retrieval.
@@ -1960,6 +2023,10 @@ func tierFromResponse(s *schemas.BifrostServiceTier, speed *string, inferenceGeo
 // tieredInputRate returns the effective per-token input rate based on total token count.
 // Flex and ultrafast have their own >272k rates. Priority-specific tier rates are preferred where available.
 func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// An Azure Voice Live turn is priced at the model's flat Voice Live rate.
+	if tier.voiceLive && pricing.InputCostPerTokenVoiceLive != nil {
+		return *pricing.InputCostPerTokenVoiceLive
+	}
 	// Fast mode (Anthropic) is a flat rate across the full context window — it
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.InputCostPerTokenFast != nil {
@@ -2015,6 +2082,10 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 // tieredOutputRate returns the effective per-token output rate based on total token count.
 // Flex and ultrafast have their own >272k rates. Priority-specific tier rates are preferred where available.
 func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// An Azure Voice Live turn is priced at the model's flat Voice Live rate.
+	if tier.voiceLive && pricing.OutputCostPerTokenVoiceLive != nil {
+		return *pricing.OutputCostPerTokenVoiceLive
+	}
 	// Fast mode (Anthropic) is a flat rate across the full context window — it
 	// takes precedence over the token-count tiers below.
 	if tier.isFast && pricing.OutputCostPerTokenFast != nil {
@@ -2136,6 +2207,10 @@ func tieredAudioTokenOutputRate(pricing *configstoreTables.TableModelPricing, to
 
 // tieredCacheReadInputTokenRate returns the configured cache-read rate for the request tier.
 func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	// An Azure Voice Live turn is priced at the model's flat Voice Live rate.
+	if tier.voiceLive && pricing.CacheReadInputTokenCostVoiceLive != nil {
+		return *pricing.CacheReadInputTokenCostVoiceLive
+	}
 	// Fast mode (Anthropic) is a flat rate across the full context window.
 	if tier.isFast && pricing.CacheReadInputTokenCostFast != nil {
 		return *pricing.CacheReadInputTokenCostFast
