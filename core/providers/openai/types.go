@@ -1659,12 +1659,73 @@ type OpenAIModel struct {
 	ContextWindow *int  `json:"context_window,omitempty"`
 
 	// Upstream list-models metadata (OpenRouter/Kimi/Together shapes); nil when the provider omits it.
-	ContextLength   *int                    `json:"context_length,omitempty"`
-	MaxInputTokens  *int                    `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens *int                    `json:"max_output_tokens,omitempty"`
-	DisplayName     *string                 `json:"display_name,omitempty"`
-	Reasoning       *schemas.ModelReasoning `json:"reasoning,omitempty"`
-	Modalities      *OpenAIModelModalities  `json:"modalities,omitempty"`
+	ContextLength   *int                   `json:"context_length,omitempty"`
+	MaxInputTokens  *int                   `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                   `json:"max_output_tokens,omitempty"`
+	DisplayName     *string                `json:"display_name,omitempty"`
+	Reasoning       *openAIModelReasoning  `json:"reasoning,omitempty"`
+	Modalities      *OpenAIModelModalities `json:"modalities,omitempty"`
+}
+
+// openAIModelReasoning tolerates the two spellings OpenAI-compatible upstreams
+// use for a per-model `reasoning` field: the OpenRouter-style object, and a
+// boolean capability flag (e.g. putty's `"reasoning": true`). A boolean must
+// not fail the surrounding list/retrieve response: `true` maps to an empty
+// ModelReasoning — supported, no further detail, the same shape OpenRouter
+// emits for models without effort levels — while `false` and null mean no
+// reasoning object. Because a JSON decoder allocates a pointer field before
+// invoking its UnmarshalJSON, "no object" cannot be expressed by leaving the
+// target nil; the absent flag records it and the consumers below drop the
+// pointer. A model whose `reasoning` key is absent never invokes this method
+// at all, so the common path stays allocation-neutral.
+type openAIModelReasoning struct {
+	schemas.ModelReasoning
+	absent bool
+}
+
+func (r *openAIModelReasoning) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		r.absent = true
+		return nil
+	}
+	if trimmed[0] == 't' || trimmed[0] == 'f' {
+		var flag bool
+		if err := sonic.Unmarshal(trimmed, &flag); err != nil {
+			return err
+		}
+		r.absent = !flag
+		return nil
+	}
+	var reasoning schemas.ModelReasoning
+	if err := sonic.Unmarshal(trimmed, &reasoning); err != nil {
+		return err
+	}
+	r.ModelReasoning = reasoning
+	return nil
+}
+
+// MarshalJSON renders only the carried ModelReasoning, keeping the flag internal.
+func (r openAIModelReasoning) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(r.ModelReasoning)
+}
+
+// toSchemasModelReasoning drops the pointer when the upstream spelled
+// `reasoning` as false or null; otherwise it returns the carried object.
+func toSchemasModelReasoning(r *openAIModelReasoning) *schemas.ModelReasoning {
+	if r == nil || r.absent {
+		return nil
+	}
+	reasoning := r.ModelReasoning
+	return &reasoning
+}
+
+// fromSchemasModelReasoning builds the field for the outgoing converters.
+func fromSchemasModelReasoning(reasoning *schemas.ModelReasoning) *openAIModelReasoning {
+	if reasoning == nil {
+		return nil
+	}
+	return &openAIModelReasoning{ModelReasoning: *reasoning}
 }
 
 // OpenAIModelModalities mirrors the `modalities` object emitted by some

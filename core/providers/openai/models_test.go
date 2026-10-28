@@ -231,6 +231,93 @@ func TestModelRetrieveUpstreamErrorIsPropagated(t *testing.T) {
 	require.Contains(t, bifrostErr.Error.Message, "does not exist")
 }
 
+// TestModelReasoningBooleanSpelling pins tolerance for upstreams that report
+// `reasoning` as a boolean capability flag (e.g. putty's /v1/models) instead
+// of the OpenRouter-style object: a boolean entry must not fail the whole
+// response. `true` maps to an empty ModelReasoning (supported, no details),
+// `false` and null stay nil, and object spellings keep passing through.
+func TestModelReasoningBooleanSpelling(t *testing.T) {
+	t.Parallel()
+
+	byID := func(t *testing.T, data []schemas.Model) map[string]schemas.Model {
+		t.Helper()
+		entries := make(map[string]schemas.Model, len(data))
+		for _, entry := range data {
+			entries[entry.ID] = entry
+		}
+		return entries
+	}
+
+	bodies := map[string]string{
+		"envelope": `{"object":"list","data":[` +
+			`{"id":"flag/true","reasoning":true},` +
+			`{"id":"flag/false","reasoning":false},` +
+			`{"id":"flag/null","reasoning":null},` +
+			`{"id":"obj/k3","reasoning":{"supported_efforts":["low","high"]}}]}`,
+		// Top-level-array upstreams (Together and friends) can mix the
+		// `organization` alias with the boolean spelling.
+		"array": `[` +
+			`{"id":"flag/true","organization":"together","reasoning":true},` +
+			`{"id":"flag/false","reasoning":false},` +
+			`{"id":"flag/null","reasoning":null},` +
+			`{"id":"obj/k3","reasoning":{"supported_efforts":["low","high"]}}]`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			response, bifrostErr := ListModelsByKey(
+				schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				&fasthttp.Client{}, server.URL,
+				schemas.Key{Models: schemas.WhiteList{"*"}},
+				false, nil,
+				schemas.ModelProvider("test"),
+				false, false,
+			)
+
+			require.Nil(t, bifrostErr)
+			entries := byID(t, response.Data)
+			require.Len(t, entries, 4)
+			require.Equal(t, &schemas.ModelReasoning{}, entries["test/flag/true"].Reasoning)
+			require.Nil(t, entries["test/flag/false"].Reasoning)
+			require.Nil(t, entries["test/flag/null"].Reasoning)
+			require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, entries["test/obj/k3"].Reasoning)
+			if name == "array" {
+				// The `organization` alias keeps landing on OwnedBy alongside
+				// the tolerated boolean.
+				require.Equal(t, schemas.Ptr("together"), entries["test/flag/true"].OwnedBy)
+			}
+		})
+	}
+
+	t.Run("retrieve", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"id":"flag/true","reasoning":true}`))
+		}))
+		defer server.Close()
+
+		response, bifrostErr := HandleOpenAIModelRetrieveRequest(
+			schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			&fasthttp.Client{}, server.URL+"/v1/models/flag/true",
+			schemas.Key{}, nil,
+			schemas.ModelProvider("test"),
+			false, false,
+		)
+
+		require.Nil(t, bifrostErr)
+		require.Equal(t, "test/flag/true", response.ID)
+		require.Equal(t, &schemas.ModelReasoning{}, response.Reasoning)
+	})
+}
+
 // TestOpenAIModelMetadataRoundTrip pins that the OpenAI-shaped surfaces
 // (/openai drop-in routes) re-emit the metadata the decode path now carries:
 // ToBifrostListModelsResponse then ToOpenAIListModelsResponse (and the
@@ -271,7 +358,7 @@ func TestOpenAIModelMetadataRoundTrip(t *testing.T) {
 	require.Equal(t, schemas.Ptr(1040500), roundTrip.MaxInputTokens)
 	require.Equal(t, schemas.Ptr(131072), roundTrip.MaxOutputTokens)
 	require.Equal(t, schemas.Ptr("K3"), roundTrip.DisplayName)
-	require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, roundTrip.Reasoning)
+	require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, toSchemasModelReasoning(roundTrip.Reasoning))
 	require.Equal(t, &OpenAIModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}}, roundTrip.Modalities)
 
 	// A model that reports only max_input_tokens keeps the legacy

@@ -41,7 +41,7 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 				MaxInputTokens:  model.MaxInputTokens,
 				MaxOutputTokens: model.MaxOutputTokens,
 				DisplayName:     model.DisplayName,
-				Reasoning:       model.Reasoning,
+				Reasoning:       toSchemasModelReasoning(model.Reasoning),
 			}
 			if model.Modalities != nil {
 				entry.Architecture = &schemas.Architecture{
@@ -86,7 +86,7 @@ func (model *OpenAIModel) ToBifrostModelRetrieveResponse(providerKey schemas.Mod
 			MaxInputTokens:  model.MaxInputTokens,
 			MaxOutputTokens: model.MaxOutputTokens,
 			DisplayName:     model.DisplayName,
-			Reasoning:       model.Reasoning,
+			Reasoning:       toSchemasModelReasoning(model.Reasoning),
 			ShutdownDate:    model.ShutdownDate,
 		},
 	}
@@ -115,7 +115,7 @@ func ToOpenAIModelRetrieveResponse(response *schemas.BifrostModelRetrieveRespons
 		MaxInputTokens:  response.MaxInputTokens,
 		MaxOutputTokens: response.MaxOutputTokens,
 		DisplayName:     response.DisplayName,
-		Reasoning:       response.Reasoning,
+		Reasoning:       fromSchemasModelReasoning(response.Reasoning),
 	}
 	if response.OwnedBy != nil {
 		openaiModel.OwnedBy = *response.OwnedBy
@@ -152,7 +152,7 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 			MaxInputTokens:  model.MaxInputTokens,
 			MaxOutputTokens: model.MaxOutputTokens,
 			DisplayName:     model.DisplayName,
-			Reasoning:       model.Reasoning,
+			Reasoning:       fromSchemasModelReasoning(model.Reasoning),
 		}
 		if model.Created != nil {
 			openaiModel.Created = model.Created
