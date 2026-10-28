@@ -256509,7 +256509,7 @@
     },
     {
       "name": "202. Live content route honours the named provider (live named provider)",
-      "description": "A recording download names only a session id, so on the bare route the caller may name the provider with ?provider= or x-model-provider, as the file, batch and video routes accept. Provider resolution runs before the session is looked up, so an unknown session id reaches it with nothing spent: a provider without live support or an unknown name is refused with 400, the query parameter wins over the header, and the /openai prefix wins over both. Sideband attach shares the resolver but is a WebSocket upgrade the harness cannot drive; tests/live covers it.",
+      "description": "A recording download names only a session id, so on the bare route the caller may name the provider with ?provider= or x-model-provider, as the file, batch and video routes accept. Provider resolution runs before the session is looked up, so an unknown session id reaches it with nothing spent: a provider without live support or an unknown name is refused with 400, the query parameter wins over the header, and the /openai integration route honours both, then the Azure OpenAI SDK user agent, before its OpenAI default, as the /openai file and batch routes do. Sideband attach shares the resolver but is a WebSocket upgrade the harness cannot drive; tests/live covers it.",
       "item": [
         {
           "name": "[EXPECT-400] /v1/live/sessions/{id}/content?provider=anthropic resolves the named provider before the session lookup - live named provider",
@@ -256635,15 +256635,15 @@
           }
         },
         {
-          "name": "[EXPECT-404] /openai/v1/live/sessions/{id}/content ignores x-model-provider: the integration prefix wins - live named provider",
+          "name": "[EXPECT-400] /openai/v1/live/sessions/{id}/content honours x-model-provider as the bare route does - live named provider",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status is 404: the request reached OpenAI, which has no such session', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });",
-                  "pm.test('The prefix, not the header, chose the provider', function () { pm.expect(pm.response.text()).to.not.include('anthropic'); });"
+                  "pm.test('Status is 400: the header named the provider on the integration route too', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The named provider, not the prefix, chose the provider', function () { pm.expect(pm.response.text()).to.include('does not support live sessions: anthropic'); });"
                 ]
               }
             }
@@ -256668,6 +256668,340 @@
                 "sessions",
                 "sess_harness_named_provider",
                 "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/live/sessions/{id}/content?provider=azure reaches Azure, which stores no recordings - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: Azure answered, not OpenAI', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('Azure refuses recordings as unsupported', function () { pm.expect(pm.response.text()).to.include('unsupported_operation'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/live/sessions/{id}/content from the Azure OpenAI SDK reaches Azure - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the Azure SDK user agent chose Azure', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('Azure refuses recordings as unsupported', function () { pm.expect(pm.response.text()).to.include('unsupported_operation'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "User-Agent",
+                "value": "AzureOpenAI/Python 1.109.1"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] /openai/v1/live/sessions/{id}/content without a named provider still reaches OpenAI - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404: the request reached OpenAI, which has no such session', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "286. Azure live WebRTC create keeps the frontend data-channel permissions (azure live client permissions)",
+      "description": "Azure's GPT Live session config is strict and has no client field: any session.client, even {} or null, is refused with 400 \"Unknown parameter: 'session.client'.\", so the OpenAI live console could not start a session on Azure. The gateway terminates the browser's data channel, so it drops session.client upstream for Azure and enforces allowed_client_events and allowed_server_events itself, answering a refused browser event with OpenAI's own event_not_allowed error. The 201 cases create a real Azure gpt-live-1 session whose browser leg never connects, so each bills Azure's 15 second WebRTC minimum. The malformed-list case is refused before any upstream call. The browser-side enforcement needs a connected data channel the harness cannot drive; tests/live TestAttach_AzureConsolePermissionsAreEnforcedByTheGateway and the handler unit tests cover it.",
+      "item": [
+        {
+          "name": "[EXPECT-201] azure/gpt-live-1 WebRTC create with the live console's session.client on /v1/live/sessions - azure live client permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201: Azure accepted a create carrying the frontend permissions', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });",
+                  "pm.test('The response carries the session id and the gateway SDP answer', function () {",
+                  "  var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('response is not JSON: ' + pm.response.text()); return; }",
+                  "  pm.expect(j.session && j.session.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.transport && j.transport.type, pm.response.text()).to.equal('webrtc');",
+                  "  pm.expect(String((j.transport && j.transport.sdp) || ''), pm.response.text()).to.match(/^v=0/);",
+                  "});",
+                  "pm.test('Azure never saw session.client', function () { pm.expect(pm.response.text()).not.to.include('Unknown parameter'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"azure/gpt-live-1\",\n    \"instructions\": \"azure live client permissions\",\n    \"delegation\": {\n      \"type\": \"client\"\n    },\n    \"client\": {\n      \"data_channel\": {\n        \"allowed_client_events\": [\n          \"session.close\"\n        ],\n        \"allowed_server_events\": [\n          {\n            \"type\": \"session.started\"\n          },\n          {\n            \"type\": \"session.closed\"\n          },\n          {\n            \"type\": \"error\"\n          }\n        ]\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-201] azure/gpt-live-1 WebRTC create with the live console's session.client on /openai/v1/live/sessions - azure live client permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201: Azure accepted a create carrying the frontend permissions', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });",
+                  "pm.test('The response carries the session id and the gateway SDP answer', function () {",
+                  "  var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('response is not JSON: ' + pm.response.text()); return; }",
+                  "  pm.expect(j.session && j.session.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.transport && j.transport.type, pm.response.text()).to.equal('webrtc');",
+                  "  pm.expect(String((j.transport && j.transport.sdp) || ''), pm.response.text()).to.match(/^v=0/);",
+                  "});",
+                  "pm.test('Azure never saw session.client', function () { pm.expect(pm.response.text()).not.to.include('Unknown parameter'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"azure/gpt-live-1\",\n    \"instructions\": \"azure live client permissions\",\n    \"delegation\": {\n      \"type\": \"client\"\n    },\n    \"client\": {\n      \"data_channel\": {\n        \"allowed_client_events\": [\n          \"session.close\"\n        ],\n        \"allowed_server_events\": [\n          {\n            \"type\": \"session.started\"\n          },\n          {\n            \"type\": \"session.closed\"\n          },\n          {\n            \"type\": \"error\"\n          }\n        ]\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] azure/gpt-live-1 WebRTC create with a malformed allowed_client_events is refused by the gateway - azure live client permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the gateway refuses a client list it cannot enforce', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The refusal names the field, not an Azure unknown parameter', function () { pm.expect(pm.response.text()).to.include('session.client.data_channel.allowed_client_events must be'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"azure/gpt-live-1\",\n    \"instructions\": \"azure live client permissions\",\n    \"delegation\": {\n      \"type\": \"client\"\n    },\n    \"client\": {\n      \"data_channel\": {\n        \"allowed_client_events\": \"none\"\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "287. Live session create sends a bare model from the Azure OpenAI SDK to Azure (live bare model)",
+      "description": "On /openai/v1/live/sessions a model without a provider prefix used to run on OpenAI even for the Azure OpenAI SDK user agent, while the session's attach and content routes send that user agent to Azure, so the attach could not find the session. A bare model now runs where those routes default to, as file and batch creates do: Azure for the Azure OpenAI SDK, else OpenAI on /openai. The case sends the Azure SDK user agent with a bare gpt-live-1 and pins that the session row names azure. It creates a real Azure gpt-live-1 session whose browser leg never connects, billing Azure's 15 second WebRTC minimum. The plain-client OpenAI default and the Azure-only virtual key refusal are covered by tests/live TestAdmission_OpenAIRouteResolvesBareModelsAsControlRoutesDo.",
+      "item": [
+        {
+          "name": "[EXPECT-201] gpt-live-1 WebRTC create on /openai/v1/live/sessions with the Azure OpenAI SDK user agent is created on Azure - live bare model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('azureLiveBareModelStart', new Date(Date.now() - 1000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl');",
+                  "var started = pm.variables.get('azureLiveBareModelStart');",
+                  "pm.test('Status is 201: the session was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });",
+                  "var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('response is not JSON: ' + pm.response.text()); return; }",
+                  "var id = j && j.session && j.session.id;",
+                  "pm.test('The response carries the session id', function () { pm.expect(id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "if (!id) return;",
+                  "// The session row is written when the session ends: its browser leg never connects, so the gateway closes it.",
+                  "function findRow(attempt) {",
+                  "  pm.sendRequest({url: base + '/api/logs?objects=live.session&limit=50&start_time=' + encodeURIComponent(started), method: 'GET'}, function (err, res) {",
+                  "    pm.test('Log lookup succeeds', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "    if (err || res.code !== 200) return;",
+                  "    var rows = res.json().logs || [];",
+                  "    var pending = rows.length, found = null;",
+                  "    function done() {",
+                  "      if (found) {",
+                  "        pm.test('The bare model was created on Azure, where the session's attach and content routes send the Azure OpenAI SDK', function () { pm.expect(found.provider, JSON.stringify(found)).to.equal('azure'); });",
+                  "        return;",
+                  "      }",
+                  "      if (attempt < 30) { setTimeout(function () { findRow(attempt + 1); }, 2000); return; }",
+                  "      pm.test('The session row appeared within 60 seconds', function () { pm.expect.fail('no live.session row for ' + id); });",
+                  "    }",
+                  "    if (!pending) { done(); return; }",
+                  "    rows.forEach(function (summary) {",
+                  "      pm.sendRequest({url: base + '/api/logs/' + summary.id, method: 'GET'}, function (detailErr, detailRes) {",
+                  "        if (!detailErr && detailRes.code === 200) { var row = detailRes.json(); if (row.live_session && row.live_session.provider_session_id === id) found = row; }",
+                  "        if (--pending === 0) done();",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "findRow(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "AzureOpenAI/Python 1.109.1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"gpt-live-1\",\n    \"instructions\": \"live bare model\",\n    \"delegation\": {\n      \"type\": \"client\"\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions"
               ]
             }
           }
