@@ -8116,6 +8116,15 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
+		// A chat tool message's breakpoint arrives on both the item and its output block. Anthropic
+		// counts nested markers toward its limit of 4 and the clamp only sees top-level blocks, so
+		// keep the one on the tool_result.
+		if toolResultBlock.CacheControl != nil && toolResultBlock.Content != nil {
+			for i := range toolResultBlock.Content.ContentBlocks {
+				toolResultBlock.Content.ContentBlocks[i].CacheControl = nil
+			}
+		}
+
 		// Set is_error if there's an error message or the status indicates an error
 		if toolError := msg.ResponsesToolMessage.Error; toolError.IsError() {
 			toolResultBlock.IsError = schemas.Ptr(true)
