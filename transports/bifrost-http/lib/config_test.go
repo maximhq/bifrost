@@ -26201,3 +26201,114 @@ func TestGrantableRelayNames(t *testing.T) {
 	assert.Equal(t, []string{}, grantableRelayNames([]string{"missing"}, stored, "vk-1", "search"))
 	assert.Equal(t, []string{}, grantableRelayNames(nil, stored, "vk-1", "search"), "no grants stays an explicit empty replacement")
 }
+
+// loadRelayGrantsConfig writes config.json into dir with the given relays and virtual keys, runs
+// the full LoadConfig a restarted pod runs, and returns each key's relay grants as stored.
+func loadRelayGrantsConfig(t *testing.T, dir, sourceOfTruth, relays, virtualKeys string) map[string][]string {
+	t.Helper()
+	sot := ""
+	if sourceOfTruth != "" {
+		sot = `"source_of_truth":"` + sourceOfTruth + `",`
+	}
+	raw := `{` + sot + `
+		"client": {"initial_pool_size": 10, "allowed_origins": ["*"]},
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(dir, "config.db")) + `}},
+		` + relays + `
+		"governance": {"virtual_keys": ` + virtualKeys + `}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0o644))
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	return relayGrantsInStore(t, config.ConfigStore)
+}
+
+func relayGrantsInStore(t *testing.T, store configstore.ConfigStore) map[string][]string {
+	t.Helper()
+	rdb, ok := store.(*configstore.RDBConfigStore)
+	require.True(t, ok, "fixture check: a sqlite config store")
+	var rows []tables.TableVirtualKeyRelayGrant
+	require.NoError(t, rdb.DB().Order("virtual_key_id, relay_name").Find(&rows).Error)
+	out := map[string][]string{}
+	for _, row := range rows {
+		out[row.VirtualKeyID] = append(out[row.VirtualKeyID], row.RelayName)
+	}
+	return out
+}
+
+// TestRelayGrantsFromConfigFile drives virtual-key relay_grants and the relays section through
+// repeated full loads, as a Helm upgrade restarts the pods with a new config.json: the key hash
+// picks up a changed grant list, an omitted list keeps API-made grants, [] clears them, and with
+// config.json as the source of truth a relay dropped from the file is pruned with its grants.
+func TestRelayGrantsFromConfigFile(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	relays := `"relays": [
+		{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}},
+		{"name": "exa", "base_url": "https://api.exa.ai", "auth": {"type": "none"}}
+	],`
+	vk := func(id, grants string) string {
+		out := `{"id": "` + id + `", "name": "` + id + `", "value": "sk-bf-` + id + `"`
+		if grants != "" {
+			out += `, "relay_grants": ` + grants
+		}
+		return out + `}`
+	}
+
+	got := loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[{"relay_name": "tavily"}]`)+`, `+vk("vk-plain", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a new key's declared grants are stored")
+
+	// A grant made through the API on a key whose file entry omits relay_grants.
+	{
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, dir)
+		require.NoError(t, err)
+		require.NoError(t, config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, "vk-plain", []string{"exa"}))
+		config.Close(ctx)
+	}
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[{"relay_name": "tavily"}]`)+`, `+vk("vk-plain", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}, "vk-plain": {"exa"}}, got, "an unchanged file keeps API-made grants on a key that omits relay_grants")
+
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[{"relay_name": "tavily"}, {"relay_name": "exa"}]`)+`, `+vk("vk-plain", "")+`]`)
+	assert.Equal(t, []string{"exa", "tavily"}, got["vk-search"], "a changed grant list changes the key hash and is applied")
+
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[]`)+`, `+vk("vk-plain", "")+`]`)
+	assert.NotContains(t, got, "vk-search", "an explicit [] clears the key's grants")
+	assert.Equal(t, []string{"exa"}, got["vk-plain"])
+
+	// config.json as the source of truth, declaring only tavily: exa is pruned, and its grant goes with it.
+	got = loadRelayGrantsConfig(t, dir, "config.json", `"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}}],`,
+		`[`+vk("vk-search", `[{"relay_name": "tavily"}]`)+`, `+vk("vk-plain", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a relay left out of the source-of-truth file is pruned with its grants")
+}
+
+// A new key whose relay_grants names a relay that is not configured (a typo, or a relay skipped as
+// invalid) keeps its valid grants, as an existing key's update does, instead of failing the load.
+func TestRelayGrantsFromConfigFile_NewKeyUnknownRelay(t *testing.T) {
+	initTestLogger()
+	got := loadRelayGrantsConfig(t, t.TempDir(), "",
+		`"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}}],`,
+		`[{"id": "vk-new", "name": "vk-new", "value": "sk-bf-new", "relay_grants": [{"relay_name": "tavily"}, {"relay_name": "tavi1y"}]}]`)
+	assert.Equal(t, map[string][]string{"vk-new": {"tavily"}}, got)
+}
+
+// A new key's agent_grants naming an agent that is not stored yet (agents are reconciled after
+// governance, so one declared in the same file is not there on its first load) skips that grant
+// instead of failing the governance sync, which would keep every key out of the store.
+func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	loadRelayGrantsConfig(t, dir, "", "",
+		`[{"id": "vk-agents", "name": "vk-agents", "value": "sk-bf-agents", "agent_grants": [{"agent_name": "travel-planner"}]},
+		  {"id": "vk-other", "name": "vk-other", "value": "sk-bf-other"}]`)
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	for _, id := range []string{"vk-agents", "vk-other"} {
+		vk, err := config.ConfigStore.GetVirtualKey(ctx, id)
+		require.NoError(t, err, "virtual key %s is stored", id)
+		assert.Empty(t, vk.AgentGrants)
+	}
+}

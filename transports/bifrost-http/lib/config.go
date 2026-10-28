@@ -5403,6 +5403,25 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// The relays the file could grant, loaded once on first use: declared grants are checked
+		// against them, so a typo in one key's relay_grants is skipped with a warning rather than
+		// failing the sync.
+		var storedRelayNames map[string]bool
+		relayNamesForGrants := func() (map[string]bool, error) {
+			if storedRelayNames != nil {
+				return storedRelayNames, nil
+			}
+			relays, err := config.ConfigStore.ListRelays(ctx)
+			if err != nil {
+				return nil, err
+			}
+			storedRelayNames = make(map[string]bool, len(relays))
+			for _, r := range relays {
+				storedRelayNames[r.Name] = true
+			}
+			return storedRelayNames, nil
+		}
+
 		// Create virtual keys with explicit association handling
 		for i := range virtualKeysToAdd {
 			virtualKey := &virtualKeysToAdd[i]
@@ -5422,13 +5441,43 @@ func updateGovernanceConfigInStore(
 			// Written to the key's tier below; left here the save would cascade them as the key's own.
 			inlineBudgets := virtualKey.Budgets
 			rateLimitID := virtualKey.RateLimitID
+			// Grants are written after the key, through the same checks an update uses: left here the
+			// save would cascade them, and one name with no stored relay or agent fails the whole sync.
+			relayGrants := virtualKey.RelayGrants
+			agentGrants := virtualKey.AgentGrants
 			virtualKey.ProviderConfigs = nil
 			virtualKey.MCPConfigs = nil
 			virtualKey.Budgets = nil
 			virtualKey.RateLimitID = nil
+			virtualKey.RelayGrants = nil
+			virtualKey.AgentGrants = nil
 			// Here we wll filter provider / keys that are not available
 			if err := config.ConfigStore.CreateVirtualKey(ctx, virtualKey, tx); err != nil {
 				return fmt.Errorf("failed to create virtual key %s: %w", virtualKey.ID, err)
+			}
+			virtualKey.RelayGrants = relayGrants
+			virtualKey.AgentGrants = agentGrants
+			if len(relayGrants) > 0 && !governed.skipKeyLimits(virtualKey.ID) {
+				stored, err := relayNamesForGrants()
+				if err != nil {
+					return fmt.Errorf("failed to list relays for virtual key relay grants: %w", err)
+				}
+				if names := grantableRelayNames(relayGrantNames(relayGrants), stored, virtualKey.ID, virtualKey.Name); len(names) > 0 {
+					if err := config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, virtualKey.ID, names, tx); err != nil {
+						return fmt.Errorf("failed to create relay grants for virtual key %s: %w", virtualKey.ID, err)
+					}
+				}
+			}
+			if len(agentGrants) > 0 {
+				names, err := grantableAgentNames(ctx, config.ConfigStore, agentGrants, virtualKey.ID, virtualKey.Name)
+				if err != nil {
+					return fmt.Errorf("failed to list agents for virtual key agent grants: %w", err)
+				}
+				if len(names) > 0 {
+					if err := config.ConfigStore.ReplaceVirtualKeyAgentGrants(ctx, virtualKey.ID, names, tx); err != nil {
+						return fmt.Errorf("failed to create agent grants for virtual key %s: %w", virtualKey.ID, err)
+					}
+				}
 			}
 			pendingVKLimits = append(pendingVKLimits, virtualKeyTierState{
 				vkID: virtualKey.ID, budgets: inlineBudgets,
@@ -5469,9 +5518,6 @@ func updateGovernanceConfigInStore(
 		}
 
 		// Update virtual keys (config.json changed)
-		// The relays the file could grant: declared grants are checked against them below, so a
-		// typo in one key's relay_grants is skipped with a warning rather than failing the sync.
-		var storedRelayNames map[string]bool
 		for _, virtualKey := range virtualKeysToUpdate {
 			if governed.skipKeyUpdate(virtualKey.ID) {
 				continue
@@ -5493,21 +5539,14 @@ func updateGovernanceConfigInStore(
 			// UpdateVirtualKey writes scalar columns only. Grants the file declares replace the stored
 			// ones; a key that omits the field keeps the grants made through the API.
 			if virtualKey.RelayGrants != nil && !governed.skipKeyLimits(virtualKey.ID) {
-				if storedRelayNames == nil {
-					relays, err := config.ConfigStore.ListRelays(ctx)
+				names := []string{}
+				if len(virtualKey.RelayGrants) > 0 {
+					stored, err := relayNamesForGrants()
 					if err != nil {
 						return fmt.Errorf("failed to list relays for virtual key relay grants: %w", err)
 					}
-					storedRelayNames = make(map[string]bool, len(relays))
-					for _, r := range relays {
-						storedRelayNames[r.Name] = true
-					}
+					names = grantableRelayNames(relayGrantNames(virtualKey.RelayGrants), stored, virtualKey.ID, virtualKey.Name)
 				}
-				names := make([]string, 0, len(virtualKey.RelayGrants))
-				for _, g := range virtualKey.RelayGrants {
-					names = append(names, g.RelayName)
-				}
-				names = grantableRelayNames(names, storedRelayNames, virtualKey.ID, virtualKey.Name)
 				if err := config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, virtualKey.ID, names, tx); err != nil {
 					return fmt.Errorf("failed to update relay grants for virtual key %s: %w", virtualKey.ID, err)
 				}
@@ -10960,4 +10999,43 @@ func grantableRelayNames(names []string, stored map[string]bool, vkID, vkName st
 		out = append(out, name)
 	}
 	return out
+}
+
+// relayGrantNames returns the relay names a key's relay_grants declare, in file order.
+func relayGrantNames(grants []configstoreTables.TableVirtualKeyRelayGrant) []string {
+	names := make([]string, 0, len(grants))
+	for _, g := range grants {
+		names = append(names, g.RelayName)
+	}
+	return names
+}
+
+// grantableAgentNames returns the agent names a new key's agent_grants in config.json can grant:
+// each name once, and only agents already stored. Agents are reconciled after governance, so an agent
+// declared in the same file is not stored yet on its first load; that grant belongs on the agent, as
+// agents[].virtual_key_ids, which the agent sync applies. A name with no stored agent is dropped with
+// a warning instead of failing the whole governance sync on the grant table's foreign key.
+func grantableAgentNames(ctx context.Context, store configstore.ConfigStore, grants []configstoreTables.TableVirtualKeyAgentGrant, vkID, vkName string) ([]string, error) {
+	registrations, err := store.ListAgentRegistrations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stored := make(map[string]bool, len(registrations))
+	for _, r := range registrations {
+		stored[r.Name] = true
+	}
+	out := make([]string, 0, len(grants))
+	seen := make(map[string]bool, len(grants))
+	for _, g := range grants {
+		if seen[g.AgentName] {
+			continue
+		}
+		seen[g.AgentName] = true
+		if !stored[g.AgentName] {
+			logger.Warn("virtual key %s (%s): agent_grants names agent %q, which is not stored yet; skipping that grant (declare it as agents[].virtual_key_ids instead)", vkID, vkName, g.AgentName)
+			continue
+		}
+		out = append(out, g.AgentName)
+	}
+	return out, nil
 }
