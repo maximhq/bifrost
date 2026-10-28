@@ -250,6 +250,11 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 **Cause:** The key authenticated, but governance refuses it, exactly as it would on an inference request.
 **Fix:** Reactivate the key or extend its expiry; the change applies on the next `/mcp` request.
 
+### Browser app refused with 403 on /mcp
+**Symptom:** A browser-based MCP client on another origin gets `403` saying the origin is refused, while the same server works from a CLI or desktop client.
+**Cause:** Browser requests to the MCP gateway must come from an allowed origin. While inference auth is off (`enforce_auth_on_inference: false`), only localhost origins and origins listed in `allowed_origins` by name or pattern are allowed; the `"*"` entry does not count. With inference auth on, `allowed_origins` applies as configured.
+**Fix:** List the app's origin in `allowed_origins` (for example `https://inspector.example.com` or `https://*.example.com`). If `allowed_origins` already contains `"*"`, turning on inference auth also works. Clients that send no `Origin` header are never affected.
+
 ### Conflicting credentials on /mcp
 **Symptom:** `conflicting credentials: an OAuth token and a virtual key header were both provided`.
 **Cause:** The client completed an OAuth flow but is also configured with a VK header, so both arrive on one request. Claude Code does this in `both` mode when the VK is set under `x-bf-vk` / `X-Api-Key` instead of `Authorization`.

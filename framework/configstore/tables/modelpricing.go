@@ -156,6 +156,9 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecond1080p *float64 `gorm:"default:null;column:output_cost_per_video_per_second_1080p" json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `gorm:"default:null;column:output_cost_per_video_per_second_4k" json:"output_cost_per_video_per_second_4k,omitempty"`
 
+	// Per-token video output rate, for providers that meter video in tokens (BytePlus Seedance).
+	OutputCostPerVideoToken *float64 `gorm:"default:null;column:output_cost_per_video_token" json:"output_cost_per_video_token,omitempty"`
+
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `gorm:"default:null;column:search_context_cost_per_query" json:"search_context_cost_per_query,omitempty"`
 	WebSearchCostPerRequest       *float64 `gorm:"default:null;column:web_search_cost_per_request" json:"web_search_cost_per_request,omitempty"`

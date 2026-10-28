@@ -313,6 +313,10 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
 		}
+		// A tool message takes text only on the OpenAI wire.
+		if message.Role == schemas.ChatMessageRoleTool {
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
+		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
 		// exceeds OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are

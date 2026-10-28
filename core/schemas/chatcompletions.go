@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -436,6 +437,7 @@ type ChatTool struct {
 	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition (shape 2)
 	CacheControl *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
 	Annotations  *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
+	MCP          *MCPToolMetadata    `json:"-"`                       // MCP title, icons and output schema (Bifrost-internal)
 
 	// Anthropic-native tool flags promoted to the neutral layer. All optional;
 	// ignored by providers that don't support them. Gating per ProviderFeatures
@@ -1578,6 +1580,11 @@ type ChatToolMessage struct {
 	// OpenAI-wire converters strip it before serialization so providers that
 	// reject unknown message parameters never see it.
 	IsError *bool `json:"is_error,omitempty"`
+
+	mcpResult        *mcp.CallToolResult // the MCP server's own result; see SetMCPResult
+	mcpResultIsText  bool                // whether the content made from it is mcpResultText
+	mcpResultText    string              // that text, copied so in-place edits show
+	mcpResultContent []string            // else its content blocks, as toolContentFields lists them
 }
 
 // ChatAssistantMessage represents a message in a chat conversation.

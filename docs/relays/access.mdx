@@ -1,0 +1,158 @@
+---
+title: "Virtual key access"
+description: "Grant relays to virtual keys, and understand how budgets and rate limits apply on the relay path."
+icon: "key"
+---
+
+Creating a relay gives it an address. Grants decide which callers may use it. Access is deny-by-default: a virtual key reaches a relay only through an explicit grant for that relay, exactly like its agent and MCP grants.
+
+Relay access is separate from provider access, MCP tool access and agent access. A key that may call `tavily` gains nothing on `/v1/chat/completions` and the other way round.
+
+## Grant a virtual key access
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Virtual Keys** and add or edit a key.
+2. Find **Relay access**.
+3. Select each relay to grant from the picker; a granted relay appears as a row you can remove again.
+4. Save the key.
+
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "research-assistant",
+    "relay_grants": [
+      { "relay_name": "tavily" },
+      { "relay_name": "textract" }
+    ]
+  }'
+```
+
+On update, `relay_grants` replaces the key's grants as a whole:
+
+```bash
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "relay_grants": [ { "relay_name": "tavily" } ] }'
+```
+
+An omitted `relay_grants` leaves the grants unchanged and `[]` clears them.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-research",
+        "name": "research-assistant",
+        "value": "env.RESEARCH_VK",
+        "relay_grants": [
+          { "relay_name": "tavily" },
+          { "relay_name": "textract" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `relay_grants` | array | omitted | Relays this key may call, one `{ "relay_name": "..." }` each. When the key syncs from the file this is its whole list: omitted or `[]` leaves it with none. In split mode an unchanged entry is not synced, so grants made in the dashboard stay until the entry is next edited. Not applied when an access profile governs the key's team, customer or user (Enterprise): that profile's `relay_grants` decide the key's relays. |
+
+Relays declared in `config.json` are loaded before governance, so a virtual key in the same file may grant them. A name that matches no relay is skipped with a warning. The key is reconciled again only when its entry changes (or on every start with `config.json` as the source of truth), so after fixing the relay, the grant is applied the next time the key's entry is synced.
+
+Like the rest of the key, `relay_grants` is synced from the file when the key's entry changes, and on every start when `config.json` is the source of truth. The declared list is then the key's whole list, and omitting it leaves the key with no grants, so grants made in the dashboard are replaced. In split mode an unchanged entry is not synced, so dashboard grants on it stay until the entry is next edited.
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  governance:
+    virtualKeys:
+      - id: vk-research
+        name: research-assistant
+        value: "env.RESEARCH_VK"
+        relay_grants:
+          - relay_name: tavily
+          - relay_name: textract
+
+# The pod reads RESEARCH_VK from its environment; envFrom loads it from a Kubernetes Secret
+envFrom:
+  - secretRef:
+      name: research-virtual-key   # a Secret with the key RESEARCH_VK; the value must start with sk-bf-
+```
+
+`RESEARCH_VK` must hold a strong random value that starts with `sk-bf-` (for example `sk-bf-$(openssl rand -hex 24)`); a value without that prefix is replaced by a generated key and requests sending the Secret's value are refused.
+
+Projects (`bifrost.governance.projects[].relay_grants`) and access profiles (`bifrost.accessProfiles[].relay_grants`) take the same list, with the same sync behaviour as `config.json`. One difference: a virtual key skips only the grant that names an unknown relay, while a project or access profile naming one is skipped as a whole, with a warning.
+
+A key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, so its own `relay_grants` are not applied. Grant the relay on the access profile instead.
+
+</Tab>
+</Tabs>
+
+Send the key on every relay request:
+
+```bash
+curl -X POST "http://localhost:8080/relay/tavily/search" \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: sk-bf-your-virtual-key" \
+  -d '{"query": "Bifrost AI gateway"}'
+```
+
+Any header that carries a virtual key on the inference endpoints (`x-bf-vk`, `Authorization: Bearer sk-bf-...`, `x-api-key`, ...) carries it here too. Whatever the caller sends in those headers is consumed by Bifrost and never forwarded; the relay signs in with its [own credential](./configuration#authentication-types).
+
+A key without a grant is refused before any upstream effect:
+
+```json
+{
+  "is_bifrost_error": true,
+  "status_code": 403,
+  "type": "relay_blocked",
+  "error": {
+    "message": "Relay 'tavily' is not allowed for virtual key 'research-assistant'"
+  }
+}
+```
+
+<Warning>
+The relay path uses the same authentication middleware as inference. With `client.enforce_auth_on_inference` on, a request must present a credential the deployment accepts (a virtual key, an API key or a user token) or it is refused; grants then restrict what the identified caller may reach. The setting defaults to on for new deployments, while an existing deployment keeps its stored value when the key is omitted, so check it: with enforcement off, a request carrying no credential is relayed without any grant check.
+</Warning>
+
+## What governance evaluates
+
+A relay call is governed the way an MCP tool execution is: the caller's identity is resolved, then every budget and rate limit the caller's holders carry is checked, before the upstream is contacted.
+
+| Applies | Does not apply |
+| --- | --- |
+| Virtual key, team, customer budgets (and business unit and project budgets in Enterprise) | Provider configs and allowed providers |
+| Request rate limits on the key | Model budgets and model rate limits |
+| Key status and expiry | Routing rules and fallbacks |
+| Required headers (`client.required_headers`) | Token rate limits (a relay has no tokens to count) |
+| | Model restrictions: a relay names no model to govern, even when the mapping reads a `model_path` for the logs |
+
+After the call, every reply the relay forwarded counts one request against the request rate limits, whether or not the route is billable, exactly as every MCP tool execution does: a limit on calls bounds calls. Only a counted call (billable route, `2xx` reply) carries a cost, which is charged to the budgets. A call that never got a reply (the upstream could not be reached) counts nothing. A stream the caller abandoned still reports what was forwarded, so hanging up does not avoid the charge.
+
+The budget and rate-limit ids a call was charged against are recorded on its [Relay Logs](./logs) row.
+
+## Enterprise: access profiles and projects
+
+On Bifrost Enterprise, `relay_grants` are also available on [access profiles](/enterprise/access-profiles) and [projects](/enterprise/projects), as grant rows only, like their agent grants. A request is allowed when its permits allow it under the same composition rules as agents and MCP tools; a refusal names the profile or project that denied it, for example `Relay 'tavily' is not allowed for access profile 'contractors'`.
+
+The **Relays** page itself is gated on the `Relays` [RBAC resource](/enterprise/rbac): a user with `Relays:View` can view relays, and one with `Relays:Create`, `Update` or `Delete` can manage them. [Relay Logs](./logs) are read under the separate `RelayLogs` resource, which has its own [data access control](/enterprise/data-access-control) scope. On upgrade, the default roles receive their `Relays` and `RelayLogs` permissions as for the Agent Gateway resources; a custom role gets nothing until an admin grants it.
+
+## Next steps
+
+- **[Budgets and rate limits](/features/governance/budget-and-limits)** — How the budgets a relay call charges are defined.
+- **[Relay Logs](./logs)** — See which key, team and customer each call was attributed to.

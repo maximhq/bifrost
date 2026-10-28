@@ -212,7 +212,9 @@ func main() {
                 continue
             }
 
-            fmt.Printf("Tool result: %s\n", *toolResult.Content.ContentStr)
+            if toolResult.Content.ContentStr != nil { // nil when the tool returned images, audio or files
+                fmt.Printf("Tool result: %s\n", *toolResult.Content.ContentStr)
+            }
             history = append(history, *toolResult)
         }
     }
@@ -297,6 +299,27 @@ POST /v1/mcp/tool/execute?format=responses
   "output": "{\"key\": \"value\"}"
 }
 ```
+
+### Images, audio and files
+
+A tool that returns only text comes back as a single string, as shown above. When it also returns images, audio or files, `content` is a list of blocks instead:
+
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_xyz789",
+  "content": [
+    { "type": "text", "text": "3 points" },
+    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo..." } }
+  ]
+}
+```
+
+A tool that returns only structured data comes back as that data, as JSON text.
+
+When the result is sent on to a model, Anthropic, Bedrock and Responses API models receive the images themselves (Responses API models receive files too). Models from other providers cannot take media in a tool result, so they receive a short note naming what the tool returned, such as `[image/png, 34 KB returned by the tool, not shown]`.
+
+Clients of [Bifrost's MCP server](./tool-hosting) receive each tool's result as the upstream server returned it, images, structured data and errors included, unless a plugin such as guardrails changed it.
 
 ---
 
