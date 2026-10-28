@@ -38,7 +38,7 @@ import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
-import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, X } from "lucide-react";
+import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, Waypoints, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 interface RelayLogDetailSheetProps {
@@ -281,18 +281,18 @@ export function RelayLogDetailSheet({
 												</Badge>
 											)}
 										</div>
-										<div className="mt-3 flex items-center gap-2">
-											<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">
-												{display.kind === "job" ? "Job" : "Route"}
-											</div>
-											<code className="text-foreground truncate font-mono text-[13px]">{requestLine}</code>
-											<CopyInlineButton text={requestLine} testId="relay-log-copy-route-button" />
-										</div>
+										<HeroIdRow
+											label={display.kind === "job" ? "Job" : "Route"}
+											value={requestLine}
+											testId="relay-log-copy-route-button"
+											className="mt-3"
+										/>
 										<HeroIdRow label="Request" value={display.request_id} testId="relay-log-copy-request-id-button" className="mt-1" />
 										{display.route_path && <HeroIdRow label="Matched" value={display.route_path} className="mt-1" />}
 										{display.virtual_key_name && <HeroIdRow label="Virtual key" value={display.virtual_key_name} className="mt-1" />}
 									</div>
 									<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 font-mono text-[12px] font-medium dark:bg-zinc-900">
+										<Waypoints className="text-muted-foreground h-3.5 w-3.5" />
 										{display.relay_name}
 									</div>
 								</div>

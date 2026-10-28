@@ -83,12 +83,19 @@ export const createRelayColumns = (
 			// Same two-line shape as the LLM table's model cell: primary line in mono, detail beneath.
 			const log = row.original;
 			const primary = log.kind === "job" ? `job ${log.job_id ?? ""}`.trim() : `${log.method} ${log.path}`;
+			// A literal (non-glob) route's path is identical to the request's own path, so "Route X"
+			// would just restate the primary line above it; show it only when it's new information
+			// (a glob, or no match at all).
+			const pathOnly = log.path.split("?")[0];
+			const routeLabel = !log.route_path ? "No route" : log.route_path !== pathOnly ? `Route ${log.route_path}` : null;
+			// "Streamed" is not repeated here as plain text: it's already a colored badge on the
+			// detail sheet, the same way LLM's streaming variants get a distinct badge color/label
+			// rather than a text suffix, so a bare "streamed" string in this muted line read as out
+			// of place next to that pattern.
 			const secondary =
 				log.kind === "job"
 					? `Settled: ${log.job_status ?? "-"}`
-					: [log.route_path ? `Route ${log.route_path}` : "No route", log.streamed ? "streamed" : "", log.billable ? "" : "not billable"]
-							.filter(Boolean)
-							.join(" · ");
+					: [routeLabel, log.billable ? "" : "not billable"].filter(Boolean).join(" · ");
 			return (
 				<div className="flex min-w-0 flex-col leading-tight">
 					<TruncatedLabel truncateFrom="start" className="font-mono text-[12px]">
