@@ -188,7 +188,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 									data-testid={`relay-route-row-${index}`}
 									className={cn("text-sm transition-colors hover:bg-white", !enabled && "opacity-60")}
 								>
-									<TableCell className="align-top">
+									<TableCell>
 										<Badge variant="secondary" className="font-mono">
 											{route.method}
 										</Badge>
