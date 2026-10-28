@@ -454,10 +454,18 @@ func (s *RDBLogStore) BatchUpdateRelayLogs(ctx context.Context, entries []*Relay
 			if err := tx.Model(&RelayLog{}).Where("id = ?", entry.ID).Updates(entry).Error; err != nil {
 				return err
 			}
-			// Updates skips zero values, so a final "visible" (false) decision would never clear a
-			// hidden flag the processing row saved earlier; write it explicitly, as Log.BatchUpdate
-			// does for content_hidden.
-			if err := tx.Model(&RelayLog{}).Where("id = ?", entry.ID).UpdateColumn("content_hidden", entry.ContentHidden).Error; err != nil {
+			// Updates skips zero values, so a final "hidden" decision (ContentHidden=false, bodies
+			// nil) would never overwrite what the processing row already carries — content_hidden
+			// would stay stuck at its inserted value, and worse, a body boundedBody captured on the
+			// processing row would survive forever once PostRelayHook decides the call must not keep
+			// one, since nil and false are exactly the zero values Updates treats as "leave alone".
+			// Write every content-visibility field explicitly, as Log.BatchUpdate does for
+			// content_hidden, so a hidden decision reliably clears what an earlier insert captured.
+			if err := tx.Model(&RelayLog{}).Where("id = ?", entry.ID).UpdateColumns(map[string]any{
+				"content_hidden": entry.ContentHidden,
+				"request_body":   entry.RequestBody,
+				"response_body":  entry.ResponseBody,
+			}).Error; err != nil {
 				return err
 			}
 		}

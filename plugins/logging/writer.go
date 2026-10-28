@@ -103,6 +103,17 @@ type pendingAgentInjectEntries struct {
 	drained bool
 }
 
+// pendingRelayEntry is what PreRelayHook parks in pendingEndpointLogs: the row itself, and whether
+// its processing INSERT actually reached the write queue. enqueueEndpointLogEntry silently drops
+// on a full queue, so a pending entry existing is not proof a row exists in the database —
+// insertQueued is what PostRelayHook and the eviction sweep actually need to decide INSERT vs
+// UPDATE for the terminal write; without it, a queue that was briefly full at PreRelayHook time
+// causes the completed call's UPDATE to match no row and the whole log, cost included, vanishes.
+type pendingRelayEntry struct {
+	row          *logstore.RelayLog
+	insertQueued bool
+}
+
 // pendingRelayInjectEntries is the Relay analogue of pendingAgentInjectEntries: the row parked by
 // PostRelayHook until Inject backfills upstream, overhead and the breakdown from the completed trace.
 // evictedRelayPartial is what cleanupStalePendingLogs leaves behind in evictedRelayPartials when
@@ -755,33 +766,61 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	// so the row written when it ends still carries the path, route and billable flag.
 	streamCutoff := time.Now().Add(-endpointStreamPendingTTL)
 	p.pendingEndpointLogs.Range(func(key, value any) bool {
-		pending, ok := value.(*logstore.RelayLog)
+		pending, ok := value.(*pendingRelayEntry)
 		if !ok {
 			return true
 		}
-		if pending.Timestamp.Before(cutoff) && (!pending.Streamed || pending.Timestamp.Before(streamCutoff)) {
-			// Unlike the LLM path, nothing needs inserting here: PreRelayHook already enqueued this
-			// row's processing INSERT, so it is already durable. The claim lock still matters,
-			// though — without it, a PostRelayHook racing this sweep could load the same pending
-			// entry after it was deleted, see no pending entry, and fall back to generating a fresh
-			// ID instead of the already-inserted row's, orphaning the processing row forever.
-			id, ok := key.(string)
-			if !ok {
-				p.pendingEndpointLogs.Delete(key)
-				return true
-			}
-			lock := p.pendingClaimLock(id)
-			lock.Lock()
-			if claimed, ok := p.pendingEndpointLogs.LoadAndDelete(key); ok {
-				if claimedEntry, ok := claimed.(*logstore.RelayLog); ok {
-					// Leaves behind only the row id, so a PostRelayHook that still arrives can
-					// reconcile the already-inserted row by UPDATE instead of inserting a duplicate
-					// with a fresh id.
-					p.evictedRelayPartials.Store(id, &evictedRelayPartial{rowID: claimedEntry.ID, evictedAt: time.Now()})
-				}
-			}
-			lock.Unlock()
+		// Timestamp is set once by PreRelayHook and never mutated again, so reading it here without
+		// the claim lock is safe. Streamed is not: PostRelayHook writes entry.Streamed on the very
+		// same struct after releasing the lock, so it is only read below, once this entry has been
+		// claimed and no concurrent mutator can remain.
+		if !pending.row.Timestamp.Before(cutoff) {
+			return true
 		}
+		id, ok := key.(string)
+		if !ok {
+			p.pendingEndpointLogs.Delete(key)
+			return true
+		}
+		// Usually nothing needs inserting here, unlike the LLM path: PreRelayHook already enqueued
+		// this row's processing INSERT, so it is already durable. The claim lock still matters,
+		// though — without it, a PostRelayHook racing this sweep could load the same pending entry
+		// after it was deleted, see no pending entry, and fall back to generating a fresh ID instead
+		// of the already-inserted row's, orphaning the processing row forever; it also protects this
+		// entry's own fields, which PostRelayHook mutates once it has claimed them.
+		//
+		// The lock stays held across the claim AND the marker store below, not just the claim:
+		// releasing it in between would let PostRelayHook's own lock-protected lookup (claiming
+		// pendingEndpointLogs finds nothing, since this sweep already took it, then checking
+		// evictedRelayPartials before this sweep has stored the marker there) see neither, fall
+		// back to a fresh ID, and insert a duplicate row — the exact bug this lock exists to
+		// prevent, just moved one step later.
+		lock := p.pendingClaimLock(id)
+		lock.Lock()
+		defer lock.Unlock()
+		claimed, claimedOK := p.pendingEndpointLogs.LoadAndDelete(key)
+		if !claimedOK {
+			return true // PostRelayHook claimed it first; nothing left to evict.
+		}
+		claimedEntry, ok := claimed.(*pendingRelayEntry)
+		if !ok {
+			return true
+		}
+		if claimedEntry.row.Streamed && !claimedEntry.row.Timestamp.Before(streamCutoff) {
+			// A stream within its longer grace period: not actually stale yet. Put it back rather
+			// than evict early; the next sweep re-evaluates it.
+			p.pendingEndpointLogs.Store(key, claimed)
+			return true
+		}
+		if !claimedEntry.insertQueued {
+			// The processing INSERT never reached the queue (full at PreRelayHook time), so there
+			// is no row yet for a late PostRelayHook to reconcile against; insert it now, exactly as
+			// persistEvictedPartial does for LLM rows.
+			p.enqueueEndpointLogEntry(claimedEntry.row)
+		}
+		// Leaves behind only the row id, so a PostRelayHook that still arrives can reconcile the
+		// already-inserted row by UPDATE instead of inserting a duplicate with a fresh id.
+		p.evictedRelayPartials.Store(id, &evictedRelayPartial{rowID: claimedEntry.row.ID, evictedAt: time.Now()})
 		return true
 	})
 	// Drop eviction markers whose request never finished at all: a PostRelayHook this late would
@@ -1116,20 +1155,28 @@ func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
 	}
 }
 
-func (p *LoggerPlugin) enqueueEndpointLogEntry(entry *logstore.RelayLog) {
+// enqueueEndpointLogEntry pushes a complete Relay Logs row to the write queue and reports whether
+// it was actually queued. The caller needs this, unlike every other enqueue* function here: a
+// PreRelayHook insert that silently drops (full queue) leaves no row in the database for the
+// terminal write to reconcile, so PostRelayHook must know to insert instead of issuing a no-op
+// UPDATE against a row that was never written.
+func (p *LoggerPlugin) enqueueEndpointLogEntry(entry *logstore.RelayLog) (queued bool) {
 	if entry == nil || p.closed.Load() {
-		return
+		return false
 	}
 	defer func() {
 		if recover() != nil {
 			p.droppedRequests.Add(1)
+			queued = false
 		}
 	}()
 	select {
 	case p.writeQueue <- &writeQueueEntry{endpointLog: entry}:
+		return true
 	default:
 		p.countDrop()
 		p.logger.Warn("log write queue full, dropping relay log entry %s", entry.ID)
+		return false
 	}
 }
 

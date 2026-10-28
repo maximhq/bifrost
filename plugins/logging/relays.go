@@ -84,7 +84,6 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	// layer is knowable this early.
 	enabledByDefault := p.disableContentLogging == nil || !*p.disableContentLogging
 	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, enabledByDefault)
-	p.pendingEndpointLogs.Store(requestID, entry)
 	// Insert the processing row now, as PreLLMHook does for LLM/chat logs: a relay call is
 	// queryable in Relay Logs while it is still in flight, and a crash or restart mid-call still
 	// leaves this row behind instead of no trace at all. PostRelayHook reconciles it with an
@@ -99,7 +98,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	// immutable *string/*float64 that reassignment, not mutation, replaces.
 	insertCopy := *entry
 	insertCopy.MetadataParsed = maps.Clone(entry.MetadataParsed)
-	p.enqueueEndpointLogEntry(&insertCopy)
+	queued := p.enqueueEndpointLogEntry(&insertCopy)
+	// Stored only after the enqueue attempt, with its outcome: PostRelayHook (and the eviction
+	// sweep) need to know whether a row actually exists to reconcile, not just that PreRelayHook
+	// ran. A full write queue at this moment means it does not — see pendingRelayEntry.
+	p.pendingEndpointLogs.Store(requestID, &pendingRelayEntry{row: entry, insertQueued: queued})
 	return req, nil, nil
 }
 
@@ -111,20 +114,37 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		return resp, bifrostErr, nil
 	}
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-	pending, _ := p.pendingEndpointLogs.LoadAndDelete(requestID)
-	entry, _ := pending.(*logstore.RelayLog)
-	// isUpdate tracks whether a processing row already exists under entry.ID: either the pending
-	// entry PreRelayHook stored, or the id an eviction sweep left behind after claiming and
-	// inserting it first. Either way the terminal write below must reconcile that row by UPDATE,
-	// never insert a second one.
-	isUpdate := entry != nil
+	// Same claim lock the eviction sweep takes around its own lookup: without it, a PostRelayHook
+	// racing the sweep could see neither the pending entry (already removed) nor the eviction
+	// marker (not stored yet), fall back to a fresh ID, and insert a duplicate row while the
+	// original stays stuck at "processing" forever.
+	lock := p.pendingClaimLock(requestID)
+	lock.Lock()
+	pendingAny, _ := p.pendingEndpointLogs.LoadAndDelete(requestID)
+	var marker *evictedRelayPartial
+	if pendingAny == nil {
+		if m, ok := p.evictedRelayPartials.LoadAndDelete(requestID); ok {
+			marker, _ = m.(*evictedRelayPartial)
+		}
+	}
+	lock.Unlock()
+	pending, _ := pendingAny.(*pendingRelayEntry)
+	// isUpdate tracks whether a processing row already exists under entry.ID: either PreRelayHook's
+	// processing insert actually reached the queue (pending.insertQueued — a pending entry existing
+	// is not enough on its own, see pendingRelayEntry), or the eviction sweep left a marker for a
+	// row it already inserted (or retried inserting) on this request's behalf. Either way the
+	// terminal write below must reconcile that row by UPDATE, never insert a second one.
+	var entry *logstore.RelayLog
+	var isUpdate bool
+	if pending != nil {
+		entry = pending.row
+		isUpdate = pending.insertQueued
+	}
 	if entry == nil {
 		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
-		if marker, ok := p.evictedRelayPartials.LoadAndDelete(requestID); ok {
-			if m, ok := marker.(*evictedRelayPartial); ok {
-				entry.ID = m.rowID
-				isUpdate = true
-			}
+		if marker != nil {
+			entry.ID = marker.rowID
+			isUpdate = true
 		}
 	}
 	entry.ApplyGovernanceContext(ctx)
@@ -217,7 +237,7 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 // eventual write reconciles the processing row PreRelayHook already inserted (UPDATE) or inserts
 // a fresh row because none exists (INSERT).
 func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, entry *logstore.RelayLog, isUpdate bool) {
-	write := p.enqueueEndpointLogEntry
+	write := func(entry *logstore.RelayLog) { p.enqueueEndpointLogEntry(entry) }
 	if isUpdate {
 		write = p.enqueueEndpointLogUpdate
 	}
@@ -280,7 +300,7 @@ func (p *LoggerPlugin) injectRelayEntries(trace *schemas.Trace, joinKey string) 
 		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
-	write := p.enqueueEndpointLogEntry
+	write := func(entry *logstore.RelayLog) { p.enqueueEndpointLogEntry(entry) }
 	if pending.isUpdate {
 		write = p.enqueueEndpointLogUpdate
 	}

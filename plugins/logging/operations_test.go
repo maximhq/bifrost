@@ -5679,6 +5679,72 @@ func TestRelayLogRow(t *testing.T) {
 	require.Equal(t, logstore.RelayLogStatusError, entry.Status)
 }
 
+// A content-hidden call must not leave a readable body behind: PreRelayHook captures the request
+// body before the final policy is known (it always has), and now that row is inserted immediately.
+// If PostRelayHook later decides the call is hidden, the UPDATE it issues must actually clear that
+// body in the database — not silently skip it because nil and false are GORM's zero values for
+// Updates, leaving content readable under a row that claims ContentHidden.
+func TestRelayLogHiddenPolicyClearsBodyAlreadyInsertedByPreHook(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-hidden-after-insert")
+	_, _, err = plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
+		RelayName: "tavily", Method: "POST", Path: "/search", Body: []byte(`{"query":"secret"}`),
+	})
+	require.NoError(t, err)
+
+	// Governance's pre-hook runs after this plugin's and disables content logging for this call —
+	// by the time PreRelayHook ran, the processing row (with the body) was already inserted.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200, Body: []byte(`{"ok":true}`)}, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	result, err := store.SearchRelayLogs(context.Background(), logstore.RelayLogFilters{RequestID: "req-hidden-after-insert"}, logstore.PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	row := result.Logs[0]
+	require.True(t, row.ContentHidden, "the row must claim hidden content")
+	require.Nil(t, row.RequestBody, "the body the processing insert already wrote must be cleared, not left readable under a hidden row")
+	require.Nil(t, row.ResponseBody)
+}
+
+// A completed call must not vanish just because the write queue was briefly full when PreRelayHook
+// tried to insert its processing row: enqueueEndpointLogEntry drops silently on a full queue, so a
+// pending entry existing is not proof a row exists in the database. If PostRelayHook assumed it did
+// and issued an UPDATE, that UPDATE would match no row and the whole completed call — usage, cost,
+// status — would be lost with nothing left behind.
+func TestRelayLogPostHookInsertsWhenProcessingInsertWasDroppedByFullQueue(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	// Capacity 1, pre-filled: PreRelayHook's own insert has nowhere to go and is dropped.
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	plugin.writeQueue <- &writeQueueEntry{}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-dropped-insert")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+	require.NoError(t, err)
+
+	pendingAny, ok := plugin.pendingEndpointLogs.Load("req-dropped-insert")
+	require.True(t, ok, "PreRelayHook still parks the pending entry even though its insert was dropped")
+	pending, ok := pendingAny.(*pendingRelayEntry)
+	require.True(t, ok)
+	require.False(t, pending.insertQueued, "the full queue must be recorded as a dropped insert, not mistaken for a successful one")
+
+	// Drain the dummy entry so the terminal write has somewhere to go.
+	<-plugin.writeQueue
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+
+	queued := <-plugin.writeQueue
+	require.NotNil(t, queued.endpointLog, "the terminal write must insert the completed row, not issue an update against a row that was never written")
+	require.Nil(t, queued.endpointLogUpdate)
+	require.Equal(t, logstore.RelayLogStatusSuccess, queued.endpointLog.Status)
+}
+
 // PreRelayHook's processing row and PostRelayHook's terminal write share one ID and reconcile via
 // UPDATE, not a second INSERT — the same two-phase pattern LLM/chat logs use, so a relay call is
 // visible in Relay Logs while still in flight and a crash between the two still leaves a row.
@@ -5920,9 +5986,11 @@ func TestRelayLogContentPolicy(t *testing.T) {
 }
 
 // A streamed relay reply has no body to log until core/relay buffers it as it forwards bytes, so
-// PreRelayHook stamps the resolved content policy onto the context as a plain bool
-// (BifrostContextKeyShouldCaptureRelayContent) for core/relay to read before it opens the stream,
-// the same shape bifrost.go uses for BifrostContextKeyShouldStoreRawInLogs on the LLM path.
+// PreRelayHook stamps its own static content-logging default onto the context as a plain bool
+// (BifrostContextKeyRelayContentLoggingEnabledByDefault) for core/relay to combine with
+// governance's and the per-request override once every pre-hook has run, before it opens the
+// stream — this hook can only answer for its own layer, since governance's pre-hook has not run
+// yet when this one does.
 func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 	t.Run("on by default", func(t *testing.T) {
 		plugin := policyTestPlugin(nil, nil, false)
@@ -5931,7 +5999,7 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-on")
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
 		require.NoError(t, err)
-		capture, _ := ctx.Value(schemas.BifrostContextKeyShouldCaptureRelayContent).(bool)
+		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
 		require.True(t, capture)
 	})
 	t.Run("off when the plugin disables content logging", func(t *testing.T) {
@@ -5941,7 +6009,7 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-off")
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
 		require.NoError(t, err)
-		capture, _ := ctx.Value(schemas.BifrostContextKeyShouldCaptureRelayContent).(bool)
+		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
 		require.False(t, capture)
 	})
 }

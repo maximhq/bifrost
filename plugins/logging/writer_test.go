@@ -2490,7 +2490,7 @@ func TestRelayLogCleanupLeavesEvictionMarker(t *testing.T) {
 
 	stale := time.Now().Add(-pendingLogTTL - time.Minute)
 	pending := &logstore.RelayLog{ID: "relay-row-evicted", RequestID: "req-relay-evicted", Timestamp: stale, Status: "processing"}
-	plugin.pendingEndpointLogs.Store("req-relay-evicted", pending)
+	plugin.pendingEndpointLogs.Store("req-relay-evicted", &pendingRelayEntry{row: pending, insertQueued: true})
 
 	plugin.cleanupStalePendingLogs()
 
@@ -2503,6 +2503,72 @@ func TestRelayLogCleanupLeavesEvictionMarker(t *testing.T) {
 	}
 	if m, ok := marker.(*evictedRelayPartial); !ok || m.rowID != "relay-row-evicted" {
 		t.Fatalf("expected marker to carry the already-inserted row id, got %+v", marker)
+	}
+}
+
+// TestRelayLogConcurrentEvictionAndPostHookNeverDuplicates races cleanupStalePendingLogs against
+// PostRelayHook for many requests concurrently: without pendingClaimLock serializing PostRelayHook's
+// lookup against the sweep's, one side can see neither the pending entry (already removed by the
+// other) nor the eviction marker (not stored yet), fall back to a fresh ID, and insert a duplicate
+// row while the original stays stuck at "processing" forever. Run with -race.
+func TestRelayLogConcurrentEvictionAndPostHookNeverDuplicates(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const n = 100
+	ctxs := make([]*schemas.BifrostContext, n)
+	// Phase 1, sequential: park every pending entry and backdate it, exactly as PreRelayHook leaves
+	// it once idle past the TTL. This must finish before phase 2 starts — backdating a Timestamp
+	// directly, the way this test simulates idle time passing, is not itself synchronized the way
+	// PreRelayHook's one-time write before the entry is ever stored is; doing it while another
+	// iteration's cleanupStalePendingLogs may still be scanning the whole shared map is a race in
+	// the test's own setup, not the bug phase 2 exists to catch.
+	for i := 0; i < n; i++ {
+		requestID := fmt.Sprintf("req-race-%d", i)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctxs[i] = ctx
+		if _, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"}); err != nil {
+			t.Fatalf("PreRelayHook() error = %v", err)
+		}
+		if pendingAny, ok := plugin.pendingEndpointLogs.Load(requestID); ok {
+			pendingAny.(*pendingRelayEntry).row.Timestamp = time.Now().Add(-pendingLogTTL - time.Minute)
+		}
+	}
+
+	// Phase 2, concurrent: race the sweep against every request's PostRelayHook at once.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		plugin.cleanupStalePendingLogs()
+	}()
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(ctx *schemas.BifrostContext) {
+			defer wg.Done()
+			if _, _, err := plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil); err != nil {
+				t.Errorf("PostRelayHook() error = %v", err)
+			}
+		}(ctxs[i])
+	}
+	wg.Wait()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	for i := 0; i < n; i++ {
+		requestID := fmt.Sprintf("req-race-%d", i)
+		result, err := store.SearchRelayLogs(context.Background(), logstore.RelayLogFilters{RequestID: requestID}, logstore.PaginationOptions{Limit: 10})
+		if err != nil {
+			t.Fatalf("SearchRelayLogs(%s) error = %v", requestID, err)
+		}
+		if len(result.Logs) != 1 {
+			t.Fatalf("expected exactly one row for %s, got %d", requestID, len(result.Logs))
+		}
 	}
 }
 
@@ -2529,9 +2595,9 @@ func TestRelayLogPostHookReconcilesAfterEviction(t *testing.T) {
 	if !ok {
 		t.Fatal("expected PreRelayHook to park a pending entry")
 	}
-	pendingEntry := pendingAny.(*logstore.RelayLog)
-	rowID := pendingEntry.ID
-	pendingEntry.Timestamp = time.Now().Add(-pendingLogTTL - time.Minute)
+	pendingEntry := pendingAny.(*pendingRelayEntry)
+	rowID := pendingEntry.row.ID
+	pendingEntry.row.Timestamp = time.Now().Add(-pendingLogTTL - time.Minute)
 	plugin.cleanupStalePendingLogs()
 	if _, ok := plugin.pendingEndpointLogs.Load("req-relay-late"); ok {
 		t.Fatal("expected eviction to clear the in-memory pending entry")

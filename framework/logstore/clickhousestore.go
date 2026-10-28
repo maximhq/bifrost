@@ -1612,8 +1612,13 @@ func (s *ClickHouseLogStore) BatchUpdateRelayLogs(ctx context.Context, entries [
 				if err := chApplyStructUpdate(ctx, st, reflect.ValueOf(r).Elem(), reflect.ValueOf(src).Elem()); err != nil {
 					return err
 				}
-				// The overlay skips zero values; the final visibility is always written.
+				// The overlay skips zero values; the final visibility is always written, same as
+				// RDBLogStore.BatchUpdateRelayLogs's explicit UpdateColumns — a hidden decision
+				// (ContentHidden=false, bodies nil) must overwrite whatever the processing row
+				// already captured, not be silently skipped as "unchanged".
 				r.ContentHidden = src.ContentHidden
+				r.RequestBody = src.RequestBody
+				r.ResponseBody = src.ResponseBody
 			}
 		}
 		return s.chReinsert(ctx, &rows)
