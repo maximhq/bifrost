@@ -2,11 +2,14 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/memtest"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
@@ -36,6 +39,74 @@ func TestInlineDocumentPreservesLegacyData(t *testing.T) {
 		if s := block.Source.SourceObj; s.Type != tc.kind || s.Data == nil || *s.Data != tc.data {
 			t.Fatalf("legacy source changed: %+v", s)
 		}
+	}
+}
+
+func TestEmptyTextDocumentPreservesSource(t *testing.T) {
+	data, media := "", "text/plain"
+	// Match the native Messages request from #8849, including citations and
+	// a non-empty sibling document, before rebuilding the Anthropic request.
+	var request AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Some text."},"citations":{"enabled":true}},{"type":"document","source":{"type":"text","media_type":"text/plain","data":""},"citations":{"enabled":true}},{"type":"text","text":"Say ok."}]}]}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	rebuilt, err := ToAnthropicResponsesRequest(ctx, request.ToBifrostResponsesRequest(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var documents []AnthropicContentBlock
+	for _, message := range rebuilt.Messages {
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type == AnthropicContentBlockTypeDocument {
+				documents = append(documents, block)
+			}
+		}
+	}
+	if len(documents) != 2 {
+		t.Fatalf("expected both documents to survive the round trip, got %d", len(documents))
+	}
+	blocks := []struct {
+		name  string
+		block AnthropicContentBlock
+	}{
+		{"chat", ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{File: &schemas.ChatInputFile{FileData: &data, FileType: &media}})},
+		{"anthropic round trip", documents[1]},
+	}
+	for _, tc := range blocks {
+		t.Run(tc.name, func(t *testing.T) {
+			wire, err := providerUtils.MarshalSorted(tc.block)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := gjson.GetBytes(wire, "source")
+			if source.Get("type").String() != "text" || source.Get("media_type").String() != "text/plain" || source.Get("data").Type != gjson.String || source.Get("data").String() != "" {
+				t.Fatalf("empty text document lost its source: %s", wire)
+			}
+			if tc.name == "anthropic round trip" && !gjson.GetBytes(wire, "citations.enabled").Bool() {
+				t.Fatalf("document citations were lost: %s", wire)
+			}
+		})
+	}
+}
+
+func BenchmarkEmptyTextDocumentConversion(b *testing.B) {
+	media := "text/plain"
+	for _, tc := range []struct{ name, data string }{{"nonempty", "Some text."}, {"empty", ""}} {
+		b.Run(tc.name+"/chat", func(b *testing.B) {
+			block := schemas.ChatContentBlock{File: &schemas.ChatInputFile{FileData: &tc.data, FileType: &media}}
+			b.ReportAllocs()
+			for b.Loop() {
+				ConvertToAnthropicDocumentBlock(block)
+			}
+		})
+		b.Run(tc.name+"/responses", func(b *testing.B) {
+			block := &schemas.ResponsesInputMessageContentBlockFile{FileData: &tc.data, FileType: &media}
+			b.ReportAllocs()
+			for b.Loop() {
+				ConvertResponsesFileBlockToAnthropic(block, nil, nil, nil)
+			}
+		})
 	}
 }
 

@@ -283165,6 +283165,148 @@
       ]
     },
     {
+        "name":  "285. Anthropic empty text document sources (#8849)",
+        "description":  "Issue #8849: an explicitly empty text document lost source.type when rebuilt for Anthropic. The native Messages case mirrors the reported two-document request with citations; Responses and Chat Completions pin the equivalent neutral ingress paths. All three require HTTP 200 and text output. Streaming shares the same request conversion and is not repeated here. These cases target Anthropic directly; the reported OpenRouter fallback uses separate OpenAI-compatible converters and is not claimed fixed.",
+        "item":  [
+                     {
+                         "name":  "Anthropic claude-haiku-4-5 native Messages empty text document - #8849",
+                         "event":  [
+                                       {
+                                           "listen":  "test",
+                                           "script":  {
+                                                          "type":  "text/javascript",
+                                                          "exec":  [
+                                                                       "pm.test(\u0027Empty text document reaches Anthropic successfully\u0027, function () {",
+                                                                       "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                                                                       "  pm.expect(pm.response.text()).not.to.contain(\"Input tag \u0027\u0027\");",
+                                                                       "  var body = pm.response.json();",
+                                                                       "  pm.expect(body.content.filter(function (block) { return block.type === \u0027text\u0027; }).map(function (block) { return block.text; }).join(\u0027\u0027).trim(), pm.response.text()).not.to.equal(\u0027\u0027);",
+                                                                       "});"
+                                                                   ]
+                                                      }
+                                       }
+                                   ],
+                         "request":  {
+                                         "method":  "POST",
+                                         "header":  [
+                                                        {
+                                                            "key":  "Content-Type",
+                                                            "value":  "application/json"
+                                                        },
+                                                        {
+                                                            "key":  "x-api-key",
+                                                            "value":  "{{anthropicKey}}"
+                                                        },
+                                                        {
+                                                            "key":  "anthropic-version",
+                                                            "value":  "2023-06-01"
+                                                        }
+                                                    ],
+                                         "body":  {
+                                                      "mode":  "raw",
+                                                      "raw":  "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"Some text.\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}"
+                                                  },
+                                         "url":  {
+                                                     "raw":  "{{baseUrl}}/anthropic/v1/messages",
+                                                     "host":  [
+                                                                  "{{baseUrl}}"
+                                                              ],
+                                                     "path":  [
+                                                                  "anthropic",
+                                                                  "v1",
+                                                                  "messages"
+                                                              ]
+                                                 }
+                                     }
+                     },
+                     {
+                         "name":  "Anthropic claude-haiku-4-5 Responses empty text document - #8849",
+                         "event":  [
+                                       {
+                                           "listen":  "test",
+                                           "script":  {
+                                                          "type":  "text/javascript",
+                                                          "exec":  [
+                                                                       "pm.test(\u0027Empty text document reaches Anthropic successfully\u0027, function () {",
+                                                                       "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                                                                       "  pm.expect(pm.response.text()).not.to.contain(\"Input tag \u0027\u0027\");",
+                                                                       "  var body = pm.response.json();",
+                                                                       "  var text = \u0027\u0027; (body.output || []).forEach(function (item) { (item.content || []).forEach(function (block) { if (block.type === \u0027output_text\u0027) { text += block.text; } }); }); pm.expect(text.trim(), pm.response.text()).not.to.equal(\u0027\u0027);",
+                                                                       "});"
+                                                                   ]
+                                                      }
+                                       }
+                                   ],
+                         "request":  {
+                                         "method":  "POST",
+                                         "header":  [
+                                                        {
+                                                            "key":  "Content-Type",
+                                                            "value":  "application/json"
+                                                        }
+                                                    ],
+                                         "body":  {
+                                                      "mode":  "raw",
+                                                      "raw":  "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"note.txt\",\n          \"file_type\": \"text/plain\",\n          \"file_data\": \"Some text.\",\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"empty.txt\",\n          \"file_type\": \"text/plain\",\n          \"file_data\": \"\",\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}"
+                                                  },
+                                         "url":  {
+                                                     "raw":  "{{baseUrl}}/v1/responses",
+                                                     "host":  [
+                                                                  "{{baseUrl}}"
+                                                              ],
+                                                     "path":  [
+                                                                  "v1",
+                                                                  "responses"
+                                                              ]
+                                                 }
+                                     }
+                     },
+                     {
+                         "name":  "Anthropic claude-haiku-4-5 Chat Completions empty text document - #8849",
+                         "event":  [
+                                       {
+                                           "listen":  "test",
+                                           "script":  {
+                                                          "type":  "text/javascript",
+                                                          "exec":  [
+                                                                       "pm.test(\u0027Empty text document reaches Anthropic successfully\u0027, function () {",
+                                                                       "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                                                                       "  pm.expect(pm.response.text()).not.to.contain(\"Input tag \u0027\u0027\");",
+                                                                       "  var body = pm.response.json();",
+                                                                       "  pm.expect(body.choices[0].message.content.trim(), pm.response.text()).not.to.equal(\u0027\u0027);",
+                                                                       "});"
+                                                                   ]
+                                                      }
+                                       }
+                                   ],
+                         "request":  {
+                                         "method":  "POST",
+                                         "header":  [
+                                                        {
+                                                            "key":  "Content-Type",
+                                                            "value":  "application/json"
+                                                        }
+                                                    ],
+                                         "body":  {
+                                                      "mode":  "raw",
+                                                      "raw":  "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"note.txt\",\n            \"file_type\": \"text/plain\",\n            \"file_data\": \"Some text.\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"empty.txt\",\n            \"file_type\": \"text/plain\",\n            \"file_data\": \"\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}"
+                                                  },
+                                         "url":  {
+                                                     "raw":  "{{baseUrl}}/v1/chat/completions",
+                                                     "host":  [
+                                                                  "{{baseUrl}}"
+                                                              ],
+                                                     "path":  [
+                                                                  "v1",
+                                                                  "chat",
+                                                                  "completions"
+                                                              ]
+                                                 }
+                                     }
+                     }
+                 ]
+    },
+    {
       "name": "276. Azure Blob storage skill files [PREVIEW]",
       "description": "Account-scoped prerequisites: start an Azure-configured gateway with logs_store.object_storage.type=azure, a writable container, and valid server-side credentials; set include_preview=1 (INCLUDE_PREVIEW=1 in the harness runner). This folder validates client paths after Azure startup; it does not establish credentials or modify the default paid provider profile. Run all rows in order with PROVIDER=azure FEATURE=\"Azure Blob storage\". GET /api/config must report connected object storage, and created Unicode text and binary dataurl files must persist storage_key references without DB blob_id fallback. Exact served bytes, owned skill deletion, and a 404 after deletion pin the lifecycle. Only the uniquely named skill created here is deleted; no global orphan cleanup is performed.",
       "item": [
