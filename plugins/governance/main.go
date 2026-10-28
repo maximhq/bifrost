@@ -764,7 +764,13 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
+	if evaluationRequest.LiteralModel {
+		ctx.SetValue(literalLimitsContextKey, true)
+	}
 	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	if evaluationRequest.LiteralModel {
+		ctx.SetValue(literalLimitsContextKey, false)
+	}
 
 	// The order of everything below is load bearing:
 	//
@@ -2290,6 +2296,8 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	}
 
 	var errs []error
+	// Every model here is one a result row actually ran, as written, so no alias target is charged.
+	ctx = context.WithValue(ctx, literalLimitsContextKey, true)
 	for _, modelUsage := range usage.ModelUsage {
 		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
 		if modelUsage.Cost > 0 {

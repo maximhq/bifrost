@@ -1614,6 +1614,57 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 	}
 }
 
+// An inline batch item runs the model as written, so an alias item is never resolved to its target
+// and an exhausted limit on that target must not block it; the batch request's own model is the one
+// pass that is resolved through the alias, and the literal marking must not outlive the item passes.
+func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"}),
+	})
+	provider := "anthropic"
+	exhausted := buildModelConfig("sonnet-exhausted", "claude-sonnet-4-6", &provider, buildBudgetWithUsage("b-sonnet-exhausted", 10.0, 10.0, "1d"), nil)
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		ModelConfigs: []configstoreTables.TableModelConfig{*exhausted},
+		Budgets:      exhausted.Budgets,
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	batch := func(requestModel, itemModel string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Anthropic, Model: &requestModel,
+			Requests: []schemas.BatchRequestItem{{CustomID: "i", Params: map[string]any{"model": itemModel}}},
+		}}
+	}
+	run := func(req *schemas.BifrostRequest) (*schemas.BifrostContext, *schemas.LLMPluginShortCircuit) {
+		ctx := presentCtx(mcpTestVKValue)
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		return ctx, shortCircuit
+	}
+
+	// The item names the alias literally and the request's own model is the allowed target's sibling.
+	ctx, shortCircuit := run(batch("claude-opus-4-6", "claude-opus-4-6"))
+	// The request's own model is still resolved through the alias, so the exhausted target applies to it.
+	require.NotNil(t, shortCircuit, "the request's own alias model still answers to its target")
+	marked, _ := ctx.Value(literalLimitsContextKey).(bool)
+	assert.False(t, marked, "the literal marking must not outlive the item passes")
+
+	// Items alone, with the request's own model on an unlimited name, are admitted.
+	ctx, shortCircuit = run(batch("claude-haiku-4-5", "claude-opus-4-6"))
+	require.Nil(t, shortCircuit, "an item that runs as written takes no limit from the alias target")
+	marked, _ = ctx.Value(literalLimitsContextKey).(bool)
+	assert.False(t, marked, "the literal marking must not outlive the item passes")
+}
+
 // A literal check still honours the custom-provider exemption: an unrestricted allowlist on a
 // custom provider that cannot list models admits any name, since the catalog cannot know them.
 func TestBatchItemLiteralCheckKeepsCustomProviderExemption(t *testing.T) {

@@ -2364,16 +2364,39 @@ func extractModelAndProvider(request *EvaluationRequest) (string, *string) {
 	return request.Model, provider
 }
 
+type limitsContextKey struct{}
+
+// literalLimitsContextKey marks a context whose model runs at the provider exactly as written, so
+// no key alias is applied to it and no alias target's limits may be added.
+var literalLimitsContextKey = limitsContextKey{}
+
+// runsAsWritten reports whether the model on ctx reaches the provider exactly as the client named
+// it: the caller marked it literal, or the credential skips key selection, so no key alias is
+// ever applied.
+func runsAsWritten(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if literal, _ := ctx.Value(literalLimitsContextKey).(bool); literal {
+		return true
+	}
+	if _, direct := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); direct {
+		return true
+	}
+	skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	return skip
+}
+
 // aliasTargets returns the models the provider's eligible keys map the requested name to, or nil
 // when the lookup has no provider, the store cannot see provider config, or no key carries an
 // alias. It is resolved once per attempt and handed to the model-config walks, so the provider
 // lookup (a shared read lock in production) and the alias scan are not repeated per scope.
-func (gs *LocalGovernanceStore) aliasTargets(provider *string, model string) []string {
+func (gs *LocalGovernanceStore) aliasTargets(ctx context.Context, provider *string, model string) []string {
 	if provider == nil || gs.inMemoryStore == nil {
 		return nil
 	}
 	cfg, ok := configuredProvider(gs.inMemoryStore, schemas.ModelProvider(*provider))
-	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) {
+	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || runsAsWritten(ctx) {
 		return nil
 	}
 	var targets []string
@@ -3728,7 +3751,7 @@ func (gs *LocalGovernanceStore) CollectModelScopedGovernanceIDs(ctx context.Cont
 		}
 	}
 
-	targets := gs.aliasTargets(providerStr, model)
+	targets := gs.aliasTargets(ctx, providerStr, model)
 	scopes := []struct{ name, id string }{
 		{configstoreTables.ModelConfigScopeGlobal, ""},
 		{configstoreTables.ModelConfigScopeVirtualKey, virtualKeyID},
@@ -4851,7 +4874,7 @@ func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access
 	// tier is where a key's own budget and rate limit live since the model-config migration.
 	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
-	targets := gs.aliasTargets(providerPtrFor(provider), model)
+	targets := gs.aliasTargets(ctx, providerPtrFor(provider), model)
 	globalModelBudgets, globalModelRateLimits := gs.globalModelLimits(ctx, provider, model, targets)
 	budgets = append(budgets, globalModelBudgets...)
 	rateLimits = append(rateLimits, globalModelRateLimits...)
@@ -4960,7 +4983,7 @@ func (gs *LocalGovernanceStore) GlobalProviderLimits(ctx context.Context, provid
 // refusal for the funnel to state with a reason rather than load balancing quietly running out of
 // options.
 func (gs *LocalGovernanceStore) ProviderScopedModelLimits(ctx context.Context, permit schemas.Permit, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit) {
-	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model, gs.aliasTargets(providerPtrFor(provider), model))
+	return gs.providerScopedModelLimitsInScopes(ctx, modelConfigScopesFor(permit), provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // ProviderScopedModelLimitsInScope is ProviderScopedModelLimits over one named scope, attributed to
@@ -4973,7 +4996,7 @@ func (gs *LocalGovernanceStore) ProviderScopedModelLimitsInScope(ctx context.Con
 	if scope == "" || scopeID == "" {
 		return nil, nil
 	}
-	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(providerPtrFor(provider), model))
+	return gs.providerScopedModelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // providerScopedModelLimitsInScopes is modelLimitsInScopes narrowed to the configs that name the
@@ -5029,7 +5052,7 @@ func (gs *LocalGovernanceStore) modelLimitsInScopes(ctx context.Context, scopes 
 // into the attempt's settled limits rather than storing them anywhere longer-lived, so one
 // attempt's limits are never charged to the next.
 func (gs *LocalGovernanceStore) GlobalModelLimits(ctx context.Context, provider schemas.ModelProvider, model string) ([]schemas.Limit, []schemas.Limit) {
-	return gs.globalModelLimits(ctx, provider, model, gs.aliasTargets(providerPtrFor(provider), model))
+	return gs.globalModelLimits(ctx, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // globalModelLimits is GlobalModelLimits with the alias targets already resolved, so a caller
@@ -5055,7 +5078,7 @@ func (gs *LocalGovernanceStore) PermitModelLimits(ctx context.Context, permit sc
 	if permit == nil || permit.ID() == "" {
 		return nil, nil
 	}
-	return gs.permitModelLimits(ctx, permit, provider, model, gs.aliasTargets(providerPtrFor(provider), model))
+	return gs.permitModelLimits(ctx, permit, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // permitModelLimits is PermitModelLimits with the alias targets already resolved.
@@ -5079,7 +5102,7 @@ func (gs *LocalGovernanceStore) ScopedModelLimits(ctx context.Context, scope, sc
 	if scope == "" || scopeID == "" {
 		return nil, nil
 	}
-	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(providerPtrFor(provider), model))
+	return gs.modelLimitsInScopes(ctx, []limitScope{{name: scope, id: scopeID, kind: kind}}, provider, model, gs.aliasTargets(ctx, providerPtrFor(provider), model))
 }
 
 // limitScope is one model-config scope to resolve limits from, with the holder kind its limits are
