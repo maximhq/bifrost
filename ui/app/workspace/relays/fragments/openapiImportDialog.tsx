@@ -68,7 +68,7 @@ export function OpenAPIImportDialog({ open, onClose, onImport }: OpenAPIImportDi
 
 	const reset = () => {
 		// A fetch still in flight belongs to the dialog being closed: retire it so its result or error
-		// never reaches a reopened dialog, and stop the spinner so Fetch spec is usable again at once.
+		// never reaches a reopened dialog, and stop the spinner so Fetch is usable again at once.
 		parseSeq.current++;
 		setIsParsing(false);
 		setMode("paste");
