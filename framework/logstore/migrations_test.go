@@ -53,6 +53,24 @@ func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddMethodColumnToMCPToolLogs verifies the read-method column is additive, idempotent,
+// and leaves existing rows (tool calls) null.
+func TestMigrationAddMethodColumnToMCPToolLogs(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	for range 2 {
+		require.NoError(t, migrationAddMethodColumnToMCPToolLogs(ctx, db, testLogger{}))
+	}
+	require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, "method"))
+	var method *string
+	require.NoError(t, db.Table("mcp_tool_logs").Select("method").Where("id = ?", "mcp-existing").Scan(&method).Error)
+	assert.Nil(t, method)
+}
+
 // TestMigrationAddSessionIDColumn verifies that the session lookup
 // column is additive, indexed, and preserves pre-existing request logs.
 func TestMigrationAddSessionIDColumn(t *testing.T) {

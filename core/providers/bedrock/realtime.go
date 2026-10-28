@@ -41,7 +41,7 @@ const (
 func (provider *BedrockProvider) SupportsRealtimeAPI() bool { return true }
 
 // RealtimeWebSocketURL is unused: Bedrock realtime is not a WebSocket, see ConnectRealtime.
-func (provider *BedrockProvider) RealtimeWebSocketURL(_ schemas.Key, _, _ string) (string, *schemas.BifrostError) {
+func (provider *BedrockProvider) RealtimeWebSocketURL(_ *schemas.BifrostContext, _ schemas.Key, _, _ string) (string, *schemas.BifrostError) {
 	return "", bedrockRealtimeError(400, "bedrock realtime runs over a bidirectional event stream, not a websocket url", nil)
 }
 
@@ -119,7 +119,7 @@ func (provider *BedrockProvider) ConnectRealtime(ctx *schemas.BifrostContext, ke
 	}
 	path, region := provider.getModelPathAndRegion(ctx, sonicBidirectionalAction, model, key)
 	credentials := func() (aws.Credentials, *schemas.BifrostError) {
-		return resolveAWSCredentials(ctx, key.BedrockKeyConfig, region)
+		return ResolveAWSCredentials(ctx, key.BedrockKeyConfig, region)
 	}
 	if _, credErr := credentials(); credErr != nil {
 		return nil, credErr

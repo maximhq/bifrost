@@ -39,7 +39,8 @@ func ToReplicateChatRequest(bifrostReq *schemas.BifrostChatRequest) (*ReplicateP
 				input.InputItemList = responsesMessages
 			}
 		} else {
-			input.Messages = bifrostReq.Input
+			// An OpenAI model on Replicate takes text only in a tool message, as on OpenAI.
+			input.Messages = schemas.FlattenToolMessagesMedia(bifrostReq.Input)
 		}
 	} else {
 		// Extract system prompt and build conversation prompt

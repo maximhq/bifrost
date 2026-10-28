@@ -1,4 +1,4 @@
-import { getMCPLogPresentation, getMCPArgumentPreview } from "@/lib/utils/mcpLogPresentation";
+import { getMCPLogPresentation, getMCPArgumentPreview, getMCPReadKind } from "@/lib/utils/mcpLogPresentation";
 import { AttributionCell } from "@/components/logAttributionCell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,9 +74,17 @@ export const createMCPColumns = (
 			const toolName = row.getValue("tool_name") as string;
 			const presentation = getMCPLogPresentation(row.original);
 			const preview = getMCPArgumentPreview(row.original);
+			const readKind = getMCPReadKind(row.original);
 			return (
 				<div className="flex min-w-0 flex-col leading-tight">
-					<span className="truncate font-mono text-xs">{toolName}</span>
+					<div className="flex min-w-0 items-center gap-1.5">
+						{readKind && (
+							<Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]" data-testid="mcp-log-read-kind">
+								{readKind}
+							</Badge>
+						)}
+						<span className="truncate font-mono text-xs">{toolName}</span>
+					</div>
 					{preview && (
 						<span className="text-muted-foreground truncate text-[10.5px]" title={preview}>
 							{preview}

@@ -230,6 +230,18 @@ type LogStore interface {
 	DeleteAgentLogs(ctx context.Context, ids []string) error
 	FlushAgentLogs(ctx context.Context, since time.Time) error
 
+	// Relay log methods (Relay Logs).
+	BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error)
+	FindRelayLog(ctx context.Context, id string) (*RelayLog, error)
+	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
+	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)
+	GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error)
+	GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error)
+	GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error)
+	HasRelayLogs(ctx context.Context) (bool, error)
+	DeleteRelayLogs(ctx context.Context, ids []string) error
+	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
 	FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error)

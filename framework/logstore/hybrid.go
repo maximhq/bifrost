@@ -2584,3 +2584,46 @@ func (h *HybridLogStore) DeleteWarpTopics(ctx context.Context, ids []string) err
 func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
 	return h.inner.ListLogsForWarpTopics(ctx, logIDs, from, to)
 }
+
+// Relay Logs keep every column in the database: bodies are bounded by the content-logging
+// settings and are shown on the detail sheet, so the hybrid store delegates every call.
+
+func (h *HybridLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error) {
+	return h.inner.BatchCreateRelayLogsIfNotExists(ctx, entries)
+}
+
+func (h *HybridLogStore) FindRelayLog(ctx context.Context, id string) (*RelayLog, error) {
+	return h.inner.FindRelayLog(ctx, id)
+}
+
+func (h *HybridLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error) {
+	return h.inner.SearchRelayLogs(ctx, filters, pagination)
+}
+
+func (h *HybridLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error) {
+	return h.inner.GetRelayLogStats(ctx, filters)
+}
+
+func (h *HybridLogStore) GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error) {
+	return h.inner.GetRelayHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+func (h *HybridLogStore) GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error) {
+	return h.inner.GetRelayTopEndpoints(ctx, filters, limit)
+}
+
+func (h *HybridLogStore) GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error) {
+	return h.inner.GetRelayFilterData(ctx, dimensions, limit, search)
+}
+
+func (h *HybridLogStore) HasRelayLogs(ctx context.Context) (bool, error) {
+	return h.inner.HasRelayLogs(ctx)
+}
+
+func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
+	return h.inner.DeleteRelayLogs(ctx, ids)
+}
+
+func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
+}

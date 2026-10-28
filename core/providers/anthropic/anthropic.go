@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -732,6 +733,10 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			if converted := ConvertAnthropicUsageToBifrostUsage(&usageToProcess.Iterations[i]); converted != nil {
 				usage.Iterations[i] = *converted
 			}
+		}
+		// Mirrored so a stream cut before its final chunk still bills the advisor passes.
+		if billedUsage != nil {
+			billedUsage.Iterations = slices.Clone(usage.Iterations)
 		}
 	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)
@@ -1709,6 +1714,11 @@ func HandleAnthropicResponsesStream(
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := 0
 
+		// Open this stream's prompt-usage presence ledger. Per stream, because
+		// chunkIndex restarts here and a previous attempt's readings must not be
+		// read against this one's chunks. See streamdeltausage.go.
+		openAnthropicStreamDeltaPromptUsageLedger(ctx)
+
 		lastChunkTime := startTime
 
 		// Track minimal state needed for response format
@@ -1797,6 +1807,17 @@ func HandleAnthropicResponsesStream(
 			}
 			if event.Message != nil && modelName == "" {
 				modelName = event.Message.Model
+			}
+			// Record WHICH prompt-side usage counters this raw message_delta
+			// reported, before the neutral conversion below flattens presence into
+			// zeros. chunkIndex is the sequence number the converter stamps on the
+			// chunk this event produces, so the reading is filed against that chunk
+			// and read back only for it -- the egress consumes chunks
+			// asynchronously, so a later event's reading must not displace an
+			// earlier chunk's. Field presence only -- no value is read. See
+			// streamdeltausage.go.
+			if event.Type == AnthropicStreamEventTypeMessageDelta {
+				recordAnthropicStreamDeltaPromptUsage(ctx, chunkIndex, eventDataBytes)
 			}
 			// Note: response.created and response.in_progress are now emitted by ToBifrostResponsesStream
 			// from the message_start event, so we don't need to call them manually here

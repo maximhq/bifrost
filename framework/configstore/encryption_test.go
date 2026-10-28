@@ -52,6 +52,7 @@ func setupEncryptionTestStore(t testing.TB) (*RDBConfigStore, *gorm.DB) {
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableModel{},
 		&tables.TempToken{},
+		&tables.TableRelay{},
 	)
 	require.NoError(t, err)
 
@@ -879,9 +880,11 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	// save it to DB, and verify the original config structs are not mutated by BeforeSave
 	// (encryption uses value-copies so shared pointers are never corrupted).
 	azureCfg := &schemas.AzureKeyConfig{
-		Endpoint: *schemas.NewSecretVar("https://myresource.openai.azure.com"),
-		ClientID: schemas.NewSecretVar("my-azure-client-id"),
-		TenantID: schemas.NewSecretVar("my-azure-tenant-id"),
+		Endpoint:              *schemas.NewSecretVar("https://myresource.openai.azure.com"),
+		ClientID:              schemas.NewSecretVar("my-azure-client-id"),
+		TenantID:              schemas.NewSecretVar("my-azure-tenant-id"),
+		UseSpeechEndpoints:    true,
+		UseVoiceLiveEndpoints: true,
 	}
 	azureCfg.ClientSecret = schemas.NewSecretVar("azure-client-secret")
 
@@ -962,6 +965,10 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	assert.Equal(t, "azure-client-secret", found.AzureKeyConfig.ClientSecret.GetValue())
 	assert.Equal(t, "my-azure-client-id", found.AzureKeyConfig.ClientID.GetValue())
 	assert.Equal(t, "my-azure-tenant-id", found.AzureKeyConfig.TenantID.GetValue())
+	assert.True(t, found.AzureKeyConfig.UseSpeechEndpoints,
+		"UseSpeechEndpoints must survive the save/reload round-trip")
+	assert.True(t, found.AzureKeyConfig.UseVoiceLiveEndpoints,
+		"UseVoiceLiveEndpoints must survive the save/reload round-trip")
 	require.NotNil(t, found.VertexKeyConfig)
 	assert.Equal(t, "vertex-creds", found.VertexKeyConfig.AuthCredentials.GetValue())
 	assert.Equal(t, "my-project", found.VertexKeyConfig.ProjectID.GetValue())
@@ -1678,4 +1685,36 @@ func BenchmarkCredentialLookupFallback(b *testing.B) {
 			_, _ = store.GetSession(ctx, "unknown-session-token")
 		}
 	})
+}
+
+func TestEncryptPlaintextRelays(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	// A row written before encryption was enabled: plaintext credential and header.
+	insertPlaintextRow(t, db,
+		`INSERT INTO config_relays (name, config_json, credential_value, extra_headers_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 'plain_text', ?, ?)`,
+		"tavily", `{"base_url":"https://search.example.com","auth":{"type":"bearer"}}`, "tvly-plain", `{"X-Tenant":{"value":"acme"}}`, now, now)
+
+	count, err := store.encryptPlaintextRelays(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	var raw tables.TableRelay
+	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).First(&raw, "name = ?", "tavily").Error)
+	assert.Equal(t, encryptionStatusEncrypted, raw.EncryptionStatus)
+	assert.NotEqual(t, "tvly-plain", raw.CredentialValue.Val)
+	assert.NotContains(t, raw.ExtraHeadersJSON, "acme")
+
+	cfg, err := store.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	assert.Equal(t, "tvly-plain", cfg.Credential.Value.GetValue(), "the encrypted row still decrypts")
+	tenant := cfg.ExtraHeaders["X-Tenant"]
+	assert.Equal(t, "acme", tenant.GetValue())
+
+	count, err = store.encryptPlaintextRelays(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, count, "an encrypted row is not processed again")
 }

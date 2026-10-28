@@ -64,6 +64,8 @@ export interface AliasConfig {
 	api_version?: string;
 	anthropic_version?: string;
 	endpoint?: SecretVar;
+	use_speech_endpoints?: boolean;
+	use_voice_live_endpoints?: boolean;
 	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
 	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
 	// so the flat project_id key doesn't collide across embedded sub-configs.
@@ -93,6 +95,8 @@ export interface AzureKeyConfig {
 	client_secret?: SecretVar;
 	tenant_id?: SecretVar;
 	scopes?: string[];
+	use_speech_endpoints?: boolean;
+	use_voice_live_endpoints?: boolean;
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
@@ -101,6 +105,8 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	client_secret: { value: "", ref: "" },
 	tenant_id: { value: "", ref: "" },
 	scopes: [],
+	use_speech_endpoints: false,
+	use_voice_live_endpoints: false,
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexAWSWorkloadIdentityConfig matching Go's schemas.VertexAWSWorkloadIdentityConfig:
@@ -213,6 +219,36 @@ export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
 	project_id: undefined as unknown as SecretVar,
 	endpoints: undefined as unknown as BedrockEndpoints,
 } as const satisfies Required<BedrockMantleKeyConfig>;
+
+// SageMakerEndpoints matching Go's schemas.SageMakerEndpoints: a runtime host override
+// (interface VPC endpoint, FIPS or dual-stack) dialled instead of the public regional host.
+export interface SageMakerEndpoints {
+	runtime?: SecretVar;
+}
+
+// SageMakerKeyConfig matching Go's schemas.SageMakerKeyConfig
+export interface SageMakerKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+	endpoints?: SageMakerEndpoints;
+}
+
+// Default SageMakerKeyConfig
+export const DefaultSageMakerKeyConfig: SageMakerKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+	endpoints: undefined as unknown as SageMakerEndpoints,
+} as const satisfies Required<SageMakerKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
@@ -377,6 +413,7 @@ export interface ModelProviderKey {
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
 	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
+	sagemaker_key_config?: SageMakerKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
@@ -865,6 +902,7 @@ export interface CoreConfig {
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
+	mcp_max_protocol_version?: string; // "" or "auto" = newest; omitted on save keeps the stored value
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;

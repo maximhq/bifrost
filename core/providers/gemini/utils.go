@@ -2165,14 +2165,14 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 			var responseData json.RawMessage
 			var contentStr string
 
-			if message.Content != nil {
+			if content := schemas.FlattenToolResultMedia(message.Content, nil); content != nil {
 				// Extract content string from ContentStr or ContentBlocks
-				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-					contentStr = *message.Content.ContentStr
-				} else if message.Content.ContentBlocks != nil {
+				if content.ContentStr != nil && *content.ContentStr != "" {
+					contentStr = *content.ContentStr
+				} else if content.ContentBlocks != nil {
 					// Fallback: try to extract text from content blocks
 					var textParts []string
-					for _, block := range message.Content.ContentBlocks {
+					for _, block := range content.ContentBlocks {
 						if block.Text != nil && *block.Text != "" {
 							textParts = append(textParts, *block.Text)
 						}

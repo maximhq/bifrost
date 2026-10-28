@@ -21,7 +21,8 @@ import (
 // resolves nothing; tests of the admission step install a fakeAdmitter.
 func newTestMCPHandler(cfg *lib.Config) *MCPServerHandler {
 	h := &MCPServerHandler{config: cfg}
-	h.mcpServer.Store(server.NewMCPServer("test", "v0", server.WithToolCapabilities(true)))
+	h.mcpServer = server.NewMCPServer("test", "v0", server.WithToolCapabilities(true))
+	h.transport = newMCPTransport(h.mcpServer)
 	return h
 }
 

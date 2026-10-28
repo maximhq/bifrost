@@ -19,19 +19,23 @@ type fakeSidekiqJobsStore struct {
 	err   error
 	since time.Time
 	limit int
+	quiet []string
 }
 
-func (f *fakeSidekiqJobsStore) ListSidekiqJobs(_ context.Context, since time.Time, limit int) ([]tables.TableSidekiqJob, error) {
-	f.since, f.limit = since, limit
+func (f *fakeSidekiqJobsStore) ListSidekiqJobs(_ context.Context, since time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error) {
+	f.since, f.limit, f.quiet = since, limit, quietKinds
 	return f.jobs, f.err
 }
 
 type fakeSidekiqJobsRunner struct {
 	summaries map[string]sidekiq.JobSummary
+	quiet     []string
 	cancelled bool
 	err       error
 	cancelID  string
 }
+
+func (f *fakeSidekiqJobsRunner) QuietOnSuccessKinds() []string { return f.quiet }
 
 func (f *fakeSidekiqJobsRunner) Cancel(_ context.Context, id string) (bool, error) {
 	f.cancelID = id
@@ -50,6 +54,17 @@ func sidekiqCtx(admin bool) *fasthttp.RequestCtx {
 		ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 	}
 	return ctx
+}
+
+// The listing asks the store to leave out the completed runs of the kinds the
+// runner marks routine, so an hourly job does not fill the tray.
+func TestSidekiqListJobsLeavesOutQuietKinds(t *testing.T) {
+	store := &fakeSidekiqJobsStore{}
+	runner := &fakeSidekiqJobsRunner{quiet: []string{"warp_topic_upkeep"}}
+	ctx := sidekiqCtx(true)
+	NewSidekiqHandler(store, runner).listJobs(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"warp_topic_upkeep"}, store.quiet)
 }
 
 func TestSidekiqListJobsMapsProgressAndCancellable(t *testing.T) {

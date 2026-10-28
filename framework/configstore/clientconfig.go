@@ -120,6 +120,7 @@ type ClientConfig struct {
 	MCPToolExecutionTimeout                 int                                   `json:"mcp_tool_execution_timeout"`                    // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel                 string                                `json:"mcp_code_mode_binding_level"`                   // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                     int                                   `json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
+	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
@@ -668,7 +669,7 @@ type ProviderConfig struct {
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
-	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP passthrough endpoints may forward
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP relays may forward
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -772,6 +773,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if len(key.AzureKeyConfig.Scopes) > 0 {
 				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
+			azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
+			azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
 
@@ -855,6 +858,30 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
+		}
+
+		// Redact SageMaker key config if present
+		if key.SageMakerKeyConfig != nil {
+			smConfig := &schemas.SageMakerKeyConfig{}
+			smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
+			smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
+			if key.SageMakerKeyConfig.SessionToken != nil {
+				smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
+			}
+			if key.SageMakerKeyConfig.Region != nil {
+				smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
+			}
+			if key.SageMakerKeyConfig.RoleARN != nil {
+				smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
+			}
+			if key.SageMakerKeyConfig.ExternalID != nil {
+				smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
+			}
+			if key.SageMakerKeyConfig.RoleSessionName != nil {
+				smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
+			}
+			smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
+			redactedConfig.Keys[i].SageMakerKeyConfig = smConfig
 		}
 
 		if key.VLLMKeyConfig != nil {
@@ -1231,6 +1258,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash SageMakerKeyConfig
+	if key.SageMakerKeyConfig != nil {
+		data, err := sonic.Marshal(key.SageMakerKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Aliases (encoded by the caller, see GenerateKeyHash).
 	if aliases != nil {
 		hash.Write(aliases)
@@ -1397,6 +1432,16 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		}
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
+	}
+	// Hash relay grants only when the key declares them, so every key that predates
+	// relays keeps its hash. Grant names are sorted so file order cannot move it.
+	if vk.RelayGrants != nil {
+		names := make([]string, 0, len(vk.RelayGrants))
+		for _, g := range vk.RelayGrants {
+			names = append(names, g.RelayName)
+		}
+		sort.Strings(names)
+		hash.Write([]byte("relayGrants:" + strings.Join(names, ",")))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -2110,6 +2155,26 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			hash.Write([]byte("needs_session_stickiness:true"))
 		} else {
 			hash.Write([]byte("needs_session_stickiness:false"))
+		}
+	}
+
+	// Only a set value contributes, so existing hashes are unchanged.
+	if m.MaxProtocolVersion != "" {
+		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
+	}
+	// nil (expose all) contributes nothing; [] and listed entries do.
+	for _, list := range []struct {
+		name  string
+		value schemas.WhiteList
+	}{{"prompts_to_expose", m.PromptsToExpose}, {"resources_to_expose", m.ResourcesToExpose}} {
+		if list.value != nil {
+			// JSON keeps entry boundaries: ["a,b"] and ["a","b"] hash apart.
+			data, err := sonic.Marshal([]string(list.value))
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte(list.name + ":"))
+			hash.Write(data)
 		}
 	}
 

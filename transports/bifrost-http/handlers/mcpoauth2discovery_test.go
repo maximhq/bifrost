@@ -66,6 +66,8 @@ func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 	assert.Equal(t, []any{"S256"}, doc["code_challenge_methods_supported"])
 	assert.Equal(t, []any{"none"}, doc["token_endpoint_auth_methods_supported"])
 	assert.Equal(t, true, doc["authorization_response_iss_parameter_supported"])
+	// MCP 2025-11-25+: clients may use a Client ID Metadata Document URL as client_id.
+	assert.Equal(t, true, doc["client_id_metadata_document_supported"])
 }
 
 func TestDiscovery_JWKS(t *testing.T) {

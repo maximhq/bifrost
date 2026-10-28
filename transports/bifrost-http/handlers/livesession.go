@@ -559,6 +559,7 @@ type liveSessionController struct {
 	upstreamDoneOnce sync.Once
 	clientGone       atomic.Bool
 	sessionClosed    atomic.Bool // the provider sent session.closed
+	startFailed      atomic.Bool // the provider refused to create the session
 	withholdUpstream atomic.Bool // the session's owner could not be recorded; nothing more reaches the client
 	closeOnce        sync.Once
 	refusalOnce      sync.Once
@@ -767,6 +768,11 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 			}
 		}
 	case schemas.LiveEventError:
+		// An error before the provider created the session is a startup error: the session never ran.
+		if c.meter.failStart(liveUpstreamError(message)) {
+			c.startFailed.Store(true)
+			return false
+		}
 		// A delegation the provider refuses to run never opens; the session goes on without it.
 		if bifrostErr := delegationError(message); bifrostErr != nil {
 			if refusal := c.meter.failBackend(bifrostErr); refusal != nil {
@@ -788,6 +794,11 @@ func delegationError(message []byte) *schemas.BifrostError {
 	if !strings.HasPrefix(providerUtils.GetJSONField(message, "error.param").Str, "session.delegation") {
 		return nil
 	}
+	return liveUpstreamError(message)
+}
+
+// liveUpstreamError reads an upstream error frame as a Bifrost error.
+func liveUpstreamError(message []byte) *schemas.BifrostError {
 	code := providerUtils.GetJSONField(message, "error.code").Str
 	if code == "" {
 		code = "invalid_request_error"
@@ -837,7 +848,7 @@ func (c *liveSessionController) upstreamEnded() {
 // client still connected is told, since nothing else will tell it. Reports whether it was.
 func (c *liveSessionController) upstreamEndedEarly() bool {
 	c.upstreamEnded()
-	if c.clientGone.Load() || c.sessionClosed.Load() {
+	if c.clientGone.Load() || c.sessionClosed.Load() || c.startFailed.Load() {
 		return false
 	}
 	c.sendError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended before session.closed"))

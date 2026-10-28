@@ -74,7 +74,7 @@ type WarpTopic struct {
 	Centroid           []byte    `json:"-"`
 	AssignFloor        float64   `gorm:"not null" json:"assign_floor"`
 	Cohesion           float64   `gorm:"not null" json:"cohesion"`
-	ExampleLogIDsJSON  string    `gorm:"column:example_log_ids;type:text" json:"-"` // JSON array; the requests the label was written from
+	ExampleLogIDsJSON  string    `gorm:"column:example_log_ids;type:text" json:"-"` // JSON array; the examples the label was written from, with members drawn at random
 	EmbeddingSignature string    `gorm:"type:varchar(255);not null" json:"embedding_signature"`
 	Status             string    `gorm:"type:varchar(16);not null;index:idx_warp_topics_status" json:"status"`
 	MergedInto         string    `gorm:"type:varchar(36);not null" json:"merged_into,omitempty"`
@@ -85,7 +85,7 @@ type WarpTopic struct {
 // TableName sets the table name for the Warp topic model.
 func (WarpTopic) TableName() string { return "warp_topics" }
 
-// ExampleLogIDs returns the requests the topic's label was written from.
+// ExampleLogIDs returns the topic's example requests.
 func (t *WarpTopic) ExampleLogIDs() []string {
 	if t.ExampleLogIDsJSON == "" {
 		return nil
@@ -97,7 +97,7 @@ func (t *WarpTopic) ExampleLogIDs() []string {
 	return ids
 }
 
-// SetExampleLogIDs records the requests the topic's label was written from.
+// SetExampleLogIDs records the topic's example requests.
 func (t *WarpTopic) SetExampleLogIDs(ids []string) error {
 	if len(ids) == 0 {
 		t.ExampleLogIDsJSON = ""

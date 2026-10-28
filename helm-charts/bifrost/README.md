@@ -17,6 +17,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.client.skipAccessProfileUserVirtualKeyCreation` (`client.skip_access_profile_user_virtual_key_creation`), default `false`. Enterprise only: when `true`, a user's first access profile no longer issues them a virtual key.
 - Added `bifrost.client.skipAccessProfileUserVirtualKeyDeletion` (`client.skip_access_profile_user_virtual_key_deletion`), default `false`. Enterprise only: when `true`, removing a user's last access profile no longer deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes them.
 - Added `syncAllUsers` to the Okta SCIM provider config (`bifrost.scim.config.syncAllUsers`, `scim_config.config.syncAllUsers`), default `true`. Chooses which Okta users directory sync keeps: every app-assigned user except suspended and deactivated ones, or (`false`) active users only. The chart's values schema and `config.schema.json` previously refused the key.
+- Added Azure Blob configuration to `storage.logsStore.objectStorage` and `bifrost.auditLogs.objectStorage` (`logs_store.object_storage` / `audit_logs.object_storage`). Set `type: azure`, `bucket` to the container, and either `endpoint` for Azure identity or `connectionString`; logs also accept `existingSecret` and `connectionStringKey`. Structured environment and vault references do not require a `value` field.
+- Added logs `objectStorage.format` and `.compression` (`logs_store.object_storage.format` / `.compression`). S3 and Azure support Parquet; GCS remains JSON-only.
+- Added `bifrost.warp` (`warp`), the dashboard's Warp settings: `enabled`, `provider`, `model`, `apiKeyId`, `additionalModels[]`, `maxIterations`, `requestTimeoutSeconds`, `historyRetentionDays`, `systemPromptSuffix`, `temperature`, `reasoningEffort`, the embedding fields (`embeddingProvider`, `embeddingModel`, `embeddingApiKeyId`, `embeddingDimension`, `logVectorStoreNamespace`), log search (`semanticSearchThreshold`, `semanticSearchLimit`) and topics (`topicDiscoveryMinRequests`). They render into the snake_case keys under `warp`; numeric fields render whenever set, since `0` means the default (or a reset). Warp also needs `bifrost.featureFlags.warp.enabled: true` and a vector store.
+- Added `bifrost.mcp.maxProtocolVersion` (`mcp.max_protocol_version`) and per-server `bifrost.mcp.clientConfigs[].maxProtocolVersion` (`max_protocol_version`): the newest MCP protocol version Bifrost offers MCP servers, one of `auto`, `2026-07-28`, `2025-11-25` or `2025-06-18`. A server's own value overrides the global one. Unset keeps the stored value.
 
 ### 2.1.45
 
@@ -787,6 +791,52 @@ Bifrost supports two storage backends (SQLite and PostgreSQL) that can be config
 | `storage.logsStore.postgres.enabled`           | Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store is postgres). When `false`, a postgres logs store shares the top-level `postgresql` connection. | `false` |
 | `storage.logsStore.objectStorageExcludeFields` | Payload DB fields to keep in DB instead of offloading to object storage | `[]`                       |
 | `storage.logsStore.objectStorageExcludeRequestTypes` | Request types whose logs stay in the DB and are not offloaded (e.g. `list_models`). Hidden logs are still offloaded | `[]` |
+| `storage.logsStore.objectStorage.type` | Payload object storage backend: `s3`, `gcs`, or `azure` | Unset |
+| `storage.logsStore.objectStorage.bucket` | Bucket name, or Azure Blob container name | Unset |
+| `storage.logsStore.objectStorage.endpoint` | S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential | Unset |
+| `storage.logsStore.objectStorage.connectionString` | Azure Storage connection string or `env.VAR_NAME` reference; mutually exclusive with `endpoint` and `existingSecret` | Unset |
+| `storage.logsStore.objectStorage.existingSecret` | Existing Kubernetes Secret containing object storage credentials | Unset |
+| `storage.logsStore.objectStorage.connectionStringKey` | Azure connection-string key in `existingSecret` | `connection-string` |
+| `storage.logsStore.objectStorage.format` | Payload encoding: `json` or `parquet` (S3/Azure only) | `json` |
+| `storage.logsStore.objectStorage.compression` | JSON: `none`/`gzip`; Parquet: `none`/`gzip`/`snappy`/`zstd`; overrides legacy `compress` | JSON: `none` (`gzip` when `compress: true`); Parquet: `snappy` |
+
+#### Azure Blob payload storage
+
+Use `bucket` for the existing container and choose exactly one authentication mode. For workload identity or another DefaultAzureCredential source, set the Blob service URL:
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      endpoint: https://mystorageaccount.blob.core.windows.net
+```
+
+Configure the pod's identity separately (for example, Azure workload identity through service-account annotations and pod labels). Object storage does not reuse Azure inference-provider credentials.
+
+Alternatively, omit `endpoint` and supply `connectionString`, an `env.VAR_NAME` reference, or a Kubernetes Secret:
+
+```yaml
+storage:
+  logsStore:
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      existingSecret: bifrost-azure-storage
+      connectionStringKey: connection-string
+      format: parquet
+      compression: snappy
+```
+
+The secret's `connection-string` key is injected as `BIFROST_OBJECT_STORAGE_CONNECTION_STRING` in both Deployment and StatefulSet workloads. Azure `bucket`, `endpoint`, and `connectionString` also accept structured SecretVar objects, such as `{ref: env.AZURE_BLOB_ENDPOINT, type: env}`.
+
+For enterprise audit configuration, `bifrost.auditLogs.objectStorage` uses the same `type`, `bucket`, `endpoint`, and `connectionString` mapping into `audit_logs.object_storage`. Supply audit secret environment variables through `bifrost.providerSecrets` (with `existingSecret`, `key`, and `envVar`) and reference them as `connectionString: env.AZURE_AUDIT_STORAGE_CONNECTION_STRING`. Audit archival retains its JSONL and legacy `compress` configuration; log payload `format` and `compression` do not apply there.
+
+**Credential storage:** Literal `connectionString` values, including structured objects containing a plaintext `value`, are copied into the generated ConfigMap for both logs and audit storage. Anyone able to read that ConfigMap can read the credential. Prefer Azure identity, `existingSecret` for logs, or environment/vault references; use `bifrost.providerSecrets` for audit environment references as shown above.
+
 
 #### Mixed Backend Example
 
@@ -862,6 +912,38 @@ See `values-examples/separate-logs-postgres.yaml` for a complete example.
 | `postgresql.external.host`           | External PostgreSQL host                                                                                                                                                                                                                         | `""`               |
 | `postgresql.external.existingSecret` | Name of an existing Kubernetes secret containing the password for the external instance                                                                                                                                                          | `""`               |
 | `postgresql.external.passwordKey`    | Key inside the external `existingSecret` that holds the password                                                                                                                                                                                 | `password`         |
+
+#### Tuning Bundled PostgreSQL
+
+Pass PostgreSQL server settings through `postgresql.primary.extraArgs`. These
+arguments go to the image entrypoint; with the default PostgreSQL image, `-c`
+sets a server parameter. Choose limits for your database resources and the total
+connection pools across all gateway replicas, including rolling-update surge.
+Changing these arguments restarts the single bundled PostgreSQL pod, which uses
+`Recreate` and temporarily interrupts database availability.
+
+```yaml
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs:
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+```
+
+Optional `postgresql.primary.persistence.annotations` (a map of string values)
+and `postgresql.primary.persistence.volumeAttributesClassName` (a class name)
+configure storage-controller integrations on the existing PVC. They do not
+change its name or the workload's claim reference. The defaults `{}` and `""`
+omit these fields. A VolumeAttributesClass must already exist, and both the
+cluster and CSI driver must support volume modification. Consult your driver's
+requirements before choosing a class or performance annotations; changing PVC
+metadata alone does not guarantee a backend volume modification succeeded.
+These options apply only to bundled PostgreSQL with persistence enabled.
 
 #### Using an Existing Secret for Hosted PostgreSQL
 
@@ -1030,6 +1112,8 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject`      | Disable automatic MCP tool injection                                                                                                                                                                           | `false`  |
 | `bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist`      | **[Upcoming]** Hosts, IPs, or CIDRs the MCP OAuth chain may reach on loopback or private addresses, for MCP servers added by an authenticated admin or declared in config. Link-local and metadata are always refused. | `[]`     |
 | `bifrost.mcp.toolSyncInterval`                             | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended.                  | `10m`    |
+| `bifrost.mcp.maxProtocolVersion`                           | **[Upcoming]** Newest MCP protocol version Bifrost offers MCP servers: `auto` (newest supported), `2026-07-28`, `2025-11-25`, or `2025-06-18`. Unset keeps the stored value. Renders into `mcp.max_protocol_version`. | unset    |
+| `bifrost.mcp.clientConfigs[].maxProtocolVersion`           | **[Upcoming]** Per-server override of `bifrost.mcp.maxProtocolVersion` (same values). Omit to use the global setting. Renders into `max_protocol_version`.                                                       | unset    |
 | `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production.                              | `false`  |
 | `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`          | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
