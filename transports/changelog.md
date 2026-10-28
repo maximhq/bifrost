@@ -1,13 +1,12 @@
 ## Features
 
 - **Azure Blob Storage** - Added log payload and skills-file storage with default Azure identity or connection-string authentication, JSON/gzip and Parquet support, and config-file/Helm configuration. Structured environment and vault references can omit `value`.
-- feat: parse the `x-bf-request-timeout` header (duration string or seconds integer) into `BifrostContextKeyRequestTimeout`, clamped to 30m, mirroring the existing `x-bf-session-ttl` / `x-bf-stream-idle-timeout` (#4805) parsing shape [@public-aanp-tanium](https://github.com/public-aanp-tanium)
-- feat: parse `x-bf-stream-idle-timeout` header for a per-request stream idle timeout override [@public-aanp-tanium](https://github.com/public-aanp-tanium)
+- feat: parse the `x-bf-request-timeout` header (duration string or whole seconds) into `BifrostContextKeyRequestTimeout`, clamped to 30m [@public-aanp-tanium](https://github.com/public-aanp-tanium)
+- feat: parse the `x-bf-stream-idle-timeout` header (duration string or whole seconds) into a per-request stream idle timeout override, clamped to 30m [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 
 ## 🐞 Fixed
 
 - **Startup no longer fails on a new key's unknown grant** - A virtual key added in config.json whose `relay_grants` or `agent_grants` named a relay or agent that is not stored (a typo, or a relay skipped as invalid) failed the whole governance sync, and Bifrost exited at startup. That grant is now skipped with a warning and the key is created, as an existing key's update already did. Agent grants in config.json belong on the agent (`agents[].virtual_key_ids`): agents load after virtual keys, so a key cannot grant an agent declared in the same file on its first start.
-- fix: clamp the seconds form of `x-bf-request-timeout` and `x-bf-stream-idle-timeout` before converting to `time.Duration`, so a seconds value large enough to overflow int64 can no longer wrap into a small duration that bypasses the 30m ceiling [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 
 ## 🔒 Security
 
