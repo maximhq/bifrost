@@ -292,7 +292,7 @@ func isTransientError(err error) bool {
 	}
 
 	errStr := err.Error()
-	if errors.Is(err, ErrMCPProtocolVersionAboveMax) {
+	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
 		return false
 	}
 
@@ -358,7 +358,7 @@ func isTransientError(err error) bool {
 // command that happens to mention a timeout rather than a slow one.
 var permanentErrorPhrases = []string{
 	// Authentication/authorization errors
-	"unauthorized", "forbidden", "invalid auth", "invalid credential",
+	"unauthorized", "forbidden", "invalid auth", "invalid credential", "authorization required",
 	// HTTP client errors
 	"bad request", "method not allowed",
 	// Configuration errors
@@ -466,7 +466,7 @@ func isTransientToolCallError(err error) bool {
 	// error text like "401 unauthorized: try again" would otherwise match
 	// "try again" below and get retried, contradicting the non-retryable
 	// auth-failure rule this classifier exists to enforce for tool calls.
-	if isAuthFailureErrorText(errStr) {
+	if isAuthFailure(err) {
 		return false
 	}
 	for _, transientErr := range transientErrorSubstrings {
@@ -475,6 +475,18 @@ func isTransientToolCallError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isAuthRequiredError reports whether err is mcp-go's 401: since v1.3.0 its text says only
+// "authorization required", with no status code.
+func isAuthRequiredError(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) || errors.Is(err, transport.ErrOAuthAuthorizationRequired)
+}
+
+// isAuthFailure reports whether a tool-call error is an upstream auth rejection: mcp-go's typed
+// 401 first, then the error text for rejections that reach us only as text.
+func isAuthFailure(err error) bool {
+	return err != nil && (isAuthRequiredError(err) || isAuthFailureErrorText(err.Error()))
 }
 
 // isAuthFailureErrorText reports whether a raw upstream tool-call error looks
@@ -500,7 +512,7 @@ func isTransientToolCallError(err error) bool {
 // it's the upstream server's rejection text verbatim, not Bifrost's.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
-	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {
+	for _, needle := range []string{"401", "403", "unauthorized", "forbidden", "authorization required"} {
 		if strings.Contains(lower, needle) {
 			return true
 		}
@@ -667,7 +679,7 @@ func isTransientProbeError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) {
+	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
 		return false
 	}
 	// Checked before the timeout rule, not after: an error carrying any
