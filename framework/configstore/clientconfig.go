@@ -38,6 +38,10 @@ const (
 // MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
 const MaxVKRotationCooldown = 30 * 24 * time.Hour
 
+// MaxDefaultRequestTimeout is the ceiling on client.default_request_timeout,
+// matching the clamp the HTTP transport applies to an x-bf-request-timeout header.
+const MaxDefaultRequestTimeout = 30 * time.Minute
+
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
 	SecretVar  string                // The environment variable name (without env. prefix)
@@ -100,6 +104,7 @@ type ClientConfig struct {
 	AllowPerRequestRawOverride              bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
 	AllowDirectKeys                         bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
 	VKRotationCooldown                      schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
+	DefaultRequestTimeout                   schemas.Duration                      `json:"default_request_timeout,omitempty"`          // Total deadline for a request when it sends no x-bf-request-timeout header (e.g. "30s"); 0 = no default
 	DisableDBPingsInHealth                  bool                                  `json:"disable_db_pings_in_health"`
 	LogRetentionDays                        int                                   `json:"log_retention_days" validate:"min=1"`           // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                  bool                                  `json:"enforce_auth_on_inference"`                     // Require auth (VK, API key, or user token) on inference endpoints
@@ -344,6 +349,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.VKRotationCooldown > 0 {
 		hash.Write([]byte("vkRotationCooldown:" + strconv.FormatInt(int64(c.VKRotationCooldown), 10)))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.DefaultRequestTimeout > 0 {
+		hash.Write([]byte("defaultRequestTimeout:" + strconv.FormatInt(int64(c.DefaultRequestTimeout), 10)))
 	}
 
 	if c.AsyncJobResultTTL > 0 {

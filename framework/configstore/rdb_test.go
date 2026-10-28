@@ -2680,6 +2680,31 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_DefaultRequestTimeoutRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:         new(true),
+		InitialPoolSize:       100,
+		LogRetentionDays:      30,
+		MaxRequestBodySizeMB:  50,
+		DefaultRequestTimeout: schemas.Duration(45 * time.Second),
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 45*time.Second, result.DefaultRequestTimeout.D())
+
+	// Clearing persists 0, so requests go back to having no default deadline.
+	result.DefaultRequestTimeout = 0
+	require.NoError(t, store.UpdateClientConfig(ctx, result))
+	cleared, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(0), cleared.DefaultRequestTimeout.D())
+}
+
 func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2945,6 +2970,28 @@ func TestGenerateClientConfigHash_VKRotationCooldown(t *testing.T) {
 	assert.NotEqual(t, baseHash, cooldownHash)
 }
 
+func TestGenerateClientConfigHash_DefaultRequestTimeout(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// Zero must not change the hash, so existing deployments see no config drift after upgrade.
+	zero := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, DefaultRequestTimeout: 0}
+	zeroHash, err := zero.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, zeroHash)
+
+	withTimeout := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, DefaultRequestTimeout: schemas.Duration(30 * time.Second)}
+	timeoutHash, err := withTimeout.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, timeoutHash)
+
+	other := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, DefaultRequestTimeout: schemas.Duration(time.Minute)}
+	otherHash, err := other.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, timeoutHash, otherHash, "changing the timeout value must change the hash")
+}
+
 func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
 	baseHash, err := base.GenerateClientConfigHash()
@@ -2976,6 +3023,20 @@ func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
 	var cfgAbsent ClientConfig
 	require.NoError(t, json.Unmarshal([]byte(`{}`), &cfgAbsent))
 	assert.Equal(t, time.Duration(0), cfgAbsent.VKRotationCooldown.D())
+}
+
+func TestClientConfigDefaultRequestTimeout_UnmarshalDurationString(t *testing.T) {
+	var cfg ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"default_request_timeout": "30s"}`), &cfg))
+	assert.Equal(t, 30*time.Second, cfg.DefaultRequestTimeout.D())
+
+	var cfgInt ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"default_request_timeout": 30000000000}`), &cfgInt))
+	assert.Equal(t, 30*time.Second, cfgInt.DefaultRequestTimeout.D())
+
+	var cfgAbsent ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{}`), &cfgAbsent))
+	assert.Equal(t, time.Duration(0), cfgAbsent.DefaultRequestTimeout.D())
 }
 
 func TestUpdateClientConfig_PreservesMetadataAcrossSync(t *testing.T) {

@@ -1,4 +1,5 @@
 - feat: added Azure Blob object storage for logs and skills with connection-string or default Azure identity authentication, JSON/gzip and Parquet support
+- feat: `ClientConfig.DefaultRequestTimeout`, stored in `config_client.default_request_timeout_ns` [@siaarzh](https://github.com/siaarzh)
 - fix: MCP OAuth discovery uses protected resource metadata only when its resource matches the MCP server URL (RFC 9728)
 - fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
