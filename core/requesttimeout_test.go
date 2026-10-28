@@ -943,3 +943,29 @@ func (b *atomicBool) get() bool {
 	defer b.mu.Unlock()
 	return b.v
 }
+
+// TestShouldTryFallbacks_StopsOnceRequestTimeoutFired verifies that a primary
+// failure which would normally fall back (a 500) does not start the fallback
+// chain once the caller's declared deadline has fired.
+func TestShouldTryFallbacks_StopsOnceRequestTimeoutFired(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	status := 500
+	primaryErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "upstream error"}}
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI, Model: "m", Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "m"}},
+	}}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	if !bifrost.shouldTryFallbacks(ctx, req, primaryErr) {
+		t.Fatal("a 500 with a configured fallback must fall back while the deadline has not fired")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	if bifrost.shouldTryFallbacks(ctx, req, primaryErr) {
+		t.Fatal("fallbacks must not start once the request timeout has fired")
+	}
+	if bifrost.shouldTryFallbacks(nil, req, primaryErr) != true {
+		t.Fatal("a nil ctx must keep the existing fallback decision")
+	}
+}

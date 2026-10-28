@@ -5838,6 +5838,13 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 		return false
 	}
 
+	// The caller's total deadline already passed: a fallback would only run
+	// pre-hooks and routing on a cancelled context before failing too.
+	if requestTimeoutFired(ctx) {
+		bifrost.logger.Debug("request timeout fired, we should not try fallbacks")
+		return false
+	}
+
 	// Check if this is a short-circuit error that doesn't allow fallbacks
 	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
 	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
@@ -6232,7 +6239,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
-		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		if requestTimeoutFired(ctx) || !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
@@ -6490,7 +6497,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
-		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		if requestTimeoutFired(ctx) || !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			stopRequestTimeout()
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr

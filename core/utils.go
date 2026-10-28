@@ -301,7 +301,7 @@ func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.
 	var message string
 
 	cause := ctx.Err()
-	if fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool); fired {
+	if requestTimeoutFired(ctx) {
 		cause = context.DeadlineExceeded
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {

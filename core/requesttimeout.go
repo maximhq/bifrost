@@ -48,6 +48,16 @@ func resolveRequestContext(ctx *schemas.BifrostContext, root *schemas.BifrostCon
 	return root, nil
 }
 
+// requestTimeoutFired reports whether ctx's declared x-bf-request-timeout
+// deadline has fired. nil-safe for callers that may pass no ctx.
+func requestTimeoutFired(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool)
+	return fired
+}
+
 // requestTimeoutArmedKey holds the *requestTimeoutArm live on a ctx.
 type requestTimeoutArmedKey struct{}
 
@@ -281,8 +291,7 @@ const forwardTimeoutChunkSendGrace = 5 * time.Second
 // re-block this goroutine on out <- chunk forever, just long enough to give a
 // merely-busy consumer a real chance to receive it.
 func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas.BifrostStreamChunk) {
-	fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool)
-	if !fired {
+	if !requestTimeoutFired(ctx) {
 		return
 	}
 	select {
