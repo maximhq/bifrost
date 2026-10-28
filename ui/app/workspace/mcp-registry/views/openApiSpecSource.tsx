@@ -43,7 +43,12 @@ export interface OpenAPISpecSourceProps {
 	disabled?: boolean;
 	/** Narrower copy for the edit sheet's "Replace spec" card. */
 	compact?: boolean;
+	/** Which sources to offer; a surface without a server-side fetch leaves out "url". */
+	modes?: OpenAPISourceMode[];
 }
+
+const ALL_SOURCE_MODES: OpenAPISourceMode[] = ["paste", "url", "upload"];
+const SOURCE_MODE_LABELS: Record<OpenAPISourceMode, string> = { paste: "Paste", url: "URL", upload: "Upload" };
 
 /**
  * The three ways to hand Bifrost an OpenAPI document: paste it, point at a URL,
@@ -71,6 +76,7 @@ export function OpenAPISpecSource({
 	specUrlError,
 	disabled,
 	compact,
+	modes = ALL_SOURCE_MODES,
 }: OpenAPISpecSourceProps) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
@@ -145,15 +151,11 @@ export function OpenAPISpecSource({
 		<div className="space-y-3" data-testid="openapi-spec-source">
 			<Tabs value={mode} onValueChange={(value) => handleModeChange(value as OpenAPISourceMode)}>
 				<TabsList data-testid="openapi-spec-source-tabs">
-					<TabsTrigger value="paste" data-testid="openapi-spec-source-tab-paste" disabled={disabled}>
-						Paste
-					</TabsTrigger>
-					<TabsTrigger value="url" data-testid="openapi-spec-source-tab-url" disabled={disabled}>
-						URL
-					</TabsTrigger>
-					<TabsTrigger value="upload" data-testid="openapi-spec-source-tab-upload" disabled={disabled}>
-						Upload
-					</TabsTrigger>
+					{modes.map((m) => (
+						<TabsTrigger key={m} value={m} data-testid={`openapi-spec-source-tab-${m}`} disabled={disabled}>
+							{SOURCE_MODE_LABELS[m]}
+						</TabsTrigger>
+					))}
 				</TabsList>
 
 				<TabsContent value="paste" className="space-y-2">
