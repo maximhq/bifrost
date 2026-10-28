@@ -18,6 +18,8 @@ export enum RbacResource {
 	MCPGateway = "MCPGateway",
 	AgentGateway = "AgentGateway",
 	AgentLogs = "AgentLogs",
+	Relays = "Relays",
+	RelayLogs = "RelayLogs",
 	MCPToolGroups = "MCPToolGroups",
 	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",

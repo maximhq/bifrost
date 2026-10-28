@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
@@ -8009,11 +8010,11 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
 		}()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+			_, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
 		}()
 		wg.Wait()
 		b.Shutdown()
@@ -8029,6 +8030,113 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 	_ = b.AddMCPClient(context.Background(), client("d"))
 	if b.MCPManager != mcp.MCPManagerInterface(injected) {
 		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings: the global cap arrives through MCPConfig
+// and is hot-reloaded on the running manager, like the tool sync interval; without a manager the
+// update is refused, and an unsupported value is refused either way.
+func TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings(t *testing.T) {
+	without, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer without.Shutdown()
+	if err := without.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20250618); err == nil {
+		t.Fatal("without an MCP manager the update must be refused, as UpdateMCPToolSyncInterval is")
+	}
+
+	with, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger(),
+		MCPConfig: &schemas.MCPConfig{MaxProtocolVersion: schemas.MCPProtocolVersion20250618}})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer with.Shutdown()
+	if err := with.UpdateMCPMaxProtocolVersion("latest"); err == nil {
+		t.Fatal("an unsupported version must be refused")
+	}
+	if err := with.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20251125); err != nil {
+		t.Fatalf("updating the running manager's cap: %v", err)
+	}
+}
+
+// TestSetMCPDiscoveryChangeCallback_ReachesLazyManager: the HTTP transport registers its discovery
+// callback at boot, before a deployment with no mcp block has a manager. The manager created lazily
+// for the first client must still fire it, or that client's discoveries are never persisted.
+func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	fired := make(chan string, 4)
+	b.SetMCPDiscoveryChangeCallback(func(clientID, _ string, _ *schemas.MCPDiscovery) { fired <- clientID })
+	b.SetMCPInProcessServerFactory(func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		s := server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false))
+		s.AddTool(mcpgo.NewTool("ping"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("pong"), nil
+		})
+		return s, nil
+	})
+	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID:             "first-id",
+		Name:           "first",
+		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+		ToolsToExecute: schemas.WhiteList{"*"},
+		OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+	}); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	select {
+	case id := <-fired:
+		if id != "first-id" {
+			t.Fatalf("callback fired for %q, want first-id", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lazily created manager never fired the discovery callback registered before it existed")
+	}
+}
+
+// listedToolsManager serves one client whose tool the test holds on to.
+type listedToolsManager struct {
+	mcp.MCPManagerInterface
+	state schemas.MCPClientState
+}
+
+// GetClients returns the held client state as the manager would.
+func (m *listedToolsManager) GetClients() []schemas.MCPClientState {
+	return []schemas.MCPClientState{m.state}
+}
+
+// TestGetMCPClients_ListedToolsAreOwned: a caller that edits a listed tool's annotations, icons or
+// output schema must not change the tool the manager serves.
+func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
+	held := schemas.ChatTool{
+		Type:        schemas.ChatToolTypeFunction,
+		Function:    &schemas.ChatToolFunction{Name: "docs-search"},
+		Annotations: &schemas.MCPToolAnnotations{Title: "Search"},
+		MCP: &schemas.MCPToolMetadata{
+			Icons:        []mcpgo.Icon{{Src: "https://example.com/search.png"}},
+			OutputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+	}
+	manager := &listedToolsManager{state: schemas.MCPClientState{
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"},
+		ToolMap:         map[string]schemas.ChatTool{"docs-search": held},
+	}}
+	b := &Bifrost{MCPManager: manager}
+
+	clients, err := b.GetMCPClients()
+	if err != nil {
+		t.Fatalf("GetMCPClients: %v", err)
+	}
+	listed := clients[0].Tools[0]
+	listed.Annotations.Title = "edited"
+	listed.Icons[0].Src = "edited"
+	listed.OutputSchema[0] = '['
+
+	if held.Annotations.Title != "Search" || held.MCP.Icons[0].Src != "https://example.com/search.png" || string(held.MCP.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("editing a listed tool changed the served one: annotations %q, icon %q, schema %s", held.Annotations.Title, held.MCP.Icons[0].Src, held.MCP.OutputSchema)
 	}
 }
 
@@ -8150,5 +8258,84 @@ func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
 		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
+	}
+}
+
+// recordingEndpointsPlugin records the order its Relays hooks run in and can
+// short-circuit the call in its pre-hook.
+type recordingEndpointsPlugin struct {
+	name  string
+	order *[]string
+	deny  bool
+}
+
+func (p *recordingEndpointsPlugin) GetName() string { return p.name }
+func (p *recordingEndpointsPlugin) Cleanup() error  { return nil }
+func (p *recordingEndpointsPlugin) PreRelayHook(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	*p.order = append(*p.order, "pre:"+p.name)
+	if p.deny {
+		return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "denied"}}}, nil
+	}
+	return req, nil, nil
+}
+func (p *recordingEndpointsPlugin) PostRelayHook(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+	*p.order = append(*p.order, "post:"+p.name)
+	return resp, bErr, nil
+}
+
+func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	bifrost.tracer.Store(&tracerWrapper{tracer: &schemas.NoOpTracer{}})
+	bifrost.llmPlugins.Store(&[]schemas.LLMPlugin{})
+	bifrost.mcpPlugins.Store(&[]schemas.MCPPlugin{})
+	bifrost.a2aPlugins.Store(&[]schemas.A2APlugin{})
+	bifrost.relayPlugins.Store(&[]schemas.RelayPlugin{})
+	bifrost.pluginPipelinePool = sync.Pool{New: func() any { return &PluginPipeline{} }}
+
+	var order []string
+	first := &recordingEndpointsPlugin{name: "governance", order: &order}
+	second := &recordingEndpointsPlugin{name: "logging", order: &order}
+	for _, p := range []*recordingEndpointsPlugin{first, second} {
+		if err := bifrost.ReloadPlugin(p, []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+			t.Fatalf("ReloadPlugin: %v", err)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	pipeline := bifrost.AcquirePluginPipeline()
+	req := &schemas.BifrostRelayRequest{RelayName: "tavily"}
+	_, shortCircuit, ran := pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit != nil {
+		t.Fatalf("unexpected short-circuit")
+	}
+	pipeline.RunRelayPostHooks(ctx, &schemas.BifrostRelayResponse{}, nil, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if got, want := strings.Join(order, ","), "pre:governance,pre:logging,post:logging,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	// A pre-hook short-circuit stops the chain; only the plugins that entered see the post-hook.
+	order = nil
+	first.deny = true
+	pipeline = bifrost.AcquirePluginPipeline()
+	_, shortCircuit, ran = pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit == nil {
+		t.Fatalf("expected a short-circuit")
+	}
+	_, bErr := pipeline.RunRelayPostHooks(ctx, nil, shortCircuit.Error, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if bErr == nil {
+		t.Fatalf("expected the refusal to reach the caller")
+	}
+	if got, want := strings.Join(order, ","), "pre:governance,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	if err := bifrost.RemovePlugin("logging", []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+		t.Fatalf("RemovePlugin: %v", err)
+	}
+	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
+		t.Fatalf("plugins after remove = %d, want 1", n)
 	}
 }

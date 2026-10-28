@@ -143,6 +143,16 @@ type inheritedProxy struct {
 // carries over as the provider's insecure_skip_verify, since that is what the global
 // setting means for traffic tunnelled through a TLS-inspecting proxy. The global
 // timeout does not: each provider keeps its own network_config timeouts.
+// InheritedGlobalProxy is the proxy a relay with no proxy_config of its own inherits
+// from the global proxy, nil when the global proxy is off or not enabled for inference.
+func InheritedGlobalProxy(global *configstoreTables.GlobalProxyConfig) *schemas.ProxyConfig {
+	inherited, ok := inheritGlobalProxy(nil, global)
+	if !ok {
+		return nil
+	}
+	return inherited.proxy
+}
+
 func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool) {
 	if hasOwnProxy(own) || global == nil || !global.Enabled || !global.EnableForInference || strings.TrimSpace(global.URL) == "" {
 		return inheritedProxy{}, false

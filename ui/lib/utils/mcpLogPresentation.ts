@@ -96,3 +96,14 @@ export function getMCPArgumentPreview(log: MCPToolLogEntry): string | undefined 
 	}
 	return undefined;
 }
+
+// getMCPReadKind names the kind of read a row records, or undefined for a tool call.
+export function getMCPReadKind(log: Pick<MCPToolLogEntry, "method">): "Prompt" | "Resource" | undefined {
+	switch (log.method) {
+		case "prompts/get":
+			return "Prompt";
+		case "resources/read":
+			return "Resource";
+	}
+	return undefined;
+}

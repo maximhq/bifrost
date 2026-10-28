@@ -56,6 +56,7 @@ import {
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
+import { RelayGrantsEditor } from "@/components/relays/relayGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import {
 	createDeleteAfterExpire,
@@ -176,6 +177,8 @@ const formSchema = z
 		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
 		agentGrants: z.array(z.string()).optional(),
+		// Relay access: the relays named, like agent grants.
+		relayGrants: z.array(z.string()).optional(),
 		entityType: z.enum(["team", "customer", "business_unit", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
@@ -383,6 +386,7 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 		provider_configs: _providerConfigs,
 		mcp_configs: _mcpConfigs,
 		agent_grants: _agentGrants,
+		relay_grants: _relayGrants,
 		budgets: _budgets,
 		rate_limit: _rateLimit,
 		calendar_aligned: _calendarAligned,
@@ -606,6 +610,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				})) || [],
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
 			agentGrants: virtualKey?.agent_grants?.map((grant) => grant.agent_name) || [],
+			relayGrants: virtualKey?.relay_grants?.map((grant) => grant.relay_name) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -1207,6 +1212,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				const agentGrantsPayload = form.formState.dirtyFields.agentGrants
 					? { agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })) }
 					: {};
+				const relayGrantsPayload = form.formState.dirtyFields.relayGrants
+					? { relay_grants: (data.relayGrants ?? []).map((relay_name) => ({ relay_name })) }
+					: {};
 
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
@@ -1224,6 +1232,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// null apart, so this is always sent.
 					disable_content_logging: contentLoggingValue(data.contentLogging),
 					...agentGrantsPayload,
+					...relayGrantsPayload,
 					// Sent only when edited, since it replaces the stored metadata as a whole ({} clears it);
 					// an untouched form copy may be older than what is stored now.
 					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
@@ -1312,6 +1321,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
 					agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })),
+					relay_grants: (data.relayGrants ?? []).map((relay_name) => ({ relay_name })),
 					team_id: ownerIdFor("team", data.teamId),
 					customer_id: ownerIdFor("customer", data.customerId),
 					business_unit_id: ownerIdFor("business_unit", data.businessUnitId),
@@ -1682,6 +1692,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											<AgentGrantsEditor
 												value={form.watch("agentGrants") ?? []}
 												onChange={(next) => form.setValue("agentGrants", next, { shouldDirty: true })}
+											/>
+
+											{/* Relay access grants for the relays this key may call. */}
+											<RelayGrantsEditor
+												value={form.watch("relayGrants") ?? []}
+												onChange={(next) => form.setValue("relayGrants", next, { shouldDirty: true })}
 											/>
 											<DottedSeparator className="mt-6 mb-5" />
 											{/* Budget Configuration */}

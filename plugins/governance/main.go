@@ -1717,8 +1717,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
 
-	// Skip for non tool execution requests
-	if !req.RequestType.IsExecuteTool() {
+	// Skip everything but tool executions and prompt or resource reads
+	isRead := req.RequestType.IsPromptOrResourceRead()
+	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
 
@@ -1750,6 +1751,14 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.MCPPluginShortCircuit{
 			Error: bifrostError,
 		}, nil
+	}
+
+	// A read has no tool to check: it may reach only the servers the access grants. Stamp the access's
+	// tool list, as /mcp does before core; core checks the server it picked against it after the hooks,
+	// so a direct Go caller is held to the grant too.
+	if isRead {
+		p.stampMCPToolAccessForCodemode(ctx)
+		return req, nil, nil
 	}
 
 	// The one question evaluation cannot answer: this specific tool. Evaluation checks the tools already
@@ -1832,7 +1841,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	} else if bifrostErr != nil {
 		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
 	}
-	if !mcpReqType.IsExecuteTool() {
+	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
 

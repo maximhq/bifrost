@@ -100,6 +100,7 @@ func TestPerformCheck_LiveConn_FailedCheck_TriggersReconnect(t *testing.T) {
 	ts, upstream := buildExpiringSessionMCPServer(t)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:                     "client-live-check-reconnect",
 		Name:                   "sticky-http-client",

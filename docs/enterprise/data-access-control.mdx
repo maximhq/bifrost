@@ -172,7 +172,7 @@ Set the scope with `dac` and the overrides with `entity_dac` on each role:
 }
 ```
 
-Values are `own-data`, `team-data`, `business-unit-data`, `customer-data`, and `all-data`. `entity_dac` is keyed by resource name: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `AgentGateway`, `AgentLogs`, `VirtualMCPs`, and `Projects`. A role with an invalid value is skipped with a warning. In Helm, use `bifrost.governance.roles[].dac` and `.entity_dac`.
+Values are `own-data`, `team-data`, `business-unit-data`, `customer-data`, and `all-data`. `entity_dac` is keyed by resource name: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `AgentGateway`, `AgentLogs`, `RelayLogs`, `VirtualMCPs`, and `Projects`. A role with an invalid value is skipped with a warning. In Helm, use `bifrost.governance.roles[].dac` and `.entity_dac`.
 
 ---
 

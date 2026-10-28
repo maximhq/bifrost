@@ -2267,6 +2267,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		var toolResultContent []BedrockContentBlock
 		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
 		var cacheControl *schemas.CacheControl
+		if content := schemas.FlattenToolResultMedia(msg.Content, schemas.IsImageBlock); content != msg.Content {
+			flattened := msg
+			flattened.Content = content
+			msg = flattened
+		}
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text

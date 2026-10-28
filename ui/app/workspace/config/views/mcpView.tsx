@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { MCP_MAX_PROTOCOL_VERSION_OPTIONS } from "@/lib/constants/mcp";
 import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
@@ -91,6 +92,7 @@ export default function MCPView() {
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
+			(localConfig.mcp_max_protocol_version || "auto") !== (config.mcp_max_protocol_version || "auto") ||
 			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
 			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
@@ -393,6 +395,35 @@ export default function MCPView() {
 						onChange={(e) => handleToolSyncIntervalChange(e.target.value)}
 						min="0"
 					/>
+				</div>
+
+				{/* Max Protocol Version */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-protocol-version" className="text-sm font-medium">
+							Max Protocol Version
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Newest MCP protocol version Bifrost offers to MCP servers. Auto uses the latest Bifrost supports. Each server can override
+							this.
+						</p>
+					</div>
+					<Select
+						value={localConfig.mcp_max_protocol_version || "auto"}
+						onValueChange={(value) => setLocalConfig((prev) => ({ ...prev, mcp_max_protocol_version: value }))}
+						disabled={!hasSettingsUpdateAccess}
+					>
+						<SelectTrigger id="mcp-max-protocol-version" data-testid="mcp-max-protocol-version-select" className="w-40">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{MCP_MAX_PROTOCOL_VERSION_OPTIONS.map((option) => (
+								<SelectItem key={option.value} value={option.value} data-testid={`mcp-max-protocol-version-${option.value}`}>
+									{option.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
 				</div>
 
 				{/* Disable Auto Tool Injection */}

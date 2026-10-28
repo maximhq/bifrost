@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -46,7 +47,7 @@ func TestCreateToolResultMessageMarksError(t *testing.T) {
 // a server sets to report that the tool ran and failed — distinct from a
 // transport error. toolmanager discarded it, so that signal never reached the model.
 func TestCreateToolResponseMessageMarksError(t *testing.T) {
-	failed := createToolResponseMessage(testToolCall("call_1"), "ENOENT: no such file or directory", true)
+	failed := createToolResponseMessage(testToolCall("call_1"), mcp.NewToolResultError("ENOENT: no such file or directory"), "tool")
 	if failed.ChatToolMessage == nil {
 		t.Fatal("expected ChatToolMessage to be attached")
 	}
@@ -54,7 +55,7 @@ func TestCreateToolResponseMessageMarksError(t *testing.T) {
 		t.Fatal("an MCP isError result must set IsError true")
 	}
 
-	ok := createToolResponseMessage(testToolCall("call_2"), "15 degrees", false)
+	ok := createToolResponseMessage(testToolCall("call_2"), mcp.NewToolResultText("15 degrees"), "tool")
 	if ok.ChatToolMessage == nil {
 		t.Fatal("expected ChatToolMessage to be attached")
 	}
@@ -67,13 +68,13 @@ func TestCreateToolResponseMessageMarksError(t *testing.T) {
 // with a failure keeps a successful transport, so the span status stays ok and only this
 // predicate distinguishes the two for a backend.
 func TestMCPToolReportedError(t *testing.T) {
-	failed := &schemas.BifrostMCPResponse{ChatMessage: createToolResponseMessage(testToolCall("call_1"), "ENOENT", true)}
+	failed := &schemas.BifrostMCPResponse{ChatMessage: createToolResponseMessage(testToolCall("call_1"), mcp.NewToolResultError("ENOENT"), "tool")}
 	if !mcpToolReportedError(failed) {
 		t.Fatal("a tool result marked IsError must report an error to the span")
 	}
 
 	// Success must stay unmarked so the attribute never becomes a constant.
-	ok := &schemas.BifrostMCPResponse{ChatMessage: createToolResponseMessage(testToolCall("call_2"), "15 degrees", false)}
+	ok := &schemas.BifrostMCPResponse{ChatMessage: createToolResponseMessage(testToolCall("call_2"), mcp.NewToolResultText("15 degrees"), "tool")}
 	if mcpToolReportedError(ok) {
 		t.Fatal("a successful tool result must not report an error to the span")
 	}

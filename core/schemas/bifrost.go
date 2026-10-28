@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 const (
@@ -28,6 +31,7 @@ type BifrostConfig struct {
 	LLMPlugins         []LLMPlugin
 	MCPPlugins         []MCPPlugin
 	A2APlugins         []A2APlugin
+	RelayPlugins       []RelayPlugin
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
@@ -209,6 +213,7 @@ const (
 	CountTokensRequest             RequestType = "count_tokens"
 	CompactionRequest              RequestType = "compaction"
 	MCPToolExecutionRequest        RequestType = "mcp_tool_execution"
+	RelayRequest                   RequestType = "relay" // a call to a Relay; no provider, no model
 	PassthroughRequest             RequestType = "passthrough"
 	PassthroughStreamRequest       RequestType = "passthrough_stream"
 	UnknownRequest                 RequestType = "unknown"
@@ -1262,8 +1267,14 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 type MCPRequestType string
 
 const (
-	MCPRequestTypePing      MCPRequestType = "ping"
-	MCPRequestTypeListTools MCPRequestType = "list_tools"
+	MCPRequestTypePing                  MCPRequestType = "ping"
+	MCPRequestTypeListTools             MCPRequestType = "list_tools"
+	MCPRequestTypeListResources         MCPRequestType = "list_resources"
+	MCPRequestTypeListResourceTemplates MCPRequestType = "list_resource_templates"
+	MCPRequestTypeListPrompts           MCPRequestType = "list_prompts"
+	MCPRequestTypeGetPrompt             MCPRequestType = "get_prompt"
+	MCPRequestTypeReadResource          MCPRequestType = "read_resource"
+	MCPRequestTypeComplete              MCPRequestType = "complete"
 
 	// [DEPRECATED] these will be replaced by MCPRequestTypeExecuteTool in the next major bump, but are kept for backward compatibility for now since some tools still rely on the old fields
 	MCPRequestTypeChatToolCall      MCPRequestType = "chat_tool_call"      // Chat API format
@@ -1292,6 +1303,12 @@ func (t MCPRequestType) IsExecuteTool() bool {
 	return false
 }
 
+// IsPromptOrResourceRead reports whether this is a prompts/get or resources/read, which plugins log
+// and govern per call like a tool execution.
+func (t MCPRequestType) IsPromptOrResourceRead() bool {
+	return t == MCPRequestTypeGetPrompt || t == MCPRequestTypeReadResource
+}
+
 // OTelMethodName returns the OTel semconv mcp.method.name for this request type
 // (tools/call, tools/list, ping). Unknown types fall back to the raw string.
 func (t MCPRequestType) OTelMethodName() string {
@@ -1300,6 +1317,18 @@ func (t MCPRequestType) OTelMethodName() string {
 		return "tools/call"
 	case t == MCPRequestTypeListTools:
 		return "tools/list"
+	case t == MCPRequestTypeListResources:
+		return "resources/list"
+	case t == MCPRequestTypeListResourceTemplates:
+		return "resources/templates/list"
+	case t == MCPRequestTypeListPrompts:
+		return "prompts/list"
+	case t == MCPRequestTypeGetPrompt:
+		return "prompts/get"
+	case t == MCPRequestTypeReadResource:
+		return "resources/read"
+	case t == MCPRequestTypeComplete:
+		return "completion/complete"
 	case t == MCPRequestTypePing:
 		return "ping"
 	default:
@@ -1315,6 +1344,8 @@ func (t MCPRequestType) OTelMethodName() string {
 // Exactly one of the embedded sub-request pointers is populated, matched by RequestType:
 //   - RequestType == MCPRequestTypePing       → BifrostMCPPingRequest
 //   - RequestType == MCPRequestTypeListTools  → BifrostMCPListToolsRequest
+//   - RequestType == MCPRequestTypeListResources / ListResourceTemplates / ListPrompts → the matching empty request
+//   - RequestType == MCPRequestTypeGetPrompt / ReadResource / Complete → the matching request
 //   - RequestType == MCPRequestTypeExecuteTool / MCPRequestTypeChatToolCall / MCPRequestTypeResponsesToolCall → BifrostMCPExecuteToolRequest
 type BifrostMCPRequest struct {
 	RequestType MCPRequestType
@@ -1322,6 +1353,12 @@ type BifrostMCPRequest struct {
 
 	*BifrostMCPPingRequest
 	*BifrostMCPListToolsRequest
+	*BifrostMCPListResourcesRequest
+	*BifrostMCPListResourceTemplatesRequest
+	*BifrostMCPListPromptsRequest
+	*BifrostMCPGetPromptRequest
+	*BifrostMCPReadResourceRequest
+	*BifrostMCPCompleteRequest
 
 	// [DEPRECATED] these will be replaced by BifrostMCPExecuteToolRequest in the next major bump, but are kept for backward compatibility for now since some tools still rely on the old fields
 	*ChatAssistantMessageToolCall
@@ -1358,6 +1395,33 @@ type BifrostMCPPingRequest struct {
 type BifrostMCPListToolsRequest struct {
 }
 
+// BifrostMCPListResourcesRequest, BifrostMCPListResourceTemplatesRequest and
+// BifrostMCPListPromptsRequest are empty for the same reason as list_tools.
+type BifrostMCPListResourcesRequest struct {
+}
+
+type BifrostMCPListResourceTemplatesRequest struct {
+}
+
+type BifrostMCPListPromptsRequest struct {
+}
+
+// BifrostMCPGetPromptRequest is a prompts/get forwarded to the client that owns the prompt.
+type BifrostMCPGetPromptRequest struct {
+	Name      string            // Prefixed with the client name
+	Arguments map[string]string // mutable
+}
+
+// BifrostMCPReadResourceRequest is a resources/read forwarded to the client that owns the URI.
+type BifrostMCPReadResourceRequest struct {
+	URI string
+}
+
+// BifrostMCPCompleteRequest is a completion/complete forwarded to the client that owns the reference.
+type BifrostMCPCompleteRequest struct {
+	Params mcp.CompleteParams // A prompt reference carries the prefixed prompt name
+}
+
 // Keeping the stub for now, will be used from the next major bump when we remove the old ChatToolCall and ResponsesToolMessage fields.
 // Note that the tool name and arguments are not standardized in this struct yet since they are still being pulled from the old fields for backward compatibility,
 // but they will be standardized in the future when we remove the old fields.
@@ -1375,6 +1439,17 @@ func (r *BifrostMCPRequest) GetToolName() string {
 		if r.ResponsesToolMessage.Name != nil {
 			return *r.ResponsesToolMessage.Name
 		}
+	}
+	return ""
+}
+
+// ReadTarget returns the prompt name, without its client prefix, or the resource URI a read targets.
+func (r *BifrostMCPRequest) ReadTarget() string {
+	switch {
+	case r.BifrostMCPGetPromptRequest != nil:
+		return strings.TrimPrefix(r.BifrostMCPGetPromptRequest.Name, r.ClientName+"-")
+	case r.BifrostMCPReadResourceRequest != nil:
+		return r.BifrostMCPReadResourceRequest.URI
 	}
 	return ""
 }
@@ -1830,6 +1905,12 @@ func setCoreExtraFields(ef *BifrostResponseExtraFields, requestType RequestType,
 type BifrostMCPResponse struct {
 	*BifrostMCPPingResponse
 	*BifrostMCPListToolsResponse
+	*BifrostMCPListResourcesResponse
+	*BifrostMCPListResourceTemplatesResponse
+	*BifrostMCPListPromptsResponse
+	*BifrostMCPGetPromptResponse
+	*BifrostMCPReadResourceResponse
+	*BifrostMCPCompleteResponse
 
 	// [DEPRECATED] back-compat fields for execute-tool requests; will move into
 	// BifrostMCPExecuteToolResponse in the next major bump.
@@ -1892,6 +1973,30 @@ type BifrostMCPListToolsResponse struct {
 	ToolNameMapping map[string]string   // sanitized_name -> original_mcp_name
 	RawToolCount    int                 // Count returned by the MCP server before Bifrost-side filtering
 	SkippedTools    []SkippedMCPTool    // Tools Bifrost dropped during conversion + reason
+}
+
+type BifrostMCPListResourcesResponse struct {
+	Resources []mcp.Resource // As the server lists them
+}
+
+type BifrostMCPListResourceTemplatesResponse struct {
+	ResourceTemplates []mcp.ResourceTemplate // As the server lists them
+}
+
+type BifrostMCPListPromptsResponse struct {
+	Prompts []mcp.Prompt // Names prefixed with the client name
+}
+
+type BifrostMCPGetPromptResponse struct {
+	Prompt *mcp.GetPromptResult
+}
+
+type BifrostMCPReadResourceResponse struct {
+	Resource *mcp.ReadResourceResult
+}
+
+type BifrostMCPCompleteResponse struct {
+	Completion *mcp.CompleteResult
 }
 
 // SkippedMCPTool describes a tool that the MCP server returned but Bifrost did not include

@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1031,6 +1032,14 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 			copyAnnotations.OpenWorldHint = &v
 		}
 		copyTool.Annotations = copyAnnotations
+	}
+
+	if original.MCP != nil {
+		copyTool.MCP = &MCPToolMetadata{
+			Title:        original.MCP.Title,
+			Icons:        slices.Clone(original.MCP.Icons),
+			OutputSchema: slices.Clone(original.MCP.OutputSchema),
+		}
 	}
 
 	// Deep copy Custom if present
