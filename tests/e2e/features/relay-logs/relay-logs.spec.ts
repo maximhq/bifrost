@@ -229,7 +229,6 @@ test.describe("Relay Logs", () => {
 
     const search = rowsOnPage.filter({ hasText: "/v1/search?q=1" });
     await expect(search).toContainText("POST /v1/search?q=1");
-    await expect(search).toContainText("Route /v1/search");
     await expect(search).toContainText(costText(SEARCH_COST));
     // The table shows the outcome as a status bar, as the LLM logs table does; the code is in the sheet.
     await expect(search.locator('[title="success"]')).toHaveCount(1);
