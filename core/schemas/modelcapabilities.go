@@ -77,6 +77,7 @@ type ModelCapabilities struct {
 	// is the scope sub-feature.
 	SupportsAssistantPrefill         *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsSystemMessages           *bool `json:"supports_system_messages,omitempty"`
+	SupportsDeveloperRole            *bool `json:"supports_developer_role,omitempty"` // false ⇒ developer messages are sent as system
 	SupportsFunctionCalling          *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling  *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice               *bool `json:"supports_tool_choice,omitempty"`
@@ -282,6 +283,9 @@ type ModelCapabilities struct {
 
 	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
 	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// Tool-schema `pattern` is accepted at all; false ⇒ the keyword is dropped before dispatch.
+	SupportsSchemaPattern *bool `json:"supports_schema_pattern,omitempty"`
 
 	// String `format` values tool schemas may carry; any other is dropped before dispatch.
 	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`

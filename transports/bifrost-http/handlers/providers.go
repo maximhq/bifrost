@@ -268,6 +268,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.GET("/api/models/newest", lib.ChainMiddlewares(h.listNewestModels, middlewares...))
 	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
@@ -566,7 +567,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var payload = struct {
+	payload := struct {
 		Keys []schemas.Key `json:"keys"` // API keys for the provider
 		providerUpdatePayload
 	}{}
@@ -1190,13 +1191,15 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // offers a model the request would reject nor hides one it would serve. A
 // custom provider is gated by its allowed requests alone: every model when it
 // allows decisions on a base that serves them (Typesafe, serving Laya, Nimble,
-// or Clef, or OpenAI, exposing /v1/decisions), since its server rejects a
+// or Clef, OpenAI, exposing /v1/decisions, or vLLM and SGLang, serving
+// /v1/systemone for every loaded model), since its server rejects a
 // model it does not serve. Typesafe lists every model, and any other provider
 // a model the datasheet marks supports_decisions, or without a row the
 // provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
 // Perplexity, a System One model on Ollama, a Microsoft decision model or the
-// gpt-6-luna family on Azure, which serves it on /openai/v1/decisions).
+// gpt-6-luna family on Azure, which serves it on /openai/v1/decisions). vLLM
+// and SGLang serve decisions for every model they load, so every listed model qualifies.
 // Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
 // serves its decisions under its own id, openai/gpt-6-luna-decisions, marked by
 // its datasheet row). A key alias is checked as the model it points at, as the
@@ -1205,9 +1208,10 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	if custom := h.customProviderConfig(provider); custom != nil {
 		return custom.IsOperationAllowed(schemas.DecisionRequest) &&
-			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI)
+			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI ||
+				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL)
 	}
-	if provider == schemas.Typesafe {
+	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
 		return true
 	}
 	listed := model

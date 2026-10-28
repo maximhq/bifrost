@@ -195,6 +195,8 @@ type PrometheusPlugin struct {
 	ProviderKeyUp                  *prometheus.GaugeVec
 	MCPToolDuration                *prometheus.HistogramVec
 	A2AOperationDuration           *prometheus.HistogramVec
+	RelayOperationDuration         *prometheus.HistogramVec
+	RelayCostTotal                 *prometheus.CounterVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -705,6 +707,17 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		Buckets: mcpOperationDurationBuckets,
 	}, a2aMetricLabelNames)
 
+	// Relay calls are plain HTTP round trips; _count gives volume and error_type the error rate.
+	relayDuration := factory.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bifrost_relay_operation_duration_seconds",
+		Help:    "Duration of a relay call to a non-LLM upstream API as observed by Bifrost.",
+		Buckets: mcpOperationDurationBuckets,
+	}, relayMetricLabelNames)
+	relayCost := factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "bifrost_relay_cost_total",
+		Help: "USD charged for relay calls.",
+	}, relayMetricLabelNames)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -742,6 +755,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		ProviderKeyUp:                  bifrostProviderKeyUp,
 		MCPToolDuration:                bifrostMCPToolDuration,
 		A2AOperationDuration:           a2aDuration,
+		RelayOperationDuration:         relayDuration,
+		RelayCostTotal:                 relayCost,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -913,6 +928,7 @@ func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error
 		return nil
 	}
 	p.recordA2AMetrics(trace)
+	p.recordRelayMetrics(trace)
 	// Always drain the handoff entry so a toggle flip mid-request can't leak it.
 	joinKey := trace.InternalID
 	if joinKey == "" {
@@ -1057,12 +1073,12 @@ func (p *PrometheusPlugin) applyCustomLabels(ctx *schemas.BifrostContext, labelV
 // PreMCPHook stashes the tool-call start time so PostMCPHook has a wall-time
 // fallback on the error path (where the response — and its latency — is absent).
 func (p *PrometheusPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
-	if ctx != nil && req != nil && req.RequestType.IsExecuteTool() {
+	if ctx != nil && req != nil && (req.RequestType.IsExecuteTool() || req.RequestType.IsPromptOrResourceRead()) {
 		ctx.SetValue(mcpStartTimeKey, time.Now())
 		// Stash identity so the error path (resp == nil) still has tool/client
 		// for codemode filtering and metric labels.
 		ctx.SetValue(mcpClientNameKey, req.ClientName)
-		ctx.SetValue(mcpToolNameKey, req.GetToolName())
+		ctx.SetValue(mcpToolNameKey, mcpMetricName(req))
 	}
 	return req, nil, nil
 }
@@ -1086,7 +1102,13 @@ func (p *PrometheusPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		clientName = bifrost.GetStringFromContext(ctx, mcpClientNameKey)
 		toolName = bifrost.GetStringFromContext(ctx, mcpToolNameKey)
 	}
-	if !mcpReqType.IsExecuteTool() || bifrost.IsCodemodeTool(toolName) {
+	if mcpReqType.IsPromptOrResourceRead() {
+		// Core may move a read to another server after the pre-hooks; the response names the one that answered.
+		if clientName == "" {
+			clientName = bifrost.GetStringFromContext(ctx, mcpClientNameKey)
+		}
+		toolName = bifrost.GetStringFromContext(ctx, mcpToolNameKey)
+	} else if !mcpReqType.IsExecuteTool() || bifrost.IsCodemodeTool(toolName) {
 		return resp, bifrostErr, nil
 	}
 
@@ -1125,6 +1147,18 @@ func (p *PrometheusPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	p.MCPToolDuration.WithLabelValues(promLabelValues...).Observe(durationSeconds)
 
 	return resp, bifrostErr, nil
+}
+
+// mcpMetricName is the mcp_tool_name label: the tool, or the prompt a prompts/get reads. A resource
+// read has none, since URIs are unbounded.
+func mcpMetricName(req *schemas.BifrostMCPRequest) string {
+	switch req.RequestType {
+	case schemas.MCPRequestTypeGetPrompt:
+		return req.ReadTarget()
+	case schemas.MCPRequestTypeReadResource:
+		return ""
+	}
+	return req.GetToolName()
 }
 
 // mcpErrorType classifies an MCP tool-call failure into a low-cardinality error_type.

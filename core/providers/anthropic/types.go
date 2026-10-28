@@ -2128,6 +2128,8 @@ type AnthropicUsage struct {
 	Speed                    *string                       `json:"speed,omitempty"`                 // "fast" or "standard" — which speed was actually served (fast mode research preview)
 	InferenceGeo             *string                       `json:"inference_geo,omitempty"`         // the geographic region for inference processing. If not specified, the workspace's default_inference_geo is used.
 	Iterations               []AnthropicUsage              `json:"iterations,omitempty"`            // Iterations statistics
+
+	absentPromptCounters uint8 // prompt counters to render as absent, not zero; see MarshalJSON in streamdeltausage.go
 }
 
 // AnthropicOutputTokensDetails breaks down output_tokens for extended-thinking responses.

@@ -2492,6 +2492,12 @@ func (h *HybridLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignm
 	return h.inner.UpsertWarpTopicAssignments(ctx, assignments)
 }
 
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since.
+func (h *HybridLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	return h.inner.DeleteWarpTopicAssignmentsUnmatchedSince(ctx, since)
+}
+
 // DeleteWarpTopicAssignments removes the given requests' assignments.
 func (h *HybridLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
 	return h.inner.DeleteWarpTopicAssignments(ctx, logIDs)
@@ -2538,6 +2544,21 @@ func (h *HybridLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []
 	return h.inner.DeleteWarpTopicUnmatched(ctx, logIDs)
 }
 
+// AddWarpVectorDeletes records deleted logs whose vector delete failed.
+func (h *HybridLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	return h.inner.AddWarpVectorDeletes(ctx, rows)
+}
+
+// ListWarpVectorDeletes returns up to limit pending vector deletes.
+func (h *HybridLogStore) ListWarpVectorDeletes(ctx context.Context, limit int) ([]WarpVectorDelete, error) {
+	return h.inner.ListWarpVectorDeletes(ctx, limit)
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (h *HybridLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpVectorDeletes(ctx, logIDs)
+}
+
 // PruneWarpTopicUnmatched bounds the pool by age and by count.
 func (h *HybridLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan time.Time, keep int) (int64, error) {
 	return h.inner.PruneWarpTopicUnmatched(ctx, olderThan, keep)
@@ -2562,4 +2583,47 @@ func (h *HybridLogStore) DeleteWarpTopics(ctx context.Context, ids []string) err
 // ListLogsForWarpTopics returns the assignment columns of the given logs.
 func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
 	return h.inner.ListLogsForWarpTopics(ctx, logIDs, from, to)
+}
+
+// Relay Logs keep every column in the database: bodies are bounded by the content-logging
+// settings and are shown on the detail sheet, so the hybrid store delegates every call.
+
+func (h *HybridLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error) {
+	return h.inner.BatchCreateRelayLogsIfNotExists(ctx, entries)
+}
+
+func (h *HybridLogStore) FindRelayLog(ctx context.Context, id string) (*RelayLog, error) {
+	return h.inner.FindRelayLog(ctx, id)
+}
+
+func (h *HybridLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error) {
+	return h.inner.SearchRelayLogs(ctx, filters, pagination)
+}
+
+func (h *HybridLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error) {
+	return h.inner.GetRelayLogStats(ctx, filters)
+}
+
+func (h *HybridLogStore) GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error) {
+	return h.inner.GetRelayHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+func (h *HybridLogStore) GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error) {
+	return h.inner.GetRelayTopEndpoints(ctx, filters, limit)
+}
+
+func (h *HybridLogStore) GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error) {
+	return h.inner.GetRelayFilterData(ctx, dimensions, limit, search)
+}
+
+func (h *HybridLogStore) HasRelayLogs(ctx context.Context) (bool, error) {
+	return h.inner.HasRelayLogs(ctx)
+}
+
+func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
+	return h.inner.DeleteRelayLogs(ctx, ids)
+}
+
+func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
 }

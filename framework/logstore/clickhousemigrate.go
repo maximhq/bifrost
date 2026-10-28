@@ -439,6 +439,34 @@ func migrationClickHouseAgentLogsTable(ctx context.Context, db *gorm.DB, cluster
 	return clickhouseReconcileTTL(ctx, db, "agent_logs", cluster, chLogsTTL(retentionDays), logger)
 }
 
+// migrationClickHouseRelayLogsTable creates the append-only Relay Logs table.
+func migrationClickHouseRelayLogsTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table relay_logs")
+	opts := chTableOpts{
+		table:       "relay_logs",
+		partitionBy: "toYYYYMM(timestamp)",
+		orderBy:     "(timestamp, id)",
+		ttl:         chLogsTTL(retentionDays),
+		skipIndexes: []string{
+			"INDEX idx_relay_logs_relay_name relay_name TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_relay_logs_virtual_key_id virtual_key_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_relay_logs_request_id request_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_relay_logs_job_id job_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_relay_logs_status status TYPE bloom_filter GRANULARITY 1",
+		},
+	}
+	if err := clickhouseCreateTable(ctx, db, &RelayLog{}, opts, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create relay_logs table: %w", err)
+	}
+	if err := clickhouseReconcileColumns(ctx, db, &RelayLog{}, "relay_logs", cluster, logger); err != nil {
+		return err
+	}
+	if err := clickhouseReconcileSkipIndexes(ctx, db, "relay_logs", cluster, opts.skipIndexes, logger); err != nil {
+		return err
+	}
+	return clickhouseReconcileTTL(ctx, db, "relay_logs", cluster, chLogsTTL(retentionDays), logger)
+}
+
 // migrationClickHouseMCPToolLogsTable creates the mcp_tool_logs table and
 // reconciles it with the MCPToolLog struct.
 func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, cluster string, retentionDays int, logger schemas.Logger) error {
@@ -629,6 +657,20 @@ func migrationClickHouseWarpTopicTables(ctx context.Context, db *gorm.DB, cluste
 	return clickhouseReconcileTTL(ctx, db, "warp_topic_unmatched", cluster, chLogsTTL(retentionDays), logger)
 }
 
+// migrationClickHouseWarpVectorDeletesTable creates the record of deleted logs
+// whose Warp vector could not be removed. It has no TTL: a row goes when its
+// retry succeeds, and expiring it would leave the vector behind.
+func migrationClickHouseWarpVectorDeletesTable(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table warp_vector_deletes")
+	if err := clickhouseCreateTable(ctx, db, &WarpVectorDelete{}, chTableOpts{
+		table:   "warp_vector_deletes",
+		orderBy: "log_id",
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_vector_deletes table: %w", err)
+	}
+	return clickhouseReconcileColumns(ctx, db, &WarpVectorDelete{}, "warp_vector_deletes", cluster, logger)
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
@@ -640,6 +682,8 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseWarpConversationTables,
 	migrationClickHouseUserAgentMappingsTable,
 	migrationClickHouseWarpTopicTables,
+	migrationClickHouseWarpVectorDeletesTable,
+	migrationClickHouseRelayLogsTable,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

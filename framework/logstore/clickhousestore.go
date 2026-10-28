@@ -1435,6 +1435,13 @@ func (s *ClickHouseLogStore) DeleteWarpTopicAssignments(ctx context.Context, log
 	return nil
 }
 
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since, with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	placeholder, arg := warpTopicTimeArg(s.db, since)
+	return s.chLightweightDelete(ctx, "warp_topic_assignments", "topic_id = ? AND assigned_at >= "+placeholder, "", arg)
+}
+
 // DeleteWarpTopicAssignmentsBatch deletes every assignment whose log was
 // created before cutoff with one lightweight delete; see DeleteLogsBatch for
 // why batchSize is ignored.
@@ -1457,6 +1464,29 @@ func (s *ClickHouseLogStore) AddWarpTopicUnmatched(ctx context.Context, rows []W
 func (s *ClickHouseLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []string) error {
 	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
 		if err := s.chLightweightDelete(ctx, "warp_topic_unmatched", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AddWarpVectorDeletes records deleted logs whose vector delete failed. A log
+// recorded twice is one row once the table merges, and listed twice until
+// then, which costs a retry one more vector delete.
+func (s *ClickHouseLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareWarpVectorDeletes(rows, time.Now()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&rows).Error
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (s *ClickHouseLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_vector_deletes", "log_id IN ?", chunk); err != nil {
 			return err
 		}
 	}
@@ -1493,4 +1523,74 @@ func (s *ClickHouseLogStore) DeleteWarpTopics(ctx context.Context, ids []string)
 // before cutoff with one lightweight delete.
 func (s *ClickHouseLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
 	return s.chDeleteWhere(ctx, "warp_topic_unmatched", "created_at < ?", cutoff)
+}
+
+// BatchCreateRelayLogsIfNotExists inserts Relay Logs rows whose IDs are absent and
+// returns the inserted IDs; ClickHouse has no ON CONFLICT, so absent IDs are found first.
+func (s *ClickHouseLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(entries))
+	inserted := make([]string, 0, len(entries))
+	err := forEachRMWChunk(entries, func(chunk []*RelayLog) error {
+		fresh := make([]*RelayLog, 0, len(chunk))
+		ids := make([]string, 0, len(chunk))
+		for _, entry := range chunk {
+			if entry == nil {
+				continue
+			}
+			if _, ok := seen[entry.ID]; ok {
+				continue
+			}
+			seen[entry.ID] = struct{}{}
+			fresh = append(fresh, entry)
+			ids = append(ids, entry.ID)
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		defer s.lockRMWBatch("relay_logs", ids)()
+		missing, err := chFilterMissing(ctx, s.db, "relay_logs", fresh, func(l *RelayLog) string { return l.ID }, func(l *RelayLog) time.Time { return l.Timestamp })
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if err := s.db.WithContext(ctx).Create(&missing).Error; err != nil {
+			return err
+		}
+		for _, entry := range missing {
+			inserted = append(inserted, entry.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inserted, nil
+}
+
+// DeleteRelayLogs deletes the identified rows with a lightweight delete.
+// DeleteRelayLogsBatch removes Relay Logs rows older than cutoff, as DeleteLogsBatch does for the
+// request logs, so the retention cleaner prunes relay rows on ClickHouse too.
+func (s *ClickHouseLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, _ int) (int64, error) {
+	return s.chDeleteWhere(ctx, "relay_logs", "timestamp < ?", cutoff)
+}
+
+func (s *ClickHouseLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// Raw SQL would skip the caller's scope, so the rows they may see are selected first, as
+	// DeleteAgentLogs does, and only those are deleted.
+	var entryIDs []string
+	if err := s.ScopedDB(ctx).Model(&RelayLog{}).Where("id IN ? OR parent_log_id IN ?", ids, ids).Pluck("id", &entryIDs).Error; err != nil {
+		return err
+	}
+	if len(entryIDs) == 0 {
+		return nil
+	}
+	return s.chLightweightDelete(ctx, "relay_logs", "id IN ?", entryIDs)
 }

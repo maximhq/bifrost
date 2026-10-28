@@ -1144,3 +1144,69 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 	assert.NotEqual(t, flowID1, flowID3, "a different mcp_client_id must not reuse another client's admin flow row")
 	assert.Len(t, store.oauthFlows, 2)
 }
+
+// TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall reproduces an
+// abandoned shared-OAuth install against a real SQLite config store: the UI
+// Create flow runs InitiateOAuthFlow, which writes a pending oauth_configs row
+// plus its admin flow row, and the user closes the authorize popup. Once the
+// flow has expired and the grace period has passed, the sweep must remove the
+// config row, not just the flow. A pending config still linked to an MCP
+// client (the config.json bootstrap shape) must survive, and so must that
+// client: config_mcp_clients.oauth_config_id cascades on delete.
+func TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall(t *testing.T) {
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	provider := NewOAuth2Provider(store, logger)
+	initiate := func() string {
+		initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+			ClientID:     schemas.NewSecretVar("client-id"),
+			AuthorizeURL: "https://auth.example.com/authorize",
+			TokenURL:     "https://auth.example.com/token",
+			RedirectURI:  "http://localhost/api/oauth/callback",
+			ServerURL:    "https://mcp.example.com",
+		})
+		require.NoError(t, err)
+		return initiation.OauthConfigID
+	}
+	abandonedID := initiate()
+	linkedID := initiate()
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableMCPClient{
+		ClientID:       "linked-client",
+		Name:           "linked",
+		ConnectionType: "http",
+		AuthType:       "oauth",
+		OauthConfigID:  &linkedID,
+	}).Error)
+
+	// Age both installs past the flow expiry and the sweep's grace period.
+	past := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableOauthConfig{}).
+		Where("id IN ?", []string{abandonedID, linkedID}).Update("created_at", past).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("oauth_config_id IN ?", []string{abandonedID, linkedID}).Update("expires_at", past).Error)
+
+	worker := NewPerUserOAuthSweepWorker(provider, 0, logger)
+	require.NotNil(t, worker)
+	worker.Start(ctx)
+	t.Cleanup(worker.Stop)
+
+	configExists := func(id string) bool {
+		var n int64
+		require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableOauthConfig{}).Where("id = ?", id).Count(&n).Error)
+		return n > 0
+	}
+	require.Eventually(t, func() bool { return !configExists(abandonedID) }, 3*time.Second, 50*time.Millisecond,
+		"abandoned pending oauth_configs row must be swept once its flow has expired")
+	assert.True(t, configExists(linkedID), "a pending oauth_configs row linked to an MCP client must not be swept")
+	var clients int64
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableMCPClient{}).Where("client_id = ?", "linked-client").Count(&clients).Error)
+	assert.Equal(t, int64(1), clients, "sweeping must never cascade-delete an MCP client")
+}

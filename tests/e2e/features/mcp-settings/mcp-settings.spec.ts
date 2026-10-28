@@ -205,17 +205,66 @@ test.describe('MCP Settings', () => {
       expect(saved?.allowed_redirect_uris ?? []).toEqual([])
     })
 
-    test('should refuse to save OAuth mode with an empty issuer URL', async ({ mcpSettingsPage, request }) => {
+    test('should show the issuer read-only with a link to Security', async ({ mcpSettingsPage, page }) => {
       await mcpSettingsPage.goto()
       await mcpSettingsPage.advancedTrigger.click()
 
-      await mcpSettingsPage.issuerUrlInput.fill('')
-      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
-      await mcpSettingsPage.saveBtn.click()
-      await expect(mcpSettingsPage.getToast('error')).toContainText(/Issuer URL is required when MCP auth mode is OAuth or Both/i)
+      await expect(mcpSettingsPage.issuerUrlValue).toHaveText('https://bifrost.e2e.test')
+      await mcpSettingsPage.issuerUrlSecurityLink.click()
+      await expect(page).toHaveURL(/\/workspace\/config\/security/)
+      await expect(mcpSettingsPage.securityIssuerUrlInput).toBeVisible()
+    })
+
+    test('should show an env issuer with its reference beside the resolved URL', async ({ mcpSettingsPage }) => {
+      await mcpSettingsPage.serveIssuer({ value: 'https://bifrost.e2e.test', ref: 'env.BIFROST_ISSUER', type: 'env' })
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlValue).toHaveText('https://bifrost.e2e.test')
+      await expect(mcpSettingsPage.issuerUrlRef).toHaveText('env.BIFROST_ISSUER')
+      await expect(mcpSettingsPage.issuerUrlUnresolved).toBeHidden()
+    })
+
+    test('should show an unresolved env issuer as not resolved rather than unset', async ({ mcpSettingsPage }) => {
+      await mcpSettingsPage.serveIssuer({ value: '', ref: 'env.BIFROST_ISSUER', type: 'env' })
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlUnresolved).toBeVisible()
+      await expect(mcpSettingsPage.issuerUrlRef).toHaveText('env.BIFROST_ISSUER')
+      await expect(mcpSettingsPage.issuerUrlValue).toBeHidden()
+    })
+
+    test('should show a plain issuer without a reference', async ({ mcpSettingsPage }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlValue).toHaveText('https://bifrost.e2e.test')
+      await expect(mcpSettingsPage.issuerUrlRef).toBeHidden()
+    })
+
+    test('should refuse to clear the issuer under Security while OAuth mode is on', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityIssuerUrlInput.fill('')
+      await expect(mcpSettingsPage.securitySaveBtn).toBeEnabled()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/Issuer URL is required while MCP auth mode is OAuth or Both/i)
 
       const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { issuer_url?: unknown } | undefined
       expect(JSON.stringify(saved?.issuer_url)).toContain('https://bifrost.e2e.test')
+    })
+
+    test('should warn and save a changed issuer under Security', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityIssuerUrlInput.fill('https://gateway.e2e.test')
+      await expect(mcpSettingsPage.securityIssuerUrlChangeWarning).toBeVisible()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { issuer_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://gateway.e2e.test')
     })
 
     test('should reject a non-https remote redirect URI without saving', async ({ mcpSettingsPage, request }) => {
@@ -229,6 +278,47 @@ test.describe('MCP Settings', () => {
 
       const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
       expect(saved?.allowed_redirect_uris ?? []).toEqual([])
+    })
+  })
+
+  test.describe('Max protocol version', () => {
+    // Both tests rewrite the shared global cap, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let original: string
+
+    test.beforeEach(async ({ request }) => {
+      original = ((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version as string | undefined) || 'auto'
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: original })
+    })
+
+    test('should save a global max protocol version and show it after reload', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: 'auto' })
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('Auto (latest)')
+
+      await mcpSettingsPage.selectMaxProtocolVersion('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-06-18')
+
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should keep the global cap when another setting is saved', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: '2025-11-25' })
+      await mcpSettingsPage.goto()
+      const depth = await mcpSettingsPage.maxAgentDepthInput.inputValue()
+      await mcpSettingsPage.maxAgentDepthInput.fill(String(Number(depth) + 1))
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-11-25')
+      await coreConfigApi.updateClientConfig(request, { mcp_agent_depth: Number(depth) })
     })
   })
 })

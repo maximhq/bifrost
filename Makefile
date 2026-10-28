@@ -614,7 +614,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i; s/vllm/VLLM/i; s/githubcopilot/GithubCopilot/i; s/sagemaker/SageMaker/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -1998,6 +1998,25 @@ test-live-long: install-gotestsum ## Run the long GPT Live sessions: 17 min on t
 	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 	exit $$STATUS
 
+test-realtime: install-gotestsum
+	@$(EXPOSE_ENV); \
+	$(ECHO) "$(GREEN)Running Realtime API e2e tests...$(NC)"; \
+	mkdir -p $(TEST_REPORTS_DIR); \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		$(ECHO) "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; exit 1; \
+	fi; \
+	RUN_FLAG=""; \
+	if [ -n "$(TESTCASE)" ]; then RUN_FLAG="-run ^$(TESTCASE)$$"; elif [ -n "$(PATTERN)" ]; then RUN_FLAG="-run .*$(PATTERN).*"; fi; \
+	REPORT_FILE="$(TEST_REPORTS_DIR)/realtime.xml"; \
+	cd tests/realtime && REALTIME_REQUIRE_GATEWAY=1 GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../../$$REPORT_FILE \
+		-- -v -count 1 -timeout 600s $$RUN_FLAG; \
+	STATUS=$$?; \
+	cd ../..; \
+	$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+	exit $$STATUS
+
 run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
@@ -2247,6 +2266,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
+		printf '  %-18s %s\n' "CHATGPT_ACCESS_TOKEN" "Env-sourced: ChatGPT sign-in access token for the Codex passthrough cases (forwarded as chatgptAccessToken; they skip when unset)."; \
 		printf '\n%s\n' "$(CYAN)Token Parity Matrix$(NC) ('Cross-Cut Round 33', generated - FOLDER or FEATURE=\"token parity\" to target it)"; \
 		printf '  %s\n' "Runs the same 3-round conversation directly against each provider AND through Bifrost, asserts usage lands in the same"; \
 		printf '  %s\n' "range, and writes tmp/harness-token-parity.md. Reuses the SAME env vars tests/integrations/python/config.json already reads"; \
@@ -2292,6 +2312,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-mcp-fixture.log" "MCP test server log (sse_mcp on 3012; only if we started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-relay-fixture.log" "Relay upstream fixture log (relays-e2e rows, 127.0.0.1:8783; only if we started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
@@ -2512,6 +2533,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			kill $$(cat tmp/harness-mcp-fixture.pid) 2>/dev/null; \
 			rm -f tmp/harness-mcp-fixture.pid; \
 		fi; \
+		if [ -f tmp/harness-relay-fixture.pid ]; then \
+			kill $$(cat tmp/harness-relay-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-relay-fixture.pid; \
+		fi; \
 	}; \
 	preempt_viewer_port() { \
 		if [ -f tmp/harness-viewer.pid ]; then \
@@ -2557,10 +2582,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		say "$(GREEN)MCP test server already listening on 3012$(NC)"; \
 	else \
 		MCP_FIXTURE_BIN="$(CURDIR)/examples/mcps/remote-test-server/bin/remote-test-server"; \
-		if [ ! -x "$$MCP_FIXTURE_BIN" ]; then \
+		if [ ! -x "$$MCP_FIXTURE_BIN" ] || [ examples/mcps/remote-test-server/main.go -nt "$$MCP_FIXTURE_BIN" ]; then \
 			say "$(CYAN)Building MCP test server (examples/mcps/remote-test-server)...$(NC)"; \
 			(cd examples/mcps/remote-test-server && GOWORK=off go build -o bin/remote-test-server .) || { \
-				say "$(RED)Could not build the MCP test server; injected-web-search rows will fail$(NC)"; \
+				say "$(RED)Could not build the MCP test server (examples/mcps/remote-test-server); not running the harness against a stale or missing fixture$(NC)"; \
+				exit 1; \
 			}; \
 		fi; \
 		if [ -x "$$MCP_FIXTURE_BIN" ]; then \
@@ -2573,6 +2599,26 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			else \
 				say "$(RED)MCP test server did not open 3012. See tmp/harness-mcp-fixture.log$(NC)"; \
 			fi; \
+		fi; \
+	fi; \
+	: "The profile's relays (harness-relay-*) point at a local upstream on 127.0.0.1:8783, so the"; \
+	: "relays-e2e rows never reach a third party. The gateway dials it per request, not at boot."; \
+	if nc -z 127.0.0.1 8783 2>/dev/null; then \
+		if curl -fsS --max-time 2 http://127.0.0.1:8783/__relay/health 2>/dev/null | grep -q '"fixture":"relay-upstream"'; then \
+			say "$(GREEN)Relay upstream fixture already listening on 8783$(NC)"; \
+		else \
+			say "$(RED)Port 8783 is taken by something other than the relay upstream fixture (no /__relay/health match); relays-e2e rows will fail until it is freed.$(NC)"; \
+			case "$(FEATURE)" in *relay*) exit 1;; esac; \
+		fi; \
+	else \
+		$(USE_NODE); RELAY_UPSTREAM_FIXTURE_PORT=8783 node tests/e2e/api/runners/relay-upstream-fixture.mjs > tmp/harness-relay-fixture.log 2>&1 & \
+		echo $$! > tmp/harness-relay-fixture.pid; \
+		for i in $$(seq 1 40); do nc -z 127.0.0.1 8783 2>/dev/null && break; sleep 0.25; done; \
+		if nc -z 127.0.0.1 8783 2>/dev/null; then \
+			say "$(GREEN)Relay upstream fixture up on 8783 (log: tmp/harness-relay-fixture.log)$(NC)"; \
+		else \
+			say "$(RED)Relay upstream fixture did not open 8783; relays-e2e rows will fail. See tmp/harness-relay-fixture.log$(NC)"; \
+			case "$(FEATURE)" in *relay*) exit 1;; esac; \
 		fi; \
 	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
@@ -2801,13 +2847,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: "the failure it is meant to clear. Args: <shard> <collection> <report-out> <provider>."; \
 		: "Runs in the foreground and returns the PIPELINE status (pipefail is set above), so the"; \
 		: "caller can record it; backgrounding stays at the call site so pids remain trackable."; \
-		: "Running SHARD jobs, excluding the monitor. start_monitor backgrounds the monitor into"; \
-		: "this same shell, so a plain 'jobs -pr | wc -l' counts it as a shard. At the default cap"; \
-		: "that is only an off-by-one, but with a low HARNESS_JOBS the count would sit at the cap"; \
-		: "with only the monitor running and 'wait -n' would block on a process that never exits."; \
+		: "Running SHARD jobs, excluding every long-lived helper this shell backgrounded: the"; \
+		: "monitor, the MCP and relay fixtures and a gateway started by 'make dev'. A plain"; \
+		: "'jobs -pr | wc -l' counts them as shards, and with a low HARNESS_JOBS the count would"; \
+		: "sit at the cap while 'wait -n' blocks on a process that never exits."; \
 		shard_jobs() { \
-			SJ_MON="$$(cat tmp/harness-monitor.pid 2>/dev/null)"; \
-			jobs -pr | grep -v -x -F "$${SJ_MON:-__none__}" | wc -l | tr -d ' '; \
+			SJ_SKIP="$$(cat tmp/harness-monitor.pid tmp/harness-mcp-fixture.pid tmp/harness-relay-fixture.pid tmp/bifrost-dev.pid 2>/dev/null)"; \
+			jobs -pr | grep -v -x -F "$${SJ_SKIP:-__none__}" | wc -l | tr -d ' '; \
 		}; \
 		newman_shard() { \
 			NS_SHARD="$$1"; NS_COLLECTION="$$2"; NS_REPORT="$$3"; NS_PROV="$$4"; \
@@ -2822,6 +2868,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$${AWS_S3_BUCKET:+--env-var "awsS3Bucket=$$AWS_S3_BUCKET"} \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
@@ -3094,6 +3141,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 				$${AWS_S3_BUCKET:+--env-var "awsS3Bucket=$$AWS_S3_BUCKET"} \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
@@ -3153,6 +3201,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
@@ -3208,6 +3257,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
 				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${CHATGPT_ACCESS_TOKEN:+--env-var "chatgptAccessToken=$$CHATGPT_ACCESS_TOKEN"} \
 				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
 				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \

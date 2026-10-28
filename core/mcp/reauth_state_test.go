@@ -61,6 +61,7 @@ func newSharedOAuthClientConfig(id string) *schemas.MCPClientConfig {
 // entry was initialized to at the top of connectToMCPClient.
 func TestConnectToMCPClient_OAuth2TokenExpired_SetsNeedsReauth(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newSharedOAuthClientConfig("client-needs-reauth")
 
 	// Confirmed precondition: only shared-connection auth types (
@@ -117,6 +118,7 @@ func (genericFailureCredStore) AdminConnectionHeaders(_ context.Context, _ *sche
 
 func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, genericFailureCredStore{}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newSharedOAuthClientConfig("client-generic-failure")
 
 	err := m.connectToMCPClient(context.Background(), config)

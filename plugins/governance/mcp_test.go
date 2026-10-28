@@ -340,3 +340,34 @@ func TestPostMCPHook_RecordsAccountedLimitIDs(t *testing.T) {
 	rateLimitIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
 	assert.Contains(t, rateLimitIDs, "vk-rl")
 }
+
+// A prompt or resource read is accounted against the caller's limits like a tool call.
+func TestPostMCPHook_AccountsPromptAndResourceReads(t *testing.T) {
+	for _, requestType := range []schemas.MCPRequestType{schemas.MCPRequestTypeGetPrompt, schemas.MCPRequestTypeReadResource} {
+		t.Run(string(requestType), func(t *testing.T) {
+			logger := NewMockLogger()
+			rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
+			vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+				RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
+			}, nil, nil)
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+			require.NoError(t, err)
+			defer plugin.Cleanup()
+
+			ctx := resolverCtx(store, "sk-bf-test")
+			_, settleErr := resolveLimits(ctx, store, "", "")
+			require.NoError(t, settleErr)
+			_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+				ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: requestType, ClientName: "client"},
+			}, nil)
+			require.NoError(t, err)
+			plugin.wg.Wait()
+
+			rateLimitIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
+			assert.Contains(t, rateLimitIDs, "vk-rl")
+		})
+	}
+}

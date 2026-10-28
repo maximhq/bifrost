@@ -495,9 +495,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 		}
 	}
 
-	// Usage - ensure token details exist
-	result.Usage = resp.Usage
-	if result.Usage != nil {
+	// Usage - ensure token details exist. Shaped on a copy: governance prices the caller's
+	// response concurrently, and its iterations carry the advisor passes.
+	if resp.Usage != nil {
+		usage := *resp.Usage
+		result.Usage = &usage
 		result.Usage.Iterations = nil
 		result.Usage.Type = nil
 		if result.Usage.InputTokensDetails == nil {
@@ -4602,8 +4604,13 @@ type ResponsesShellCallOutputDelta struct {
 // MarshalJSON omits event-scoped fields that are nil so strict Responses
 // clients do not see explicit nulls on unrelated event types. Some event types
 // still intentionally emit empty arrays after WithDefaults populates them.
+// resp is a copy, so defaults set here never reach the caller's event.
 func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesStreamResponse
+	// Anthropic/Bedrock carry the thinking signature on a text-less delta; delta is required on the wire.
+	if resp.Type == ResponsesStreamResponseTypeReasoningSummaryTextDelta && resp.Delta == nil {
+		resp.Delta = new("")
+	}
 	encoded, err := Marshal(alias(resp))
 	if err != nil {
 		return nil, err

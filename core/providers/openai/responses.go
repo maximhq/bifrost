@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -553,6 +554,27 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 // retags it by role.
 const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
 
+// isNativeWebSearchCall reports whether message is a web_search_call that OpenAI itself
+// produced: its id has OpenAI's "ws_" prefix and its status is one OpenAI defines.
+// "ws_<n>" is excluded because Gemini synthesizes it for ID-less search calls
+// (convertGeminiCandidatesToResponsesOutput, generateItemID), and OpenAI rejects an id
+// it never issued.
+func isNativeWebSearchCall(message schemas.ResponsesMessage) bool {
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		message.ID == nil || message.Status == nil {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(*message.ID, "ws_")
+	if !ok || suffix == "" || strings.Trim(suffix, "0123456789") == "" {
+		return false
+	}
+	switch *message.Status {
+	case "in_progress", "searching", "completed", "failed", "incomplete":
+		return true
+	}
+	return false
+}
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -560,7 +582,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -574,6 +596,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// additional_tools items are lifted to the top level so the tools inside them get
 	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
@@ -599,6 +622,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				continue
 			}
 			message.OutputConfig = nil
+		}
+		// Role is swapped for a new pointer, so the caller's message keeps "developer".
+		if developerAsSystem && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) &&
+			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleDeveloper {
+			message.Role = new(schemas.ResponsesInputMessageRoleSystem)
 		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
@@ -727,7 +755,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// Strip it, with four exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
@@ -740,6 +768,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// OpenAI wire, and `error` on an input item is rejected outright. Dropping
 			// it too would make a failed tool call indistinguishable from a successful
 			// one. Only this value is kept; any other status is still stripped.
+		case isNativeWebSearchCall(message):
+			// A web_search_call that keeps its native "ws_" id is OpenAI's own item, where
+			// id and status are both required on replay ("Missing required parameter:
+			// input[N].status" otherwise). Foreign ids and statuses (Gemini) are still stripped.
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage &&
 			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant &&
 			message.ID != nil && *message.ID != "" && message.Status != nil &&
@@ -759,7 +791,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!isNativeWebSearchCall(message) {
 			message.ID = nil
 		}
 
@@ -923,6 +956,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		} else {
 			messages = append(messages, message)
 		}
+	}
+	if !caps.SupportsMidConversationSystem(true) {
+		messages = inlineResponsesMidConversationSystem(messages)
 	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated
 	// out of cache_control, which their serializer would otherwise strip.
@@ -1162,6 +1198,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		req.Store = new(false)
+		if _, ok := req.ExtraParams["store"]; ok {
+			req.ExtraParams = maps.Clone(req.ExtraParams)
+			req.ExtraParams["store"] = false
+		}
 	}
 
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {

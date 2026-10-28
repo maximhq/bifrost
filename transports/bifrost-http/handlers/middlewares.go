@@ -218,6 +218,25 @@ type corsMiddlewareConfig struct {
 	dumpErrorsInConsoleLogs bool
 	allowedOrigins          []string
 	allowedHeaders          []string
+	allowHeaders            string // Access-Control-Allow-Headers when nothing is reflected, joined once
+}
+
+// defaultCorsAllowedHeaders are allowed on every route. SetupTokenHeader is sent by the dashboard
+// on every call while the OSS setup lock is active, so a UI served from another origin must be able
+// to preflight it. The MCP Streamable HTTP headers ride on every request a browser MCP client makes
+// after initialize, and on every 2026-07-28 request.
+var defaultCorsAllowedHeaders = []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", "X-Bifrost-View-As", SetupTokenHeader,
+	"MCP-Protocol-Version", "Mcp-Session-Id", "Mcp-Method", "Mcp-Name", "Last-Event-ID"}
+
+// corsAllowHeaders joins the default headers with the configured extras, skipping duplicates.
+func corsAllowHeaders(configured []string) string {
+	headers := slices.Clone(defaultCorsAllowedHeaders)
+	for _, header := range configured {
+		if header != "*" && !slices.Contains(headers, header) {
+			headers = append(headers, header)
+		}
+	}
+	return strings.Join(headers, ", ")
 }
 
 // newCorsMiddlewareConfig builds an immutable snapshot from the live config,
@@ -230,6 +249,7 @@ func newCorsMiddlewareConfig(config *lib.Config) *corsMiddlewareConfig {
 		dumpErrorsInConsoleLogs: config.ClientConfig.DumpErrorsInConsoleLogs,
 		allowedOrigins:          slices.Clone(config.ClientConfig.AllowedOrigins),
 		allowedHeaders:          slices.Clone(config.ClientConfig.AllowedHeaders),
+		allowHeaders:            corsAllowHeaders(config.ClientConfig.AllowedHeaders),
 	}
 }
 
@@ -254,6 +274,20 @@ func NewCorsMiddleware(config *lib.Config) *CorsMiddleware {
 // client config is refreshed, mirroring how AuthMiddleware is updated.
 func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
+}
+
+// logRequestTarget is the request target for the access log with an api-key query value redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
+// parsed names are checked, so a percent-encoded api-key name is redacted too.
+func logRequestTarget(ctx *fasthttp.RequestCtx) string {
+	uri := ctx.RequestURI()
+	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+		return string(uri)
+	}
+	var args fasthttp.Args
+	ctx.QueryArgs().CopyTo(&args)
+	args.Set("api-key", schemas.RedactedAttrValue)
+	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
 }
 
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
@@ -282,7 +316,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					}
 					logBuilder := logger.LogHTTPRequest(level, "request completed").
 						Str("http.method", string(ctx.Method())).
-						Str("http.target", string(ctx.RequestURI())).
+						Str("http.target", logRequestTarget(ctx)).
 						Int("http.status_code", statusCode).
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
@@ -334,35 +368,32 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 		isLocalhostOrigin(origin) ||
 		slices.Contains(cfg.allowedOrigins, origin)
 
-	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
-	// active, so a UI served from another origin must be able to preflight it.
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
-	if slices.Contains(cfg.allowedHeaders, "*") {
-		if credentialed {
-			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
-			// wildcard when Access-Control-Allow-Credentials: true is set — browsers
-			// interpret it as a literal header name. For credentialed preflight requests,
-			// reflect back the requested headers instead.
-			if requestedHeaders := string(ctx.Request.Header.Peek("Access-Control-Request-Headers")); requestedHeaders != "" {
-				allowedHeaders = []string{requestedHeaders}
-			}
-			// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
-		} else {
-			allowedHeaders = []string{"*"}
-		}
-	} else if len(cfg.allowedHeaders) > 0 {
-		// append allowed headers from config to the default headers
-		for _, header := range cfg.allowedHeaders {
-			if !slices.Contains(allowedHeaders, header) {
-				allowedHeaders = append(allowedHeaders, header)
-			}
-		}
-	}
 	// Check if origin is allowed (localhost always allowed + configured origins)
 	if allowed {
+		// Built only for an allowed origin: a refused one gets no CORS headers, so it costs nothing.
+		allowHeaders := cfg.allowHeaders
+		requested := ctx.Request.Header.Peek("Access-Control-Request-Headers")
+		if slices.Contains(cfg.allowedHeaders, "*") {
+			if credentialed {
+				// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
+				// wildcard when Access-Control-Allow-Credentials: true is set — browsers
+				// interpret it as a literal header name. For credentialed preflight requests,
+				// reflect back the requested headers instead.
+				if len(requested) > 0 {
+					allowHeaders = string(requested)
+				}
+				// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
+			} else {
+				// "*" never covers Authorization (Fetch standard), so it stays listed explicitly.
+				allowHeaders = cfg.allowHeaders + ", *"
+			}
+		} else if len(requested) > 0 {
+			// Mcp-Param-* names come from each tool's x-mcp-header annotations, so they are echoed from the preflight.
+			allowHeaders = appendMCPParamHeaders(allowHeaders, requested)
+		}
 		ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
-		ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
+		ctx.Response.Header.Set("Access-Control-Allow-Headers", allowHeaders)
 		if credentialed {
 			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 		}
@@ -1678,6 +1709,8 @@ var apiSystemWhitelistedRoutes = []string{
 	// not a session token is present, so a repeat logout must not 401 here.
 	"/api/session/logout",
 	"/api/oauth/callback",
+	// Client ID Metadata Document
+	"/api/oauth/client-metadata.json",
 	"/health",
 	"/login",
 	"/favicon.ico",
@@ -2457,4 +2490,32 @@ func AuthBypassedMiddleware(allowedOrigins, whitelistedRoutes []string) schemas.
 			next(ctx)
 		}
 	}
+}
+
+// appendMCPParamHeaders appends the Mcp-Param-* names a preflight asks for to allowed, which is
+// returned unchanged when it asks for none.
+func appendMCPParamHeaders(allowed string, requested []byte) string {
+	isParam := func(name []byte) bool {
+		return len(name) > len("mcp-param-") && bytes.EqualFold(name[:len("mcp-param-")], []byte("mcp-param-"))
+	}
+	// Sized first so the list is built in one allocation: appending to a string copies it per name.
+	size := 0
+	for name := range bytes.SplitSeq(requested, []byte(",")) {
+		if name = bytes.TrimSpace(name); isParam(name) {
+			size += len(", ") + len(name)
+		}
+	}
+	if size == 0 {
+		return allowed
+	}
+	var out strings.Builder
+	out.Grow(len(allowed) + size)
+	out.WriteString(allowed)
+	for name := range bytes.SplitSeq(requested, []byte(",")) {
+		if name = bytes.TrimSpace(name); isParam(name) {
+			out.WriteString(", ")
+			out.Write(name)
+		}
+	}
+	return out.String()
 }
