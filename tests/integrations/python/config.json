@@ -626,7 +626,8 @@
         {
           "name": "Replicate API Key",
           "value": "env.REPLICATE_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -657,7 +658,8 @@
         {
           "name": "Runway API Key",
           "value": "env.RUNWAY_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -672,7 +674,8 @@
         {
           "name": "Nebius API Key",
           "value": "env.NEBIUS_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {

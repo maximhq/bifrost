@@ -875,7 +875,6 @@ export default function AppSidebar() {
 				icon: Bot,
 				description: "Register and manage A2A agents",
 				hasAccess: hasAgentGatewayAccess,
-				new: true,
 				subItems: [
 					{
 						title: "Agent Catalog",

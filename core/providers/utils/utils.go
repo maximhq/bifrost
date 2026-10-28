@@ -592,6 +592,12 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
 func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthttp.Client {
+	// A factory client forwards each request to an inner client that already carries
+	// the factory's proxy, dialer and retry policy; it is left as it is.
+	if network.IsLiveFasthttpClient(client) {
+		return client
+	}
+
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -834,26 +840,35 @@ func configureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 // net/http dispatches on the proxy URL's scheme (HTTP CONNECT for "http", SOCKS5
 // for "socks5"), so both types share one path.
 func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.URL, error), *tls.Config, error) {
+	proxy, targetTLS, _, err := NetHTTPProxyWithHopTLS(proxyConfig)
+	return proxy, targetTLS, err
+}
+
+// NetHTTPProxyWithHopTLS is NetHTTPProxy that also returns hopTLS, the TLS config for
+// the connection to an https:// proxy itself: its CA and skip_tls_verify, without the
+// no_proxy scope targetTLS carries. That scope cannot tell the proxy's handshake from a
+// target's, so it would verify the proxy when it is an IP literal or on no_proxy.
+// hopTLS == targetTLS when no scope applies.
+func NetHTTPProxyWithHopTLS(proxyConfig *schemas.ProxyConfig) (proxy func(*http.Request) (*url.URL, error), targetTLS, hopTLS *tls.Config, err error) {
 	if proxyConfig == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
-	var proxy func(*http.Request) (*url.URL, error)
 	switch proxyConfig.Type {
 	case schemas.NoProxy:
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	case schemas.HTTPProxy, schemas.Socks5Proxy:
 		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
-			return nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
+			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
 		}
 		proxyURLValue := proxyConfig.URL.GetValue()
 		if proxyURLValue == "" {
 			getLogger().Warn("Warning: proxy URL is required for setting up proxy")
-			return nil, nil, nil
+			return nil, nil, nil, nil
 		}
 		parsedURL, err := url.Parse(proxyURLValue)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
+			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
 		}
 		proxyUsername := proxyConfig.Username.GetValue()
 		proxyPassword := proxyConfig.Password.GetValue()
@@ -864,7 +879,7 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 	case schemas.EnvProxy:
 		proxy = EnvProxyFunc()
 	default:
-		return nil, nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+		return nil, nil, nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 	}
 	if noProxy := proxyConfig.NoProxy; noProxy != "" {
 		configured := proxy
@@ -877,18 +892,19 @@ func NetHTTPProxy(proxyConfig *schemas.ProxyConfig) (func(*http.Request) (*url.U
 	}
 
 	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
-		return nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
+		return nil, nil, nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
 	}
 	var tlsConfig *tls.Config
 	if proxyCACertPEM := proxyConfig.CACertPEM.GetValue(); proxyCACertPEM != "" {
 		var err error
 		tlsConfig, err = createTLSConfigWithCA(proxyCACertPEM)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
+			return nil, nil, nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
 		}
 	}
 
-	return proxy, scopeSkipVerify(withProxySkipVerify(tlsConfig, proxyConfig.SkipTLSVerify), proxyConfig.NoProxy), nil
+	hopTLS = withProxySkipVerify(tlsConfig, proxyConfig.SkipTLSVerify)
+	return proxy, scopeSkipVerify(hopTLS, proxyConfig.NoProxy), hopTLS, nil
 }
 
 // skipVerifyScopes records, for each TLS config scopeSkipVerify built, the no_proxy list
@@ -1006,7 +1022,7 @@ func EnvProxyFunc() func(*http.Request) (*url.URL, error) {
 // client that's built once and reused silently), this returns an error directly: callers resolve proxy
 // configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
 func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
-	proxy, tlsConfig, err := NetHTTPProxy(proxyConfig)
+	proxy, tlsConfig, hopTLS, err := NetHTTPProxyWithHopTLS(proxyConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -1023,10 +1039,10 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 	// the proxy is chosen by is still the request's.
 	dialer.Proxy = nil
 	dialer.NetDialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-		return dialWebSocketUpstream(ctx, proxy, "http", addr, tlsConfig)
+		return dialWebSocketUpstream(ctx, proxy, "http", addr, hopTLS)
 	}
 	dialer.NetDialTLSContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
-		conn, err := dialWebSocketUpstream(ctx, proxy, "https", addr, tlsConfig)
+		conn, err := dialWebSocketUpstream(ctx, proxy, "https", addr, hopTLS)
 		if err != nil {
 			return nil, err
 		}
@@ -1047,6 +1063,53 @@ func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig
 		return tlsConn, nil
 	}
 	return dialer, nil
+}
+
+// DialHTTPSProxyWithHopTLS makes transport reach an https:// proxy with hopTLS (see
+// NetHTTPProxyWithHopTLS) instead of TLSClientConfig, which net/http otherwise uses for
+// the TLS session to the proxy as well as to the target. A request whose Proxy func
+// picks an https:// proxy is handed to DialContext as a direct one, and DialContext
+// reaches the target through network.DialViaProxyTLS; net/http then speaks TLS to the
+// target over that tunnel with TLSClientConfig, as it would after its own CONNECT. The
+// proxy picked for each target host:port is kept until a later request picks another.
+func DialHTTPSProxyWithHopTLS(transport *http.Transport, hopTLS *tls.Config) {
+	proxy := transport.Proxy
+	if proxy == nil {
+		return
+	}
+	var viaHTTPSProxy sync.Map // target host:port -> *url.URL
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := proxy(req)
+		addr := canonicalTargetAddr(req.URL)
+		if err != nil || proxyURL == nil || proxyURL.Scheme != "https" {
+			viaHTTPSProxy.Delete(addr)
+			return proxyURL, err
+		}
+		viaHTTPSProxy.Store(addr, proxyURL)
+		return nil, nil
+	}
+	direct := transport.DialContext
+	if direct == nil {
+		direct = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	transport.DialContext = func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if proxyURL, ok := viaHTTPSProxy.Load(addr); ok {
+			return network.DialViaProxyTLS(ctx, proxyURL.(*url.URL), addr, hopTLS)
+		}
+		return direct(ctx, netw, addr)
+	}
+}
+
+// canonicalTargetAddr is the host:port net/http dials for a direct request to u.
+func canonicalTargetAddr(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" || u.Scheme == "wss" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 // dialWebSocketUpstream opens the TCP stream to a WebSocket upstream: through the proxy

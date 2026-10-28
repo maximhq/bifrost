@@ -1,7 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { getErrorMessage, useCreateRelayMutation } from "@/lib/store";
 import { relayFormSchema, type RelayFormValues } from "@/lib/types/schemas";
@@ -60,39 +59,40 @@ export function AddEndpointSheet({
 					</SheetTitle>
 				</SheetHeader>
 				<Form {...form}>
-					<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 px-4 pb-6 md:px-8">
-						<FormField
-							control={form.control}
-							name="name"
-							render={({ field }) => (
-								<FormItem>
-									<InfoLabel label="Name (Required)" info={<>Callers use /relay/&lt;name&gt;. It cannot be changed later.</>} />
-									<FormControl>
-										<Input placeholder="tavily" data-testid="relay-name" {...field} />
-									</FormControl>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
-						<FormField
-							control={form.control}
-							name="base_url"
-							render={({ field }) => (
-								<FormItem>
-									<InfoLabel
-										label="Base URL (Required)"
-										info="Every request is pinned under this origin and path; callers cannot reach another host."
-									/>
-									<FormControl>
-										<Input placeholder="https://api.tavily.com" data-testid="relay-new-base-url" {...field} />
-									</FormControl>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
-						<Separator className="my-6" />
-						<CredentialFields form={form} />
-						<div className="flex justify-end space-x-2 pt-4">
+					<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
+						<div className="grow space-y-4 px-4 md:px-8">
+							<FormField
+								control={form.control}
+								name="name"
+								render={({ field }) => (
+									<FormItem>
+										<InfoLabel label="Name (Required)" info={<>Callers use /relay/&lt;name&gt;. It cannot be changed later.</>} />
+										<FormControl>
+											<Input placeholder="tavily" data-testid="relay-name" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="base_url"
+								render={({ field }) => (
+									<FormItem>
+										<InfoLabel
+											label="Base URL (Required)"
+											info="Every request is pinned under this origin and path; callers cannot reach another host."
+										/>
+										<FormControl>
+											<Input placeholder="https://api.tavily.com" data-testid="relay-new-base-url" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<CredentialFields form={form} />
+						</div>
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={close} disabled={isLoading}>
 								Cancel
 							</Button>

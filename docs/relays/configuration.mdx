@@ -102,6 +102,30 @@ Relays in `config.json` are reconciled into the config store at startup, before 
 Every secret field (`credential.value`, the AWS fields, `extra_headers` values, proxy fields) accepts a literal string, an `env.VAR_NAME` reference, or a structured secret object (`{"value": "..."}`, `{"from_env": true, "env_var": "..."}` or a vault reference).
 
 </Tab>
+<Tab title="Helm">
+
+`bifrost.relays` takes the same fields as `config.json` and renders them unchanged as top-level `relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: tavily
+      description: "Web search for the research assistant"
+      base_url: "https://api.tavily.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.TAVILY_API_KEY"
+
+# Supply the referenced variable from a Kubernetes Secret
+envFrom:
+  - secretRef:
+      name: relay-credentials
+```
+
+The chart validates each relay against the same schema, and a name used twice fails the render. Startup reconciliation follows the `config.json` rules: with `bifrost.sourceOfTruth: config.json`, an explicit `relays` list (`[]` included) prunes stored relays it does not name, and leaving `relays` out keeps them.
+
+</Tab>
 </Tabs>
 
 ## Authentication types

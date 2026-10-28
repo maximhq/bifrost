@@ -45086,7 +45086,7 @@
     },
     {
       "name": "27. Anthropic Fallback Credit Strip + Fallback Entry Fields",
-      "description": "Fallback credit (fallback-credit-2026-06-01; -2026-06-09 on the AWS surfaces) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding, the per-provider beta gating and the AWS beta-date rewrite are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
+      "description": "Fallback credit (fallback-credit-2026-06-01, forwarded with the client date on every surface) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding and the per-provider beta gating are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
       "item": [
         {
           "name": "anthropic/claude-opus-4-8 · count_tokens strips fallback_credit_token",
@@ -45241,6 +45241,69 @@
                   "// The CLI user-agent routes this through the raw-body path, where the entry is",
                   "// rewritten by the gjson/sjson strip rather than the typed marshaller - a separate",
                   "// code path with its own way to corrupt the array."
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 · /anthropic/v1/messages · InvokeModel · fallback-credit beta keeps the client date (x-bf-eh)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-anthropic-beta",
+                "value": "fallback-credit-2026-07-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"tools\":[{\"type\":\"tool_search_tool_regex_20251119\",\"name\":\"tool_search_tool_regex\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// tool_search + defer_loading routes Bedrock to InvokeModel, where betas ride in the body",
+                  "// anthropic_beta array that Bedrock validates. Bifrost used to rewrite any fallback-credit-*",
+                  "// to fallback-credit-2026-06-09 here, which Bedrock rejects with 400 Unexpected value(s).",
+                  "pm.test('bedrock InvokeModel fallback-credit: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200 (a 400 naming fallback-credit-2026-06-09 is the rewrite regression): ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock InvokeModel fallback-credit: anthropic_beta carries the client date unchanged', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var betas = (rr && rr.anthropic_beta) || [];",
+                  "  pm.expect(rr && rr.anthropic_version, 'request did not go to InvokeModel: ' + JSON.stringify(rr)).to.eql('bedrock-2023-05-31');",
+                  "  pm.expect(betas, 'client fallback-credit date not forwarded: ' + JSON.stringify(betas)).to.include('fallback-credit-2026-07-01');",
+                  "  pm.expect(betas, 'gateway rewrote the fallback-credit date: ' + JSON.stringify(betas)).to.not.include('fallback-credit-2026-06-09');",
+                  "});"
                 ]
               }
             }
@@ -290719,6 +290782,92 @@
           }
         }
       ]
+    },
+    {
+      "name": "285. Proxy egress: upstream reach for providers with no other cheap row (proxy-egress)",
+      "description": "One upstream-reaching request for each provider that no existing harness row reaches cheaply. The proxy e2e flow (tests/e2e/api/runners/proxy/) selects these through proxy-smoke-manifest.json, so every provider's egress is proven through each proxy. Each row asserts a 200 carrying the provider's own catalog, which only the live upstream can return.",
+      "item": [
+        {
+          "name": "nebius models listed through /v1/models reach api.tokenfactory.nebius.com - proxy-egress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nebius ListModels reaches the upstream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var models = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('nebius/') === 0; });",
+                  "  pm.expect(models, 'no nebius/ model in the upstream catalog: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=nebius",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "nebius"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "elevenlabs models listed through /v1/models reach api.elevenlabs.io - proxy-egress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('elevenlabs ListModels reaches the upstream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var models = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('elevenlabs/') === 0; });",
+                  "  pm.expect(models, 'no elevenlabs/ model in the upstream catalog: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=elevenlabs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "elevenlabs"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
 ,
     {
@@ -295154,6 +295303,889 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "287. Image cost falls back to the per-image rate when tokens have no rate (image per-image pricing) [SERIAL]",
+      "description": "BytePlus Seedream reports output_tokens on every generated image, but its datasheet rows price per image only (output_cost_per_image, no per-token rate). Image cost took the token branch whenever tokens were reported, multiplied them by a missing rate and recorded no cost, so the per-image fallback was never reached. Token pricing now only applies when it yields a non-zero cost. Case 1 generates one image with a pinned request id; case 2 polls the log row for that id and asserts it carries a cost (pre-fix: no cost).",
+      "item": [
+        {
+          "name": "/v1/images/generations - generate one image for pricing - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var reqId = 'e2e-seedream-image-price-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('seedreamImagePriceRequestId', reqId);",
+                  "pm.collectionVariables.unset('seedreamImagePriceRetry');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('one image generated by byteplus', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect((body.data || []).length, 'no images: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "});",
+                  "pm.test('byteplus reported output tokens for the image', function () {",
+                  "  var usage = pm.response.json().usage;",
+                  "  pm.expect(usage && usage.output_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});",
+                  "pm.test('the produced size is reported for pixel-tier pricing', function () {",
+                  "  var size = pm.response.json().size;",
+                  "  pm.expect(size, 'size: ' + pm.response.text().slice(0, 500)).to.match(/^\\d+x\\d+$/);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{seedreamImagePriceRequestId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dola-seedream-5-0-pro-260628\",\n  \"prompt\": \"A blue circle on white\",\n  \"size\": \"2048x2048\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "logs - the image is recorded with its per-image cost - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('seedreamImagePriceRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.collectionVariables.get('seedreamImagePriceRequestId');",
+                  "pm.test('logs query responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('seedreamImagePriceRetry'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+                  "var row = null;",
+                  "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+                  "var retry = Number(pm.collectionVariables.get('seedreamImagePriceRetry') || 0);",
+                  "if ((!row || !(row.cost > 0)) && retry < 10) {",
+                  "  pm.collectionVariables.set('seedreamImagePriceRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('seedreamImagePriceRetry');",
+                  "pm.test('the image generation was logged under its request id', function () {",
+                  "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+                  "  pm.expect(row.object).to.eql('image_generation');",
+                  "});",
+                  "if (!row) { return; }",
+                  "pm.test('the reported output tokens were kept on the row', function () {",
+                  "  pm.expect(row.token_usage && row.token_usage.completion_tokens, 'token_usage: ' + JSON.stringify(row.token_usage)).to.be.above(0);",
+                  "});",
+                  "pm.test('the image was priced at the per-image rate despite reported tokens', function () {",
+                  "  pm.expect(row.cost, 'cost: ' + JSON.stringify([row.cost, row.token_usage])).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?request_id={{seedreamImagePriceRequestId}}&limit=1"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "288. Sonnet 5.5 caller request surface (sonnet-5-5-surface)",
+      "description": "Local fixture regression, no live provider. Point an isolated gateway's anthropic base_url at runners/anthropic-request-surface-fixture.mjs with max_retries=0 and set anthropicRequestSurfaceFixture=1 to enable these cases; see tests/e2e/api/README.md, \"Sonnet 5.5 caller request surface\". The fixture stands in for the Anthropic Messages API and inspects the request it receives, so these cases assert WHAT BIFROST FORWARDS. They are not evidence of what the live Claude API accepts, and they need no key, no quota and no subscription entitlement. Each request carries its case name in the user message; the fixture answers 200 only when the reasoning and sampling surface on the wire is the one the caller sent, and otherwise answers 400 naming every field that drifted. Four cases are red before the request-surface fix and green after: between_tools carrying a sibling thinking.display; enabled+budget on the typed and the claude-cli raw path; and a caller-sent effort. Ten are invariance controls that must pass on both trees: bare between_tools on unary, stream and count_tokens (already forwarded upstream since PR #7665, and recorded here as controls rather than fixes), the three typed sampling cases, the raw path's already-correct sampling tuple, and claude-sonnet-5 keeping its adaptive rewrite, its raw-path asymmetry and its dropped count sampling. The typed sampling cases are controls because this model family is adaptive-only and the typed converter drops temperature/top_p and deletes top_k for it, so the change leaves sampling stripped; the raw path still forwards all three, and that divergence stays visible here rather than being resolved. count_tokens still deletes temperature for every model, which the count cases pin rather than fix.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('anthropicRequestSurfaceFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture accepted the forwarded request', function () {",
+              "  var body = pm.response.text();",
+              "  pm.expect(pm.response.code, body).to.equal(200);",
+              "  pm.expect(body, 'the fixture rejected the forwarded request').to.not.include('surface_mismatch');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Anthropic /v1/messages - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages stream - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-stream\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message stream', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "  pm.expect(body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-count\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking between_tools keeps a sibling display (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-display-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\",\n    \"display\": \"omitted\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled keeps its budget, invents no effort, and carries the interleaved beta (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: enabled-budget-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled on the claude-cli raw path matches the typed path (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: enabled-budget-raw\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - a caller-sent effort survives beside the restored thinking (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: effort-preserved-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - temperature, top_p and top_k stay stripped for this adaptive-only model (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-unary\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages stream - temperature, top_p and top_k stay stripped for this adaptive-only model (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-stream\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message stream', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "  pm.expect(body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - all three sampling parameters stay stripped (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-count\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the claude-cli raw path forwards the same sampling tuple (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-raw\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the neighbouring model keeps its adaptive rewrite and its dropped sampling (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the neighbouring model keeps its raw-path asymmetry (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-raw\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - the neighbouring model still loses all three sampling parameters (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-count\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

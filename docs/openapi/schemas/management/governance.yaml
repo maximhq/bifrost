@@ -2529,6 +2529,15 @@ PricingPatch:
         Per-second output rate for 4K video. Matched on the short edge of the
         generated video's size; falls back to output_cost_per_video_per_second
         when unset.
+    output_cost_per_video_token:
+      type: number
+      minimum: 0
+      description: >-
+        Per-token output rate for video, for providers that meter generated
+        video in tokens (BytePlus Seedance bills on the task's
+        completion_tokens). Takes precedence over output_cost_per_token for
+        video output tokens. When no token rate applies (unset or zero), video
+        output falls back to the per-second video rates.
     # Costs - Other
     web_search_cost_per_request:
       type: number

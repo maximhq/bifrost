@@ -3201,6 +3201,7 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_video_per_second_1024p",
 	"output_cost_per_video_per_second_1080p",
 	"output_cost_per_video_per_second_4k",
+	"output_cost_per_video_token",
 	// Costs - Other
 	"search_context_cost_per_query",
 	"web_search_cost_per_request",
