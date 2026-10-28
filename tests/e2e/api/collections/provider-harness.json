@@ -297373,7 +297373,7 @@
       ]
     },
     {
-      "name": "291. Cloudflare 520 origin errors retry on the same key (provider error fixture) (PR #8967)",
+      "name": "294. Cloudflare 520 origin errors retry on the same key (provider error fixture) (PR #8967)",
       "description": "Cloudflare answers 520-524 when its edge gets nothing usable from the origin, and providers behind it (OpenAI) pass that through, usually as a plain-text body such as \"error code: 520\". These statuses are transient (core/failureclass.go), so Bifrost retries them on the same key instead of returning them. The row uses the routing-error-fixture setup (see folder 185's description): a run-scoped OpenAI-backed provider on the provider error fixture with max_retries 2, one key whose alias sends upstream-520-once, which answers the first attempt with a plain-text 520 and the next with a response. Before the change the client gets the 520; after it the request succeeds on the second attempt with the same key. Run with providerErrorFixture=1 (and providerErrorFixtureUrl when the fixture is not on http://127.0.0.1:8791); skipped otherwise.",
       "item": [
         {
