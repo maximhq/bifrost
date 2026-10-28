@@ -146,10 +146,9 @@ func TestArmRequestTimeout_ConcurrentCallsKeepADeadline(t *testing.T) {
 }
 
 // TestArmRequestTimeout_ChildStoppingLastClearsParent covers overlapping
-// requests on a parent ctx and a child derived from it. The child reads the
-// parent's arm through Value and shares it; when the child's stop is the last
-// one, the marker must be cleared on the parent that owns it, or the parent's
-// next request reuses the stopped timer and runs with no deadline.
+// requests on a parent ctx and a child derived from it, with the child
+// stopping last. The parent must not be left holding a stopped arm, or its
+// next request would reuse that timer and run with no deadline.
 func TestArmRequestTimeout_ChildStoppingLastClearsParent(t *testing.T) {
 	parent, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
@@ -172,6 +171,65 @@ func TestArmRequestTimeout_ChildStoppingLastClearsParent(t *testing.T) {
 	case <-parent.Done():
 	case <-time.After(time.Second):
 		t.Fatal("the parent's next request ran with no deadline")
+	}
+}
+
+// TestArmRequestTimeout_ShorterChildTimeoutIsEnforced covers a derived ctx
+// that declares a shorter timeout while its parent's longer timer is live.
+// The child must end at its own deadline, and only the child: the parent's
+// request keeps running.
+func TestArmRequestTimeout_ShorterChildTimeoutIsEnforced(t *testing.T) {
+	parent, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	parent.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Minute)
+	stopParent, _ := armRequestTimeout(parent)
+	defer stopParent()
+
+	child := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	defer child.Cancel()
+	child.SetValue(schemas.BifrostContextKeyRequestTimeout, 30*time.Millisecond)
+	stopChild, armed := armRequestTimeout(child)
+	if !armed {
+		t.Fatal("child must report armed")
+	}
+	defer stopChild()
+
+	select {
+	case <-child.Done():
+	case <-time.After(time.Second):
+		t.Fatal("the child's shorter timeout was not enforced")
+	}
+	if fired, _ := child.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool); !fired {
+		t.Fatal("fired sentinel must be set on the child")
+	}
+	if parent.Err() != nil {
+		t.Fatalf("the child's deadline must not cancel the parent, got %v", parent.Err())
+	}
+}
+
+// TestArmRequestTimeout_ParentDeadlineStillReachesChild verifies the other
+// direction: a child with a longer timeout of its own still ends when the
+// parent's shorter deadline fires.
+func TestArmRequestTimeout_ParentDeadlineStillReachesChild(t *testing.T) {
+	parent, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	parent.SetValue(schemas.BifrostContextKeyRequestTimeout, 30*time.Millisecond)
+	stopParent, _ := armRequestTimeout(parent)
+	defer stopParent()
+
+	child := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	defer child.Cancel()
+	child.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Minute)
+	stopChild, _ := armRequestTimeout(child)
+	defer stopChild()
+
+	select {
+	case <-child.Done():
+	case <-time.After(time.Second):
+		t.Fatal("the parent's shorter deadline did not reach the child")
+	}
+	if fired, _ := child.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool); !fired {
+		t.Fatal("the child must see the fired sentinel the parent's timer set")
 	}
 }
 

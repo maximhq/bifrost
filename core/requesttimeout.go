@@ -54,9 +54,8 @@ type requestTimeoutArmedKey struct{}
 // requestTimeoutArm is one timer shared by every armRequestTimeout call on a
 // ctx; the last stop stops it. requestTimeoutArmMu guards refs and the
 // get-or-create, so concurrent first arms cannot each start a timer. owner is
-// the ctx the arm was stored on: a derived child reads it through Value, so
-// the last stop may come from the child, and the marker must be cleared on
-// owner or the parent keeps a stopped timer it would hand its next request.
+// the ctx the arm was stored on. A derived child sees it through Value but
+// never joins it, see armRequestTimeout.
 type requestTimeoutArm struct {
 	owner *schemas.BifrostContext
 	refs  int
@@ -95,6 +94,12 @@ var requestTimeoutArmMu sync.Mutex
 // from the first arm; they cannot have independent ones, since either timer
 // firing cancels the ctx both run on. What the count prevents is the first
 // call's stop leaving the second with no deadline at all.
+//
+// Only an arm stored on this exact ctx is shared. A ctx derived from one that
+// is armed reads the parent's arm through Value, but it may declare a shorter
+// timeout of its own, so it arms its own timer. The parent's deadline still
+// reaches it, because cancelling the parent cancels the child, so the child
+// ends at whichever deadline comes first.
 func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 	d, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration)
 	if d <= 0 {
@@ -102,7 +107,7 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 	}
 	requestTimeoutArmMu.Lock()
 	arm, _ := ctx.Value(requestTimeoutArmedKey{}).(*requestTimeoutArm)
-	if arm == nil {
+	if arm == nil || arm.owner != ctx {
 		arm = &requestTimeoutArm{owner: ctx, timer: time.AfterFunc(d, func() {
 			ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
 			ctx.Cancel()
