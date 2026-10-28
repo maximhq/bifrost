@@ -38,10 +38,21 @@ const (
 	mcpToolNameKey       schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
 
 	// Overhead is measured across the transport hooks rather than the LLM hooks,
-	// so the window matches the OTEL root span. See recordOverhead.
-	transportStartTimeKey schemas.BifrostContextKey = "bf-prom-transport-start-time"
-	overheadLabelsKey     schemas.BifrostContextKey = "bf-prom-overhead-labels"
+	// so the window matches the OTEL root span. Holds an *overheadSlot.
+	overheadSlotKey schemas.BifrostContextKey = "bf-prom-overhead-slot"
 )
+
+// overheadSlot hands the LLM hooks' labels and upstream counter to HTTPTransportPostHook.
+// The transport and handler run on separate BifrostContexts, so it travels as a shared pointer.
+type overheadSlot struct {
+	start   time.Time
+	capture atomic.Pointer[overheadCapture]
+}
+
+type overheadCapture struct {
+	labels []string
+	root   *schemas.BifrostContext // request root; outlives the hook's pooled scoped context
+}
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
 // This enables accurate metrics aggregation in multi-node cluster deployments where
@@ -878,7 +889,7 @@ func (*PrometheusPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *
 // HTTPTransportPreHook stamps the start of the transport window used to measure
 // Bifrost's overhead. See HTTPTransportPostHook.
 func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	ctx.SetValue(transportStartTimeKey, time.Now())
+	ctx.SetValue(overheadSlotKey, &overheadSlot{start: time.Now()})
 	return nil, nil
 }
 
@@ -898,25 +909,27 @@ func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 	// when a client cancels a stream before it reaches the handler, which would
 	// otherwise leave the gauge incremented forever. This runs after a stream drains.
 	p.releaseActiveRequest(ctx)
-	start, ok := ctx.Value(transportStartTimeKey).(time.Time)
+	slot, ok := ctx.Value(overheadSlotKey).(*overheadSlot)
 	if !ok {
 		return nil
 	}
-	p.recordOverhead(ctx, time.Since(start))
+	// Nil when no LLM hook completed; !ok when upstream was never measured, since the full duration would be wrong.
+	c := slot.capture.Load()
+	if c == nil || len(c.labels) == 0 {
+		return nil
+	}
+	if overhead, ok := schemas.CalculateOverhead(c.root, time.Since(slot.start)); ok {
+		p.observeOverhead(c.labels, overhead)
+	}
 	return nil
 }
 
-// recordOverhead observes total-minus-upstream against the labels the LLM hook
-// resolved. Silent when either is missing: no accumulator means upstream was
-// never measured, and reporting the full duration as overhead would be wrong.
-func (p *PrometheusPlugin) recordOverhead(ctx *schemas.BifrostContext, total time.Duration) {
-	labels, ok := ctx.Value(overheadLabelsKey).([]string)
-	if !ok || len(labels) == 0 {
-		return
+// observeOverhead records one overhead sample, clamped at zero like schemas.CalculateOverhead.
+func (p *PrometheusPlugin) observeOverhead(labels []string, overhead time.Duration) {
+	if overhead < 0 {
+		overhead = 0
 	}
-	if overhead, ok := schemas.CalculateOverhead(ctx, total); ok {
-		p.OverheadLatencyMicros.WithLabelValues(labels...).Observe(float64(overhead) / float64(time.Microsecond))
-	}
+	p.OverheadLatencyMicros.WithLabelValues(labels...).Observe(float64(overhead) / float64(time.Microsecond))
 }
 
 // Inject (schemas.ObservabilityPlugin) records the per-component overhead histogram from
@@ -1338,11 +1351,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
-	// Labels for HTTPTransportPostHook, which observes overhead. Written before
+	// Labels for HTTPTransportPostHook, which observes overhead. Published before
 	// the goroutine launches so the transport hook can't race it; on a retry the
 	// final attempt's labels win.
+	slot, viaTransport := ctx.Value(overheadSlotKey).(*overheadSlot)
+	if viaTransport && (isStreamFinal || bifrostErr != nil) {
+		slot.capture.Store(&overheadCapture{labels: slices.Clone(promLabelValues), root: ctx.Root()})
+	}
 	if isStreamFinal {
-		ctx.SetValue(overheadLabelsKey, slices.Clone(promLabelValues))
 		// Hand these labels to Inject (keyed by trace ID) for the breakdown histogram.
 		// Only when enabled and traced, so nothing is stored (or leaks) otherwise.
 		if p.overheadBreakdownEnabled.Load() {
@@ -1428,8 +1444,10 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		// SDK caller: no transport hooks fire, so this LLM-hook window is all there
 		// is to measure overhead against.
-		if _, viaTransport := ctx.Value(transportStartTimeKey).(time.Time); !viaTransport {
-			p.recordOverhead(ctx, llmHookWindow)
+		if !viaTransport {
+			if overhead, ok := schemas.CalculateOverhead(ctx, llmHookWindow); ok {
+				p.observeOverhead(promLabelValues, overhead)
+			}
 		}
 
 		// Record cost using the dedicated cost counter

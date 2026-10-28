@@ -110156,6 +110156,111 @@
         }
       }
     },
+    "/api/relays/openapi-spec": {
+      "post": {
+        "operationId": "fetchRelayOpenAPISpec",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Relays:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Fetch an OpenAPI document for route import",
+        "description": "Fetches an OpenAPI or Swagger document (JSON or YAML) from `spec_url` and returns its text unparsed, with the URL it was\nread from after redirects, so the route import can read a document the browser cannot fetch itself. The fetch uses the\nsame timeout, size cap and private-network guard as the MCP OpenAPI preview: an unauthenticated caller may not reach\nloopback or private addresses. Nothing is stored.\n",
+        "tags": [
+          "Relays"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "spec_url"
+                ],
+                "properties": {
+                  "spec_url": {
+                    "type": "string",
+                    "description": "Absolute http(s) URL of the document."
+                  }
+                }
+              },
+              "example": {
+                "spec_url": "https://exa.ai/docs/exa-spec.json"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The fetched document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "spec": {
+                      "type": "string",
+                      "description": "The document text as served."
+                    },
+                    "spec_url": {
+                      "type": "string",
+                      "description": "The URL the document was read from, after redirects."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted, or `spec_url` points at a private address for an unauthenticated caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The document is larger than the size cap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/relays/{name}/access-profiles": {
       "get": {
         "operationId": "listAccessProfilesForRelay",
@@ -139054,6 +139159,11 @@
             "type": "number",
             "minimum": 0,
             "description": "Per-second output rate for 4K video. Matched on the short edge of the generated video's size; falls back to output_cost_per_video_per_second when unset."
+          },
+          "output_cost_per_video_token": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Per-token output rate for video, for providers that meter generated video in tokens (BytePlus Seedance bills on the task's completion_tokens). Takes precedence over output_cost_per_token for video output tokens. When no token rate applies (unset or zero), video output falls back to the per-second video rates."
           },
           "web_search_cost_per_request": {
             "type": "number",

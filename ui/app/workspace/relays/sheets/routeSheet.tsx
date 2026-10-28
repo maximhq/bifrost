@@ -6,13 +6,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { RelayRouteMethods, type RelayUsageConfig } from "@/lib/types/relays";
-import { relayRouteFormSchema } from "@/lib/types/schemas";
+import { relayRouteFormSchema, relayUsageUnitsPathError } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
-import { cleanUsage, routeBillableByDefault } from "@/lib/utils/relayForm";
+import { cleanUsage, routeBillableByDefault, withoutPricing } from "@/lib/utils/relayForm";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ChevronDown, Plus, Trash2, Waypoints } from "lucide-react";
+import { ChevronDown, Waypoints } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useFieldArray, useForm, type Control, type FieldValues } from "react-hook-form";
+import { useForm, type Control, type FieldValues } from "react-hook-form";
+import { HeaderPairsTable } from "../fragments/headerPairsTable";
 import { UsageFields } from "../fragments/usageFields";
 import type { RouteForm } from "../routes.utils";
 import { InfoLabel } from "../fragments/infoLabel";
@@ -37,7 +38,6 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 		resolver: zodResolver(relayRouteFormSchema),
 		defaultValues: route ?? { method: "POST", path: "/", headers: [] },
 	});
-	const headers = useFieldArray({ control: form.control, name: "headers" });
 	useEffect(() => {
 		form.reset(route ?? { method: "POST", path: "/", headers: [] });
 	}, [route, form]);
@@ -53,6 +53,23 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 		if (show) setPricingOpen(false);
 	}, [show, route]);
 
+	// The backend judges a route's pricing merged with the relay's, which the form schema cannot see.
+	// A route that is not billed is never priced and hides its pricing, so the pricing is dropped rather
+	// than left to fail a check the person cannot see; its model and token mapping stays.
+	const save = (values: RouteForm) => {
+		if (!(values.billable ?? routeBillableByDefault(values.method))) {
+			onSave({ ...values, usage: withoutPricing(values.usage ?? undefined) });
+			return;
+		}
+		const message = relayUsageUnitsPathError(values.usage ?? undefined, endpointUsage);
+		if (message) {
+			form.setError("usage.units_path", { message });
+			setPricingOpen(true);
+			return;
+		}
+		onSave(values);
+	};
+
 	return (
 		<Sheet open={show} onOpenChange={(open) => !open && onCancel()}>
 			<SheetContent className="p-0 pt-4" data-testid="relay-route-sheet" onInteractOutside={(e) => e.preventDefault()}>
@@ -66,28 +83,92 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 				</SheetHeader>
 				<Form {...form}>
 					<form
-						onSubmit={form.handleSubmit(onSave, (errors) => errors.usage && setPricingOpen(true))}
-						className="space-y-4 px-4 pb-6 md:px-8"
+						onSubmit={form.handleSubmit(save, (errors) => errors.usage && setPricingOpen(true))}
+						className="flex grow flex-col gap-6 pt-4"
 					>
-						<div className="flex w-full flex-row items-start gap-4">
+						<div className="grow space-y-4 px-4 md:px-8">
+							<div className="flex w-full flex-row items-start gap-4">
+								<FormField
+									control={form.control}
+									name="method"
+									render={({ field }) => (
+										<FormItem className="w-32">
+											<FormLabel>Method</FormLabel>
+											<Select onValueChange={field.onChange} value={field.value} disabled={disabled}>
+												<FormControl>
+													<SelectTrigger className="w-full" data-testid="relay-route-method">
+														<SelectValue />
+													</SelectTrigger>
+												</FormControl>
+												<SelectContent>
+													{RelayRouteMethods.map((m) => (
+														<SelectItem key={m} value={m}>
+															{m}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="path"
+									render={({ field }) => (
+										<FormItem className="flex-1">
+											<InfoLabel label="Path (Required)" info="* matches within one segment; a trailing /** matches everything below." />
+											<FormControl>
+												<Input placeholder="/v1/search" disabled={disabled} data-testid="relay-route-path" {...field} />
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							</div>
+
 							<FormField
 								control={form.control}
-								name="method"
+								name="headers"
 								render={({ field }) => (
-									<FormItem className="w-32">
-										<FormLabel>Method</FormLabel>
-										<Select onValueChange={field.onChange} value={field.value} disabled={disabled}>
+									<FormItem>
+										<InfoLabel
+											label="Header Matchers (Optional)"
+											info="Request headers that must also match, such as X-Amz-Target for AWS JSON APIs. Values are globs."
+										/>
+										<HeaderPairsTable
+											value={field.value}
+											onChange={field.onChange}
+											errors={form.formState.errors.headers}
+											keyPlaceholder="X-Amz-Target"
+											valuePlaceholder="Textract.Analyze*"
+											disabled={disabled}
+											testIdPrefix="relay-route-header"
+										/>
+									</FormItem>
+								)}
+							/>
+
+							<FormField
+								control={form.control}
+								name="stream"
+								render={({ field }) => (
+									<FormItem>
+										<InfoLabel label="Streaming" info={<>Auto follows the relay&apos;s streaming settings.</>} />
+										<Select
+											value={field.value === undefined ? STREAM_AUTO : field.value ? "on" : "off"}
+											onValueChange={(v) => field.onChange(v === STREAM_AUTO ? undefined : v === "on")}
+											disabled={disabled || !!job}
+										>
 											<FormControl>
-												<SelectTrigger className="w-full" data-testid="relay-route-method">
+												<SelectTrigger className="w-full" data-testid="relay-route-stream">
 													<SelectValue />
 												</SelectTrigger>
 											</FormControl>
 											<SelectContent>
-												{RelayRouteMethods.map((m) => (
-													<SelectItem key={m} value={m}>
-														{m}
-													</SelectItem>
-												))}
+												<SelectItem value={STREAM_AUTO}>Auto</SelectItem>
+												<SelectItem value="on">Always stream</SelectItem>
+												<SelectItem value="off">Never stream</SelectItem>
 											</SelectContent>
 										</Select>
 										<FormMessage />
@@ -96,163 +177,67 @@ export function RouteSheet({ show, route, isNew, endpointUsage, ignoreUpstreamCo
 							/>
 							<FormField
 								control={form.control}
-								name="path"
+								name="billable"
 								render={({ field }) => (
-									<FormItem className="flex-1">
-										<InfoLabel label="Path (Required)" info="* matches within one segment; a trailing /** matches everything below." />
+									<FormItem className="flex flex-row items-center justify-between">
+										<div className="space-y-0.5">
+											<InfoLabel
+												label="Billable"
+												info={
+													<>
+														Counted against rate limits and charged to budgets. Default for {method}:{" "}
+														{routeBillableByDefault(method) ? "yes" : "no"}.
+													</>
+												}
+											/>
+										</div>
 										<FormControl>
-											<Input placeholder="/v1/search" disabled={disabled} data-testid="relay-route-path" {...field} />
+											<Switch
+												checked={field.value ?? routeBillableByDefault(method)}
+												onCheckedChange={field.onChange}
+												disabled={disabled || !!job}
+												data-testid="relay-route-billable"
+											/>
 										</FormControl>
-										<FormMessage />
 									</FormItem>
 								)}
 							/>
+							{billableNow && (
+								<Collapsible open={pricingOpen} onOpenChange={setPricingOpen} className="rounded-sm border">
+									<CollapsibleTrigger asChild>
+										<button
+											type="button"
+											className="flex w-full items-center justify-between px-4 py-3 text-left"
+											data-testid="relay-route-pricing-toggle"
+										>
+											<div className="space-y-0.5">
+												<div className="text-sm font-medium">Pricing Override</div>
+												<p className="text-muted-foreground text-sm">
+													{hasOverride ? "This route overrides the relay pricing." : "Uses the relay pricing."}
+												</p>
+											</div>
+											<ChevronDown className={cn("h-4 w-4 transition-transform", pricingOpen && "rotate-180")} />
+										</button>
+									</CollapsibleTrigger>
+									<CollapsibleContent className="space-y-4 border-t px-4 py-4">
+										<p className="text-muted-foreground text-sm">
+											Empty fields inherit the relay&apos;s pricing; set a field to 0 to waive it on this route.
+										</p>
+										<UsageFields
+											control={form.control as unknown as Control<FieldValues>}
+											name="usage"
+											value={usage}
+											inheritFrom={endpointUsage ?? {}}
+											disabled={disabled}
+											ignoreUpstreamCost={ignoreUpstreamCost}
+											testIdPrefix="relay-route-usage"
+										/>
+									</CollapsibleContent>
+								</Collapsible>
+							)}
 						</div>
 
-						<div className="space-y-2">
-							<InfoLabel
-								label="Header Matchers (Optional)"
-								info="Request headers that must also match, such as X-Amz-Target for AWS JSON APIs. Values are globs."
-								inForm={false}
-							/>
-							{headers.fields.map((field, i) => (
-								<div key={field.id} className="flex items-start gap-2">
-									<FormField
-										control={form.control}
-										name={`headers.${i}.name`}
-										render={({ field: f }) => (
-											<FormItem className="flex-1">
-												<FormControl>
-													<Input placeholder="X-Amz-Target" disabled={disabled} data-testid={`relay-route-header-name-${i}`} {...f} />
-												</FormControl>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<FormField
-										control={form.control}
-										name={`headers.${i}.value`}
-										render={({ field: f }) => (
-											<FormItem className="flex-1">
-												<FormControl>
-													<Input placeholder="Textract.Analyze*" disabled={disabled} data-testid={`relay-route-header-value-${i}`} {...f} />
-												</FormControl>
-												<FormMessage />
-											</FormItem>
-										)}
-									/>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										aria-label="Remove header matcher"
-										disabled={disabled}
-										onClick={() => headers.remove(i)}
-									>
-										<Trash2 className="h-4 w-4" />
-									</Button>
-								</div>
-							))}
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={disabled}
-								onClick={() => headers.append({ name: "", value: "" })}
-								data-testid="relay-route-add-header"
-							>
-								<Plus className="h-4 w-4" /> Add header matcher
-							</Button>
-						</div>
-
-						<FormField
-							control={form.control}
-							name="stream"
-							render={({ field }) => (
-								<FormItem>
-									<InfoLabel label="Streaming" info={<>Auto follows the relay&apos;s streaming settings.</>} />
-									<Select
-										value={field.value === undefined ? STREAM_AUTO : field.value ? "on" : "off"}
-										onValueChange={(v) => field.onChange(v === STREAM_AUTO ? undefined : v === "on")}
-										disabled={disabled || !!job}
-									>
-										<FormControl>
-											<SelectTrigger className="w-full" data-testid="relay-route-stream">
-												<SelectValue />
-											</SelectTrigger>
-										</FormControl>
-										<SelectContent>
-											<SelectItem value={STREAM_AUTO}>Auto</SelectItem>
-											<SelectItem value="on">Always stream</SelectItem>
-											<SelectItem value="off">Never stream</SelectItem>
-										</SelectContent>
-									</Select>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
-						<FormField
-							control={form.control}
-							name="billable"
-							render={({ field }) => (
-								<FormItem className="flex flex-row items-center justify-between">
-									<div className="space-y-0.5">
-										<InfoLabel
-											label="Billable"
-											info={
-												<>
-													Counted against rate limits and charged to budgets. Default for {method}:{" "}
-													{routeBillableByDefault(method) ? "yes" : "no"}.
-												</>
-											}
-										/>
-									</div>
-									<FormControl>
-										<Switch
-											checked={field.value ?? routeBillableByDefault(method)}
-											onCheckedChange={field.onChange}
-											disabled={disabled || !!job}
-											data-testid="relay-route-billable"
-										/>
-									</FormControl>
-								</FormItem>
-							)}
-						/>
-						{billableNow && (
-							<Collapsible open={pricingOpen} onOpenChange={setPricingOpen} className="rounded-sm border">
-								<CollapsibleTrigger asChild>
-									<button
-										type="button"
-										className="flex w-full items-center justify-between px-4 py-3 text-left"
-										data-testid="relay-route-pricing-toggle"
-									>
-										<div className="space-y-0.5">
-											<div className="text-sm font-medium">Pricing Override</div>
-											<p className="text-muted-foreground text-sm">
-												{hasOverride ? "This route overrides the relay pricing." : "Uses the relay pricing."}
-											</p>
-										</div>
-										<ChevronDown className={cn("h-4 w-4 transition-transform", pricingOpen && "rotate-180")} />
-									</button>
-								</CollapsibleTrigger>
-								<CollapsibleContent className="space-y-4 border-t px-4 py-4">
-									<p className="text-muted-foreground text-sm">
-										Empty fields inherit the relay&apos;s pricing; set a field to 0 to waive it on this route.
-									</p>
-									<UsageFields
-										control={form.control as unknown as Control<FieldValues>}
-										name="usage"
-										value={usage}
-										inheritFrom={endpointUsage ?? {}}
-										disabled={disabled}
-										ignoreUpstreamCost={ignoreUpstreamCost}
-										testIdPrefix="relay-route-usage"
-									/>
-								</CollapsibleContent>
-							</Collapsible>
-						)}
-
-						<div className="flex justify-end space-x-2 pt-4">
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={onCancel}>
 								Cancel
 							</Button>

@@ -755,6 +755,12 @@ export const PRICING_FIELDS = [
 		group: "video",
 		requestTypeGroups: ["video"],
 	},
+	{
+		key: "output_cost_per_video_token",
+		label: "Output / video token",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
 	// OCR fields
 	{
 		key: "ocr_cost_per_page",

@@ -20,33 +20,29 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useUpdateRelayMutation } from "@/lib/store";
 import type { Relay } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
 import { cleanUsage, describePricing, mergeUsage, routeBillableByDefault, toRelayForm } from "@/lib/utils/relayForm";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ArrowDownIcon, ArrowUpIcon, EllipsisIcon, FileUpIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { EllipsisIcon, FileUpIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
+import { HeaderActionButton } from "../fragments/headerActionButton";
 import { OpenAPIImportDialog } from "../fragments/openapiImportDialog";
 import { withRoutes, type RouteForm } from "../routes.utils";
 import { RouteSheet } from "../sheets/routeSheet";
 
 function RouteActionsMenu({
 	index,
-	count,
 	hasUpdateAccess,
 	onEdit,
-	onMove,
 	onDelete,
 }: {
 	index: number;
-	count: number;
 	hasUpdateAccess: boolean;
 	onEdit: () => void;
-	onMove: (to: number) => void;
 	onDelete: () => void;
 }) {
 	return (
@@ -60,14 +56,6 @@ function RouteActionsMenu({
 				<DropdownMenuItem onSelect={onEdit} disabled={!hasUpdateAccess} data-testid={`relay-route-edit-${index}`}>
 					<PencilIcon className="mr-1 h-4 w-4" />
 					Edit
-				</DropdownMenuItem>
-				<DropdownMenuItem onSelect={() => onMove(index - 1)} disabled={!hasUpdateAccess || index === 0}>
-					<ArrowUpIcon className="mr-1 h-4 w-4" />
-					Move up
-				</DropdownMenuItem>
-				<DropdownMenuItem onSelect={() => onMove(index + 1)} disabled={!hasUpdateAccess || index === count - 1}>
-					<ArrowDownIcon className="mr-1 h-4 w-4" />
-					Move down
 				</DropdownMenuItem>
 				<DropdownMenuSeparator />
 				<DropdownMenuItem variant="destructive" onSelect={onDelete} disabled={!hasUpdateAccess} data-testid={`relay-route-remove-${index}`}>
@@ -87,6 +75,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 	const [deleting, setDeleting] = useState<number | null>(null);
 	const [importOpen, setImportOpen] = useState(false);
 	const [pendingImport, setPendingImport] = useState<{ routes: RouteForm[]; dropped: string[] } | null>(null);
+	// Shown in saved order, which is the order requests are matched in; every save writes compareRoutes order.
 	const routes = toRelayForm(endpoint).routes;
 	const endpointUsage = cleanUsage(endpoint.usage, false);
 
@@ -138,39 +127,25 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 					<div className="flex min-w-0 flex-wrap items-center gap-2">
 						{headerActions}
 						{canUpdate && (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										variant="outline"
-										className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
-										aria-label="Import OpenAPI"
-										disabled={saving}
-										onClick={() => setImportOpen(true)}
-										data-testid="relay-routes-import"
-									>
-										<FileUpIcon className="h-4 w-4" />
-										<span className="hidden @3xl/card-header:inline">Import OpenAPI</span>
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>Replace the routes with the operations of an OpenAPI document</TooltipContent>
-							</Tooltip>
+							<HeaderActionButton
+								variant="outline"
+								icon={<FileUpIcon className="h-4 w-4" />}
+								label="Import OpenAPI"
+								aria-label="Import OpenAPI"
+								disabled={saving}
+								onClick={() => setImportOpen(true)}
+								data-testid="relay-routes-import"
+							/>
 						)}
 						{canUpdate && (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										aria-label="Add Route"
-										disabled={saving}
-										className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
-										onClick={() => setEditing({ index: -1, route: { method: "POST", path: "/", headers: [], enabled: true } })}
-										data-testid="relay-routes-add"
-									>
-										<PlusIcon className="h-4 w-4" />
-										<span className="hidden @3xl/card-header:inline">Add Route</span>
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>Add Route</TooltipContent>
-							</Tooltip>
+							<HeaderActionButton
+								icon={<PlusIcon className="h-4 w-4" />}
+								label="Add Route"
+								aria-label="Add Route"
+								disabled={saving}
+								onClick={() => setEditing({ index: -1, route: { method: "POST", path: "/", headers: [], enabled: true } })}
+								data-testid="relay-routes-add"
+							/>
 						)}
 					</div>
 				</CardTitle>
@@ -178,13 +153,15 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 			<div className="flex w-full flex-col gap-2 rounded-sm border">
 				<Table className="w-full min-w-[640px] table-fixed" data-testid="relay-routes-table">
 					<colgroup>
-						<col className="w-[40%]" />
-						<col className="w-[38%]" />
+						<col className="w-24" />
+						<col className="w-[36%]" />
+						<col className="w-[32%]" />
 						<col className="w-[12%]" />
 						<col className="w-[10%]" />
 					</colgroup>
 					<TableHeader>
 						<TableRow>
+							<TableHead>Method</TableHead>
 							<TableHead>Route</TableHead>
 							<TableHead>Price</TableHead>
 							<TableHead>Enabled</TableHead>
@@ -194,7 +171,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 					<TableBody>
 						{routes.length === 0 && (
 							<TableRow data-testid="relay-routes-empty">
-								<TableCell colSpan={4} className="py-6 text-center">
+								<TableCell colSpan={5} className="py-6 text-center">
 									{endpoint.skip_route_check
 										? "No routes; every path is relayed with the relay pricing."
 										: "No routes found. Add one or import an OpenAPI document."}
@@ -211,11 +188,13 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 									data-testid={`relay-route-row-${index}`}
 									className={cn("text-sm transition-colors hover:bg-white", !enabled && "opacity-60")}
 								>
+									<TableCell className="align-top">
+										<Badge variant="secondary" className="font-mono">
+											{route.method}
+										</Badge>
+									</TableCell>
 									<TableCell className="overflow-hidden">
 										<div className="flex min-w-0 items-center gap-2">
-											<Badge variant="secondary" className="font-mono">
-												{route.method}
-											</Badge>
 											<span className="truncate font-mono text-sm">{route.path}</span>
 											{route.job && <Badge variant="outline">job</Badge>}
 										</div>
@@ -257,15 +236,8 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 									<TableCell className="text-right">
 										<RouteActionsMenu
 											index={index}
-											count={routes.length}
 											hasUpdateAccess={canUpdate && !saving}
 											onEdit={() => setEditing({ index, route: structuredClone(route) })}
-											onMove={(to) => {
-												const next = [...routes];
-												const [moved] = next.splice(index, 1);
-												next.splice(to, 0, moved);
-												void save(next, "Route order updated");
-											}}
 											onDelete={() => setDeleting(index)}
 										/>
 									</TableCell>

@@ -7,7 +7,7 @@ import { useGetRelaysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { ArrowLeft, PlusIcon, Waypoints } from "lucide-react";
+import { ArrowLeft, PlusIcon } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { DeleteEndpointDialog } from "./dialogs/deleteEndpointDialog";
@@ -52,7 +52,7 @@ export default function RelaysPage() {
 
 	const current = endpoints?.find((e) => e.name === selected);
 	return (
-		<div className="flex w-full flex-col gap-4 md:flex-row">
+		<div className="flex w-full flex-col gap-4 md:h-[calc(var(--app-content-viewport)_-_55px)] md:flex-row">
 			{addSheet}
 			{current && (
 				<DeleteEndpointDialog
@@ -98,7 +98,6 @@ export default function RelaysPage() {
 									}
 								}}
 							>
-								<Waypoints className="text-muted-foreground h-4 w-4 shrink-0" />
 								<TruncatedLabel className="flex-1 text-sm">{endpoint.name}</TruncatedLabel>
 							</div>
 						))}
@@ -119,7 +118,8 @@ export default function RelaysPage() {
 					</div>
 				</div>
 			</div>
-			<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
+			{/* Scrolls on its own so the relay list stays in view beside a long route table. */}
+			<div className={cn("custom-scrollbar min-w-0 w-full md:h-full", mobileDetailOpen ? "block" : "hidden md:block")}>
 				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
 					<ArrowLeft className="size-4" />
 					Endpoints

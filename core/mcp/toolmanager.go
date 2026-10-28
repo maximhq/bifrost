@@ -847,7 +847,7 @@ func (m *ToolsManager) executeToolInternal(
 		//     terminated session, which on 2026-07-28 it cannot be.
 		//
 		// See attemptCallFailureRecovery for the per-auth-type mechanics.
-		if isAuthFailureErrorText(callErr.Error()) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn)) {
+		if isAuthFailure(callErr) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn)) {
 			// Recovery runs inside this call's own budget, not the caller's.
 			// The attempt above already spent part of toolCtx, and handing the
 			// parent ctx down instead would let the reconnect wait its full

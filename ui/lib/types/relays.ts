@@ -170,6 +170,13 @@ export interface UsagePreviewRequest {
 	sample: UsagePreviewSample;
 }
 
+/** POST /api/relays/openapi-spec: the gateway fetches a document the browser cannot (CORS) for the route import. */
+export interface RelayOpenAPISpecResponse {
+	spec: string;
+	/** The URL the document was read from after redirects; relative servers resolve against it. */
+	spec_url: string;
+}
+
 export interface UsagePreview {
 	route_index: number | null;
 	route_allowed: boolean;

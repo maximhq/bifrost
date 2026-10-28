@@ -271,6 +271,18 @@ func (f *HTTPClientFactory) GetFasthttpClient(purpose ClientPurpose) *fasthttp.C
 	return client
 }
 
+// IsLiveFasthttpClient reports whether client was handed out by GetFasthttpClient. Its
+// Transport forwards every request to the factory's inner client, so replacing the
+// transport or the dialer would take the request (for every holder of the shared
+// client) off the factory's proxy.
+func IsLiveFasthttpClient(client *fasthttp.Client) bool {
+	if client == nil {
+		return false
+	}
+	_, ok := client.Transport.(*liveFasthttpTransport)
+	return ok
+}
+
 // fasthttpClientKey identifies an inner fasthttp client. rawPath selects the variant
 // that sends the request path exactly as written; fasthttp applies that setting from
 // the client that sends the request, so it cannot be a per-request choice.
