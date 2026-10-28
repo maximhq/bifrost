@@ -749,7 +749,7 @@ false
 {{- if hasKey . "allow_all_providers" }}{{- $_ := set $vk "allow_all_providers" .allow_all_providers }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
-{{- /* Omitted keeps grants made through the API; [] replaces them with none, so it must survive. */ -}}
+{{- /* Rendered as declared; [] must survive so the key hash records an explicit empty list. */ -}}
 {{- if hasKey . "relay_grants" }}{{- $_ := set $vk "relay_grants" (default (list) .relay_grants) }}{{- end }}
 {{- $vks = append $vks $vk }}
 {{- end }}
