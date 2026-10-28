@@ -37,7 +37,7 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 				ID:            string(providerKey) + "/" + result.ResolvedID,
 				Created:       model.Created,
 				OwnedBy:       schemas.Ptr(model.OwnedBy),
-				ContextLength: model.ContextWindow,
+				ContextLength: model.contextLength(),
 			}
 			if result.AliasValue != "" {
 				entry.Alias = schemas.Ptr(result.AliasValue)
@@ -53,6 +53,14 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	return bifrostResponse
 }
 
+// contextLength returns context_window, falling back to vLLM's max_model_len.
+func (model *OpenAIModel) contextLength() *int {
+	if model.ContextWindow != nil {
+		return model.ContextWindow
+	}
+	return model.MaxModelLen
+}
+
 // ToBifrostModelRetrieveResponse converts an OpenAI model object to a Bifrost model retrieve response
 func (model *OpenAIModel) ToBifrostModelRetrieveResponse(providerKey schemas.ModelProvider) *schemas.BifrostModelRetrieveResponse {
 	if model == nil {
@@ -64,7 +72,7 @@ func (model *OpenAIModel) ToBifrostModelRetrieveResponse(providerKey schemas.Mod
 			ID:            string(providerKey) + "/" + model.ID,
 			Created:       model.Created,
 			OwnedBy:       schemas.Ptr(model.OwnedBy),
-			ContextLength: model.ContextWindow,
+			ContextLength: model.contextLength(),
 			ShutdownDate:  model.ShutdownDate,
 		},
 	}

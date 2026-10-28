@@ -214,3 +214,35 @@ func TestListModels_ErrorsWithoutPerKeyURL(t *testing.T) {
 		t.Fatal("expected error for key without vllm_key_config.url, got nil")
 	}
 }
+
+func TestListModels_ReportsMaxModelLenAsContextLength(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"served-model","object":"model","owned_by":"vllm","max_model_len":32768}]}`)
+	}))
+	defer server.Close()
+
+	keys := []schemas.Key{{
+		ID:            "key-1",
+		Value:         schemas.SecretVar{Val: "test-api-key"},
+		VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: schemas.SecretVar{Val: server.URL}},
+	}}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newTestVLLMProvider().ListModels(ctx, keys, &schemas.BifrostListModelsRequest{
+		Provider:   schemas.VLLM,
+		Unfiltered: true,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ListModels returned error: %v", bifrostErr.Error)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(resp.Data))
+	}
+	got := resp.Data[0].ContextLength
+	if got == nil || *got != 32768 {
+		t.Errorf("ContextLength = %v, want 32768", got)
+	}
+}
