@@ -294872,6 +294872,86 @@
               }
             }
           ]
+        },
+        {
+          "name": "Config: route header matchers accept any header name",
+          "description": "Which header selects a route is the operator's choice, so a route matcher may name any header, here an x-amz-* header under aws_sigv4 that the relay does not forward upstream. Before, create was refused with 400 \"is not forwarded under aws_sigv4\". Management API only, the upstream is never called.",
+          "item": [
+            {
+              "name": "create a sigv4 relay whose route matches on X-Amz-Storage-Class - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('sigv4 relay with an x-amz-storage-class matcher is created: HTTP 201', function () { pm.expect(pm.response.code, 'expected 201, got: ' + pm.response.text()).to.eql(201); });",
+                      "var relay = pm.response.json() || {};",
+                      "pm.test('the stored route keeps its X-Amz-Storage-Class matcher', function () {",
+                      "  var route = (relay.routes || [])[0] || {};",
+                      "  var headers = route.headers || {};",
+                      "  var value = headers['X-Amz-Storage-Class'] || headers['x-amz-storage-class'];",
+                      "  pm.expect(value, pm.response.text()).to.eql('GLACIER');",
+                      "});",
+                      "pm.collectionVariables.set('relaySigv4Name', relay.name);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"harness-relay-sigv4-{{$timestamp}}\",\n  \"base_url\": \"https://s3.us-east-1.amazonaws.com\",\n  \"auth\": {\n    \"type\": \"aws_sigv4\",\n    \"aws\": {\n      \"service\": \"s3\"\n    }\n  },\n  \"credential\": {\n    \"aws\": {\n      \"access_key\": {\n        \"value\": \"AKIAHARNESSEXAMPLE\"\n      },\n      \"secret_key\": {\n        \"value\": \"harness-example-secret\"\n      },\n      \"region\": {\n        \"value\": \"us-east-1\"\n      }\n    }\n  },\n  \"routes\": [\n    {\n      \"method\": \"PUT\",\n      \"path\": \"/**\",\n      \"headers\": {\n        \"X-Amz-Storage-Class\": \"GLACIER\"\n      },\n      \"billable\": false\n    }\n  ]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "cleanup: delete the sigv4 relay - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('sigv4 relay deleted: HTTP 204', function () { pm.expect(pm.response.code, 'expected 204, got: ' + pm.response.text()).to.eql(204); });"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/relays/{{relaySigv4Name}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "relays",
+                    "{{relaySigv4Name}}"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     }

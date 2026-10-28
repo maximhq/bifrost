@@ -85,6 +85,20 @@ func TestPreviewUsage(t *testing.T) {
 		require.NotNil(t, out.RouteIndex)
 		assert.Equal(t, 0, *out.RouteIndex, "the operator's X-Amz-Target picks the route, not the sample's")
 	})
+	t.Run("under sigv4 a route can match on an x-amz header the upstream never receives", func(t *testing.T) {
+		s3 := &schemas.RelayConfig{
+			Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthAWSSigV4, AWS: &schemas.RelayAWSAuthConfig{Service: "s3"}},
+			Routes: []schemas.RelayRouteConfig{
+				{Method: "PUT", Path: "/**", Headers: map[string]string{"X-Amz-Storage-Class": "GLACIER"}, Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.02)}},
+				{Method: "PUT", Path: "/**", Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)}},
+			},
+		}
+		require.NoError(t, s3.Validate())
+		out, err := previewUsage(s3, nil, UsagePreviewInput{Method: "PUT", Path: "/bucket/key", Headers: map[string]string{"X-Amz-Storage-Class": "GLACIER"}}, false)
+		require.NoError(t, err)
+		require.NotNil(t, out.RouteIndex)
+		assert.Equal(t, 0, *out.RouteIndex, "the caller's x-amz-storage-class picks the route")
+	})
 	t.Run("the sample path is decoded before matching, as the transport decodes it", func(t *testing.T) {
 		files := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{Method: "GET", Path: "/files/*"}}}
 		out, err := previewUsage(files, nil, UsagePreviewInput{Method: "GET", Path: "/files/a%2Fb"}, false)
