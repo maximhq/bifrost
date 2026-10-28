@@ -95,7 +95,9 @@ func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) 
 			MaxTokens:      model.MaxOutputTokens,
 			Capabilities:   model.ProviderExtra,
 		}
-		if model.Name != nil {
+		if model.DisplayName != nil {
+			anthropicModel.DisplayName = *model.DisplayName
+		} else if model.Name != nil {
 			anthropicModel.DisplayName = *model.Name
 		}
 		if model.Created != nil {

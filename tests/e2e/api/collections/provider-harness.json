@@ -297162,7 +297162,7 @@
     },
     {
       "name": "293. Upstream model metadata passthrough in model listings (#8914 / PR #9201)",
-      "description": "Custom OpenAI-compatible providers lost per-model metadata end to end (#8914): the shared list-models decoder whitelist dropped context_length/max_input_tokens/max_output_tokens/display_name/reasoning/modalities for envelope-shaped upstream responses, and the OpenAI-shape output converters (drop-in routes via ToOpenAIListModelsResponse / ToOpenAIModelRetrieveResponse) re-stripped them on the way out, so clients probing their base URL fell back to default context limits. PR #9201 decodes the fields in both response shapes and carries them through both converters. 293.1 pins the native /v1/models contract on a live metadata-emitting upstream (OpenRouter emits context_length in the envelope shape). 293.2 and 293.3 are the red-before pins for the output converters: the /openai drop-in routes used to emit context_window only, so a missing context_length there can only mean the converter stripped it again.",
+      "description": "Custom OpenAI-compatible providers lost per-model metadata end to end (#8914): the shared list-models decoder whitelist dropped context_length/max_input_tokens/max_output_tokens/display_name/reasoning/modalities for envelope-shaped upstream responses, and the OpenAI-shape output converters (drop-in routes via ToOpenAIListModelsResponse / ToOpenAIModelRetrieveResponse) re-stripped them on the way out, so clients probing their base URL fell back to default context limits. PR #9201 decodes the fields in both response shapes and carries them through both converters. 293.1 pins the native /v1/models contract on a live metadata-emitting upstream (OpenRouter emits context_length in the envelope shape). 293.2 and 293.3 are the red-before pins (293.2 scopes the listing with x-bf-model-provider: openrouter — the header selects which provider is asked) for the output converters: the /openai drop-in routes used to emit context_window only, so a missing context_length there can only mean the converter stripped it again.",
       "item": [
         {
           "name": "293.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914",
@@ -297181,6 +297181,7 @@
                   "pm.test('the upstream context_length reaches the native listing (#8914)', function () {",
                   "  pm.expect(entry, 'model not listed: ' + pm.response.text().slice(0, 2000)).to.be.an('object');",
                   "  pm.expect(entry['context_length'], 'context_length missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "  pm.expect(entry['display_name'], 'display_name missing on ' + JSON.stringify(entry)).to.be.a('string').and.not.equal('');",
                   "});"
                 ]
               }
@@ -297243,7 +297244,7 @@
               },
               {
                 "key": "x-bf-model-provider",
-                "value": "openai"
+                "value": "openrouter"
               }
             ],
             "url": {
