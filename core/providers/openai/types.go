@@ -1658,10 +1658,7 @@ type OpenAIModel struct {
 	Active        *bool `json:"active,omitempty"`
 	ContextWindow *int  `json:"context_window,omitempty"`
 
-	// Metadata fields emitted by many OpenAI-compatible upstreams
-	// (OpenRouter, Kimi, Together, ...) in their list-models responses.
-	// Decoded in both the envelope and top-level-array shapes and carried
-	// through to Bifrost's catalog entries; nil for providers that omit them.
+	// Upstream list-models metadata (OpenRouter/Kimi/Together shapes); nil when the provider omits it.
 	ContextLength   *int                    `json:"context_length,omitempty"`
 	MaxInputTokens  *int                    `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens *int                    `json:"max_output_tokens,omitempty"`

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -228,4 +229,146 @@ func TestModelRetrieveUpstreamErrorIsPropagated(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusNotFound), bifrostErr.StatusCode)
 	require.Contains(t, bifrostErr.Error.Message, "does not exist")
+}
+
+// TestOpenAIModelMetadataRoundTrip pins that the OpenAI-shaped surfaces
+// (/openai drop-in routes) re-emit the metadata the decode path now carries:
+// ToBifrostListModelsResponse then ToOpenAIListModelsResponse (and the
+// retrieve equivalents) must not be lossy for the new fields.
+func TestOpenAIModelMetadataRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	upstream := `{"object":"list","data":[{` +
+		`"id":"kimi/k3",` +
+		`"display_name":"K3",` +
+		`"context_length":1048576,` +
+		`"max_input_tokens":1040500,` +
+		`"max_output_tokens":131072,` +
+		`"reasoning":{"supported_efforts":["low","high"]},` +
+		`"modalities":{"input":["text","image"],"output":["text"]}}]}`
+
+	var decoded OpenAIListModelsResponse
+	require.NoError(t, json.Unmarshal([]byte(upstream), &decoded))
+	require.Len(t, decoded.Data, 1)
+
+	bifrost := decoded.ToBifrostListModelsResponse(
+		schemas.ModelProvider("test"),
+		schemas.WhiteList{"*"},
+		nil,
+		nil,
+		false,
+	)
+	require.Len(t, bifrost.Data, 1)
+
+	openai := ToOpenAIListModelsResponse(bifrost)
+	require.Len(t, openai.Data, 1)
+	roundTrip := openai.Data[0]
+
+	require.Equal(t, "test/kimi/k3", roundTrip.ID)
+	require.Equal(t, schemas.Ptr(1048576), roundTrip.ContextLength)
+	require.Equal(t, schemas.Ptr(1048576), roundTrip.ContextWindow)
+	require.Equal(t, schemas.Ptr(1040500), roundTrip.MaxInputTokens)
+	require.Equal(t, schemas.Ptr(131072), roundTrip.MaxOutputTokens)
+	require.Equal(t, schemas.Ptr("K3"), roundTrip.DisplayName)
+	require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, roundTrip.Reasoning)
+	require.Equal(t, &OpenAIModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}}, roundTrip.Modalities)
+
+	retrieved := ToOpenAIModelRetrieveResponse(&schemas.BifrostModelRetrieveResponse{Model: bifrost.Data[0]})
+	require.Equal(t, "test/kimi/k3", retrieved.ID)
+	require.Equal(t, schemas.Ptr(1048576), retrieved.ContextLength)
+	require.Equal(t, schemas.Ptr("K3"), retrieved.DisplayName)
+	require.Equal(t, &OpenAIModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}}, retrieved.Modalities)
+}
+
+// benchmarkListModelsEnvelope is a representative OpenAI-envelope list-models
+// payload: a mix of bare entries (the OpenAI catalog today) and entries
+// carrying the extended metadata emitted by OpenAI-compatible upstreams.
+var benchmarkListModelsEnvelope = mustJSON(map[string]any{
+	"object": "list",
+	"data": []map[string]any{
+		{"id": "gpt-5.2", "object": "model", "owned_by": "openai", "created": 1761264000},
+		{"id": "gpt-5.2-mini", "object": "model", "owned_by": "openai", "created": 1761264000},
+		{
+			"id":                "kimi/k3",
+			"object":            "model",
+			"created":           1761264000,
+			"display_name":      "K3",
+			"context_length":    1048576,
+			"max_input_tokens":  1040500,
+			"max_output_tokens": 131072,
+			"reasoning": map[string]any{
+				"mandatory": false, "default_enabled": true,
+				"supported_efforts": []string{"low", "high"}, "default_effort": "high",
+			},
+			"modalities": map[string]any{"input": []string{"text", "image"}, "output": []string{"text"}},
+		},
+	},
+})
+
+func mustJSON(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+// BenchmarkOpenAIListModelsParseAndConvert measures decode of an upstream
+// list-models payload plus conversion to the Bifrost catalog shape — the full
+// per-call cost of GET /v1/models on the provider side.
+func BenchmarkOpenAIListModelsParseAndConvert(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var response OpenAIListModelsResponse
+		if err := json.Unmarshal(benchmarkListModelsEnvelope, &response); err != nil {
+			b.Fatal(err)
+		}
+		response.ToBifrostListModelsResponse(
+			schemas.ModelProvider("bench"),
+			schemas.WhiteList{"*"},
+			nil,
+			nil,
+			false,
+		)
+	}
+}
+
+// BenchmarkOpenAIListModelsParse isolates the unmarshal cost.
+func BenchmarkOpenAIListModelsParse(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var response OpenAIListModelsResponse
+		if err := json.Unmarshal(benchmarkListModelsEnvelope, &response); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchmarkListModelsBareEnvelope is a catalog whose upstream emits no
+// extended metadata (plain OpenAI shape) — the common case that must not
+// regress when the decoder learns new fields.
+var benchmarkListModelsBareEnvelope = mustJSON(map[string]any{
+	"object": "list",
+	"data": []map[string]any{
+		{"id": "gpt-5.2", "object": "model", "owned_by": "openai", "created": 1761264000},
+		{"id": "gpt-5.2-mini", "object": "model", "owned_by": "openai", "created": 1761264000},
+	},
+})
+
+// BenchmarkOpenAIListModelsBareParseAndConvert measures the no-metadata path.
+func BenchmarkOpenAIListModelsBareParseAndConvert(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var response OpenAIListModelsResponse
+		if err := json.Unmarshal(benchmarkListModelsBareEnvelope, &response); err != nil {
+			b.Fatal(err)
+		}
+		response.ToBifrostListModelsResponse(
+			schemas.ModelProvider("bench"),
+			schemas.WhiteList{"*"},
+			nil,
+			nil,
+			false,
+		)
+	}
 }

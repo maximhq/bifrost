@@ -297159,6 +297159,154 @@
           ]
         }
       ]
+    },
+    {
+      "name": "293. Upstream model metadata passthrough in model listings (#8914 / PR #9201)",
+      "description": "Custom OpenAI-compatible providers lost per-model metadata end to end (#8914): the shared list-models decoder whitelist dropped context_length/max_input_tokens/max_output_tokens/display_name/reasoning/modalities for envelope-shaped upstream responses, and the OpenAI-shape output converters (drop-in routes via ToOpenAIListModelsResponse / ToOpenAIModelRetrieveResponse) re-stripped them on the way out, so clients probing their base URL fell back to default context limits. PR #9201 decodes the fields in both response shapes and carries them through both converters. 293.1 pins the native /v1/models contract on a live metadata-emitting upstream (OpenRouter emits context_length in the envelope shape). 293.2 and 293.3 are the red-before pins for the output converters: the /openai drop-in routes used to emit context_window only, so a missing context_length there can only mean the converter stripped it again.",
+      "item": [
+        {
+          "name": "293.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('293.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = (body.data || []).filter(function (m) { return m.id === 'openrouter/openai/gpt-4o-mini'; })[0];",
+                  "pm.test('the upstream context_length reaches the native listing (#8914)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text().slice(0, 2000)).to.be.an('object');",
+                  "  pm.expect(entry['context_length'], 'context_length missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=openrouter&page_size=1000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                },
+                {
+                  "key": "page_size",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "293.2 openrouter/openai/gpt-4o-mini via /openai/v1/models carries context_window and context_length - #8914",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('293.2 openrouter/openai/gpt-4o-mini via /openai/v1/models carries context_window and context_length - #8914 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = (body.data || []).filter(function (m) { return m.id === 'openrouter/openai/gpt-4o-mini'; })[0];",
+                  "pm.test('the drop-in route re-emits the context limits in both spellings (#8914)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text().slice(0, 2000)).to.be.an('object');",
+                  "  pm.expect(entry['context_window'], 'context_window missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "  pm.expect(entry['context_length'], 'context_length missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "293.3 openrouter/openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('293.3 openrouter/openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var entry = pm.response.json();",
+                  "pm.test('the drop-in retrieve re-emits the context limits in both spellings (#8914)', function () {",
+                  "  pm.expect(entry['context_window'], 'context_window missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "  pm.expect(entry['context_length'], 'context_length missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models/openrouter%2Fopenai%2Fgpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models",
+                "openrouter%2Fopenai%2Fgpt-4o-mini"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

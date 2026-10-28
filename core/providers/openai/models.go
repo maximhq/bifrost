@@ -111,14 +111,25 @@ func ToOpenAIModelRetrieveResponse(response *schemas.BifrostModelRetrieveRespons
 		Object:       "model",
 		Created:      response.Created,
 		ShutdownDate: response.ShutdownDate,
+
+		MaxInputTokens:  response.MaxInputTokens,
+		MaxOutputTokens: response.MaxOutputTokens,
+		DisplayName:     response.DisplayName,
+		Reasoning:       response.Reasoning,
 	}
 	if response.OwnedBy != nil {
 		openaiModel.OwnedBy = *response.OwnedBy
 	}
-	if response.ContextLength != nil {
-		openaiModel.ContextWindow = response.ContextLength
-	} else if response.MaxInputTokens != nil {
-		openaiModel.ContextWindow = response.MaxInputTokens // Fallback to MaxInputTokens if ContextLength is not set
+	openaiModel.ContextWindow = response.ContextLength
+	if openaiModel.ContextWindow == nil {
+		openaiModel.ContextWindow = response.MaxInputTokens
+	}
+	openaiModel.ContextLength = openaiModel.ContextWindow
+	if response.Architecture != nil {
+		openaiModel.Modalities = &OpenAIModelModalities{
+			Input:  response.Architecture.InputModalities,
+			Output: response.Architecture.OutputModalities,
+		}
 	}
 	return openaiModel
 }
@@ -135,6 +146,11 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		openaiModel := OpenAIModel{
 			ID:     model.ID,
 			Object: "model",
+
+			MaxInputTokens:  model.MaxInputTokens,
+			MaxOutputTokens: model.MaxOutputTokens,
+			DisplayName:     model.DisplayName,
+			Reasoning:       model.Reasoning,
 		}
 		if model.Created != nil {
 			openaiModel.Created = model.Created
@@ -142,10 +158,16 @@ func ToOpenAIListModelsResponse(response *schemas.BifrostListModelsResponse) *Op
 		if model.OwnedBy != nil {
 			openaiModel.OwnedBy = *model.OwnedBy
 		}
-		if model.ContextLength != nil {
-			openaiModel.ContextWindow = model.ContextLength
-		} else if model.MaxInputTokens != nil {
-			openaiModel.ContextWindow = model.MaxInputTokens // Fallback to MaxInputTokens if ContextLength is not set
+		openaiModel.ContextWindow = model.ContextLength
+		if openaiModel.ContextWindow == nil {
+			openaiModel.ContextWindow = model.MaxInputTokens
+		}
+		openaiModel.ContextLength = openaiModel.ContextWindow
+		if model.Architecture != nil {
+			openaiModel.Modalities = &OpenAIModelModalities{
+				Input:  model.Architecture.InputModalities,
+				Output: model.Architecture.OutputModalities,
+			}
 		}
 
 		openaiResponse.Data = append(openaiResponse.Data, openaiModel)
