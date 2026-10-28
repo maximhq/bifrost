@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -47,8 +48,18 @@ func resolveRequestContext(ctx *schemas.BifrostContext, root *schemas.BifrostCon
 	return root, nil
 }
 
-// requestTimeoutArmedKey marks a ctx whose request-timeout timer is live.
+// requestTimeoutArmedKey holds the *requestTimeoutArm live on a ctx.
 type requestTimeoutArmedKey struct{}
+
+// requestTimeoutArm is one timer shared by every armRequestTimeout call on a
+// ctx; the last stop stops it. requestTimeoutArmMu guards refs and the
+// get-or-create, so concurrent first arms cannot each start a timer.
+type requestTimeoutArm struct {
+	refs  int
+	timer *time.Timer
+}
+
+var requestTimeoutArmMu sync.Mutex
 
 // armRequestTimeout arms a timer for the total request/stream deadline
 // declared via the x-bf-request-timeout header (schemas.BifrostContextKeyRequestTimeout),
@@ -72,26 +83,38 @@ type requestTimeoutArmedKey struct{}
 // hook method -- so ctx.Cancel() here needs no Root() indirection.
 //
 // Calls nest: while a timer armed on ctx is live, a further call on the same
-// ctx returns a no-op stop and armed=true instead of arming a second, fresh
-// timer. The MCP agent loop depends on this: ChatCompletionRequest and
-// ResponsesRequest arm once around the whole call, and each turn's
-// handleRequest inside it must not restart the caller's budget.
+// ctx shares it instead of starting a fresh one, and the timer stops only when
+// the last of those calls stops. The MCP agent loop depends on this:
+// ChatCompletionRequest and ResponsesRequest arm once around the whole call,
+// and each turn's handleRequest inside it must not restart the caller's
+// budget. Two concurrent calls on one caller ctx share the budget too, measured
+// from the first arm; they cannot have independent ones, since either timer
+// firing cancels the ctx both run on. What the count prevents is the first
+// call's stop leaving the second with no deadline at all.
 func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 	d, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration)
 	if d <= 0 {
 		return func() {}, false
 	}
-	if outer, _ := ctx.Value(requestTimeoutArmedKey{}).(bool); outer {
-		return func() {}, true
+	requestTimeoutArmMu.Lock()
+	arm, _ := ctx.Value(requestTimeoutArmedKey{}).(*requestTimeoutArm)
+	if arm == nil {
+		arm = &requestTimeoutArm{timer: time.AfterFunc(d, func() {
+			ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+			ctx.Cancel()
+		})}
+		ctx.SetValue(requestTimeoutArmedKey{}, arm)
 	}
-	ctx.SetValue(requestTimeoutArmedKey{}, true)
-	timer := time.AfterFunc(d, func() {
-		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
-		ctx.Cancel()
-	})
+	arm.refs++
+	requestTimeoutArmMu.Unlock()
 	return func() {
-		ctx.SetValue(requestTimeoutArmedKey{}, false)
-		timer.Stop()
+		requestTimeoutArmMu.Lock()
+		defer requestTimeoutArmMu.Unlock()
+		arm.refs--
+		if arm.refs == 0 {
+			arm.timer.Stop()
+			ctx.SetValue(requestTimeoutArmedKey{}, (*requestTimeoutArm)(nil))
+		}
 	}, true
 }
 

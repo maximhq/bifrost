@@ -121,6 +121,64 @@ func TestArmRequestTimeout_NestedArmKeepsOuterBudget(t *testing.T) {
 	}
 }
 
+// TestArmRequestTimeout_ConcurrentCallsKeepADeadline covers two independent
+// calls sharing one caller ctx. The first call finishing must not stop the
+// timer the second is still relying on: the shared timer stops only when the
+// last caller stops.
+func TestArmRequestTimeout_ConcurrentCallsKeepADeadline(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 50*time.Millisecond)
+
+	stopA, _ := armRequestTimeout(ctx)
+	stopB, armedB := armRequestTimeout(ctx)
+	if !armedB {
+		t.Fatal("second call must report armed")
+	}
+	defer stopB()
+	stopA()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("the first call's stop left the second call with no deadline")
+	}
+}
+
+// TestArmRequestTimeout_ConcurrentArmsStartOneTimer verifies concurrent first
+// arms on one ctx share a single timer rather than each starting their own,
+// and that the timer stops once every caller has stopped.
+func TestArmRequestTimeout_ConcurrentArmsStartOneTimer(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 100*time.Millisecond)
+
+	const callers = 32
+	stops := make([]func(), callers)
+	var wg sync.WaitGroup
+	for i := range stops {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			stops[i], _ = armRequestTimeout(ctx)
+		}(i)
+	}
+	wg.Wait()
+
+	arm, _ := ctx.Value(requestTimeoutArmedKey{}).(*requestTimeoutArm)
+	if arm == nil || arm.refs != callers {
+		t.Fatalf("expected one shared arm with %d refs, got %+v", callers, arm)
+	}
+	for _, stop := range stops {
+		stop()
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("timer fired after every caller had stopped")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestArmRequestTimeout_StopReleasesNesting verifies a caller context reused
 // for a later, sequential request gets a live timer again: the outer stop
 // must clear the nesting marker rather than leave every later arm a no-op.

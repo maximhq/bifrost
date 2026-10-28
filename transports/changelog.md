@@ -1,23 +1,17 @@
 ## Features
 
 - **Azure Blob Storage** - Added log payload and skills-file storage with default Azure identity or connection-string authentication, JSON/gzip and Parquet support, and config-file/Helm configuration. Structured environment and vault references can omit `value`.
-
-## 🐞 Fixed
-
-- **Startup no longer fails on a new key's unknown grant** - A virtual key added in config.json whose `relay_grants` or `agent_grants` named a relay or agent that is not stored (a typo, or a relay skipped as invalid) failed the whole governance sync, and Bifrost exited at startup. That grant is now skipped with a warning and the key is created, as an existing key's update already did. Agent grants in config.json belong on the agent (`agents[].virtual_key_ids`): agents load after virtual keys, so a key cannot grant an agent declared in the same file on its first start.
-
-## 🔒 Security
-
-- **Go 1.27.3** - Security release for [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek) in `crypto/x509`: certificate chains through a small set of intermediates from a specific Certificate Authority are no longer accepted by `Verify`, which covers every TLS connection Bifrost makes to providers, MCP servers and other upstreams. Bifrost now builds with Go 1.27.3, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.3-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.3 to load.
-
-## ✨ Features
-
 - feat: parse the `x-bf-request-timeout` header (duration string or seconds integer) into `BifrostContextKeyRequestTimeout`, clamped to 30m, mirroring the existing `x-bf-session-ttl` / `x-bf-stream-idle-timeout` (#4805) parsing shape [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 - feat: parse `x-bf-stream-idle-timeout` header for a per-request stream idle timeout override [@public-aanp-tanium](https://github.com/public-aanp-tanium)
 
 ## 🐞 Fixed
 
+- **Startup no longer fails on a new key's unknown grant** - A virtual key added in config.json whose `relay_grants` or `agent_grants` named a relay or agent that is not stored (a typo, or a relay skipped as invalid) failed the whole governance sync, and Bifrost exited at startup. That grant is now skipped with a warning and the key is created, as an existing key's update already did. Agent grants in config.json belong on the agent (`agents[].virtual_key_ids`): agents load after virtual keys, so a key cannot grant an agent declared in the same file on its first start.
 - fix: clamp the seconds form of `x-bf-request-timeout` and `x-bf-stream-idle-timeout` before converting to `time.Duration`, so a seconds value large enough to overflow int64 can no longer wrap into a small duration that bypasses the 30m ceiling [@public-aanp-tanium](https://github.com/public-aanp-tanium)
+
+## 🔒 Security
+
+- **Go 1.27.3** - Security release for [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek) in `crypto/x509`: certificate chains through a small set of intermediates from a specific Certificate Authority are no longer accepted by `Verify`, which covers every TLS connection Bifrost makes to providers, MCP servers and other upstreams. Bifrost now builds with Go 1.27.3, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.3-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.3 to load.
 
 ## 🔧 Maintenance
 
