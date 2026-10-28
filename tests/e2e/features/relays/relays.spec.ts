@@ -57,6 +57,11 @@ test.describe("Relays", () => {
     // Test a call against the saved mapping: 0.001 + 4 * 0.008.
     await page.page.getByTestId("relay-preview-toggle").click();
     await expect(page.page.getByTestId("relay-preview-sheet")).toBeVisible();
+    // The status takes three digits; letters and a fourth digit are refused as typed.
+    const status = page.page.getByTestId("relay-preview-status");
+    await status.fill("");
+    await status.pressSequentially("2001sas");
+    await expect(status).toHaveValue("200");
     await page.page.getByTestId("relay-preview-path").fill("/search");
     await page.page.getByTestId("relay-preview-response-body").fill('{"usage":{"credits":4}}');
     await page.page.getByTestId("relay-preview-run").click();
@@ -271,23 +276,47 @@ test.describe("Relays", () => {
     await expect(page.routeRow(0)).toContainText("Free");
     await expect(page.routeEnabledSwitch(0)).toBeChecked();
 
-    // A POST route (the default method) with no matcher.
+    // Clearing a matcher's name keeps the row and its value, so saving is refused rather than
+    // silently dropping the matcher and widening the route.
+    await page.openEditRoute(0);
+    await page.page.getByTestId("relay-route-header-name-0").fill("");
+    await expect(page.page.getByTestId("relay-route-header-value-0")).toHaveValue("Textract.Analyze*");
+    await page.page.getByTestId("relay-route-save").click();
+    await expect(page.routeSheet).toContainText("A header matcher needs a header name");
+    await page.page.getByTestId("relay-route-header-name-0").fill("X-Amz-Target");
+    await page.saveRoute();
+    await expect(page.routeRow(0)).toContainText("X-Amz-Target: Textract.Analyze*");
+
+    // Renaming a second matcher to the first one's name is refused too, rather than saving its old name.
+    await page.openEditRoute(0);
+    await page.page.getByTestId("relay-route-header-name-1").fill("X-Kind");
+    await page.page.getByTestId("relay-route-header-value-1").fill("poll");
+    await page.page.getByTestId("relay-route-header-name-1").fill("X-Amz-Target");
+    await page.page.getByTestId("relay-route-save").click();
+    await expect(page.routeSheet).toContainText("This header is already matched on this route");
+    await page.closeSheets();
+    expect((await getRelay(request, name)).routes[0].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
+
+    // A POST route (the default method) with no matcher. Routes are saved in match order, literal
+    // paths A to Z, so /v1/search lands ahead of /v1/status.
     await page.addRoute({ path: "/v1/search" });
-    await expect(page.routeRow(1)).toContainText("POST");
-    await expect(page.routeRow(1)).toContainText("/v1/search");
-    await expect(page.routeRow(1)).not.toContainText("Free");
+    await expect(page.routeRow(0)).toContainText("POST");
+    await expect(page.routeRow(0)).toContainText("/v1/search");
+    await expect(page.routeRow(0)).not.toContainText("Free");
+    await expect(page.routeRow(1)).toContainText("/v1/status");
 
     let relay = await getRelay(request, name);
     expect(relay.routes).toHaveLength(2);
-    expect(relay.routes[0].method).toBe("GET");
-    expect(relay.routes[0].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
-    expect(relay.routes[1]).toMatchObject({ method: "POST", path: "/v1/search" });
+    expect(relay.routes[0]).toMatchObject({ method: "POST", path: "/v1/search" });
+    expect(relay.routes[1].method).toBe("GET");
+    expect(relay.routes[1].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
 
-    // Edit: widen the second route's path.
-    await page.openEditRoute(1);
+    // Edit: widen /v1/search into a catch-all, which is saved after the literal route it would otherwise shadow.
+    await page.openEditRoute(0);
     await expect(page.page.getByTestId("relay-route-path")).toHaveValue("/v1/search");
     await page.fillRoute({ path: "/v1/search/**" });
     await page.saveRoute();
+    await expect(page.routeRow(0)).toContainText("/v1/status");
     await expect(page.routeRow(1)).toContainText("/v1/search/**");
 
     // Disable from the row switch.
@@ -317,6 +346,36 @@ test.describe("Relays", () => {
     expect(relay.routes ?? []).toHaveLength(0);
   });
 
+  test("refuses letters in a route price and clears a price back to the relay's", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-price-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.select(name);
+
+    await page.openAddRoute();
+    await page.fillRoute({ path: "/search" });
+    await page.page.getByTestId("relay-route-pricing-toggle").click();
+    const fee = page.page.getByTestId("relay-route-usage-cost-per-request");
+    // Letters and signs are refused as typed, rather than shown while the form holds nothing.
+    await fee.pressSequentially("e-1");
+    await expect(fee).toHaveValue("1");
+    await fee.fill("0.5");
+    await page.saveRoute();
+    let relay = await getRelay(request, name);
+    expect(relay.routes[0].usage).toEqual({ cost_per_request: 0.5 });
+
+    // Emptying the field stays empty and saves the route with no override.
+    await page.openEditRoute(0);
+    await page.page.getByTestId("relay-route-pricing-toggle").click();
+    await expect(fee).toHaveValue("0.5");
+    await fee.fill("");
+    await expect(fee).toHaveValue("");
+    await page.saveRoute();
+    relay = await getRelay(request, name);
+    expect(relay.routes[0].usage).toBeUndefined();
+  });
+
   // ---------------------------------------------------------------------------------------------
   // Advanced, Network and Proxy tabs
   // ---------------------------------------------------------------------------------------------
@@ -332,9 +391,8 @@ test.describe("Relays", () => {
     await page.openConfigTab("advanced");
     await expect(page.saveButton("advanced")).toBeDisabled();
     await page.page.getByTestId("relay-streaming-paths").fill("/v1/stream/**");
-    await page.page.getByTestId("relay-extra-header-add").click();
     await page.page.getByTestId("relay-extra-header-name-0").fill("X-Tenant");
-    await page.configSheet.getByPlaceholder("value or env.HEADER_VALUE").fill("acme");
+    await page.page.getByTestId("relay-extra-header-value-0").fill("acme");
     await page.page.getByTestId("relay-ignore-upstream-cost").click();
     await expect(page.page.getByTestId("relay-ignore-upstream-cost")).toHaveAttribute("data-state", "checked");
     await page.saveConfigTab("advanced");

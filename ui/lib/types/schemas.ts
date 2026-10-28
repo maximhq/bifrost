@@ -2170,30 +2170,59 @@ const endpointGjsonPath = z.string().trim().optional();
 // checks, so routes use the base object.
 export const relayUsageBaseSchema = z.object({
 	model_path: endpointGjsonPath,
-	model_source: z.enum(["body", "query"]).optional(),
+	model_source: z.enum(["body", "query"]).nullish(),
 	input_tokens_path: endpointGjsonPath,
 	output_tokens_path: endpointGjsonPath,
 	total_tokens_path: endpointGjsonPath,
 	cost_path: endpointGjsonPath,
-	cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
+	// Cleared fields hold null, not undefined: react-hook-form shows a field's loaded value again when
+	// it is set to undefined, so an emptied price would snap back. null and "" are dropped on save.
+	cost_per_request: z.number().min(0, "Cost per request must not be negative").nullish(),
 	units_path: endpointGjsonPath,
-	units_source: z.enum(["response", "request"]).optional(),
-	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).optional(),
-	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
-	units_block_size: z.number().positive("Block size must be above zero").optional(),
-	units_minimum: z.number().min(0, "Minimum units must not be negative").optional(),
+	units_source: z.enum(["response", "request"]).nullish(),
+	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).nullish(),
+	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").nullish(),
+	units_block_size: z.number().positive("Block size must be above zero").nullish(),
+	units_minimum: z.number().min(0, "Minimum units must not be negative").nullish(),
 });
 
-export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) => {
-	if (
-		usage.cost_per_unit &&
-		usage.cost_per_unit > 0 &&
-		usage.units_measure !== "body_bytes" &&
-		usage.units_measure !== "body_chars" &&
-		!usage.units_path
-	) {
-		ctx.addIssue({ code: "custom", message: "Units path is required unless the measure reads the whole body", path: ["units_path"] });
+/** A route is billable by default only for POST, so the flag is stored only when it differs. */
+export function routeBillableByDefault(method: string): boolean {
+	return method.toUpperCase() === "POST";
+}
+
+export type RelayUsageForm = z.infer<typeof relayUsageBaseSchema>;
+
+type UsageRule = {
+	units_path?: string | null;
+	units_measure?: string | null;
+	cost_per_unit?: number | null;
+};
+
+/**
+ * Mirrors RelayUsageConfig.validate in core/schemas/relay.go: a positive per-unit rate needs a units
+ * path unless the measure reads the whole body. On a route, the rate, path and measure it leaves
+ * empty come from the relay (base), so the check runs on the merged values as the backend's does.
+ */
+export function relayUsageUnitsPathError(usage: UsageRule | undefined, base?: UsageRule): string | undefined {
+	const pick = <K extends keyof UsageRule>(k: K) => {
+		const own = usage?.[k];
+		return own === undefined || own === null || own === "" ? base?.[k] : own;
+	};
+	const rate = pick("cost_per_unit");
+	const measure = pick("units_measure");
+	const path = (pick("units_path") ?? "").toString().trim();
+	if (typeof rate === "number" && rate > 0 && measure !== "body_bytes" && measure !== "body_chars" && !path) {
+		return base
+			? "Units path is required: this route charges per unit and neither it nor the relay names a path"
+			: "Units path is required unless the measure reads the whole body";
 	}
+	return undefined;
+}
+
+export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) => {
+	const message = relayUsageUnitsPathError(usage);
+	if (message) ctx.addIssue({ code: "custom", message, path: ["units_path"] });
 });
 
 // Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
@@ -2381,6 +2410,19 @@ export const relayFormSchema = z
 		}
 		if ((form.proxy.type === "http" || form.proxy.type === "socks5") && !isSecretVarSet(form.proxy.url)) {
 			ctx.addIssue({ code: "custom", message: "Proxy URL is required", path: ["proxy", "url"] });
+		}
+		// The backend checks every route against the relay pricing it inherits, so a relay edit that
+		// leaves a per-unit route without a units path is refused; say which route on the relay field.
+		// A route that is not billed is never priced, and its hidden override is not saved.
+		const broken = form.routes.find(
+			(r) => (r.billable ?? routeBillableByDefault(r.method)) && r.usage && relayUsageUnitsPathError(r.usage, form.usage),
+		);
+		if (broken && !relayUsageUnitsPathError(form.usage)) {
+			ctx.addIssue({
+				code: "custom",
+				message: `Units path is required: route ${broken.method} ${broken.path} charges per unit and inherits it from the relay`,
+				path: ["usage", "units_path"],
+			});
 		}
 	});
 

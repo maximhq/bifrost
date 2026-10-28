@@ -1,4 +1,5 @@
 import type { RelayAuthConfig, RelayRouteConfig, RelayRouteMethod } from "@/lib/types/relays";
+import { compareRoutes } from "@/lib/utils/relayForm";
 
 // What an OpenAPI or Swagger document resolves into for a relay: the
 // operations as routes, the first security scheme as an auth suggestion, and the first server as
@@ -169,8 +170,6 @@ export function templateToRoute(template: string): { path: string; headers?: Rec
 	return { path: templateToGlob(base), headers: { [fragment.slice(0, eq)]: fragment.slice(eq + 1) } };
 }
 
-const wildcardCount = (path: string) => path.split("*").length - 1;
-
 // importOpenAPI resolves a parsed document into endpoint fields.
 export function importOpenAPI(doc: Doc): OpenAPIImport {
 	const info = asRecord(doc.info);
@@ -199,21 +198,8 @@ export function importOpenAPI(doc: Doc): OpenAPIImport {
 				if (!Array.isArray(effective) || !(effective.length === 0 || effective.some(isEmptyRequirement))) requirements.push(effective);
 			}
 		}
-		// The relay takes the first route that matches, so a literal path must come before a
-		// parameter glob covering it (GET /files/latest before GET /files/*) or its settings would
-		// never apply. Among globs with as many wildcards and segments, the one with more literal text goes first:
-		// /models/*:predict before /models/*, which also matches foo:predict. The sort is stable, so
-		// the document's order holds otherwise.
-		// A total order (wildcards, then segments, then literal text, longest first) keeps the sort
-		// consistent; it is stable, so document order holds for ties.
-		const literalLength = (path: string) => path.replaceAll("*", "").length;
-		const segments = (path: string) => path.split("/").length;
-		result.routes.sort(
-			(a, b) =>
-				wildcardCount(a.path) - wildcardCount(b.path) ||
-				segments(a.path) - segments(b.path) ||
-				literalLength(b.path) - literalLength(a.path),
-		);
+		// The relay takes the first route that matches; compareRoutes is the order every save uses.
+		result.routes.sort(compareRoutes);
 		if (referenced.length > 0) {
 			result.partial = true;
 			result.warnings.push(

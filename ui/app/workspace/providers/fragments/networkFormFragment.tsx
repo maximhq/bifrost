@@ -24,50 +24,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useMemo } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { toast } from "sonner";
+import { secondsToHumanReadable } from "@/lib/utils/strings";
 import { buildProviderUpdatePayload } from "../views/utils";
 
 interface NetworkFormFragmentProps {
 	provider: ModelProvider;
 }
-
-// seconds to human readable time
-const secondsToHumanReadable = (seconds: number) => {
-	// Handle edge cases
-	if (!seconds || seconds < 0 || isNaN(seconds)) {
-		return "0 seconds";
-	}
-	seconds = Math.floor(seconds);
-	if (seconds < 60) {
-		return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
-	}
-	if (seconds < 3600) {
-		const minutes = Math.floor(seconds / 60);
-		const remainingSeconds = seconds % 60;
-		const parts: string[] = [`${minutes} ${minutes === 1 ? "minute" : "minutes"}`];
-		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
-		return parts.join(" ");
-	}
-	if (seconds < 86400) {
-		const hours = Math.floor(seconds / 3600);
-		const minutes = Math.floor((seconds % 3600) / 60);
-		const remainingSeconds = seconds % 60;
-		const parts: string[] = [`${hours} ${hours === 1 ? "hour" : "hours"}`];
-		if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
-		if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
-		return parts.join(" ");
-	}
-	// For >= 1 day, only show non-zero components
-	const days = Math.floor(seconds / 86400);
-	const hours = Math.floor((seconds % 86400) / 3600);
-	const minutes = Math.floor((seconds % 3600) / 60);
-	const remainingSeconds = seconds % 60;
-	const parts: string[] = [];
-	parts.push(`${days} ${days === 1 ? "day" : "days"}`);
-	if (hours > 0) parts.push(`${hours} ${hours === 1 ? "hour" : "hours"}`);
-	if (minutes > 0) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
-	if (remainingSeconds > 0) parts.push(`${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`);
-	return parts.join(" ");
-};
 
 export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	const dispatch = useAppDispatch();
@@ -86,7 +48,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		defaultValues: {
 			network_config: {
 				base_url: provider.network_config?.base_url || undefined,
-				extra_headers: toSecretVarMapFormValue(provider.network_config?.extra_headers_secret_vars ?? provider.network_config?.extra_headers),
+				extra_headers: toSecretVarMapFormValue(
+					provider.network_config?.extra_headers_secret_vars ?? provider.network_config?.extra_headers,
+				),
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
@@ -176,7 +140,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		form.reset({
 			network_config: {
 				base_url: provider.network_config?.base_url || undefined,
-				extra_headers: toSecretVarMapFormValue(provider.network_config?.extra_headers_secret_vars ?? provider.network_config?.extra_headers),
+				extra_headers: toSecretVarMapFormValue(
+					provider.network_config?.extra_headers_secret_vars ?? provider.network_config?.extra_headers,
+				),
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,

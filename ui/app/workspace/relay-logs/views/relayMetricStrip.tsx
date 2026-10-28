@@ -21,7 +21,6 @@ import {
 import { MetricSegment, MetricStripCard, MetricTooltipBody, MetricTooltipRow, MetricTrailing, MetricUnit } from "@/components/metricStrip";
 import type { RelayHistogramResponse, RelayLogStatsResponse } from "@/lib/types/relays";
 import { COMPACT_NUMBER_FORMAT, formatCurrencyNumber } from "@/lib/utils/numbers";
-import { formatBytes } from "@/lib/utils/strings";
 import NumberFlow from "@number-flow/react";
 import { useMemo } from "react";
 
@@ -64,17 +63,12 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.units ?? 0 }))),
 		[buckets],
 	);
-	const bytesPoints = useMemo(
-		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.bytes_out ?? 0 }))),
-		[buckets],
-	);
 
 	const previous = stats?.has_previous_period ? stats.previous : undefined;
 	const totalRequests = stats?.total_requests ?? 0;
 	const successRate = stats?.success_rate ?? 0;
 	const totalCost = stats?.total_cost ?? 0;
 	const totalUnits = stats?.total_units ?? 0;
-	const totalBytesOut = stats?.total_bytes_out ?? 0;
 	const costPerRequest = totalRequests > 0 ? totalCost / totalRequests : 0;
 	// success_rate is measured over succeeded plus failed calls, so the counts come from the
 	// server's own figures and cancellations are shown on their own rather than folded in.
@@ -87,21 +81,15 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 	const requestsSignal = requestsChange?.text ? requestsChange : windowTrend(requestPoints.map((point) => point.value));
 	const successChange = previous ? formatPointDelta(successRate, previous.success_rate) : undefined;
 	const latencyChange = previous ? formatPctChange(stats?.average_latency ?? 0, previous.average_latency, "lower-is-better") : undefined;
-	// Cost is lower-is-better; units and bytes are volume, so they read like requests.
+	// Cost is lower-is-better; units are volume, so they read like requests.
 	const costChange = previous ? formatPctChange(totalCost, previous.total_cost, "lower-is-better") : undefined;
 	const unitsChange = previous ? formatPctChange(totalUnits, previous.total_units) : undefined;
 	const unitsSignal = unitsChange?.text ? unitsChange : windowTrend(unitPoints.map((point) => point.value));
-	const bytesChange = previous ? formatPctChange(totalBytesOut, previous.total_bytes_out ?? 0) : undefined;
-	const bytesSignal = bytesChange?.text ? bytesChange : windowTrend(bytesPoints.map((point) => point.value));
-
-	// formatBytes picks the unit; the strip shows the figure in mono and the unit small, as
-	// the other tiles do, so "1.2 MB" lines up with "68.27 %".
-	const [bytesFigure, bytesUnit] = formatBytes(totalBytesOut).split(" ");
 
 	return (
 		<div className="@container/metric-strip shrink-0">
 			<MetricStripCard
-				className="grid-cols-2 @2xl/metric-strip:grid-cols-3 @5xl/metric-strip:grid-cols-6"
+				className="grid-cols-2 @2xl/metric-strip:grid-cols-3 @5xl/metric-strip:grid-cols-5 [&>*:last-child]:col-span-2 @5xl/metric-strip:[&>*:last-child]:col-span-1"
 				loading={loading}
 				testId="relay-logs-metric-strip"
 			>
@@ -197,6 +185,29 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 
 				<MetricSegment
 					state={state}
+					title="Total Units"
+					testId="relay-logs-stat-units"
+					footer={
+						<>
+							<Sparkline
+								points={unitPoints}
+								bucketSizeSeconds={bucketSizeSeconds}
+								className={toneClass[unitsSignal.tone]}
+								rows={(point) => <MetricTooltipRow name="Units">{averaged(point, formatCount(point.value))}</MetricTooltipRow>}
+							/>
+							{unitsSignal.text && (
+								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[unitsSignal.tone]}>
+									{unitsSignal.text}
+								</MetricTrailing>
+							)}
+						</>
+					}
+				>
+					<NumberFlow value={totalUnits} format={COMPACT_NUMBER_FORMAT} />
+				</MetricSegment>
+
+				<MetricSegment
+					state={state}
 					title="Total Cost"
 					testId="relay-logs-stat-cost"
 					footer={
@@ -222,53 +233,6 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 					}
 				>
 					<NumberFlow value={totalCost} format={{ ...COMPACT_NUMBER_FORMAT, style: "currency", currency: "USD" }} />
-				</MetricSegment>
-
-				<MetricSegment
-					state={state}
-					title="Units Billed"
-					testId="relay-logs-stat-units"
-					footer={
-						<>
-							<Sparkline
-								points={unitPoints}
-								bucketSizeSeconds={bucketSizeSeconds}
-								className={toneClass[unitsSignal.tone]}
-								rows={(point) => <MetricTooltipRow name="Units">{averaged(point, formatCount(point.value))}</MetricTooltipRow>}
-							/>
-							{unitsSignal.text && (
-								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[unitsSignal.tone]}>
-									{unitsSignal.text}
-								</MetricTrailing>
-							)}
-						</>
-					}
-				>
-					<NumberFlow value={totalUnits} format={COMPACT_NUMBER_FORMAT} />
-				</MetricSegment>
-
-				<MetricSegment
-					state={state}
-					title="Bytes Out"
-					testId="relay-logs-stat-bytes"
-					footer={
-						<>
-							<Sparkline
-								points={bytesPoints}
-								bucketSizeSeconds={bucketSizeSeconds}
-								className={toneClass[bytesSignal.tone]}
-								rows={(point) => <MetricTooltipRow name="Bytes out">{averaged(point, formatBytes(point.value))}</MetricTooltipRow>}
-							/>
-							{bytesSignal.text && (
-								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[bytesSignal.tone]}>
-									{bytesSignal.text}
-								</MetricTrailing>
-							)}
-						</>
-					}
-				>
-					<NumberFlow value={Number(bytesFigure)} format={{ maximumFractionDigits: 1 }} />
-					<MetricUnit>{bytesUnit}</MetricUnit>
 				</MetricSegment>
 			</MetricStripCard>
 		</div>
