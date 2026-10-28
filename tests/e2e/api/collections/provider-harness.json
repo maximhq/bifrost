@@ -297159,6 +297159,218 @@
           ]
         }
       ]
+    },
+    {
+      "name": "293. MCP OAuth public client moves to new endpoints without a client secret (mcp-oauth-public-client-endpoints)",
+      "description": "An OAuth MCP client whose client_id has no secret (a public PKCE client) can change its authorize_url and token_url through PUT /api/mcp/client/{id} without sending a client_secret. The rule that a changed endpoint needs the secret resent exists so a stored secret is never posted to an endpoint the admin did not pair it with; a public client stores none, so pre-fix the edit was refused with 400 \"client_secret must be resent explicitly when authorize_url or token_url changes\" and a public client could not follow its MCP server to a new authorization server, which is the recovery the authorization server change docs prescribe. A confidential client that changes an endpoint without its secret is still refused; that and the resend case are covered by the Go test TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Its dynamic client registration issues no client_secret, and its /authorize approves without a login page when called with user=..., so the rows complete a real sign-in. Nothing in the harness runners starts it, so the rows are [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp-oauth-public-client-endpoints\" INCLUDE_PREVIEW=1 once it is up. Like folder 207 the registration needs localhost on mcp_oauth_private_allowlist (the harness profile has it). The edit points the client at the same demo server through 127.0.0.1, so the endpoints differ as strings. The last row deletes the client. No provider credentials are used.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints registering an OAuth MCP server starts a sign-in for a public client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration starts the OAuth flow against the demo server', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, pm.response.text()).to.equal('pending_oauth');",
+                  "  pm.expect(String(body.authorize_url || ''), pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  pm.expect(body.mcp_client_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.complete_url, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('publicClientAuthorizeUrl', body.authorize_url);",
+                  "  pm.collectionVariables.set('publicClientId', body.mcp_client_id);",
+                  "  pm.collectionVariables.set('publicClientCompleteUrl', body.complete_url);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_public_client_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the demo authorization server approves and redirects back with a code",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the authorization server redirects to the Bifrost callback with a code', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientAuthorizeUrl'), 'the registration row did not capture an authorize URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = String(pm.response.headers.get('Location') || '');",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/api/oauth/callback?');",
+                  "  pm.expect(location, 'Location: ' + location).to.match(/[?&]code=/);",
+                  "  pm.collectionVariables.set('publicClientCallbackUrl', location);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientAuthorizeUrl}}&user=harness"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the callback exchanges the code and reports success",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OAuth callback completes the sign-in', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCallbackUrl'), 'the authorize row did not capture a callback URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientCallbackUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints completing the sign-in creates the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('complete-oauth creates and connects the client', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCompleteUrl'), 'the registration row did not capture a complete URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}{{publicClientCompleteUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints a public client changes its authorize_url and token_url without a client_secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the endpoint change is accepted with no secret to resend', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.text(), 'pre-fix a public client was asked for a secret it never had').to.not.include('client_secret must be resent');",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"oauth_config\": {\n    \"authorize_url\": \"http://127.0.0.1:3003/authorize\",\n    \"token_url\": \"http://127.0.0.1:3003/token\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints cleanup deletes the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the client is removed', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
