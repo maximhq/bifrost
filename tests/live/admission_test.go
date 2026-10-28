@@ -121,6 +121,51 @@ func TestAdmission_OpenAIIntegrationRouteServesSessions(t *testing.T) {
 	})
 }
 
+// On /openai a model without a provider prefix runs where the session's attach and content routes
+// default to, as file and batch creates do: Azure for the Azure OpenAI SDK, whose later attach then
+// finds the session on Azure, else OpenAI. An Azure-only key names Azure with the azure/ prefix.
+func TestAdmission_OpenAIRouteResolvesBareModelsAsControlRoutesDo(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	const azureSDK = "AzureOpenAI/Python 1.109.1"
+	for _, tc := range []struct {
+		name      string
+		spec      virtualKeySpec
+		userAgent string
+		upstream  string // empty: refused, the route's OpenAI default is not allowed for the key
+	}{
+		{name: "an Azure-only key must name Azure", spec: virtualKeySpec{provider: "azure"}},
+		{name: "OpenAI is the default when the key allows both", spec: virtualKeySpec{alsoProviders: []string{"azure"}}, upstream: "openai"},
+		{name: "the Azure OpenAI SDK prefers Azure", spec: virtualKeySpec{alsoProviders: []string{"azure"}}, userAgent: azureSDK, upstream: "azure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forEachTransport(t, func(t *testing.T, tr transport) {
+				vk := createVirtualKey(t, tc.spec)
+				headers := vkHeaders(vk)
+				if tc.userAgent != "" {
+					headers["User-Agent"] = tc.userAgent
+				}
+				session := sessionFor(t, voiceModel, backendModel, nil)
+				opts := clientOptions{path: "/openai/v1/live/sessions", headers: headers, session: session}
+				if tc.upstream == "" {
+					assert.Contains(t, errorMessage(openRefused(t, tr, opts)), "Provider 'openai' is not allowed")
+					return
+				}
+				c := openLive(t, tr, opts)
+				s := fake.WaitSession(t, session["instructions"].(string))
+				assert.Equal(t, tc.upstream, s.Upstream())
+				if tr == webrtcTransport && tc.userAgent != "" {
+					sideband, status, err := dialLive(t, "/openai/v1/live/sessions/"+s.ID()+"/attach", headers)
+					require.NoError(t, err, "HTTP %d", status)
+					assert.Equal(t, s.ID(), sideband.WaitFor("session.started").Get("session.id").Str, "the attach finds the session where it was created")
+				}
+				c.CloseSession()
+				assert.Equal(t, tc.upstream, findLiveLog(t, s.ID()).Get("provider").Str)
+			})
+		})
+	}
+}
+
 // An Azure session runs on the key's resource, under the deployment names the key's aliases give
 // both models, and bills both.
 func TestAdmission_AzureSessionRunsOnTheResourceDeployments(t *testing.T) {

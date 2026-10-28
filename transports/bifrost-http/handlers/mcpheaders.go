@@ -252,7 +252,7 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	// required-key check above is the whole validation; the upstream API sees
 	// the values on the first tool call.
 	if config.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
-		if _, _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
+		if _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 			return
 		}

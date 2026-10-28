@@ -55,6 +55,7 @@ import {
 	Wallet,
 	WalletCards,
 	Webhook,
+	Waypoints,
 } from "lucide-react";
 
 import { WarpIcon } from "@/components/ui/icons";
@@ -168,7 +169,13 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
 
-const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs", "/workspace/agent-logs"]);
+const TimeFilterPages = new Set([
+	"/workspace/dashboard",
+	"/workspace/logs",
+	"/workspace/mcp-logs",
+	"/workspace/agent-logs",
+	"/workspace/relay-logs",
+]);
 
 const preserveTimeFilters = (baseHref: string, subItemUrl: string, pathname: string, search: string): string => {
 	if (TimeFilterPages.has(subItemUrl) && TimeFilterPages.has(pathname)) {
@@ -593,6 +600,8 @@ export default function AppSidebar() {
 	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
 	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
+	const hasRelaysAccess = useRbac(RbacResource.Relays, RbacOperation.View);
+	const hasRelayLogsAccess = useRbac(RbacResource.RelayLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
@@ -683,7 +692,13 @@ export default function AppSidebar() {
 				icon: Telescope,
 				description: "Request logs & monitoring",
 				hasAccess:
-					hasLogsAccess || hasDashboardAccess || hasMCPLogsAccess || hasAgentLogsAccess || hasObservabilityAccess || hasSettingsAccess,
+					hasLogsAccess ||
+					hasDashboardAccess ||
+					hasMCPLogsAccess ||
+					hasAgentLogsAccess ||
+					hasRelayLogsAccess ||
+					hasObservabilityAccess ||
+					hasSettingsAccess,
 				subItems: [
 					{
 						title: "Dashboard",
@@ -712,6 +727,13 @@ export default function AppSidebar() {
 						icon: Bot,
 						description: "Agent request logs",
 						hasAccess: hasAgentLogsAccess,
+					},
+					{
+						title: "Relay Logs",
+						url: "/workspace/relay-logs",
+						icon: Waypoints,
+						description: "Relay calls and their cost",
+						hasAccess: hasRelayLogsAccess,
 					},
 					{
 						title: "Connectors",
@@ -853,7 +875,6 @@ export default function AppSidebar() {
 				icon: Bot,
 				description: "Register and manage A2A agents",
 				hasAccess: hasAgentGatewayAccess,
-				new: true,
 				subItems: [
 					{
 						title: "Agent Catalog",
@@ -877,6 +898,13 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 				],
+			},
+			{
+				title: "Relays",
+				url: "/workspace/relays",
+				icon: Waypoints,
+				description: "Relay non-LLM APIs with per-route pricing",
+				hasAccess: hasRelaysAccess,
 			},
 			{
 				title: "Plugins",
@@ -1279,6 +1307,8 @@ export default function AppSidebar() {
 			hasAgentLogsAccess,
 			hasVirtualMCPsAccess,
 			hasMCPLogsAccess,
+			hasRelaysAccess,
+			hasRelayLogsAccess,
 			hasPluginsAccess,
 			hasUsersAccess,
 			hasUserProvisioningAccess,

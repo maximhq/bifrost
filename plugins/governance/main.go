@@ -1205,7 +1205,9 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if isPassthrough || len(toolModels) > 0 {
 		var bodyModels []string
 		if isPassthrough {
-			bodyModels = passthroughBodyModels(req)
+			if p.bodyNamesModels(provider) {
+				bodyModels = passthroughBodyModels(req)
+			}
 			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
 		}
 		for _, toolModel := range toolModels {
@@ -1483,6 +1485,12 @@ func passthroughBodyModels(req *schemas.BifrostRequest) []string {
 	return models
 }
 
+// bodyNamesModels reports whether a passthrough body's "model" is a Bifrost model. SageMaker's is the
+// container's own served name: the endpoint in the path is the model, and the router already set it.
+func (p *GovernancePlugin) bodyNamesModels(provider schemas.ModelProvider) bool {
+	return configuredBaseProvider(p.inMemoryStore, provider) != schemas.SageMaker
+}
+
 // namesModelsAsResources reports whether a provider name reaches Gemini or Vertex, whose bodies
 // name a model by its resource name rather than its bare id.
 func (p *GovernancePlugin) namesModelsAsResources(provider schemas.ModelProvider) bool {
@@ -1709,8 +1717,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
 
-	// Skip for non tool execution requests
-	if !req.RequestType.IsExecuteTool() {
+	// Skip everything but tool executions and prompt or resource reads
+	isRead := req.RequestType.IsPromptOrResourceRead()
+	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
 
@@ -1742,6 +1751,14 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.MCPPluginShortCircuit{
 			Error: bifrostError,
 		}, nil
+	}
+
+	// A read has no tool to check: it may reach only the servers the access grants. Stamp the access's
+	// tool list, as /mcp does before core; core checks the server it picked against it after the hooks,
+	// so a direct Go caller is held to the grant too.
+	if isRead {
+		p.stampMCPToolAccessForCodemode(ctx)
+		return req, nil, nil
 	}
 
 	// The one question evaluation cannot answer: this specific tool. Evaluation checks the tools already
@@ -1824,7 +1841,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	} else if bifrostErr != nil {
 		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
 	}
-	if !mcpReqType.IsExecuteTool() {
+	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
 

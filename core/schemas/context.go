@@ -105,6 +105,7 @@ type BifrostContext struct {
 	pluginScope   *string                        // Non-nil when this is a scoped plugin context
 	pluginLogs    atomic.Pointer[pluginLogStore] // Shared log store; lazily initialized on root, shared by scoped contexts
 	valueDelegate *BifrostContext                // For scoped contexts: delegate Value/SetValue to this root context
+	scopeSpanID   string                         // For scoped contexts: parent span for spans the plugin starts, read in place of the root's
 }
 
 // NewBifrostContext creates a new BifrostContext with the given parent context and deadline.
@@ -425,6 +426,9 @@ func (bc *BifrostContext) Err() error {
 // Otherwise checks the internal userValues map, then delegates to the parent context.
 func (bc *BifrostContext) Value(key any) any {
 	if bc.valueDelegate != nil {
+		if bc.scopeSpanID != "" && key == BifrostContextKeySpanID {
+			return bc.scopeSpanID
+		}
 		return bc.valueDelegate.Value(key)
 	}
 	// A scoped context never reaches this line - it returned via its delegate above - so bc is
@@ -1109,6 +1113,15 @@ func (bc *BifrostContext) WithPluginScope(name *string) *BifrostContext {
 		valueDelegate: bc,
 	}
 	scoped.pluginLogs.Store(bc.pluginLogs.Load())
+	return scoped
+}
+
+// WithPluginScopeSpan is WithPluginScope with spanID as the parent of spans the plugin
+// starts. Only this scoped context sees it, so the root's active span is untouched for
+// other goroutines sharing the request context.
+func (bc *BifrostContext) WithPluginScopeSpan(name *string, spanID string) *BifrostContext {
+	scoped := bc.WithPluginScope(name)
+	scoped.scopeSpanID = spanID
 	return scoped
 }
 

@@ -1498,6 +1498,7 @@ export interface MCPToolLogEntry {
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
+	method?: string; // "prompts/get" or "resources/read" for a prompt or resource read (tool_name holds the prompt or URI); absent for a tool call
 	virtual_key_id?: string;
 	virtual_key_name?: string;
 	arguments?: Record<string, unknown> | string; // JSON parsed tool arguments

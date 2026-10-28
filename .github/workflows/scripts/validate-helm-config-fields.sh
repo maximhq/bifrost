@@ -785,12 +785,14 @@ bifrost:
   mcp:
     enabled: true
     toolSyncInterval: "10m"
+    maxProtocolVersion: "auto"
     clientConfigs:
       - name: "stdio-server"
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
         toolSyncInterval: "5m"
+        maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
         toolPricing:
           search: 0.05
@@ -852,11 +854,13 @@ assert_field_value 'mcp tool_manager_config.max_agent_depth' '.mcp.tool_manager_
 
 # Gap 6a: Global tool sync interval
 assert_field_value 'mcp tool_sync_interval' '.mcp.tool_sync_interval' '"10m"'
+assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto"'
 
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
+assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'
 assert_field 'mcp client[0] tool_pricing' '.mcp.client_configs.[0].tool_pricing'
 assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].tool_pricing.search' '0.05'
@@ -1990,6 +1994,134 @@ for bad in '"next_rotation_at":"2026-11-01T00:00:00Z"' \
     report_result "access_profiles {$bad} is rejected" 0
   else
     report_result "access_profiles {$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# 2.1.46 Warp (bifrost.warp -> warp)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.46 Warp${NC}"
+
+cat > "$TMPDIR/values-warp.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  featureFlags:
+    warp:
+      enabled: true
+  warp:
+    enabled: true
+    provider: "openai"
+    model: "gpt-4o-mini"
+    apiKeyId: "openai-key-1"
+    additionalModels:
+      - provider: "anthropic"
+        model: "claude-3-5-haiku"
+        apiKeyId: "anthropic-key-1"
+      - provider: "openai"
+        model: "gpt-4.1-nano"
+    maxIterations: 12
+    requestTimeoutSeconds: 90
+    historyRetentionDays: 14
+    systemPromptSuffix: "Teams are named after rivers."
+    temperature: 0.3
+    reasoningEffort: "medium"
+    embeddingProvider: "openai"
+    embeddingModel: "text-embedding-3-small"
+    embeddingApiKeyId: "openai-embed-key"
+    embeddingDimension: 1536
+    logVectorStoreNamespace: "WarpLogsV2"
+    semanticSearchThreshold: 0.6
+    semanticSearchLimit: 20
+    topicDiscoveryMinRequests: 250
+VALS
+render_config "$TMPDIR/values-warp.yaml"
+assert_field_value 'feature_flags.flags.warp.enabled' '.feature_flags.flags.warp.enabled' 'true'
+assert_field_value 'warp.enabled' '.warp.enabled' 'true'
+assert_field_value 'warp.provider' '.warp.provider' '"openai"'
+assert_field_value 'warp.model' '.warp.model' '"gpt-4o-mini"'
+assert_field_value 'warp.api_key_id' '.warp.api_key_id' '"openai-key-1"'
+assert_field_value 'warp.additional_models[0] (with api_key_id)' '.warp.additional_models.[0]' '{"api_key_id": "anthropic-key-1", "model": "claude-3-5-haiku", "provider": "anthropic"}'
+assert_field_value 'warp.additional_models[1] (no api_key_id)' '.warp.additional_models.[1]' '{"model": "gpt-4.1-nano", "provider": "openai"}'
+assert_field_value 'warp.max_iterations' '.warp.max_iterations' '12'
+assert_field_value 'warp.request_timeout_seconds' '.warp.request_timeout_seconds' '90'
+assert_field_value 'warp.history_retention_days' '.warp.history_retention_days' '14'
+assert_field_value 'warp.system_prompt_suffix' '.warp.system_prompt_suffix' '"Teams are named after rivers."'
+assert_field_value 'warp.temperature' '.warp.temperature' '0.3'
+assert_field_value 'warp.reasoning_effort' '.warp.reasoning_effort' '"medium"'
+assert_field_value 'warp.embedding_provider' '.warp.embedding_provider' '"openai"'
+assert_field_value 'warp.embedding_model' '.warp.embedding_model' '"text-embedding-3-small"'
+assert_field_value 'warp.embedding_api_key_id' '.warp.embedding_api_key_id' '"openai-embed-key"'
+assert_field_value 'warp.embedding_dimension' '.warp.embedding_dimension' '1536'
+assert_field_value 'warp.log_vector_store_namespace' '.warp.log_vector_store_namespace' '"WarpLogsV2"'
+assert_field_value 'warp.semantic_search_threshold' '.warp.semantic_search_threshold' '0.6'
+assert_field_value 'warp.semantic_search_limit' '.warp.semantic_search_limit' '20'
+assert_field_value 'warp.topic_discovery_min_requests' '.warp.topic_discovery_min_requests' '250'
+
+# Explicit false, 0, [] and "" must reach config.json: Warp keeps the stored value for an
+# omitted embedding, search or topic field (and 0 means the default or a reset), so a value
+# the chart dropped would silently leave the old setting in force.
+cat > "$TMPDIR/values-warp-zero.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  warp:
+    enabled: false
+    additionalModels: []
+    maxIterations: 0
+    requestTimeoutSeconds: 0
+    historyRetentionDays: 0
+    temperature: 0
+    embeddingProvider: ""
+    embeddingModel: ""
+    embeddingApiKeyId: ""
+    embeddingDimension: 0
+    logVectorStoreNamespace: ""
+    semanticSearchThreshold: 0
+    semanticSearchLimit: 0
+    topicDiscoveryMinRequests: 0
+VALS
+render_config "$TMPDIR/values-warp-zero.yaml"
+assert_field_value 'warp.enabled false kept' '.warp.enabled' 'false'
+assert_field_value 'warp.additional_models [] kept' '.warp.additional_models' '[]'
+assert_field_value 'warp.max_iterations 0 kept' '.warp.max_iterations' '0'
+assert_field_value 'warp.request_timeout_seconds 0 kept' '.warp.request_timeout_seconds' '0'
+assert_field_value 'warp.history_retention_days 0 kept' '.warp.history_retention_days' '0'
+assert_field_value 'warp.temperature 0 kept' '.warp.temperature' '0'
+assert_field_value 'warp.embedding_provider "" kept' '.warp.embedding_provider' '""'
+assert_field_value 'warp.embedding_model "" kept' '.warp.embedding_model' '""'
+assert_field_value 'warp.embedding_api_key_id "" kept' '.warp.embedding_api_key_id' '""'
+assert_field_value 'warp.embedding_dimension 0 kept' '.warp.embedding_dimension' '0'
+assert_field_value 'warp.log_vector_store_namespace "" kept' '.warp.log_vector_store_namespace' '""'
+assert_field_value 'warp.semantic_search_threshold 0 kept' '.warp.semantic_search_threshold' '0'
+assert_field_value 'warp.semantic_search_limit 0 kept' '.warp.semantic_search_limit' '0'
+assert_field_value 'warp.topic_discovery_min_requests 0 kept' '.warp.topic_discovery_min_requests' '0'
+
+# Unset, the chart renders no warp block, so Warp stays managed from the dashboard.
+cat > "$TMPDIR/values-warp-unset.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+VALS
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "import json, sys; sys.exit(0 if 'warp' not in json.load(open('$TMPDIR/config.json')) else 1)"; then
+  report_result 'warp omitted when bifrost.warp is unset' 0
+else
+  report_result 'warp omitted when bifrost.warp is unset' 1
+  echo -e "${YELLOW}    config.json carries a warp block nobody configured${NC}"
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'enabled=true,bifrost.warp.provider=openai' 'maxIterations=1' 'reasoningEffort=extreme' 'baseUrl=http://warp'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set "bifrost.warp.$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "warp {$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "warp" "$TMPDIR/render-err.txt"; then
+    report_result "warp {$bad} is rejected" 0
+  else
+    report_result "warp {$bad} is rejected" 1
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done

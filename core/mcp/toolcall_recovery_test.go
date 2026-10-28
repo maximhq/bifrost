@@ -29,7 +29,7 @@ import (
 // at all: attemptCallFailureRecovery fails closed on missing hints (MCP's own
 // defaults are destructiveHint=true, idempotentHint=false), so an unannotated
 // tool is never retried automatically. Reuses sessionInvalidator from
-// connectionchecker_reconnect_test.go.
+// connectionchecker_reconnect_test.go. Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildRecoveryMCPServer(t *testing.T, toolOpts ...mcpgo.ToolOption) (*httptest.Server, *sessionInvalidator) {
 	t.Helper()
 
@@ -41,7 +41,7 @@ func buildRecoveryMCPServer(t *testing.T, toolOpts ...mcpgo.ToolOption) (*httpte
 		},
 	)
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	invalidator := &sessionInvalidator{dead: map[string]bool{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if invalidator.reject(w, r) {
@@ -412,4 +412,54 @@ func TestExecuteTool_ToolErrorMentioningSession_DoesNotTriggerRecovery(t *testin
 	assert.Equal(t, before.ConnGeneration, after.ConnGeneration, "a tool error is not a dead session: the connection must not be swapped")
 	assert.Same(t, before.Conn, after.Conn)
 	assert.Equal(t, int32(1), calls.Load(), "a tool error is not a dead session: the call must not be replayed")
+}
+
+// TestExecuteTool_404OnModernConnection_DoesNotTriggerDeadSessionRecovery pins that dead-session
+// recovery is a 2025-era remedy. mcp-go reports any 404 as ErrSessionTerminated, but 2026-07-28
+// has no sessions: a 404 there (an unknown method, a moved endpoint) is not cured by reconnecting,
+// and replaying the call only repeats it.
+func TestExecuteTool_404OnModernConnection_DoesNotTriggerDeadSessionRecovery(t *testing.T) {
+	s := server.NewMCPServer("test-modern-404", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("echo", mcpgo.WithDescription("Echo tool"), mcpgo.WithReadOnlyHintAnnotation(true)),
+		func(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("ok"), nil
+		})
+	streamable := server.NewStreamableHTTPServer(s)
+	var calls, discovers atomic.Int32
+	var refuseCalls atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Mcp-Method") {
+		case "tools/call":
+			calls.Add(1)
+			if refuseCalls.Load() {
+				http.NotFound(w, r)
+				return
+			}
+		case "server/discover":
+			discovers.Add(1)
+		}
+		streamable.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newRecoveryClientConfig("client-modern-404", "modern-404-client", ts.URL)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	toolName := config.Name + "-echo"
+
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	require.Equal(t, mcpgo.ProtocolVersion20260728, before.Conn.ProtocolVersion())
+	discoversBefore := discovers.Load()
+
+	refuseCalls.Store(true)
+	_, bErr := executeEchoTool(m, toolName)
+	require.NotNil(t, bErr, "the 404 must reach the caller")
+	assert.Equal(t, int32(1), calls.Load(), "a 404 on 2026-07-28 is not a dead session: the call must not be replayed")
+
+	require.Never(t, func() bool {
+		after, exists := snapshotClientState(m, config.ID)
+		return !exists || after.ConnGeneration != before.ConnGeneration || discovers.Load() != discoversBefore
+	}, time.Second, 50*time.Millisecond, "a 404 on 2026-07-28 is not a dead session: the connection must not be swapped")
 }

@@ -1,0 +1,156 @@
+---
+title: "Routes and header matchers"
+description: "List the upstream operations callers may use, match AWS-style operations by header, and decide which calls are counted, streamed or refused."
+icon: "route"
+---
+
+A route is one upstream operation: a method, a path glob and optionally the request headers that must also match. The first route that fits a request decides whether the call is allowed, whether it is counted and charged, how it is priced and whether it streams.
+
+With no routes and **Relay Any Path** off, a relay refuses every call with `404`. That is the safe default: list the operations you mean to expose.
+
+## Add a route
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Relays**, select the relay and choose **Add Route** above the route table.
+2. Pick the **Method** and enter the **Path**, for example `/search`.
+3. Add **Header Matchers** if the upstream tells operations apart by header rather than path.
+4. Choose **Streaming** (Auto, Always stream, Never stream) and whether the route is **Billable**.
+5. Open **Pricing Override** to price this route differently from the relay, then select **Add Route**.
+
+
+The route table shows each route's method, path, header matchers, effective price (with an **override** badge when the route changes the relay pricing) and an **Enabled** switch. Routes are matched top to bottom.
+
+
+</Tab>
+<Tab title="API">
+
+Routes are part of the relay. Send the whole relay back with its `routes` array:
+
+```bash
+curl -X PUT http://localhost:8080/api/relays/tavily \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base_url": "https://api.tavily.com",
+    "auth": { "type": "bearer" },
+    "credential": { "value": "env.TAVILY_API_KEY" },
+    "routes": [
+      { "method": "POST", "path": "/search" },
+      { "method": "POST", "path": "/extract" },
+      { "method": "GET",  "path": "/crawl/*" },
+      { "method": "DELETE", "path": "/crawl/*", "enabled": false }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "relays": [
+    {
+      "name": "tavily",
+      "base_url": "https://api.tavily.com",
+      "auth": { "type": "bearer" },
+      "credential": { "value": "env.TAVILY_API_KEY" },
+      "routes": [
+        { "method": "POST", "path": "/search" },
+        { "method": "POST", "path": "/extract" },
+        { "method": "GET", "path": "/crawl/*" },
+        { "method": "DELETE", "path": "/crawl/*", "enabled": false }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `method` | string | Yes | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` or `HEAD`. |
+| `path` | string | Yes | Rooted segment glob; see [Path globs](#path-globs). |
+| `headers` | object | No | Header name to value glob; every one must match. See [Header matchers](#header-matchers). |
+| `enabled` | boolean | No | `false` refuses matching requests with `404`, even with `skip_route_check` on. Default `true`. |
+| `billable` | boolean | No | Whether a `2xx` reply is counted and charged. Default: `true` for `POST`, `false` for every other method. |
+| `stream` | boolean | No | Force the streaming (`true`) or buffered (`false`) relay. Unset follows the relay's [streaming settings](./streaming). |
+| `usage` | object | No | Field-by-field override of the relay's [usage mapping](./pricing#route-overrides). |
+
+</Tab>
+</Tabs>
+
+## Path globs
+
+A path is matched segment by segment against the request path below `/relay/{name}`:
+
+| Pattern | Matches | Does not match |
+| --- | --- | --- |
+| `/search` | `/search` | `/search/`, `/v1/search` |
+| `/crawl/*` | `/crawl/abc`, `/crawl/123` | `/crawl`, `/crawl/abc/status` |
+| `/v1/*/predict` | `/v1/gemini/predict` | `/v1/a/b/predict` |
+| `/v1/**` | `/v1`, `/v1/x`, `/v1/x/y/z` | `/v2/x` |
+| `/` | `/` (AWS JSON APIs post every operation here) | anything else |
+
+`*` matches within one segment and `?`, `[...]` work as in a shell. `**` is allowed only as the last segment, where it matches the prefix and everything below it. The request path is matched decoded, so `/files/a%2Fb` is seen as `/files/a/b`.
+
+## Header matchers
+
+Some APIs send every operation to the same path and name the operation in a header. AWS JSON APIs (Textract, Translate, Comprehend) `POST /` with `X-Amz-Target: Textract.AnalyzeDocument`. A route on method and path alone cannot tell those operations apart, so a route may also require headers:
+
+```json
+{
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/",
+      "headers": { "X-Amz-Target": "Textract.AnalyzeDocument" },
+      "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.065 }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "headers": { "X-Amz-Target": "Textract.Get*" },
+      "billable": false
+    }
+  ]
+}
+```
+
+- Names match case-insensitively; values are globs matched case-sensitively, with `/` as an ordinary character (`application/x-amz-json-1.1` is a valid literal).
+- Every listed header must be present and match. A route with no `headers` matches on method and path alone.
+- When the relay sets an [extra header](./configuration#extra-headers) of the same name, the matcher sees the operator's value, since that is what reaches the upstream.
+- A request that sends one header under two spellings (`X-Amz-Target` and `x-amz-target`) is refused with `400`.
+
+A matcher may not name a header callers never deliver to route matching: credentials (`Authorization`, `x-api-key`, the relay's own `auth.header_name`), gateway headers (`x-bf-*`), hop-by-hop headers, `Content-Length`, and under `aws_sigv4` any `x-amz-*` header other than `X-Amz-Target`. Such a route is refused at save time.
+
+## Route order
+
+The first matching route wins, so a literal path must come before a glob that also covers it: `GET /files/latest` before `GET /files/*`. A disabled route still matches, which is how it refuses a request rather than letting it fall through to a broader route or to **Relay Any Path**.
+
+The [OpenAPI import](#import-routes-from-openapi) sorts routes so that more specific ones come first.
+
+## Billable by default: POST only
+
+Unless a route says otherwise, only `POST` calls are counted. On most APIs `GET` and `HEAD` are polls and listings, `PUT` and `PATCH` update settings and `DELETE` cleans up; charging those would spend a caller's allowance on nothing. A route never flips a method's billing just by existing, which keeps imported route lists safe. Set `billable: true` where an API bills another method, and `billable: false` to relay a `POST` free of charge.
+
+A call is counted (priced and charged to budgets) only when it is billable **and** the upstream answers `2xx`. A `4xx` or `5xx` reply is relayed and not charged, but like every forwarded reply it still counts one request against the caller's request rate limits.
+
+## Relay any path
+
+**Relay Any Path** (`skip_route_check: true`) relays requests that match no route instead of refusing them. Unrouted calls use the relay-level pricing and the method default for billing. Disabled routes still refuse their requests.
+
+<Warning>
+With Relay Any Path on, every path on the upstream is reachable with the relay's credential. Prefer listing routes; use this switch for a trusted upstream or while discovering an API.
+</Warning>
+
+## Import routes from OpenAPI
+
+**Import OpenAPI** in the route table turns an OpenAPI 3 or Swagger 2 document (pasted, uploaded or fetched from a URL, JSON or YAML) into routes. A URL is fetched by Bifrost, not the browser, with the same size cap and private-network guard as the [MCP OpenAPI servers](/mcp/openapi-servers); the document is read once and not stored. Every operation becomes a route; `{param}` segments become `*`; AWS-style `/#X-Amz-Target=Service.Op` keys become a route on the path with an `X-Amz-Target` matcher. The preview also suggests an auth type and base URL, read from the document's security schemes and servers (a relative server resolves against the URL the document was fetched from). The import changes only the routes, so review those suggestions and set them on the relay yourself.
+
+The import is shown for review first: the dialog says how many routes will replace the current list and names any route with a pricing override or job that would be removed. Nothing changes until you choose **Apply import**. Routes the document still lists keep their settings; new ones carry no pricing override, so they use the relay pricing and the method default for billing.
+
+
+## Next steps
+
+- **[Usage mapping and pricing](./pricing)** — Price the routes you listed.
+- **[Streaming](./streaming)** — What the route's stream flag changes.

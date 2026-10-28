@@ -4,10 +4,17 @@ kind: PersistentVolumeClaim
 metadata:
   name: {{ include "bifrost.fullname" . }}-postgresql
   namespace: {{ .Release.Namespace }}
+  {{- with .Values.postgresql.primary.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   labels:
     {{- include "bifrost.labels" . | nindent 4 }}
     app.kubernetes.io/component: database
 spec:
+  {{- with .Values.postgresql.primary.persistence.volumeAttributesClassName }}
+  volumeAttributesClassName: {{ . | quote }}
+  {{- end }}
   accessModes:
     - ReadWriteOnce
   {{- if .Values.postgresql.primary.persistence.storageClass }}
