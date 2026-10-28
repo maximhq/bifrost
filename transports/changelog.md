@@ -1,6 +1,7 @@
 ## Features
 
 - **Azure Blob Storage** - Added log payload and skills-file storage with default Azure identity or connection-string authentication, JSON/gzip and Parquet support, and config-file/Helm configuration. Structured environment and vault references can omit `value`.
+- **Key Selection Hooks for Embedders** - `BifrostHTTPServer` gains `KeySelector` and `KeyPoolFilter`, passed to core on `Bootstrap`, so a program embedding the HTTP server can supply its own key-selection policy. Unset, core's defaults apply [@jeremym-tanium](https://github.com/jeremym-tanium)
 
 ## 🐞 Fixed
 

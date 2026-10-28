@@ -254,6 +254,9 @@ type BifrostHTTPServer struct {
 	Client *bifrost.Bifrost
 	Config *lib.Config
 
+	KeySelector   schemas.KeySelector   // embedder key-selection policy; nil keeps core's default
+	KeyPoolFilter schemas.KeyPoolFilter // embedder key-pool filter; nil keeps core's default
+
 	// HTTPClientFactory hands out clients for outbound traffic other than provider
 	// inference (webhooks, skills, plugin downloads, MCP, catalog sync) that honour
 	// the global proxy for their purpose and follow proxy changes live.
@@ -3398,6 +3401,9 @@ func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, sho
 // 3. Initializes the Bifrost client with the configuration
 // 4. Sets up HTTP routes for text and chat completions
 //
+// KeySelector and KeyPoolFilter are passed to core here, so an embedder must
+// set them before calling Bootstrap.
+//
 // The server exposes the following endpoints:
 //   - POST /v1/text/completions: For text completion requests
 //   - POST /v1/chat/completions: For chat completion requests
@@ -3548,6 +3554,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
 		ModelCatalog:       s.Config.ModelCatalog,
+		KeySelector:        s.KeySelector,
+		KeyPoolFilter:      s.KeyPoolFilter,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
