@@ -46,6 +46,9 @@ func TestSpanIfMatchGuards(t *testing.T) {
 	if _, ok := s.Attributes["leak"]; ok {
 		t.Fatal("stale handle leaked an attribute onto a reused span")
 	}
+	if s.SetStartTimeIfMatch("abc", time.Unix(1, 0)) || !s.StartTime.IsZero() {
+		t.Fatal("SetStartTimeIfMatch must not move a reused span's start")
+	}
 	if !s.SetAttributeIfMatch("xyz", "own", true) {
 		t.Fatal("SetAttributeIfMatch should succeed for the current owner")
 	}
@@ -84,12 +87,17 @@ func TestSpanHandle_UseAfterReleaseTraceIsSafe(t *testing.T) {
 	// The stale handle must not touch the reused span.
 	tracer.EndSpan(handle1, schemas.SpanStatusError, "stale")
 	tracer.SetAttribute(handle1, "leak", true)
+	span2Start := span2.StartTime
+	tracer.SetSpanStartTime(handle1, time.Unix(1, 0))
 
 	if span2.Status == schemas.SpanStatusError {
 		t.Error("stale handle ended the reused span")
 	}
 	if _, ok := span2.Attributes["leak"]; ok {
 		t.Error("stale handle leaked an attribute onto the reused span")
+	}
+	if !span2.StartTime.Equal(span2Start) {
+		t.Error("stale handle moved the reused span's start time")
 	}
 	// The released handle no longer resolves to a span.
 	if got := tracer.SpanFromHandle(handle1); got == span2 {
@@ -119,6 +127,7 @@ func TestSpanHandle_UseAfterTTLCleanupIsSafe(t *testing.T) {
 	// Must not panic; the guard fails and the by-ID fallback finds no trace.
 	tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 	tracer.SetAttribute(handle, "x", 1)
+	tracer.SetSpanStartTime(handle, time.Now())
 	if got := tracer.SpanFromHandle(handle); got != nil {
 		t.Error("handle to a swept trace should resolve to nil")
 	}
