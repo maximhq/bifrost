@@ -3,6 +3,7 @@
 // reading the first bytes, then aborting the downstream request.
 
 import { writeFileSync } from "node:fs";
+import { generatedTextChars, cancelledUsageFailure } from "./lib/cancel-stream-usage.mjs";
 import { createRequire } from "node:module";
 import { evaluateProbeStream } from "./lib/stream-probe-verdict.mjs";
 import { evaluateNonStreamCancel } from "./lib/nonstream-cancel-verdict.mjs";
@@ -30,6 +31,9 @@ const providerFilter = (args.provider || "").toLowerCase();
 const out = args.out || "tmp/stream-cancel-report.json";
 const readTimeoutMs = Number(args["read-timeout-ms"] || 20000);
 const abortAfterBytes = Number(args["abort-after-bytes"] || 1);
+const expectEstimation = args["expect-estimation"] !== "false";
+const abortAfterChars = Number(args["abort-after-chars"] || (expectEstimation ? 128 : 0));
+const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
 // Non-streaming cancellation: abort this many ms after dispatch (before the full
 // response can return) to force a client-disconnect on a non-streaming request,
 // exercising the non-streaming client-disconnect billing path (#3357).
@@ -59,23 +63,8 @@ const configPathArg = args["config"] || process.env.BIFROST_CONFIG_PATH || "conf
 const serverWorkingDir = args["server-working-dir"] || process.cwd();
 const pricingUrl =
   args["pricing-url"] || process.env.BIFROST_PRICING_URL || "https://getbifrost.ai/datasheet";
-// Providers that emit usage in the FIRST stream event → a cancel-after-first-byte
-// deterministically has billable usage, so cost MUST be > 0. Only native Anthropic
-// qualifies: its message_start event carries input_tokens + cache tokens immediately
-// (https://platform.claude.com/docs/en/api/messages-streaming).
-// Everyone else delivers usage only in a terminal event, so an early cancel may
-// legitimately have none — for those we require only that the error row exists.
-// Notably Bedrock (Converse) is NOT early-usage: per the ConverseStream response
-// schema the `usage` field lives solely in the terminal `metadata`
-// (ConverseStreamMetadataEvent), after messageStop — messageStart carries only role
-// (https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html).
-// So a Bedrock stream cancelled before metadata has nothing to bill, same as the
-// OpenAI family — the fix still bills Bedrock whenever metadata arrives before failure.
-const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
-
-// An early-usage cancel carries the message_start usage that logs and governance bill;
-// /metrics must count it too, not only the error.
-const BILLED_CANCEL_COUNTERS = ["bifrost_error_requests_total", "bifrost_input_tokens_total", "bifrost_cost_total"];
+// Every provider must account for output actually received before cancellation.
+const BILLED_CANCEL_COUNTERS = ["bifrost_error_requests_total", "bifrost_input_tokens_total", "bifrost_output_tokens_total", "bifrost_cost_total"];
 
 // /metrics sits behind the API auth chain: the OSS setup lock, or dashboard credentials once auth is on.
 const adminAuthHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
@@ -107,7 +96,7 @@ async function verifyCancelMetrics(provider, before) {
     await new Promise((r) => setTimeout(r, ms));
     const after = await scrapeProviderCounters(provider);
     delta = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, after[n] - before[n]]));
-    if (delta.bifrost_input_tokens_total > 0 && delta.bifrost_cost_total > 0) return undefined;
+    if (delta.bifrost_input_tokens_total > 0 && (!expectEstimation || delta.bifrost_output_tokens_total > 0) && delta.bifrost_cost_total > 0) return undefined;
   }
   return `cancelled ${provider} stream billed usage missing from /metrics: ${BILLED_CANCEL_COUNTERS.map((n) => `${n} +${delta[n]}`).join(", ")}`;
 }
@@ -273,7 +262,15 @@ const nonStreamCases = streamCases.flatMap((c) =>
   })),
 );
 
-const cases = [...streamCases, ...nonStreamCases].filter(
+const responsesStreamCases = streamCases.map((c) => ({
+  provider:c.provider, name:`${c.body.model} Responses cancelled usage`, path:"/v1/responses",
+  body:{model:c.body.model,input:"Count from 1 to 200, one number per line.",stream:true,max_output_tokens:1024},
+}));
+const nativeAnthropicStreamCase = {
+  provider:"anthropic", name:"Anthropic native messages cancelled usage", path:"/anthropic/v1/messages",
+  body:{model:"claude-haiku-4-5",messages:[{role:"user",content:"Count from 1 to 200, one number per line."}],stream:true,max_tokens:1024},
+};
+const cases = [...streamCases, ...responsesStreamCases, nativeAnthropicStreamCase, ...nonStreamCases].filter(
   (c) => !providerFilter || c.provider === providerFilter,
 );
 
@@ -336,9 +333,7 @@ async function runCase(testCase) {
   const requestId = `stream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
 
   try {
-    const metricsBefore = EARLY_USAGE_PROVIDERS.has(testCase.provider)
-      ? await scrapeProviderCounters(testCase.provider)
-      : null;
+    const metricsBefore = expectEstimation || EARLY_USAGE_PROVIDERS.has(testCase.provider) ? await scrapeProviderCounters(testCase.provider) : undefined;
     const response = await fetch(`${baseUrl}${testCase.path}`, {
       method: "POST",
       headers: {
@@ -381,10 +376,22 @@ async function runCase(testCase) {
     }
 
     const reader = response.body.getReader();
-    while (bytesRead < abortAfterBytes) {
+    const decoder = new TextDecoder();
+    let pending = "";
+    let generatedChars = 0;
+    while (bytesRead < abortAfterBytes || generatedChars < abortAfterChars) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) throw new Error(`stream completed before cancellation threshold (${generatedChars} generated characters)`);
       bytesRead += value?.byteLength || 0;
+      pending += decoder.decode(value, {stream:true});
+      const lines = pending.split("\n");
+      pending = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        generatedChars += generatedTextChars(JSON.parse(payload));
+      }
     }
 
     controller.abort(new Error("intentional downstream abort after first stream bytes"));
@@ -644,30 +651,19 @@ if (skipCostCheck) {
         } else {
           const cost = Number(row.cost || 0),
             tokens = Number(row.total_tokens || 0);
-          // Strict cost-presence only where usage is deterministically available at the
-          // moment of cancel: native Anthropic streaming (input tokens in message_start).
-          if (EARLY_USAGE_PROVIDERS.has(r.provider)) {
-            if (!(cost > 0 && tokens > 0)) {
-              r.costCheck = "FAIL";
-              r.costDetail = `cancelled ${r.provider} ${kind} logged no cost (cost=$${cost} tokens=${tokens})`;
-              costFailures++;
-            } else {
-              const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
-              if (v.fail) costFailures++;
-              r.costDetail = v.detail;
-              r.costCheck = v.verdict;
-            }
+          const failure = expectEstimation ? cancelledUsageFailure(row, r.provider) : EARLY_USAGE_PROVIDERS.has(r.provider) && !(cost > 0 && tokens > 0) ? `cancelled ${r.provider} logged no usage` : undefined;
+          if (failure) {
+            r.costCheck = "FAIL";
+            r.costDetail = failure;
+            costFailures++;
+          } else if (!expectEstimation && !(cost > 0 && tokens > 0)) {
+            r.costCheck = "PASS";
+            r.costDetail = "Estimation disabled; provider usage not available before cancellation";
           } else {
-            // Presence not required. If a cost WAS recorded, still verify its accuracy.
-            if (cost > 0 && tokens > 0) {
-              const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
-              if (v.fail) costFailures++;
-              r.costDetail = v.detail;
-              r.costCheck = v.verdict;
-            } else {
-              r.costCheck = "PASS";
-              r.costDetail = `status=${row.status} cost=$${cost} (cost-presence not required for ${r.provider} ${kind})`;
-            }
+            const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
+            if (v.fail) costFailures++;
+            r.costDetail = v.detail;
+            r.costCheck = v.verdict;
           }
         }
         console.error(

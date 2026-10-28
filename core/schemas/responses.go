@@ -1336,6 +1336,7 @@ type ResponsesStopDetails struct {
 }
 
 type ResponsesResponseUsage struct {
+	Estimation          *TokenUsageEstimation          `json:"estimation,omitempty"`
 	Type                *string                        `json:"type,omitempty"`          // type field is sent by anthropic
 	Model               *string                        `json:"model,omitempty"`         // model that produced this (iteration) attempt; sent on iterations[] for Anthropic server-side fallback
 	InputTokens         int                            `json:"input_tokens"`            // Number of input tokens (prompt tokens + cached tokens)

@@ -363,14 +363,14 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	if billed == nil {
 		return
 	}
-	if entry.TokenUsageParsed == nil {
+	if entry.TokenUsageParsed == nil || billed.Estimation != nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
 		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
-	if entry.Cost == nil && p.pricingManager != nil {
+	if (entry.Cost == nil || billed.Estimation != nil) && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
 			total := bd.TotalCost

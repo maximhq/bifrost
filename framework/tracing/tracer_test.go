@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -1584,4 +1585,40 @@ func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
 	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
 		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
 	}
+}
+
+// A cancelled stream's usage is estimated from the same accumulator the logging
+// plugin feeds, read mid-stream before the accumulator is finalized.
+func TestTracer_CancelledStreamEstimatedFromAccumulator(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, bifrost.NewNoOpLogger())
+	defer tracer.Stop()
+
+	const traceID = "trace-cancelled-estimate"
+	tracer.CreateStreamAccumulator(traceID, time.Now())
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	for i, text := range []string{"hello ", "world"} {
+		chunk := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr(text)}}}},
+		}}
+		chunk.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+		chunk.ChatResponse.ExtraFields.ChunkIndex = i
+		tracer.ProcessStreamingChunk(ctx, traceID, false, chunk, nil)
+	}
+
+	request := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: "gpt-4o", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}}
+	cancelled := &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, request, "gpt-4o", cancelled)
+
+	usage := cancelled.ExtraFields.BilledUsage
+	require.NotNil(t, usage, "no usage estimated from the accumulated output")
+	require.Equal(t, 2, usage.CompletionTokens)
+	require.Equal(t, 8, usage.PromptTokens)
+	require.NotNil(t, usage.Estimation)
+	require.Equal(t, "o200k_base", usage.Estimation.Tokenizer)
 }

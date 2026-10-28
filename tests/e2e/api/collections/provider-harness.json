@@ -298482,6 +298482,248 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "Cancelled usage estimation — successful stream controls",
+      "description": "Cancellation regressions run in runners/run-stream-cancellation.mjs: cancel after 128 generated characters, require input/output usage and cost for every provider, and reject the Anthropic initial output cursor. These controls verify completed streams still return provider usage on each ingress shape. Postman cannot abort mid-stream.",
+      "item": [
+        {
+          "name": "Cancelled usage estimation control — OpenAI chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches [DONE] with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached [DONE]: ' + text.slice(-600)).to.include('data: [DONE]');",
+                  "  pm.expect(text, 'stream carried an error: ' + text.slice(0, 600)).not.to.match(/\"error\"\\s*:\\s*\\{/);",
+                  "  var chunks = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "  // finish_reason comes only from the terminal event (Anthropic's message_delta), so it proves the usage is final, not message_start's provisional count.",
+                  "  var finished = chunks.some(function (c) { return (c.choices || []).some(function (ch) { return !!ch.finish_reason; }); });",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + text.slice(-600)).to.equal(true);",
+                  "  var last = chunks.filter(function (c) { return c.usage; }).pop();",
+                  "  pm.expect(last ? last.usage.completion_tokens : 0, 'no final provider usage: ' + text.slice(-600)).to.be.above(0);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control — Anthropic chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches [DONE] with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached [DONE]: ' + text.slice(-600)).to.include('data: [DONE]');",
+                  "  pm.expect(text, 'stream carried an error: ' + text.slice(0, 600)).not.to.match(/\"error\"\\s*:\\s*\\{/);",
+                  "  var chunks = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "  // finish_reason comes only from the terminal event (Anthropic's message_delta), so it proves the usage is final, not message_start's provisional count.",
+                  "  var finished = chunks.some(function (c) { return (c.choices || []).some(function (ch) { return !!ch.finish_reason; }); });",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + text.slice(-600)).to.equal(true);",
+                  "  var last = chunks.filter(function (c) { return c.usage; }).pop();",
+                  "  pm.expect(last ? last.usage.completion_tokens : 0, 'no final provider usage: ' + text.slice(-600)).to.be.above(0);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control — OpenAI Responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches response.completed with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached response.completed: ' + text.slice(-600)).to.include('response.completed');",
+                  "  pm.expect(text, 'stream carried an error event: ' + text.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(text, 'stream failed: ' + text.slice(0, 600)).not.to.match(/\"type\"\\s*:\\s*\"(?:error|response\\.failed)\"/);",
+                  "  pm.expect(text, 'no final provider usage: ' + text.slice(-800)).to.match(/response\\.completed[\\s\\S]*\"output_tokens\"\\s*:\\s*[1-9]/);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control — Anthropic Responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Say hello.\",\n  \"stream\": true,\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches response.completed with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream never reached response.completed: ' + text.slice(-600)).to.include('response.completed');",
+                  "  pm.expect(text, 'stream carried an error event: ' + text.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(text, 'stream failed: ' + text.slice(0, 600)).not.to.match(/\"type\"\\s*:\\s*\"(?:error|response\\.failed)\"/);",
+                  "  pm.expect(text, 'no final provider usage: ' + text.slice(-800)).to.match(/response\\.completed[\\s\\S]*\"output_tokens\"\\s*:\\s*[1-9]/);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancelled usage estimation control — Anthropic native messages",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed stream reaches message_stop with final provider usage', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(text, 'stream did not end with message_stop: ' + text.slice(-600)).to.include('message_stop');",
+                  "  pm.expect(text, 'stream carried an error event: ' + text.slice(0, 600)).to.not.include('event: error');",
+                  "  // message_start carries a provisional output count; the final one is on message_delta.",
+                  "  pm.expect(text, 'no final message_delta usage: ' + text.slice(-800)).to.match(/event: message_delta[\\s\\S]*\"output_tokens\"\\s*:\\s*[1-9]/);",
+                  "  pm.expect(text, text).not.to.include('\"estimation\":');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
