@@ -1,1 +1,1 @@
-- fix: preserve raw OpenAI Responses cache-counter presence [@valentinyanakiev](https://github.com/valentinyanakiev)
+- fix: OpenAI-compatible Responses providers record whether the raw payload carried usage.input_tokens_details, so post hooks can tell missing cache counters from zero ones (ExtraFields.RawResponsesCacheCountersKnown, in-process only) (#6868) [@valentinyanakiev](https://github.com/valentinyanakiev)
