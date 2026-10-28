@@ -72,6 +72,7 @@ const staticKeyMethodBySection: Record<string, string> = {
 	vertex_key_config: "api_key",
 	bedrock_key_config: "api_key",
 	bedrock_mantle_key_config: "api_key",
+	sagemaker_key_config: "api_key",
 	databricks_key_config: "pat",
 };
 

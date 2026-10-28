@@ -5239,8 +5239,6 @@ func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
 // cannot produce from a request body, with the reason. Everything else must be exercised
 // by the corpus in TestAddMissingBetaHeadersFromRawBody_MatchesTypedPath.
 var notEmittedByRequestGating = map[string]string{
-	"AnthropicFallbackCreditBetaHeaderAWS": "FilterBetaHeadersForProvider rewrites the canonical " +
-		"fallback-credit date to the AWS one on Bedrock/Mantle; gating emits only the canonical value",
 	"AnthropicMCPClientBetaHeaderDeprecated": "superseded version constant kept for inbound matching; " +
 		"gating emits AnthropicMCPClientBetaHeader",
 	"AnthropicContext1MBetaHeader":      "opted into via network config or passthrough headers, not derived from the request body",
@@ -5263,8 +5261,7 @@ func TestEveryBetaHeaderIsCoveredByTheCorpus(t *testing.T) {
 	//
 	// Deliberately measured after MergeBetaHeaders + FilterBetaHeadersForProvider rather
 	// than off the context. The gating computing a header is not the same as the request
-	// carrying it: the filter can drop a value the provider does not support, or rewrite
-	// it (that is how the AWS fallback-credit date is produced). Stopping at the context
+	// carrying it: the filter can drop a value the provider does not support. Stopping at the context
 	// would pass for a header that is computed correctly and then silently discarded
 	// before req.Header.Set(AnthropicBetaHeader, ...) in anthropic.go.
 	providers := betaHeaderTestProviders()

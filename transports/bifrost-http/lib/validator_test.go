@@ -995,6 +995,32 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
+// use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
+func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {
+	client := `{
+		"name": "linear",
+		"connection_type": "http",
+		"connection_string": "https://mcp.linear.app/mcp",
+		"auth_type": "oauth",
+		"oauth_config": {
+			"authorize_url": "https://linear.app/oauth/authorize",
+			"token_url": "https://api.linear.app/oauth/token",
+			"use_client_metadata_document": true
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(`{"mcp": {"client_configs": [`+client+`]}}`), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected use_client_metadata_document to pass validation: %v", err)
+	}
+	var parsed schemas.MCPClientConfig
+	if err := json.Unmarshal([]byte(client), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.PendingOAuthConfig == nil || !parsed.PendingOAuthConfig.UseClientMetadataDocument {
+		t.Fatal("use_client_metadata_document did not reach the pending OAuth config")
+	}
+}
+
 func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 	// Valid MCP client config with http connection type
 	validConfig := `{
@@ -2710,6 +2736,66 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 	}
 }
 
+// TestSchemaSCIMSharedProvisioningFields pins the fields every identity provider inherits from
+// the enterprise mapping.ProvisioningConfig: Cross App Access (crossAppAccess), the token
+// exchange host allowlist (tokenExchangeHosts) and accessProfileResolutionStrategy. Each
+// provider's config refuses unknown keys, so a provider missing one of them rejects a config
+// the loader accepts.
+func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
+	compiled := compileSchema(t)
+
+	providers := map[string]string{
+		"okta":      `"issuerUrl":"https://acme.okta.com/oauth2/default","clientId":"bifrost","clientSecret":"env.OKTA_CLIENT_SECRET"`,
+		"entra":     `"tenantId":"00000000-0000-0000-0000-000000000000","clientId":"bifrost"`,
+		"keycloak":  `"serverUrl":"https://keycloak.company.com","realm":"bifrost-prod","clientId":"bifrost","clientSecret":"env.KEYCLOAK_CLIENT_SECRET"`,
+		"zitadel":   `"domain":"acme.zitadel.cloud","clientId":"bifrost"`,
+		"google":    `"domain":"company.com","clientId":"bifrost"`,
+		"sailpoint": `"product":"isc","tenant":"acme"`,
+		"generic":   `"issuerUrl":"https://idp.company.com","clientId":"bifrost"`,
+	}
+	scimConfig := func(provider, extra string) string {
+		return `{"scim_config":{"enabled":true,"provider":"` + provider + `","config":{` + providers[provider] + extra + `}}}`
+	}
+
+	for provider := range providers {
+		t.Run(provider+" accepts the shared provisioning fields", func(t *testing.T) {
+			extra := `,"crossAppAccess":{"enabled":true,"accessTokenTtl":3600,"provisionUsers":false},` +
+				`"tokenExchangeHosts":["auth.example.com","login.example.com:8443"],` +
+				`"accessProfileResolutionStrategy":"order"`
+			if err := validateConfig(t, compiled, scimConfig(provider, extra)); err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+
+	tests := []struct {
+		name      string
+		extra     string
+		wantError bool
+	}{
+		{name: "okta syncAllUsers false is valid", extra: `,"syncAllUsers":false`},
+		{name: "crossAppAccess accessTokenTtl 0 means the default", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":0}`},
+		{name: "crossAppAccess accessTokenTtl at the 60 second floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":60}`},
+		{name: "crossAppAccess accessTokenTtl below the floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":59}`, wantError: true},
+		{name: "crossAppAccess accessTokenTtl above one day", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":86401}`, wantError: true},
+		{name: "crossAppAccess rejects unknown keys", extra: `,"crossAppAccess":{"enabled":true,"trustedIssuer":"https://acme.okta.com"}`, wantError: true},
+		{name: "tokenExchangeHosts rejects a URL", extra: `,"tokenExchangeHosts":["https://auth.example.com"]`, wantError: true},
+		{name: "tokenExchangeHosts rejects a path", extra: `,"tokenExchangeHosts":["auth.example.com/oauth2"]`, wantError: true},
+		{name: "accessProfileResolutionStrategy rejects unknown values", extra: `,"accessProfileResolutionStrategy":"first"`, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, scimConfig("okta", tt.extra))
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaKeyAliases(t *testing.T) {
 	schema := loadSchema(t)
 
@@ -2974,6 +3060,32 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 			t.Errorf("mcp with tool_sync_interval should be valid, got: %v", err)
 		}
 	})
+}
+
+// max_protocol_version is accepted globally (mcp) and per client, limited to the supported values.
+func TestSchemaMCPMaxProtocolVersion(t *testing.T) {
+	compiled := compileSchema(t)
+	config := func(global, client string) string {
+		return fmt.Sprintf(`{
+			"mcp": {
+				"max_protocol_version": %s,
+				"client_configs": [
+					{"name": "example", "connection_type": "http", "connection_string": "https://example.com/mcp", "max_protocol_version": %s}
+				]
+			}
+		}`, global, client)
+	}
+	for _, v := range []string{`"auto"`, `"2026-07-28"`, `"2025-11-25"`, `"2025-06-18"`} {
+		if err := validateConfig(t, compiled, config(v, v)); err != nil {
+			t.Errorf("max_protocol_version %s should be valid, got: %v", v, err)
+		}
+	}
+	if err := validateConfig(t, compiled, config(`"2024-11-05"`, `"auto"`)); err == nil {
+		t.Error("an unsupported global max_protocol_version must be rejected")
+	}
+	if err := validateConfig(t, compiled, config(`"auto"`, `"latest"`)); err == nil {
+		t.Error("an unsupported per-client max_protocol_version must be rejected")
+	}
 }
 
 func TestSchemaMCPClientEndpointSlug(t *testing.T) {

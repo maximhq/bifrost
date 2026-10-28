@@ -4604,8 +4604,13 @@ type ResponsesShellCallOutputDelta struct {
 // MarshalJSON omits event-scoped fields that are nil so strict Responses
 // clients do not see explicit nulls on unrelated event types. Some event types
 // still intentionally emit empty arrays after WithDefaults populates them.
+// resp is a copy, so defaults set here never reach the caller's event.
 func (resp BifrostResponsesStreamResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesStreamResponse
+	// Anthropic/Bedrock carry the thinking signature on a text-less delta; delta is required on the wire.
+	if resp.Type == ResponsesStreamResponseTypeReasoningSummaryTextDelta && resp.Delta == nil {
+		resp.Delta = new("")
+	}
 	encoded, err := Marshal(alias(resp))
 	if err != nil {
 		return nil, err

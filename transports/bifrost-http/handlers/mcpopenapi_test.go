@@ -75,11 +75,11 @@ func (m *openAPIRecordingManager) RequiresPerCallConnection(*schemas.MCPClientCo
 
 // VerifyHeadersConnection mirrors core: verification dials a remote MCP server,
 // so a config without a connection URL cannot be verified.
-func (m *openAPIRecordingManager) VerifyHeadersConnection(_ context.Context, c *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (m *openAPIRecordingManager) VerifyHeadersConnection(_ context.Context, c *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
 	if c.ConnectionString == nil || c.ConnectionString.GetValue() == "" {
-		return nil, nil, "", errors.New("connection URL is required for per-user headers verification")
+		return nil, errors.New("connection URL is required for per-user headers verification")
 	}
-	return map[string]schemas.ChatTool{}, map[string]string{}, "", nil
+	return &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}, nil
 }
 
 func newOpenAPITestHandler(t *testing.T) (*MCPHandler, *openAPIRecordingManager) {

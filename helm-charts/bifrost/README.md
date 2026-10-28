@@ -10,15 +10,60 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### Upcoming
 
-- Added Cross App Access (ID-JAG) fields to `bifrost.mcp.clientConfigs[].tokenExchange` (Enterprise): `profile`, `resource`, `resourceTokenEndpoint`, `resourceClientId`, `resourceClientSecret`, `resourcePrivateKey`, `resourceKeyId`, `resourceSigningAlgorithm`, `resourceAssertionAudience` and `resourceClientAuthMethod`. They render into `token_exchange.profile` and `token_exchange.resource_*`; the values schema requires `resourceClientId` for profile `id_jag` and refuses a secret together with a private key. `id_jag` always exchanges as the SSO application, so `useIdpCredentials`, `clientId` and `clientSecret` are not needed for it.
-- Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
-- Added `bifrost.disableOnboarding` (`disable_onboarding`) to hide the management UI setup checklist for every user. It is read from config.json on every start rather than the config store, so it stays in effect on stateless or provider-less deployments.
-- Added `bifrost.governance.projects[].disable_content_logging` (`governance.projects[].disable_content_logging` in config.json), a per-project content-logging setting. Omit it to inherit the virtual key's setting (or the client's when the key has none); `true` or `false` override the virtual key for requests scoped to the project.
-- Added `bifrost.client.skipAccessProfileUserVirtualKeyCreation` (`client.skip_access_profile_user_virtual_key_creation`), default `false`. Enterprise only: when `true`, a user's first access profile no longer issues them a virtual key.
-- Added `bifrost.client.skipAccessProfileUserVirtualKeyDeletion` (`client.skip_access_profile_user_virtual_key_deletion`), default `false`. Enterprise only: when `true`, removing a user's last access profile no longer deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes them.
-- Added `syncAllUsers` to the Okta SCIM provider config (`bifrost.scim.config.syncAllUsers`, `scim_config.config.syncAllUsers`), default `true`. Chooses which Okta users directory sync keeps: every app-assigned user except suspended and deactivated ones, or (`false`) active users only. The chart's values schema and `config.schema.json` previously refused the key.
-- Added Azure Blob configuration to `storage.logsStore.objectStorage` and `bifrost.auditLogs.objectStorage` (`logs_store.object_storage` / `audit_logs.object_storage`). Set `type: azure`, `bucket` to the container, and either `endpoint` for Azure identity or `connectionString`; logs also accept `existingSecret` and `connectionStringKey`. Structured environment and vault references do not require a `value` field.
-- Added logs `objectStorage.format` and `.compression` (`logs_store.object_storage.format` / `.compression`). S3 and Azure support Parquet; GCS remains JSON-only.
+#### ⚙️ Upgrade Notes
+
+- **GitHub Copilot keys need a token** - GitHub App authentication is gone, and Bifrost now ignores `github_copilot_key_config` (`app_id`, `installation_id`, `repository_id`, `private_key`, `github_domain`). Put a fine-grained personal access token (`github_pat_…`) or a GitHub OAuth token (`ghu_…` / `gho_…`) in the key's `value`; a key that relied on the App fields no longer authenticates.
+- **Existing MCP servers stay on protocol 2025-06-18** - Upgrading a deployment that already has MCP servers caps them at `2025-06-18`, the version they used before. Set `bifrost.mcp.maxProtocolVersion: auto` to offer the newest version.
+- **Token exchange needs a client ID** - `bifrost.mcp.clientConfigs[].tokenExchange` without `clientId` is now refused unless `useIdpCredentials: true` or `profile: id_jag`. Such a config never worked: Bifrost's own config validation rejected what the chart rendered.
+
+#### ✨ Features
+
+**Storage**
+
+- **Parquet log payloads** - Offloaded log payloads can be written as Parquet instead of JSON. Set `storage.logsStore.objectStorage.format` (`json` or `parquet`) and `.compression` (`none` or `gzip` for JSON; `none`, `gzip`, `snappy` or `zstd` for Parquet). Parquet works on S3 and Azure; GCS stays JSON-only.
+- **Azure Blob Storage** - Logs and audit-log archives can be stored in an Azure Blob container: `type: azure`, `bucket` set to the container, and either `endpoint` (Azure identity) or `connectionString`. For logs, `existingSecret` with `connectionStringKey` reads the connection string from a Kubernetes Secret.
+- **Cap temp files during log view refreshes** - `storage.logsStore.matviewRefreshTempFileLimit` (for example `"10GB"`) sets Postgres `temp_file_limit` for materialized-view refreshes. The cap applies to each Postgres process, and parallel workers each get it, so keep cap × (workers + 1) well under free disk. It needs superuser or `GRANT SET ON PARAMETER temp_file_limit`.
+- **Tune the bundled PostgreSQL** - `postgresql.primary.extraArgs` passes server settings such as `["-c", "max_connections=200"]`; changing them restarts the PostgreSQL pod. `postgresql.primary.persistence.annotations` and `.volumeAttributesClassName` add metadata to its volume claim.
+
+**Relays**
+
+- **Relays from values** - `bifrost.relays` declares relays: raw HTTP relays to non-LLM APIs such as Tavily, Exa or AWS Textract, served at `/relay/{name}/...`. Bifrost adds the relay's credential, prices each counted call and charges it to the caller's budgets. Entries render as top-level `relays` in config.json as written. With `sourceOfTruth: config.json`, an explicit list (including `[]`) removes stored relays it doesn't name, and their grants with them; leave the key out to keep stored relays. A repeated name fails the render. Grants are checked for identified callers only: with `bifrost.client.enforceAuthOnInference: false`, a request that carries no credential is relayed without any grant check.
+- **Relay grants** - Callers reach a relay through `relay_grants: [{relay_name: ...}]` on `bifrost.governance.virtualKeys[]`, `bifrost.governance.projects[]` or `bifrost.accessProfiles[]`. Like the rest of the entry, the list in your values is the whole list whenever that key, project or profile syncs from config.json: when its entry changes, or on every start with `sourceOfTruth: config.json`. Leaving `relay_grants` out then means no grants, so list any grant made in the dashboard that should stay. A grant naming a relay that doesn't exist is skipped with a warning on a virtual key; a project or access profile naming one is skipped as a whole. A virtual key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, and its own `relay_grants` are not applied; grant the relay on the profile.
+
+**Kubernetes**
+
+- **PodDisruptionBudget** - `podDisruptionBudget.enabled: true` keeps at least `minAvailable` (default `1`) Bifrost pods running through node drains and cluster upgrades. Setting `maxUnavailable` replaces `minAvailable`, so `maxUnavailable: "100%"` lets every replica be evicted. It is rendered only in cluster mode, and needs at least 2 replicas.
+
+**Identity and access (Enterprise)**
+
+- **Cross App Access for AI clients** - `bifrost.scim.config.crossAppAccess` lets AI clients your identity provider admits sign in to Bifrost as the user, by exchanging the provider's ID-JAG for a Bifrost token. Options: `enabled`, `accessTokenTtl` (60-86400 seconds, default one day) and `provisionUsers`. It needs `bifrost.client.oauth2ServerConfig.issuerUrl`, the governance plugin, and an identity provider that issues ID-JAGs (such as Okta). Every identity provider's config accepts the setting.
+- **Cross App Access to MCP servers** - `bifrost.mcp.clientConfigs[].tokenExchange.profile: id_jag` gets an ID-JAG for the user from the identity provider and redeems it at the MCP server's authorization server. Set `audience` to that authorization server's issuer and `resourceClientId` to Bifrost's client there. `resourceTokenEndpoint` is discovered from the issuer when left empty. Add `resourceClientSecret` or `resourcePrivateKey` unless Bifrost is a public client.
+- **Token exchange host allowlist** - `bifrost.scim.config.tokenExchangeHosts` lists the hosts, besides the identity provider's own, that an MCP server's token exchange may be sent to.
+- **First-match access profile mappings** - `bifrost.scim.config.accessProfileResolutionStrategy: order` grants only the profiles of the first attribute rule a user matches. The default, `all`, grants every match.
+- **Choose which Okta users sync** - `bifrost.scim.config.syncAllUsers` (default `true`) keeps every user assigned to the Okta app except suspended and deactivated ones; `false` keeps active users only.
+- **Access profile virtual keys** - `bifrost.client.skipAccessProfileUserVirtualKeyCreation: true` stops giving users a virtual key with their first access profile. `skipAccessProfileUserVirtualKeyDeletion: true` keeps their virtual keys when their last profile is removed.
+- **Per-project content logging** - `bifrost.governance.projects[].disable_content_logging` turns request and response content logging on or off for a project's traffic, overriding the virtual key. Omit it to inherit.
+
+**MCP**
+
+- **Cap the MCP protocol version** - `bifrost.mcp.maxProtocolVersion` (`auto`, `2026-07-28`, `2025-11-25` or `2025-06-18`) sets the newest protocol version offered to MCP servers. A server can override it with its own `clientConfigs[].maxProtocolVersion`.
+- **Serve upstream prompts and resources** - `bifrost.mcp.clientConfigs[].promptsToExpose` and `.resourcesToExpose` choose which of an MCP server's prompts and resources the MCP gateway serves: `["*"]` for all, `[]` for none. A new server serves everything when the field is omitted; on an existing server, omitting it keeps the stored list.
+
+**Providers**
+
+- **Amazon SageMaker** - `bifrost.providers.sagemaker` routes requests to SageMaker real-time endpoints. Set `sagemaker_key_config.region`; leave out `access_key` and `secret_key` to use the default AWS credentials (for example IRSA). Models are endpoint names.
+- **Azure Speech and Voice Live** - In `azure_key_config`, `use_speech_endpoints: true` sends speech and transcription to Azure AI Speech, and `use_voice_live_endpoints: true` sends realtime sessions to Azure Voice Live. An alias can override either.
+- **Passthrough allow list** - `bifrost.providers.<name>.passthrough.allowed_routes` limits which HTTP passthrough routes reach a provider, by `path` (`*` and `/**` globs) and optional `methods`. An empty list forwards nothing.
+
+**Dashboard**
+
+- **Warp settings from values** - `bifrost.warp` configures the dashboard's Warp assistant: model and provider, limits, embeddings, log search and topics. Warp also needs `bifrost.featureFlags.warp.enabled: true` and a vector store.
+- **Hide the setup checklist** - `bifrost.disableOnboarding: true` hides the dashboard's setup checklist for every user. It is read from config.json on every start, so it holds on stateless deployments.
+
+#### 🐞 Fixed
+
+- **Identity provider settings rejected by validation** - `crossAppAccess`, `tokenExchangeHosts` and `accessProfileResolutionStrategy` were read by Bifrost, but both the chart's values schema and `config.schema.json` refused them, so they could only be set from the dashboard.
+- **Okta `syncAllUsers` rejected** - The values schema refused `bifrost.scim.config.syncAllUsers`, so it could only be set from the dashboard.
 
 ### 2.1.45
 
@@ -40,6 +85,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - A provider key's `weight` is now optional, as documented; the chart already defaults it to 1.
 - Documented `enabled` on provider keys (`bifrost.providers.<name>.keys[].enabled`, renders into `providers.<name>.keys[].enabled`; also added to config.schema.json). Set `false` to keep a key configured but skip it in key selection, the same as the UI's Enabled toggle. New keys default to `true`; omitting it on an existing key keeps the stored value. Bifrost now saves the value from config.json on restart, so a key whose field was previously unset can be disabled from values; previously the stored value won.
 - Added `output_mode` to `bifrost.guardrails.rules[]`, rendered as `guardrails_config.guardrail_rules[].output_mode` (`enforce` default, or `monitor`). A monitor rule delivers the response untouched, evaluates it in the background, and records matches on the request's log without enforcing them; it requires `apply_to` `output` or `both`.
+- Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
 
 ### 2.1.44
 
@@ -911,6 +957,38 @@ See `values-examples/separate-logs-postgres.yaml` for a complete example.
 | `postgresql.external.existingSecret` | Name of an existing Kubernetes secret containing the password for the external instance                                                                                                                                                          | `""`               |
 | `postgresql.external.passwordKey`    | Key inside the external `existingSecret` that holds the password                                                                                                                                                                                 | `password`         |
 
+#### Tuning Bundled PostgreSQL
+
+Pass PostgreSQL server settings through `postgresql.primary.extraArgs`. These
+arguments go to the image entrypoint; with the default PostgreSQL image, `-c`
+sets a server parameter. Choose limits for your database resources and the total
+connection pools across all gateway replicas, including rolling-update surge.
+Changing these arguments restarts the single bundled PostgreSQL pod, which uses
+`Recreate` and temporarily interrupts database availability.
+
+```yaml
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs:
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=256MB"
+```
+
+Optional `postgresql.primary.persistence.annotations` (a map of string values)
+and `postgresql.primary.persistence.volumeAttributesClassName` (a class name)
+configure storage-controller integrations on the existing PVC. They do not
+change its name or the workload's claim reference. The defaults `{}` and `""`
+omit these fields. A VolumeAttributesClass must already exist, and both the
+cluster and CSI driver must support volume modification. Consult your driver's
+requirements before choosing a class or performance annotations; changing PVC
+metadata alone does not guarantee a backend volume modification succeeded.
+These options apply only to bundled PostgreSQL with persistence enabled.
+
 #### Using an Existing Secret for Hosted PostgreSQL
 
 If you manage secrets externally (e.g. with Vault Secrets Operator, External Secrets Operator, or Sealed Secrets), point `existingSecret` at the synced Kubernetes secret instead of providing a plaintext password:
@@ -1078,6 +1156,8 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject`      | Disable automatic MCP tool injection                                                                                                                                                                           | `false`  |
 | `bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist`      | **[Upcoming]** Hosts, IPs, or CIDRs the MCP OAuth chain may reach on loopback or private addresses, for MCP servers added by an authenticated admin or declared in config. Link-local and metadata are always refused. | `[]`     |
 | `bifrost.mcp.toolSyncInterval`                             | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended.                  | `10m`    |
+| `bifrost.mcp.maxProtocolVersion`                           | **[Upcoming]** Newest MCP protocol version Bifrost offers MCP servers: `auto` (newest supported), `2026-07-28`, `2025-11-25`, or `2025-06-18`. Unset keeps the stored value. Renders into `mcp.max_protocol_version`. | unset    |
+| `bifrost.mcp.clientConfigs[].maxProtocolVersion`           | **[Upcoming]** Per-server override of `bifrost.mcp.maxProtocolVersion` (same values). Omit to use the global setting. Renders into `max_protocol_version`.                                                       | unset    |
 | `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production.                              | `false`  |
 | `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`          | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |
 
