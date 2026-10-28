@@ -546,6 +546,43 @@ else:
   fi
 }
 
+# check_config renders the chart and runs a Python assertion against the rendered config.json,
+# available to the assertion as `cfg`.
+check_config() {
+  local test_name=$1
+  local assertion=$2
+  shift 2
+  if ! helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 "$@" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Error output:${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    return
+  fi
+  local reason
+  reason=$(ASSERTION="$assertion" python3 -c '
+import json, os, yaml
+docs = [d for d in yaml.safe_load_all(open("/tmp/helm-template-output.yaml")) if d]
+cms = [d for d in docs if d.get("kind") == "ConfigMap" and "config.json" in (d.get("data") or {})]
+if len(cms) != 1:
+    print("expected exactly one ConfigMap carrying config.json, got %d" % len(cms))
+else:
+    cfg = json.loads(cms[0]["data"]["config.json"])
+    try:
+        exec(os.environ["ASSERTION"])
+    except AssertionError as e:
+        print(e or "assertion failed")
+    except Exception as e:
+        print("%s: %s" % (type(e).__name__, e))
+' 2>&1 || true)
+  if [ -z "$reason" ]; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  $reason${NC}"
+  fi
+}
+
 # expect_render_failure asserts the chart refuses the values (schema or template guard).
 expect_render_failure() {
   local test_name=$1
@@ -761,6 +798,122 @@ expect_render_failure "postgresql: schema rejects non-string arguments" "extraAr
   --set 'postgresql.primary.extraArgs[0]=42'
 expect_render_failure "postgresql: schema rejects non-string PVC annotations" "annotations" \
   --set 'postgresql.primary.persistence.annotations.invalid=42'
+
+# token_exchange in config.schema.json requires client_id unless use_idp_credentials is true or
+# the profile is id_jag; the values schema must refuse what config.json validation would.
+TOKEN_EXCHANGE_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=te'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http'
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp'
+  --set 'bifrost.mcp.clientConfigs[0].authType=token_exchange'
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.audience=https://auth.example.com'
+)
+expect_render_failure "mcp tokenExchange: schema requires clientId without useIdpCredentials or id_jag" "allOf" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}"
+expect_render_failure "mcp tokenExchange: schema treats a blank clientId as unset" "allOf" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set-string 'bifrost.mcp.clientConfigs[0].tokenExchange.clientId= '
+test_template "mcp tokenExchange: clientId satisfies the default profile" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.clientId=exchange-app'
+test_template "mcp tokenExchange: useIdpCredentials needs no clientId" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.useIdpCredentials=true'
+test_template "mcp tokenExchange: id_jag needs resourceClientId, not clientId" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.profile=id_jag' \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.resourceClientId=bifrost-client'
+
+# Every identity provider inherits crossAppAccess, tokenExchangeHosts and
+# accessProfileResolutionStrategy from the enterprise ProvisioningConfig; the chart passes
+# scim.config through, so the values schema is what has to accept them.
+OKTA_SCIM=(
+  --set bifrost.scim.enabled=true
+  --set bifrost.scim.provider=okta
+  --set bifrost.scim.config.issuerUrl=https://acme.okta.com/oauth2/default
+  --set bifrost.scim.config.clientId=bifrost
+  --set bifrost.scim.config.clientSecret=env.OKTA_CLIENT_SECRET
+)
+check_config "scim: Cross App Access, token exchange hosts and access profile strategy render" \
+  'c = cfg["scim_config"]["config"]
+assert c["crossAppAccess"] == {"enabled": True, "accessTokenTtl": 3600, "provisionUsers": False}, "crossAppAccess changed: %r" % c.get("crossAppAccess")
+assert c["tokenExchangeHosts"] == ["auth.example.com", "login.example.com:8443"], "tokenExchangeHosts changed: %r" % c.get("tokenExchangeHosts")
+assert c["accessProfileResolutionStrategy"] == "order", "accessProfileResolutionStrategy changed: %r" % c.get("accessProfileResolutionStrategy")
+assert c["syncAllUsers"] is False, "syncAllUsers false was dropped: %r" % c.get("syncAllUsers")' \
+  "${OKTA_SCIM[@]}" \
+  --set bifrost.scim.config.crossAppAccess.enabled=true \
+  --set bifrost.scim.config.crossAppAccess.accessTokenTtl=3600 \
+  --set bifrost.scim.config.crossAppAccess.provisionUsers=false \
+  --set 'bifrost.scim.config.tokenExchangeHosts[0]=auth.example.com' \
+  --set 'bifrost.scim.config.tokenExchangeHosts[1]=login.example.com:8443' \
+  --set bifrost.scim.config.accessProfileResolutionStrategy=order \
+  --set bifrost.scim.config.syncAllUsers=false
+expect_render_failure "scim: schema rejects a crossAppAccess accessTokenTtl under 60 seconds" "accessTokenTtl" \
+  "${OKTA_SCIM[@]}" \
+  --set bifrost.scim.config.crossAppAccess.accessTokenTtl=30
+expect_render_failure "scim: schema rejects a URL in tokenExchangeHosts" "tokenExchangeHosts" \
+  "${OKTA_SCIM[@]}" \
+  --set 'bifrost.scim.config.tokenExchangeHosts[0]=https://auth.example.com'
+
+# Relays render as top-level relays exactly as declared, and relay_grants reach virtual keys,
+# projects and access profiles. A key's relay_grants: [] replaces its grants with none when it syncs,
+# while an omitted field keeps the ones made through the API, so the two must render differently.
+cat > "$VALUES_DIR/relay-values.yaml" << 'VALS'
+bifrost:
+  relays:
+    - name: tavily
+      base_url: "https://api.tavily.com"
+      auth: { type: bearer }
+      credential: { value: "env.TAVILY_API_KEY" }
+      usage: { cost_per_request: 0.001 }
+      routes:
+        - { method: POST, path: /search, usage: { units_path: usage.credits, cost_per_unit: 0.008 } }
+    - name: textract
+      base_url: "https://textract.us-east-1.amazonaws.com"
+      auth: { type: aws_sigv4, aws: { service: textract } }
+      credential: { aws: { region: us-east-1 } }
+      routes:
+        - { method: POST, path: /, headers: { X-Amz-Target: "Textract.AnalyzeDocument" } }
+  governance:
+    virtualKeys:
+      - { id: vk-search, name: search, relay_grants: [{ relay_name: tavily }] }
+      - { id: vk-cleared, name: cleared, relay_grants: [] }
+      - { id: vk-plain, name: plain }
+    projects:
+      - { name: research, access_rule: union, relay_grants: [{ relay_name: textract }] }
+  accessProfiles:
+    - { name: analysts, relay_grants: [{ relay_name: tavily }] }
+VALS
+check_config "relays: rendered as declared with grants on keys, projects and access profiles" \
+  'assert [r["name"] for r in cfg["relays"]] == ["tavily", "textract"], "relays changed: %r" % cfg.get("relays")
+assert cfg["relays"][0]["credential"] == {"value": "env.TAVILY_API_KEY"}, "credential changed: %r" % cfg["relays"][0]
+assert cfg["relays"][1]["auth"] == {"type": "aws_sigv4", "aws": {"service": "textract"}}, "auth changed: %r" % cfg["relays"][1]
+vks = {k["id"]: k for k in cfg["governance"]["virtual_keys"]}
+assert vks["vk-search"]["relay_grants"] == [{"relay_name": "tavily"}], "grants dropped: %r" % vks["vk-search"]
+assert vks["vk-cleared"]["relay_grants"] == [], "relay_grants: [] must render to clear grants: %r" % vks["vk-cleared"]
+assert "relay_grants" not in vks["vk-plain"], "an omitted relay_grants must stay omitted: %r" % vks["vk-plain"]
+assert cfg["governance"]["projects"][0]["relay_grants"] == [{"relay_name": "textract"}], "project grants: %r" % cfg["governance"]["projects"]
+assert cfg["access_profiles"][0]["relay_grants"] == [{"relay_name": "tavily"}], "profile grants: %r" % cfg["access_profiles"]' \
+  -f "$VALUES_DIR/relay-values.yaml"
+check_config "relays: an explicit empty list renders, so source of truth prunes stored relays" \
+  'assert cfg["relays"] == [], "relays: [] must render: %r" % cfg.get("relays")' \
+  --set-json 'bifrost.relays=[]'
+check_config "relays: omitted by default, leaving stored relays alone" \
+  'assert "relays" not in cfg, "relays rendered without being configured: %r" % cfg.get("relays")'
+expect_render_failure "relays: a repeated name is refused" "used by more than one relay" \
+  --set 'bifrost.relays[0].name=tavily' --set 'bifrost.relays[0].base_url=https://a.example.com' \
+  --set 'bifrost.relays[1].name=tavily' --set 'bifrost.relays[1].base_url=https://b.example.com'
+expect_render_failure "relays: schema rejects an invalid name" "name" \
+  --set 'bifrost.relays[0].name=has space' --set 'bifrost.relays[0].base_url=https://a.example.com'
+expect_render_failure "relays: schema rejects an unknown auth type" "type" \
+  --set 'bifrost.relays[0].name=tavily' --set 'bifrost.relays[0].base_url=https://a.example.com' \
+  --set 'bifrost.relays[0].auth.type=oauth'
+expect_render_failure "relays: schema requires base_url" "base_url" \
+  --set 'bifrost.relays[0].name=tavily'
+expect_render_failure "relays: schema rejects a relay grant without relay_name" "relay_name" \
+  --set 'bifrost.governance.virtualKeys[0].id=vk' --set 'bifrost.governance.virtualKeys[0].name=vk' \
+  --set-json 'bifrost.governance.virtualKeys[0].relay_grants=[{"name":"tavily"}]'
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml

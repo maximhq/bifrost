@@ -2599,6 +2599,13 @@
                       "$ref": "#/$defs/virtualKeyProviderConfig"
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays this key may call, one by one. Omit to keep grants made through the API; a declared list ([] included) replaces them when the key syncs from config.json. Renders into relay_grants.",
+                    "items": {
+                      "$ref": "#/$defs/virtual_key_relay_grant"
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -3655,6 +3662,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3744,6 +3754,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3822,6 +3835,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3898,6 +3914,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -3989,6 +4008,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4097,6 +4119,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4184,6 +4209,9 @@
                       "attributeRoleMappings": { "$ref": "#/$defs/scim_attribute_role_mappings" },
                       "roleResolutionStrategy": { "$ref": "#/$defs/scim_role_resolution_strategy" },
                       "claimsSyncMode": { "$ref": "#/$defs/scim_claims_sync_mode" },
+                      "accessProfileResolutionStrategy": { "$ref": "#/$defs/scim_access_profile_resolution_strategy" },
+                      "tokenExchangeHosts": { "$ref": "#/$defs/scim_token_exchange_hosts" },
+                      "crossAppAccess": { "$ref": "#/$defs/scim_cross_app_access" },
                       "attributeTeamMappings": { "$ref": "#/$defs/scim_attribute_team_mappings" },
                       "attributeBusinessUnitMappings": {
                         "$ref": "#/$defs/scim_attribute_business_unit_mappings"
@@ -4749,6 +4777,13 @@
                   "$ref": "#/$defs/access_profile_virtual_mcp"
                 }
               },
+              "relay_grants": {
+                "type": "array",
+                "description": "Relays keys governed by this profile may call, one by one. Renders into access_profiles[].relay_grants.",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_relay_grant"
+                }
+              },
               "mcp_configs": {
                 "type": "array",
                 "description": "Per-MCP-client tool allowlists this profile grants. Canonical key; supersedes the deprecated mcp_servers and mcp_tool_overrides aliases.",
@@ -5256,6 +5291,13 @@
             },
             "required": ["name", "url", "events"],
             "additionalProperties": false
+          }
+        },
+        "relays": {
+          "type": "array",
+          "description": "Relays: raw HTTP relays to non-LLM APIs served at /relay/{name}/{path}, with the relay's credential injected and each counted call priced and charged to the caller's budgets. Rendered directly as top-level relays in config.json and reconciled by name with hash-based change detection. With config.json as the source of truth, an explicit list (including []) prunes stored relays it does not name; omit the key to leave them alone. Virtual keys, access profiles and projects reach a relay through relay_grants.",
+          "items": {
+            "$ref": "#/$defs/relay"
           }
         },
         "agents": {
@@ -6935,6 +6977,458 @@
     }
   },
   "$defs": {
+    "relay": {
+      "type": "object",
+      "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "description": "Served at /relay/{name}; immutable"
+        },
+        "description": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Absolute http(s) upstream origin and base path every request is pinned under"
+        },
+        "auth": {
+          "$ref": "#/$defs/relay_auth_config"
+        },
+        "credential": {
+          "type": "object",
+          "description": "The one secret the endpoint signs in with: value for bearer, header, query and basic auth; aws for aws_sigv4. Omit for auth none.",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/relay_secret"
+            },
+            "aws": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "secret_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_token": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "region": {
+                  "$ref": "#/$defs/relay_secret",
+                  "description": "SigV4 signing region"
+                },
+                "role_arn": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "external_id": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_name": {
+                  "$ref": "#/$defs/relay_secret"
+                }
+              },
+              "required": [
+                "region"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "extra_headers": {
+          "type": "object",
+          "description": "Operator headers sent on every request; a caller cannot replace them",
+          "additionalProperties": {
+            "$ref": "#/$defs/relay_secret"
+          }
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Whole-response timeout for buffered calls (default 60)"
+            },
+            "stream_idle_timeout_in_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Max silence between stream chunks (default 60)"
+            },
+            "max_conns_per_host": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Default 5000"
+            },
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config",
+          "description": "Outbound proxy; omit to inherit the global proxy when it is enabled for inference"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        },
+        "streaming": {
+          "$ref": "#/$defs/relay_streaming_config"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relay_route_config"
+          },
+          "description": "Upstream operations, first match wins; only listed routes are relayed unless skip_route_check is set"
+        },
+        "skip_route_check": {
+          "type": "boolean",
+          "description": "Relay requests that match no route instead of refusing them with 404"
+        },
+        "ignore_upstream_cost": {
+          "type": "boolean",
+          "description": "Ignore cost_path values; the operator's fee and unit pricing still apply"
+        }
+      },
+      "required": [
+        "name",
+        "base_url"
+      ],
+      "additionalProperties": false
+    },
+    "relay_auth_config": {
+      "type": "object",
+      "description": "How the endpoint's credential is presented to the upstream",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "header",
+            "query",
+            "basic",
+            "aws_sigv4",
+            "none"
+          ],
+          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; aws_sigv4: SigV4 with the endpoint's credential.aws; none: nothing injected (default bearer)"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "Header that carries the key (auth.type header)"
+        },
+        "query_param": {
+          "type": "string",
+          "description": "Query parameter that carries the key (auth.type query)"
+        },
+        "value_prefix": {
+          "type": "string",
+          "description": "Literal prefix placed before the key value (auth.type header)"
+        },
+        "aws": {
+          "type": "object",
+          "description": "SigV4 settings (auth.type aws_sigv4)",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$",
+              "description": "SigV4 signing name, e.g. textract or translate. Requests are signed for credential.aws.region"
+            }
+          },
+          "required": [
+            "service"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_route_config": {
+      "type": "object",
+      "description": "Overrides for one upstream operation",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "false refuses requests matching this route with 404, even when skip_route_check is on. Defaults to true"
+        },
+        "billable": {
+          "type": "boolean",
+          "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers that must also match for this route: header name (case-insensitive) to value glob. AWS JSON APIs send every operation to POST / and name it in X-Amz-Target, so one route per operation is {\"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"} or a glob such as Textract.Get*",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "Forces the streaming or buffered relay for this route"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "relay_secret": {
+      "description": "A literal value, an env.VAR_NAME reference, or a structured secret reference (vault-backed secrets are stored as references).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "plain_text",
+                "env",
+                "vault"
+              ]
+            },
+            "env_var": {
+              "type": "string"
+            },
+            "from_env": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "properties": {
+                "value": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "ref": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "anyOf": [
+                {
+                  "required": [
+                    "type"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            },
+            {
+              "properties": {
+                "env_var": {
+                  "minLength": 1
+                },
+                "from_env": {
+                  "const": true
+                }
+              },
+              "required": [
+                "env_var",
+                "from_env"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relay_streaming_config": {
+      "type": "object",
+      "description": "Paths that are always relayed as streams. Otherwise a route's stream flag wins, and without one the upstream's reply decides: text/event-stream is streamed, anything else is read and priced. Nothing the caller sends selects streaming",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Rooted segment globs that always stream, e.g. /v1/stream/**",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_usage_config": {
+      "type": "object",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read. On the endpoint, a field left empty reads nothing; on a route, an empty field inherits the endpoint's value and reads nothing only when it is still empty after that (a route cannot switch an endpoint path off by leaving it blank). Negative numbers are ignored",
+      "properties": {
+        "model_path": {
+          "type": "string",
+          "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Stored on the log row and checked against virtual-key model restrictions. Unset reads no model"
+        },
+        "model_source": {
+          "type": "string",
+          "enum": [
+            "body",
+            "query"
+          ],
+          "description": "Where model_path points: body (default), a JSON field of the request body; or query, a query parameter (Deepgram's ?model=nova-3)"
+        },
+        "input_tokens_path": {
+          "type": "string",
+          "description": "Response body path for input tokens"
+        },
+        "output_tokens_path": {
+          "type": "string",
+          "description": "Response body path for output tokens"
+        },
+        "total_tokens_path": {
+          "type": "string",
+          "description": "Response body path for total tokens"
+        },
+        "cost_path": {
+          "type": "string",
+          "description": "Response body path for an endpoint-reported USD cost; an array of numbers is summed"
+        },
+        "cost_per_request": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat USD fee added to every billable call; on a route, 0 waives the endpoint fee"
+        },
+        "units_path": {
+          "type": "string",
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes or body_chars"
+        },
+        "units_source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "request"
+          ],
+          "description": "Body the quantity is read from: the upstream response (default) or the caller's request, which is what per-character APIs bill on"
+        },
+        "units_measure": {
+          "type": "string",
+          "enum": [
+            "value",
+            "chars",
+            "body_bytes",
+            "body_chars"
+          ],
+          "description": "value: the number at units_path (default); chars: the character count of the JSON string at units_path; body_bytes: the byte length of the whole body; body_chars: the character count of the whole body, any content type (what per-character APIs such as Azure Speech bill)"
+        },
+        "cost_per_unit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
+        },
+        "units_block_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bill per started block of this many raw units: 100 for an API priced per 100 characters. Default exact"
+        },
+        "units_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Least number of billed units once a quantity was read. Default 0"
+        }
+      },
+      "additionalProperties": false
+    },
+    "proxy_config": {
+      "type": "object",
+      "description": "Proxy configuration for provider connections",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "http",
+            "socks5",
+            "environment"
+          ],
+          "description": "Type of proxy to use"
+        },
+        "url": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^env\\.[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            {
+              "type": "string",
+              "format": "uri"
+            }
+          ],
+          "description": "URL of the proxy server (supports env.VAR_NAME or a literal URI)"
+        },
+        "username": {
+          "type": "string",
+          "description": "Username for proxy authentication (supports env.VAR_NAME)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Password for proxy authentication (supports env.VAR_NAME)"
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies, and for the proxy itself when the URL is https://, supports env.VAR_NAME)"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "virtual_key_relay_grant": {
+      "type": "object",
+      "properties": {
+        "relay_name": {
+          "type": "string",
+          "description": "Name of a relay this key may call"
+        }
+      },
+      "required": [
+        "relay_name"
+      ],
+      "additionalProperties": false
+    },
     "azureStorageSecret": {
       "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference",
       "anyOf": [
@@ -8594,6 +9088,21 @@
           "required": ["audience"],
           "allOf": [
             {
+              "$comment": "clientId is required unless useIdpCredentials is true or profile is id_jag, mirroring token_exchange in config.schema.json. A blank clientId is not rendered, so it counts as unset.",
+              "if": {
+                "not": {
+                  "anyOf": [
+                    { "properties": { "useIdpCredentials": { "const": true } }, "required": ["useIdpCredentials"] },
+                    { "properties": { "profile": { "const": "id_jag" } }, "required": ["profile"] }
+                  ]
+                }
+              },
+              "then": {
+                "properties": { "clientId": { "pattern": "\\S" } },
+                "required": ["clientId"]
+              }
+            },
+            {
               "$comment": "A client secret or a private key, not both; a blank value counts as unset, as at runtime.",
               "not": {
                 "properties": {
@@ -8709,14 +9218,14 @@
           "items": {
             "type": "string"
           },
-          "description": "Prompts served through the MCP gateway (omit for all, [] for none). Renders into prompts_to_expose."
+          "description": "Prompts served through the MCP gateway: ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list. Renders into prompts_to_expose."
         },
         "resourcesToExpose": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Resource URIs and URI templates served through the MCP gateway (omit for all, [] for none). Renders into resources_to_expose."
+          "description": "Resource URIs and URI templates served through the MCP gateway: ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list. Renders into resources_to_expose."
         },
         "toolSyncInterval": {
           "type": "string",
@@ -9495,6 +10004,43 @@
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
     },
+    "scim_access_profile_resolution_strategy": {
+      "type": "string",
+      "enum": [
+        "all",
+        "order"
+      ],
+      "default": "all",
+      "description": "How many attribute-access-profile grants a user receives when several attributeAccessProfileMappings match: 'all' (default) grants every matching rule's profile; 'order' grants only the profiles of the first rule, in list order, that the user matches. Profiles granted through roles are unaffected."
+    },
+    "scim_token_exchange_hosts": {
+      "type": "array",
+      "description": "Hosts besides the issuer's own that an MCP client's token exchange may be sent to through its authorization_server_url (for example an Okta custom authorization server on another domain). The exchange carries the caller's identity-provider token, so only these hosts may be named. Each entry is a bare host name, with a port only when it needs one; entries are lowercased and deduplicated.",
+      "items": {
+        "type": "string",
+        "pattern": "^\\s*[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[1-9][0-9]{0,4})?\\s*$"
+      }
+    },
+    "scim_cross_app_access": {
+      "type": "object",
+      "description": "Cross App Access (XAA, the ID-JAG profile), inbound: AI clients this identity provider admits for a user exchange a provider-signed ID-JAG at Bifrost's /oauth2/token for a Bifrost token that acts as that user. Needs the governance plugin and client.oauth2_server_config.issuer_url. Client IDs are registered in the dashboard.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn Cross App Access on for this provider."
+        },
+        "accessTokenTtl": {
+          "type": "integer",
+          "anyOf": [{ "const": 0 }, { "minimum": 60, "maximum": 86400 }],
+          "description": "Lifetime in seconds of the Bifrost tokens issued for an ID-JAG, 60 to 86400. 0 or omitted uses the default of 86400 (one day), since Okta caps ID-JAGs per user per resource app per month."
+        },
+        "provisionUsers": {
+          "type": "boolean",
+          "description": "Create a Bifrost user for an assertion that names someone who has none, instead of refusing the grant. Off by default: an ID-JAG carries only an ID and email, so most new users would resolve no role."
+        }
+      },
+      "additionalProperties": false
+    },
     "scim_claims_sync_mode": {
       "type": "string",
       "enum": ["both", "scim"],
@@ -9617,6 +10163,13 @@
           "description": "Per-provider access and accounting, one entry per provider",
           "items": {
             "$ref": "#/$defs/project_provider_config"
+          }
+        },
+        "relay_grants": {
+          "type": "array",
+          "description": "Relays requests scoped to this project may call, one by one. Renders into governance.projects[].relay_grants.",
+          "items": {
+            "$ref": "#/$defs/virtual_key_relay_grant"
           }
         },
         "mcp_configs": {

@@ -1168,6 +1168,10 @@ bifrost:
       #   mcp_configs:
       #     - mcp_client_id: 1
       #       tools_to_execute: ["tool1", "tool2"]
+      #   # Relays this key may call (names from bifrost.relays). Omit to keep grants made in the
+      #   # dashboard; a declared list ([] included) replaces them when the key syncs from this file.
+      #   relay_grants:
+      #     - relay_name: "tavily"
     modelConfigs: []
       # - id: "model-config-1"
       #   model_name: "gpt-4o"       # model name, or "*" for all models
@@ -1222,6 +1226,8 @@ bifrost:
       #       tools_to_execute: ["*"]
       #   virtual_mcps:
       #     - virtual_mcp_name: "Platform Tools"
+      #   relay_grants:  # Relays requests scoped to this project may call; the file's list replaces the stored one
+      #     - relay_name: "textract"
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -1418,6 +1424,9 @@ bifrost:
       #   - attribute: "groups"
       #     value: "bifrost-power-users"
       #     accessProfile: "power-user"
+      # # Which attribute-profile rules apply when several match: "all" (default) grants every match;
+      # # "order" grants only the profiles of the first matching rule. Role-granted profiles are unaffected.
+      # accessProfileResolutionStrategy: "all"
       # # Attribute -> project memberships. Every matching rule adds the user to that project (by name;
       # # never auto-created). Memberships a rule added are removed when it stops matching; members
       # # added from the dashboard are kept.
@@ -1441,6 +1450,21 @@ bifrost:
       # # off and directory access granted (Okta apiToken, Auth0 management credentials, Entra/Google
       # # bulk sync).
       # bulkSyncInterval: "24h"
+      #
+      # # Token exchange hosts (Enterprise). Shared across every provider above: hosts besides the
+      # # issuer's own that an MCP client's token exchange may be sent to through its
+      # # tokenExchange.authorizationServerUrl. Bare host names, with a port only when needed.
+      # tokenExchangeHosts:
+      #   - "auth.example.com"
+      #
+      # # Cross App Access (XAA, ID-JAG) inbound (Enterprise). Shared across every provider above:
+      # # AI clients the IdP admits for a user exchange its ID-JAG at Bifrost's /oauth2/token for a
+      # # Bifrost token that acts as that user. Needs the governance plugin and
+      # # client.oauth2ServerConfig.issuerUrl; register the client IDs in the dashboard.
+      # crossAppAccess:
+      #   enabled: true
+      #   accessTokenTtl: 86400   # seconds, 60-86400; 0 or omitted = 86400
+      #   provisionUsers: false   # create a Bifrost user for an unknown assertion subject instead of refusing
       #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
@@ -1678,6 +1702,8 @@ bifrost:
     #   mcp_configs:  # Per-client tool allowlists: ["*"] all tools, [] none, named list only those
     #     - mcp_client_id: "github"
     #       tools_to_execute: ["create_pull_request", "list_issues"]
+    #   relay_grants:  # Relays keys governed by this profile may call
+    #     - relay_name: "tavily"
     #   # DEPRECATED — folded into virtual_mcps / mcp_configs at load time:
     #   # mcp_tool_groups:
     #   #   - tool_group_id: 1
@@ -1775,6 +1801,40 @@ bifrost:
   #       type: "headers"
   #       headers:
   #         Authorization: "env.AGENT_RUNTIME_AUTH"
+
+  # Relays: raw HTTP relays to non-LLM APIs, served at /relay/{name}/{path}. Bifrost injects the
+  # relay's credential, prices each counted call and charges it to the caller's budgets. Rendered
+  # directly as top-level `relays` in config.json and reconciled by name. With sourceOfTruth
+  # "config.json", an explicit list (including []) prunes stored relays it does not name, and their
+  # grants with them; omit the key to leave stored relays alone. Callers need a relay_grants entry
+  # on their virtual key, project or access profile.
+  # relays:
+  #   - name: "tavily"                       # served at /relay/tavily; letters, digits, . _ - (max 64); immutable
+  #     description: "Web search"
+  #     base_url: "https://api.tavily.com"
+  #     auth:
+  #       type: "bearer"                     # bearer | header | query | basic | aws_sigv4 | none
+  #     credential:
+  #       value: "env.TAVILY_API_KEY"        # literal, env.VAR_NAME, or a vault reference; supply the env var via envFrom/extraEnv
+  #     usage:
+  #       cost_per_request: 0.001            # USD added to every billable call
+  #     routes:                              # only listed routes are relayed unless skip_route_check: true
+  #       - method: "POST"
+  #         path: "/search"
+  #         usage:
+  #           units_path: "usage.credits"
+  #           cost_per_unit: 0.008
+  #   - name: "textract"
+  #     base_url: "https://textract.us-east-1.amazonaws.com"
+  #     auth:
+  #       type: "aws_sigv4"
+  #       aws: { service: "textract" }
+  #     credential:
+  #       aws: { region: "us-east-1" }       # omit access_key/secret_key to use the pod's AWS credentials (IRSA)
+  #     routes:
+  #       - method: "POST"
+  #         path: "/"
+  #         headers: { X-Amz-Target: "Textract.AnalyzeDocument" }
 
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:

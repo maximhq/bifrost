@@ -749,6 +749,8 @@ false
 {{- if hasKey . "allow_all_providers" }}{{- $_ := set $vk "allow_all_providers" .allow_all_providers }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
+{{- /* Omitted keeps grants made through the API; [] replaces them with none, so it must survive. */ -}}
+{{- if hasKey . "relay_grants" }}{{- $_ := set $vk "relay_grants" (default (list) .relay_grants) }}{{- end }}
 {{- $vks = append $vks $vk }}
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
@@ -1075,6 +1077,19 @@ false
 {{- end }}
 {{- end }}
 {{- $_ := set $config "agents" .Values.bifrost.agents }}
+{{- end }}
+{{- /* Relays. Rendered whenever the key is declared, [] included: with config.json as the source of
+       truth an explicit list prunes stored relays it does not name, and omitting the key leaves them.
+       Startup skips every copy of a repeated name, so a duplicate is refused here instead. */ -}}
+{{- if hasKey .Values.bifrost "relays" }}
+{{- $seenRelayNames := list }}
+{{- range .Values.bifrost.relays }}
+{{- if has .name $seenRelayNames }}
+{{- fail (printf "ERROR: bifrost.relays[].name '%s' is used by more than one relay. Names must be unique; startup reconciliation identifies relays by name." .name) }}
+{{- end }}
+{{- $seenRelayNames = append $seenRelayNames .name }}
+{{- end }}
+{{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}

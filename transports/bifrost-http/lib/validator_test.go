@@ -2736,6 +2736,66 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 	}
 }
 
+// TestSchemaSCIMSharedProvisioningFields pins the fields every identity provider inherits from
+// the enterprise mapping.ProvisioningConfig: Cross App Access (crossAppAccess), the token
+// exchange host allowlist (tokenExchangeHosts) and accessProfileResolutionStrategy. Each
+// provider's config refuses unknown keys, so a provider missing one of them rejects a config
+// the loader accepts.
+func TestSchemaSCIMSharedProvisioningFields(t *testing.T) {
+	compiled := compileSchema(t)
+
+	providers := map[string]string{
+		"okta":      `"issuerUrl":"https://acme.okta.com/oauth2/default","clientId":"bifrost","clientSecret":"env.OKTA_CLIENT_SECRET"`,
+		"entra":     `"tenantId":"00000000-0000-0000-0000-000000000000","clientId":"bifrost"`,
+		"keycloak":  `"serverUrl":"https://keycloak.company.com","realm":"bifrost-prod","clientId":"bifrost","clientSecret":"env.KEYCLOAK_CLIENT_SECRET"`,
+		"zitadel":   `"domain":"acme.zitadel.cloud","clientId":"bifrost"`,
+		"google":    `"domain":"company.com","clientId":"bifrost"`,
+		"sailpoint": `"product":"isc","tenant":"acme"`,
+		"generic":   `"issuerUrl":"https://idp.company.com","clientId":"bifrost"`,
+	}
+	scimConfig := func(provider, extra string) string {
+		return `{"scim_config":{"enabled":true,"provider":"` + provider + `","config":{` + providers[provider] + extra + `}}}`
+	}
+
+	for provider := range providers {
+		t.Run(provider+" accepts the shared provisioning fields", func(t *testing.T) {
+			extra := `,"crossAppAccess":{"enabled":true,"accessTokenTtl":3600,"provisionUsers":false},` +
+				`"tokenExchangeHosts":["auth.example.com","login.example.com:8443"],` +
+				`"accessProfileResolutionStrategy":"order"`
+			if err := validateConfig(t, compiled, scimConfig(provider, extra)); err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+
+	tests := []struct {
+		name      string
+		extra     string
+		wantError bool
+	}{
+		{name: "okta syncAllUsers false is valid", extra: `,"syncAllUsers":false`},
+		{name: "crossAppAccess accessTokenTtl 0 means the default", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":0}`},
+		{name: "crossAppAccess accessTokenTtl at the 60 second floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":60}`},
+		{name: "crossAppAccess accessTokenTtl below the floor", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":59}`, wantError: true},
+		{name: "crossAppAccess accessTokenTtl above one day", extra: `,"crossAppAccess":{"enabled":true,"accessTokenTtl":86401}`, wantError: true},
+		{name: "crossAppAccess rejects unknown keys", extra: `,"crossAppAccess":{"enabled":true,"trustedIssuer":"https://acme.okta.com"}`, wantError: true},
+		{name: "tokenExchangeHosts rejects a URL", extra: `,"tokenExchangeHosts":["https://auth.example.com"]`, wantError: true},
+		{name: "tokenExchangeHosts rejects a path", extra: `,"tokenExchangeHosts":["auth.example.com/oauth2"]`, wantError: true},
+		{name: "accessProfileResolutionStrategy rejects unknown values", extra: `,"accessProfileResolutionStrategy":"first"`, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, scimConfig("okta", tt.extra))
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaKeyAliases(t *testing.T) {
 	schema := loadSchema(t)
 

@@ -67,9 +67,35 @@ An omitted `relay_grants` leaves the grants unchanged and `[]` clears them.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `relay_grants` | array | `[]` | Relays this key may call, one `{ "relay_name": "..." }` each. Empty means none. |
+| `relay_grants` | array | omitted | Relays this key may call, one `{ "relay_name": "..." }` each. Omitted keeps the grants made in the dashboard or API; a declared list, `[]` included, replaces them when the key syncs from the file. Not applied when an access profile governs the key's team, customer or user (Enterprise): that profile's `relay_grants` decide the key's relays. |
 
 Relays declared in `config.json` are loaded before governance, so a virtual key in the same file may grant them.
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  governance:
+    virtualKeys:
+      - id: vk-research
+        name: research-assistant
+        value: "env.RESEARCH_VK"
+        relay_grants:
+          - relay_name: tavily
+          - relay_name: textract
+
+# The pod reads RESEARCH_VK from its environment; envFrom loads it from a Kubernetes Secret
+envFrom:
+  - secretRef:
+      name: research-virtual-key   # a Secret with the key RESEARCH_VK; the value must start with sk-bf-
+```
+
+`RESEARCH_VK` must hold a strong random value that starts with `sk-bf-` (for example `sk-bf-$(openssl rand -hex 24)`); a value without that prefix is replaced by a generated key and requests sending the Secret's value are refused.
+
+Leaving `relay_grants` out keeps grants made in the dashboard. When the key syncs from the file (its entry changed, or on every start with `config.json` as the source of truth), a declared list, `[]` included, replaces them. Projects (`bifrost.governance.projects[].relay_grants`) and access profiles (`bifrost.accessProfiles[].relay_grants`) take the same list, but there the declared list is the whole list whenever the entry syncs: leaving it out means no grants. A project or access profile naming a relay that does not exist is skipped with a warning.
+
+A key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, so its own `relay_grants` are not applied. Grant the relay on the access profile instead.
 
 </Tab>
 </Tabs>
