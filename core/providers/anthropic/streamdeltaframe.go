@@ -1,10 +1,5 @@
 package anthropic
 
-import (
-	"github.com/bytedance/sonic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-)
-
 // A streaming `message_delta` frame carries TWO things: the turn's usage so far
 // and its stop state. The usage half is in streamdeltausage.go. This is the
 // stop half, and it is a protocol requirement rather than a nicety: the
@@ -37,46 +32,12 @@ import (
 // mistake as synthesizing a usage figure. The terminal frame is untouched: it
 // has a stop reason of its own and already rendered both fields.
 //
-// Why a flag and a MarshalJSON rather than dropping `omitempty` from
-// StopReason: AnthropicStreamDelta is shared with content_block_delta, whose
-// frames legitimately carry no stop fields and whose bytes are pinned by the
-// carried stock-byte controls. The flag is set at exactly one call site, so
-// everything else -- every content block, every synthesized terminal frame,
-// every non-streaming response -- renders byte-identically to stock.
-
-// newAnthropicMessageDeltaStopFields returns the delta object a `message_delta`
-// frame must carry when the upstream event behind it reported no stop reason:
-// the two required fields, both explicitly null, and nothing else.
-func newAnthropicMessageDeltaStopFields() *AnthropicStreamDelta {
-	return &AnthropicStreamDelta{requireStopFields: true}
-}
-
-// anthropicStreamDeltaWire is AnthropicStreamDelta without its MarshalJSON
-// method, so the encoder's own field rendering stays the single source of the
-// delta object's bytes and the unflagged path is byte-identical to stock.
-type anthropicStreamDeltaWire AnthropicStreamDelta
-
-// MarshalJSON renders the delta object, adding an explicit null `stop_reason`
-// only for a frame that requires the message-level stop fields and has no stop
-// reason to report. `stop_sequence` needs no such handling: its tag already
-// carries no omitempty, because `message_delta` has always needed it present.
-//
-// The flag itself (AnthropicStreamDelta.requireStopFields) asks for the two
-// MESSAGE-level stop fields to be rendered explicitly -- stop_reason as a JSON
-// null when unset -- because a streaming message_delta frame's delta object
-// declares both as required and nullable, and the supported clients read
-// delta.stop_reason unguarded. It is unexported and set at one call site.
-//
-// The default (zero) flag reproduces stock bytes exactly, and so does a flagged
-// object that does have a stop reason -- the rendering only ever ADDS the key
-// the protocol requires, never changes or removes one.
-func (d AnthropicStreamDelta) MarshalJSON() ([]byte, error) {
-	data, err := sonic.Marshal(anthropicStreamDeltaWire(d))
-	if err != nil {
-		return nil, err
-	}
-	if !d.requireStopFields || d.StopReason != nil {
-		return data, nil
-	}
-	return providerUtils.SetRawJSONField(data, "stop_reason", []byte("null"))
-}
+// Why an empty stop reason rather than dropping `omitempty` from StopReason:
+// AnthropicStreamDelta is shared with content_block_delta, whose frames
+// legitimately carry no stop fields and whose bytes are pinned by the carried
+// stock-byte controls. The message_delta egress sets an EMPTY stop reason when
+// the upstream reported none, and AnthropicStopReason.MarshalJSON renders that
+// as the required JSON null. Its stop reason is a nil pointer on every other
+// frame, so `omitempty` drops it before any method runs: every content block,
+// every synthesized terminal frame and every non-streaming response renders
+// byte-identically to stock, at stock cost (BenchmarkStreamDeltaMarshal).

@@ -4170,15 +4170,18 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// reported -- a null stop_reason, never a fabricated end_turn. See
 			// streamdeltaframe.go.
 			//
-			// The flag is set on an object the branches above ALREADY built, not
+			// The null is set on an object the branches above ALREADY built, not
 			// only on one supplied here: `stop_details`, `container` and a text
 			// delta each allocate one, so such a frame with no stop reason rendered
-			// without `stop_reason` -- the same omission. The flag only ADDS the
-			// null when there is none, so a terminal frame is byte-unchanged.
+			// without `stop_reason` -- the same omission. An empty reason renders
+			// as JSON null (AnthropicStopReason.MarshalJSON) and only frames that
+			// set it pay for that, so content_block_delta keeps stock encoding and
+			// a terminal frame with its own reason is byte-unchanged.
 			if streamResp.Delta == nil {
-				streamResp.Delta = newAnthropicMessageDeltaStopFields()
-			} else {
-				streamResp.Delta.requireStopFields = true
+				streamResp.Delta = &AnthropicStreamDelta{}
+			}
+			if streamResp.Delta.StopReason == nil {
+				streamResp.Delta.StopReason = new(AnthropicStopReason(""))
 			}
 		}
 

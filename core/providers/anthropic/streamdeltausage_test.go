@@ -1407,3 +1407,40 @@ func TestPromptUsageLedgerIsReleasedOnDelivery(t *testing.T) {
 		}
 	})
 }
+
+// BenchmarkAnthropicUsageMarshal measures the usage object with and without
+// the prompt-counter mask. Unmasked is every usage Bifrost renders outside a
+// streamed message_delta that omitted its prompt counters.
+func BenchmarkAnthropicUsageMarshal(b *testing.B) {
+	full := AnthropicUsage{InputTokens: 100, CacheReadInputTokens: 40, OutputTokens: 25}
+	b.Run("unmasked", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = sonic.Marshal(full)
+		}
+	})
+	masked := AnthropicUsage{OutputTokens: 25, absentPromptCounters: anthropicPromptCounterInputTokens |
+		anthropicPromptCounterCacheCreationInputTokens | anthropicPromptCounterCacheReadInputTokens | anthropicPromptCounterCacheCreation}
+	b.Run("masked", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = sonic.Marshal(masked)
+		}
+	})
+}
+
+// BenchmarkStreamDeltaPromptUsageLedger measures the per-message_delta work:
+// recording which prompt counters the raw event carried, then applying that
+// reading to the rendered usage object.
+func BenchmarkStreamDeltaPromptUsageLedger(b *testing.B) {
+	ctx := anthropicCtx()
+	event := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":25}}`)
+	openAnthropicStreamDeltaPromptUsageLedger(ctx)
+	defer ReleaseStreamPromptUsage(ctx)
+	usage := &AnthropicUsage{}
+	b.ReportAllocs()
+	for b.Loop() {
+		recordAnthropicStreamDeltaPromptUsage(ctx, 7, event)
+		applyAnthropicStreamDeltaPromptUsage(ctx, 7, usage)
+	}
+}

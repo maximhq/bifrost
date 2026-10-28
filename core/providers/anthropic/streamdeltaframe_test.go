@@ -365,12 +365,16 @@ func TestContentBlockDeltaBytesAreUnchanged(t *testing.T) {
 	}
 }
 
-// TestStreamDeltaMarshalIsStockWithoutTheFlag drives the rendering directly.
-// Every delta object Bifrost builds for a content block, a thinking block, a
-// tool call or a terminal frame is unflagged, and must render exactly as the
-// encoder's own field rendering does -- the definition of "byte-identical to
-// stock" for this type.
-func TestStreamDeltaMarshalIsStockWithoutTheFlag(t *testing.T) {
+// stockStreamDelta is AnthropicStreamDelta with no methods: the encoder's own
+// rendering of the type, and the baseline every delta object must match.
+type stockStreamDelta AnthropicStreamDelta
+
+// TestStreamDeltaMarshalIsStock pins the hot path. content_block_delta is the
+// most frequent frame in every Anthropic stream, so its delta object must
+// render byte-for-byte and allocation-for-allocation like the method-less type:
+// the message_delta stop fields may cost nothing on the frames that do not
+// carry them.
+func TestStreamDeltaMarshalIsStock(t *testing.T) {
 	for _, delta := range []AnthropicStreamDelta{
 		{},
 		{Type: AnthropicStreamDeltaTypeText, Text: schemas.Ptr("hi")},
@@ -383,60 +387,65 @@ func TestStreamDeltaMarshalIsStockWithoutTheFlag(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal %+v: %v", delta, err)
 		}
-		want, err := sonic.Marshal(anthropicStreamDeltaWire(delta))
+		want, err := sonic.Marshal(stockStreamDelta(delta))
 		if err != nil {
-			t.Fatalf("marshal wire %+v: %v", delta, err)
+			t.Fatalf("marshal stock %+v: %v", delta, err)
 		}
 		if string(got) != string(want) {
-			t.Errorf("unflagged delta rendering changed:\n got %s\nwant %s", got, want)
+			t.Errorf("delta rendering changed:\n got %s\nwant %s", got, want)
 		}
 		if delta.StopReason == nil && gjson.GetBytes(got, "stop_reason").Exists() {
-			t.Errorf("an unflagged delta with no stop reason must not report one: %s", got)
+			t.Errorf("a delta with no stop reason must not report one: %s", got)
+		}
+		gotAllocs := testing.AllocsPerRun(100, func() { _, _ = sonic.Marshal(delta) })
+		wantAllocs := testing.AllocsPerRun(100, func() { _, _ = sonic.Marshal(stockStreamDelta(delta)) })
+		// One alloc of slack absorbs -race instrumentation noise; a per-delta
+		// MarshalJSON wrapper costs three.
+		if gotAllocs > wantAllocs+1 {
+			t.Errorf("delta %s costs %.0f allocs to marshal, stock costs %.0f", want, gotAllocs, wantAllocs)
 		}
 	}
 }
 
-// TestStreamDeltaMarshalAddsOnlyTheRequiredNull pins what the flag does and
-// does not do: it ADDS the one key the protocol requires, changes nothing
-// else, and is inert on an object that reports a stop reason of its own.
-func TestStreamDeltaMarshalAddsOnlyTheRequiredNull(t *testing.T) {
-	got, err := sonic.Marshal(newAnthropicMessageDeltaStopFields())
+// TestMessageDeltaEmptyStopReasonRendersNull pins the mechanism the
+// message_delta egress uses: an EMPTY stop reason renders as the required JSON
+// null (AnthropicStopReason.MarshalJSON), next to the null stop_sequence, and
+// nothing else is added.
+func TestMessageDeltaEmptyStopReasonRendersNull(t *testing.T) {
+	got, err := sonic.Marshal(AnthropicStreamDelta{StopReason: new(AnthropicStopReason(""))})
 	if err != nil {
-		t.Fatalf("marshal flagged delta: %v", err)
+		t.Fatalf("marshal: %v", err)
 	}
-	reason := gjson.GetBytes(got, "stop_reason")
-	if !reason.Exists() || reason.Type != gjson.Null {
-		t.Errorf("a flagged delta with no stop reason must report stop_reason null, got %s", got)
+	const want = `{"stop_reason":null,"stop_sequence":null}`
+	if string(got) != want {
+		t.Errorf("message_delta stop fields:\n got %s\nwant %s", got, want)
 	}
-	sequence := gjson.GetBytes(got, "stop_sequence")
-	if !sequence.Exists() || sequence.Type != gjson.Null {
-		t.Errorf("a flagged delta must report stop_sequence null, got %s", got)
-	}
-	gjson.ParseBytes(got).ForEach(func(key, _ gjson.Result) bool {
-		switch key.String() {
-		case "stop_reason", "stop_sequence":
-		default:
-			t.Errorf("a flagged delta reported %q; it carries the two required stop fields and nothing else: %s", key.String(), got)
-		}
-		return true
-	})
+}
 
-	// Inert when the frame reports a real stop reason: that path is the
-	// terminal frame's, whose bytes are pinned above.
-	flagged := AnthropicStreamDelta{requireStopFields: true, StopReason: schemas.Ptr(AnthropicStopReasonEndTurn)}
-	withFlag, err := sonic.Marshal(flagged)
-	if err != nil {
-		t.Fatalf("marshal flagged delta with a stop reason: %v", err)
-	}
-	plain := flagged
-	plain.requireStopFields = false
-	withoutFlag, err := sonic.Marshal(plain)
-	if err != nil {
-		t.Fatalf("marshal unflagged delta with a stop reason: %v", err)
-	}
-	if string(withFlag) != string(withoutFlag) {
-		t.Errorf("the flag changed a delta that reports its own stop reason:\n got %s\nwant %s", withFlag, withoutFlag)
-	}
+// BenchmarkStreamDeltaMarshal measures the delta object of the common frame
+// (content_block_delta) against the method-less baseline, and the
+// message_delta that reports no stop reason.
+func BenchmarkStreamDeltaMarshal(b *testing.B) {
+	text := AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeText, Text: schemas.Ptr("hello world, a typical token chunk")}
+	b.Run("content_block_delta", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = sonic.Marshal(text)
+		}
+	})
+	b.Run("content_block_delta_stock", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = sonic.Marshal(stockStreamDelta(text))
+		}
+	})
+	nullStop := AnthropicStreamDelta{StopReason: new(AnthropicStopReason(""))}
+	b.Run("message_delta_null_stop_reason", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = sonic.Marshal(nullStop)
+		}
+	})
 }
 
 // TestClientDeltaFaultsIsNotVacuous proves the mirror above refuses the

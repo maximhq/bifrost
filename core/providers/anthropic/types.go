@@ -2318,8 +2318,6 @@ type AnthropicStreamDelta struct {
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
 	// SafeguardResults carries Claude Code's auto-mode verdicts on the final message_delta.
 	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
-
-	requireStopFields bool // render the required message-level stop fields explicitly; see MarshalJSON in streamdeltaframe.go
 }
 
 // ==================== MODEL TYPES ====================
