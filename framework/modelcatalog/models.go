@@ -362,6 +362,19 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 // model. The match is one way: an allowlist naming only the alias does not open the model's own id.
 func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, model string, keys []schemas.Key, allowedModels schemas.WhiteList) bool {
 	matched := false
+	// Last target that passed aliasTargetAllowed for this model and allowlist; keys that agree on
+	// a target skip the catalog work. Only passing targets are stored.
+	lastAllowed := ""
+	check := func(target string) bool {
+		if lastAllowed != "" && target == lastAllowed {
+			return true
+		}
+		if !mc.aliasTargetAllowed(provider, model, target, allowedModels) {
+			return false
+		}
+		lastAllowed = target
+		return true
+	}
 	for i := range keys {
 		// A key that cannot serve the name (disabled, or its models or blacklisted_models exclude
 		// it, both written in alias names) cannot be picked, so its missing alias must not veto
@@ -374,7 +387,7 @@ func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, 
 		// differing only in case map to different models, every one must be allowed.
 		found := false
 		if ac, ok := keys[i].Aliases[model]; ok {
-			if !mc.aliasTargetAllowed(provider, model, ac.ModelID, allowedModels) {
+			if !check(ac.ModelID) {
 				return false
 			}
 			found = true
@@ -383,7 +396,7 @@ func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, 
 				if !strings.EqualFold(name, model) {
 					continue
 				}
-				if !mc.aliasTargetAllowed(provider, model, ac.ModelID, allowedModels) {
+				if !check(ac.ModelID) {
 					return false
 				}
 				found = true

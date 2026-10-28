@@ -103,7 +103,7 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 		{"a key without the alias would send the name through as written", "claude-sonnet", withAliases(nil, sonnet), schemas.WhiteList{canonical}, false},
 		{"another key maps the alias to a model that is not allowed", "claude-sonnet", withAliases(sonnet, schemas.KeyAliases{"claude-sonnet": {ModelID: "us.anthropic.claude-opus-4-6"}}), schemas.WhiteList{canonical}, false},
 		{"a disabled key is never selected, so it is ignored", "claude-sonnet", withDisabled(withAliases(sonnet), schemas.Key{}), schemas.WhiteList{canonical}, true},
-		{"names differing only in case that map elsewhere must all be allowed", "Claude-Sonnet", withAliases(schemas.KeyAliases{"claude-sonnet": {ModelID: canonical}, "CLAUDE-SONNET": {ModelID: "us.anthropic.claude-opus-4-6"}}), schemas.WhiteList{canonical}, false},
+		{"defence in depth: names differing only in case that map elsewhere must all be allowed (Validate rejects this config)", "Claude-Sonnet", withAliases(schemas.KeyAliases{"claude-sonnet": {ModelID: canonical}, "CLAUDE-SONNET": {ModelID: "us.anthropic.claude-opus-4-6"}}), schemas.WhiteList{canonical}, false},
 		{"an empty alias target allows nothing", "claude-sonnet", withAliases(schemas.KeyAliases{"claude-sonnet": {ModelID: ""}}), schemas.WhiteList{canonical}, false},
 		{"alias allowed by a regex entry on its target", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{"regex:^us\\.anthropic\\..*"}, true},
 		{"alias whose target is not allowed stays blocked", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{"us.anthropic.claude-haiku-4-5"}, false},
