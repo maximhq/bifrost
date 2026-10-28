@@ -227,6 +227,26 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
 
+	// Azure AI Speech models are not in the model list. The voices list is large and slow, so it runs
+	// beside the model list and stops before the key's deadline; a slow or failed one drops only the voice suffixes.
+	var speechVoices chan []AzureSpeechVoice
+	if key.AzureKeyConfig != nil && key.AzureKeyConfig.UseSpeechEndpoints {
+		speechVoices = make(chan []AzureSpeechVoice, 1)
+		go func() {
+			var voicesDeadline time.Time
+			if deadline, ok := ctx.Deadline(); ok {
+				voicesDeadline = deadline.Add(-azureSpeechVoicesDeadlineMargin)
+			}
+			voicesCtx := schemas.NewBifrostContext(ctx, voicesDeadline)
+			defer voicesCtx.Cancel()
+			voices, voicesErr := provider.listSpeechVoices(voicesCtx, key)
+			if voicesErr != nil {
+				provider.logger.Warn("azure list models: voices list failed for key %s, listing speech models without voice suffixes: %v", key.ID, voicesErr.Error.Message)
+			}
+			speechVoices <- voices
+		}()
+	}
+
 	// Create the request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -278,6 +298,10 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, azureResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+
+	if speechVoices != nil {
+		azureResponse.Data = append(azureResponse.Data, azureSpeechModels(<-speechVoices)...)
 	}
 
 	// Convert to Bifrost response
