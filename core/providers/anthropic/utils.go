@@ -2573,8 +2573,7 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 		}
 	}
 	// Check for fallback credit redemption (fallback_credit_token present). The
-	// canonical date is added here; FilterBetaHeadersForProvider rewrites it to the
-	// AWS date on Bedrock/Mantle.
+	// same date is used on every provider, Bedrock/Mantle included.
 	if req.FallbackCreditToken != nil {
 		if !hasProvider || features.FallbackCredit {
 			headers = appendUniqueHeader(headers, AnthropicFallbackCreditBetaHeader)
@@ -2698,17 +2697,6 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 	AnthropicInlineToolsBetaHeaderPrefix,
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix,
-}
-
-// betaHeaderProviderVersion rewrites a beta header's version date on providers
-// that ship the same feature under a different date. Keyed by provider, then by
-// the known prefix the token matched. Applied in FilterBetaHeadersForProvider
-// after the support check, so it covers both transports (HTTP header and the
-// body-side anthropic_beta array).
-var betaHeaderProviderVersion = map[schemas.ModelProvider]map[string]string{
-	// AWS-operated surfaces trail the Claude API on fallback credit.
-	schemas.Bedrock:       {AnthropicFallbackCreditBetaHeaderPrefix: AnthropicFallbackCreditBetaHeaderAWS},
-	schemas.BedrockMantle: {AnthropicFallbackCreditBetaHeaderPrefix: AnthropicFallbackCreditBetaHeaderAWS},
 }
 
 // stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
@@ -3442,11 +3430,6 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 			if !supported {
 				continue
-			}
-			if rewrites, ok := betaHeaderProviderVersion[provider]; ok {
-				if replacement, ok := rewrites[matchedPrefix]; ok {
-					token = replacement
-				}
 			}
 			filtered = append(filtered, token)
 		}

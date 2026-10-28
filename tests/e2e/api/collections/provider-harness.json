@@ -45086,7 +45086,7 @@
     },
     {
       "name": "27. Anthropic Fallback Credit Strip + Fallback Entry Fields",
-      "description": "Fallback credit (fallback-credit-2026-06-01; -2026-06-09 on the AWS surfaces) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding, the per-provider beta gating and the AWS beta-date rewrite are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
+      "description": "Fallback credit (fallback-credit-2026-06-01, forwarded with the client date on every surface) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding and the per-provider beta gating are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
       "item": [
         {
           "name": "anthropic/claude-opus-4-8 · count_tokens strips fallback_credit_token",
@@ -45241,6 +45241,69 @@
                   "// The CLI user-agent routes this through the raw-body path, where the entry is",
                   "// rewritten by the gjson/sjson strip rather than the typed marshaller - a separate",
                   "// code path with its own way to corrupt the array."
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 · /anthropic/v1/messages · InvokeModel · fallback-credit beta keeps the client date (x-bf-eh)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-anthropic-beta",
+                "value": "fallback-credit-2026-07-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"tools\":[{\"type\":\"tool_search_tool_regex_20251119\",\"name\":\"tool_search_tool_regex\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// tool_search + defer_loading routes Bedrock to InvokeModel, where betas ride in the body",
+                  "// anthropic_beta array that Bedrock validates. Bifrost used to rewrite any fallback-credit-*",
+                  "// to fallback-credit-2026-06-09 here, which Bedrock rejects with 400 Unexpected value(s).",
+                  "pm.test('bedrock InvokeModel fallback-credit: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200 (a 400 naming fallback-credit-2026-06-09 is the rewrite regression): ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock InvokeModel fallback-credit: anthropic_beta carries the client date unchanged', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var betas = (rr && rr.anthropic_beta) || [];",
+                  "  pm.expect(rr && rr.anthropic_version, 'request did not go to InvokeModel: ' + JSON.stringify(rr)).to.eql('bedrock-2023-05-31');",
+                  "  pm.expect(betas, 'client fallback-credit date not forwarded: ' + JSON.stringify(betas)).to.include('fallback-credit-2026-07-01');",
+                  "  pm.expect(betas, 'gateway rewrote the fallback-credit date: ' + JSON.stringify(betas)).to.not.include('fallback-credit-2026-06-09');",
+                  "});"
                 ]
               }
             }
