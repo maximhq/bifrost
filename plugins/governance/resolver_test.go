@@ -1595,6 +1595,9 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 		{"an item repeating the request's alias is still literal", batch("claude-opus-4-6", "claude-opus-4-6"), true},
 		{"an alias in the OpenAI-shaped body is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-opus-4-6"}}), true},
 		{"a non-string model next to no other model is not literal-checked", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": 123}}), false},
+		{"body allowed, params names a model that is not allowed, is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-sonnet-4-6"}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
+		{"body and params both naming the allowed model are admitted", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": "claude-sonnet-4-6"}, Params: map[string]any{"model": "claude-sonnet-4-6"}}), false},
+		{"an empty body model does not hide a params alias", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": ""}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
 		{"a non-string body model falls through to a string params alias, which is refused", rawItems("claude-sonnet-4-6", schemas.BatchRequestItem{CustomID: "i", Body: map[string]any{"model": 123}, Params: map[string]any{"model": "claude-opus-4-6"}}), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1720,7 +1723,9 @@ func TestBatchItemModels(t *testing.T) {
 		{"duplicates collapse", create(item(nil, map[string]any{"model": "a"}), item(map[string]any{"model": "a"}, nil)), []string{"a"}},
 		{"empty model skipped", create(item(nil, map[string]any{"model": ""}), item(nil, map[string]any{"model": "a"})), []string{"a"}},
 		{"non-string model skipped", create(item(nil, map[string]any{"model": 123}), item(nil, map[string]any{"model": "a"})), []string{"a"}},
-		{"body wins over params", create(item(map[string]any{"model": "body"}, map[string]any{"model": "params"})), []string{"body"}},
+		{"both maps naming different models returns both, body first", create(item(map[string]any{"model": "body"}, map[string]any{"model": "params"})), []string{"body", "params"}},
+		{"empty body model does not hide params model", create(item(map[string]any{"model": ""}, map[string]any{"model": "x"})), []string{"x"}},
+		{"mixed non-string body and string params", create(item(map[string]any{"model": 123}, map[string]any{"model": "x"})), []string{"x"}},
 		{"params used when body has no model", create(item(map[string]any{"x": 1}, map[string]any{"model": "params"})), []string{"params"}},
 		{"order is first seen", create(item(nil, map[string]any{"model": "b"}), item(map[string]any{"model": "a"}, nil), item(nil, map[string]any{"model": "b"})), []string{"b", "a"}},
 	} {

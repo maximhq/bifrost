@@ -2396,6 +2396,10 @@ func (gs *LocalGovernanceStore) aliasTargets(provider *string, model string) []s
 //  5. ("*", provider)              all models on this provider  (provider-level governance)
 //  6. ("*", nil)                   all models on all providers
 //
+// When targets is non-nil (the models a key alias resolves to), tiers 1-4 are repeated for each
+// target after the six tiers above, deduped by config ID, so a limit on the aliased model also
+// applies to a request that names the alias.
+//
 // This is the single source of truth for "which model configs apply"; every budget /
 // rate-limit check and usage-tracking site iterates it so the wildcard tiers are matched
 // consistently everywhere.

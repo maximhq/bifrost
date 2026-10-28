@@ -1547,16 +1547,24 @@ func BatchItemModels(req *schemas.BifrostRequest) []string {
 	}
 	var models []string
 	for _, item := range req.BatchCreateRequest.Requests {
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				if m != "" && !slices.Contains(models, m) {
-					models = append(models, m)
-				}
-				break
+		forEachItemModel(item, func(m string) {
+			if !slices.Contains(models, m) {
+				models = append(models, m)
 			}
-		}
+		})
 	}
 	return models
+}
+
+// forEachItemModel calls fn with every non-empty string "model" an inline batch item names, Body
+// first and then Params. Providers disagree on which map they send (Anthropic sends Params and
+// falls back to Body), so every model an item could run is visited rather than the first found.
+func forEachItemModel(item schemas.BatchRequestItem, fn func(model string)) {
+	for _, body := range [2]map[string]any{item.Body, item.Params} {
+		if m, ok := body["model"].(string); ok && m != "" {
+			fn(m)
+		}
+	}
 }
 
 // BatchCreateModels returns every distinct model an inline batch create will run,
@@ -1579,13 +1587,7 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	}
 	add(model)
 	for _, item := range req.BatchCreateRequest.Requests {
-		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				add(m)
-				break
-			}
-		}
+		forEachItemModel(item, add)
 	}
 	if len(models) == 0 {
 		// No item named a model: fall back to the model-less evaluation so the
