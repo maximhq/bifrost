@@ -1559,6 +1559,7 @@ func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *
 }
 
 // computeImageInputCost calculates input cost: tokens first, then per-pixel, then per-image count fallback.
+// Token pricing only applies when it yields a non-zero cost.
 func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, tier serviceTier) float64 {
 	// Try token-based pricing first
 	var inputTextTokens, inputImageTokens int
@@ -1569,9 +1570,13 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 		inputTextTokens = imageUsage.InputTokens
 	}
 
+	// Tokens win only when the row prices them. Providers like BytePlus report
+	// tokens on rows that bill per image, so a zero token cost falls through.
 	if inputTextTokens > 0 || inputImageTokens > 0 {
-		return float64(inputTextTokens)*tieredInputRate(pricing, totalTokens, tier) +
-			float64(inputImageTokens)*tieredImageInputRate(pricing, totalTokens, tier)
+		if cost := float64(inputTextTokens)*tieredInputRate(pricing, totalTokens, tier) +
+			float64(inputImageTokens)*tieredImageInputRate(pricing, totalTokens, tier); cost > 0 {
+			return cost
+		}
 	}
 
 	// Per-pixel pricing fallback
@@ -1588,6 +1593,7 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 // computeImageOutputCost calculates output cost: tokens first, then per-pixel, then per-image count fallback.
+// Token pricing only applies when it yields a non-zero cost.
 // imageQuality: "low", "medium", "high", "standard", "auto" use quality-specific rates when available; other values use base/size-tier rates.
 func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, imageQuality string, tier serviceTier) float64 {
 	// Try token-based pricing first
@@ -1599,9 +1605,12 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		outputImageTokens = imageUsage.OutputTokens
 	}
 
+	// Same as the input side: a row with no token rate falls through to pixel/image rates.
 	if outputTextTokens > 0 || outputImageTokens > 0 {
-		return float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens, tier) +
-			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens, tier)
+		if cost := float64(outputTextTokens)*tieredOutputRate(pricing, totalTokens, tier) +
+			float64(outputImageTokens)*tieredImageOutputRate(pricing, totalTokens, tier); cost > 0 {
+			return cost
+		}
 	}
 
 	// Per-pixel pricing fallback
