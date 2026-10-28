@@ -23,10 +23,12 @@ type BifrostRelayRequest struct {
 }
 
 // BifrostRelayResponse is what PostRelayHook receives, once the reply (or the stream) has ended.
-// Body is nil unless content capture was enabled for the call (see
-// BifrostContextKeyRelayContentLoggingEnabledByDefault); for a streamed call it is whatever was
-// buffered as the reply was forwarded, bounded the same way a buffered reply's body is. Usage is
-// nil when the call is not counted: a route that is not billable, or a non-2xx reply.
+// Body's content depends on how the reply arrived: a buffered (non-streamed) reply always carries
+// its full body here, regardless of content-capture policy, since it was already read into memory
+// to be forwarded. A streamed reply's Body is nil unless content capture was enabled for the call
+// (see BifrostContextKeyRelayContentLoggingEnabledByDefault), in which case it is a bounded prefix
+// of what was buffered as the reply was forwarded — not the whole reply the way a buffered one is.
+// Usage is nil when the call is not counted: a route that is not billable, or a non-2xx reply.
 type BifrostRelayResponse struct {
 	RelayName       string
 	StatusCode      int

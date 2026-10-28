@@ -97,7 +97,14 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 // newStream, which runs after RunRelayPreHooks has completed every pre-hook including governance's,
 // so this sees the final decision rather than the early, plugin-only one PreRelayHook could offer.
 func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
-	enabled, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
+	enabled, pluginPresent := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
+	if !pluginPresent {
+		// No logging plugin stamped a default at all — either it is not registered, or its
+		// PreRelayHook did not run. Governance's or the per-request key being present on ctx for
+		// unrelated reasons must not turn capture on by itself; without a plugin to ever read the
+		// buffer, that would just retain up to maxStreamBodyCaptureLen per stream for nothing.
+		return false
+	}
 	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
 		enabled = !disabled
 	}

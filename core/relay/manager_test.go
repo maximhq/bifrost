@@ -296,6 +296,34 @@ func TestServeStreamCapturesResponseBodyWhenContentLoggingEnabled(t *testing.T) 
 	assert.Equal(t, body, pipeline.post[0].Body, "the buffered capture matches what was forwarded")
 }
 
+// Without a logging plugin (or any plugin that stamps the default-capture signal at all), a
+// streamed reply must never be captured, even if governance or a per-request override happens to
+// be present on ctx for an unrelated reason: there is no logging plugin that will ever read the
+// buffer, so capturing would just retain bytes for nothing.
+func TestServeStreamNeverCapturesWithoutLoggingPluginSignal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("llm", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+
+	ctx := testCtx(t)
+	// No BifrostContextKeyRelayContentLoggingEnabledByDefault set at all. Governance says "not
+	// disabled" (false), which a naive precedence chain would read as "enabled".
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
+	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err := io.ReadAll(res.Stream)
+	require.NoError(t, err)
+	require.NoError(t, res.Stream.Close())
+
+	require.Len(t, pipeline.post, 1)
+	assert.Nil(t, pipeline.post[0].Body, "no logging plugin signal present; governance alone must not turn capture on")
+}
+
 // A virtual key that re-enables content logging after the plugin's own default disables it must
 // still get its streamed body captured: the decision is resolved after every pre-hook (governance
 // included) has run, not frozen at the plugin's early, pre-governance default.
