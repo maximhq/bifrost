@@ -6,7 +6,7 @@ icon: "chart-diagram"
 
 ## Overview
 
-Routing Rules provide dynamic, expression-based control over request routing. They execute **before governance provider selection** and can override it, allowing you to make sophisticated routing decisions based on request context, headers, parameters, capacity metrics, and organizational hierarchy.
+Routing Rules provide dynamic, expression-based control over request routing. They execute **before governance provider selection** and can override it, allowing you to make sophisticated routing decisions based on request context, headers, parameters, capacity metrics, organizational hierarchy, and the time of the request.
 
 <Frame>
   <img src="/media/ui-routing-tree.png" alt="Routing Rules Tree" />
@@ -137,6 +137,37 @@ complexity_tier == "COMPLEX" && team_name == "research"     // Scoped to a team
 ```
 
 See [Complexity Router](/features/complexity-router) for how tiers are computed, including decision-model classification and semantic reference phrases.
+
+#### Request Time
+
+```cel
+current_time   // CEL timestamp captured once when this request's rules are evaluated
+```
+
+`current_time` is the instant routing started for the request, in UTC. Every rule in that evaluation sees the same value, including later steps of a [chained rule](#rule-chaining). It is not refreshed per rule or per chain step. Rules that do not reference `current_time` do not read the clock.
+
+Timestamp methods take a timezone name. Pass `'UTC'` unless you mean a local clock. The stored instant is UTC either way: `getHours('America/Los_Angeles')` converts before it reads the hour.
+
+```cel
+current_time.getHours('UTC')       // 0-23
+current_time.getDayOfWeek('UTC')   // 0 = Sunday through 6 = Saturday
+```
+
+The same timezone argument works on the other CEL timestamp accessors (`getFullYear`, `getMonth`, `getDayOfMonth`, `getMinutes`, `getSeconds`).
+
+**DeepSeek off-peak.** Send `deepseek-chat` to an off-peak target only from 01:00 up to 04:00 UTC:
+
+```cel
+model == "deepseek-chat" && current_time.getHours('UTC') >= 1 && current_time.getHours('UTC') < 4
+```
+
+Weekdays only (Monday through Friday, UTC):
+
+```cel
+current_time.getDayOfWeek('UTC') >= 1 && current_time.getDayOfWeek('UTC') <= 5
+```
+
+The visual rule builder emits field comparisons and cannot express a timestamp method call. Write `current_time` rules in the CEL editor.
 
 #### How Capacity Metrics Are Resolved
 

@@ -1627,6 +1627,9 @@ func TestValidateRoutingCELExpression(t *testing.T) {
 		{name: "syntax error unbalanced paren", expr: `model == "gpt-4o" && (provider == "openai"`, wantErr: true},
 		{name: "type mismatch string vs number", expr: `model == 5`, wantErr: true},
 		{name: "dangling operator", expr: `model ==`, wantErr: true},
+		{name: "current time hour window", expr: `model == "deepseek-chat" && current_time.getHours('UTC') >= 1 && current_time.getHours('UTC') < 4`, wantErr: false},
+		{name: "current time day of week", expr: `current_time.getDayOfWeek('UTC') == 3`, wantErr: false},
+		{name: "current time unknown method", expr: `current_time.nope('UTC') == 1`, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -2457,5 +2460,285 @@ func TestSelectWeightedTargetSplitFollowsTheWeights(t *testing.T) {
 			counts := countTargetPicks(t, weightedTargets(tc.providers, tc.weights), targetDraws)
 			requireTargetSplit(t, tc.providers, counts, tc.weights)
 		})
+	}
+}
+
+// TestEvaluateRoutingRules_CurrentTime covers hour windows, weekday, a rule that
+// does not read the clock, and the guarantee that a referencing rule never sees
+// the zero placeholder.
+func TestEvaluateRoutingRules_CurrentTime(t *testing.T) {
+	const offpeak = `model == "deepseek-chat" && current_time.getHours('UTC') >= 1 && current_time.getHours('UTC') < 4`
+	wednesday := time.Date(2026, 1, 7, 2, 15, 0, 0, time.UTC)
+	la, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	require.NotEqual(t, wednesday.Weekday(), wednesday.In(la).Weekday(), "fixture must cross a local midnight")
+
+	tests := []struct {
+		name      string
+		expr      string
+		at        time.Time
+		model     string
+		wantMatch bool
+		wantCalls int
+	}{
+		{name: "inside hour window", expr: offpeak, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+		{name: "hour 1 inclusive", expr: offpeak, at: time.Date(2026, 1, 7, 1, 0, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+		{name: "hour 4 exclusive", expr: offpeak, at: time.Date(2026, 1, 7, 4, 0, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: false, wantCalls: 1},
+		{name: "before window", expr: offpeak, at: time.Date(2026, 1, 7, 0, 30, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: false, wantCalls: 1},
+		{name: "wrong model inside window", expr: offpeak, at: wednesday, model: "gpt-4o", wantMatch: false, wantCalls: 1},
+		{
+			name:      "day of week matches",
+			expr:      fmt.Sprintf(`current_time.getDayOfWeek('UTC') == %d`, int(wednesday.Weekday())),
+			at:        wednesday,
+			model:     "deepseek-chat",
+			wantMatch: true,
+			wantCalls: 1,
+		},
+		{
+			name:      "day of week does not match",
+			expr:      fmt.Sprintf(`current_time.getDayOfWeek('UTC') == %d`, int(wednesday.Weekday())),
+			at:        wednesday.AddDate(0, 0, 1),
+			model:     "deepseek-chat",
+			wantMatch: false,
+			wantCalls: 1,
+		},
+		{
+			name:      "timezone argument converts the instant",
+			expr:      fmt.Sprintf(`current_time.getDayOfWeek('America/Los_Angeles') == %d`, int(wednesday.In(la).Weekday())),
+			at:        wednesday,
+			model:     "deepseek-chat",
+			wantMatch: true,
+			wantCalls: 1,
+		},
+		{name: "rule does not reference current_time", expr: `model == "deepseek-chat"`, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 0},
+		{name: "string literal is not the variable", expr: `model == "current_time"`, at: wednesday, model: "current_time", wantMatch: true, wantCalls: 0},
+		{name: "shadowed macro variable is not the clock", expr: `[1].exists(current_time, current_time == 1)`, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 0},
+		{name: "referencing rule does not see the zero placeholder", expr: `current_time.getHours('UTC') == 0`, at: wednesday, model: "deepseek-chat", wantMatch: false, wantCalls: 1},
+		{name: "midnight hour matches hour 0", expr: `current_time.getHours('UTC') == 0`, at: time.Date(2026, 1, 7, 0, 15, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			prev := nowFunc
+			t.Cleanup(func() { nowFunc = prev })
+			nowFunc = func() time.Time {
+				calls++
+				return tt.at
+			}
+
+			store, err := newTestRuleStore()
+			require.NoError(t, err)
+			engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+			require.NoError(t, err)
+			require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+				ID:            "time-rule",
+				Name:          tt.name,
+				CelExpression: tt.expr,
+				Targets: []configstoreTables.TableRoutingTarget{{
+					Provider: bifrost.Ptr("deepseek"),
+					Model:    bifrost.Ptr("deepseek-chat"),
+					Weight:   1,
+				}},
+				Enabled: bifrost.Ptr(true),
+				Scope:   "global",
+			}))
+
+			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), tt.at), &EvaluationContext{
+				Provider: schemas.OpenAI,
+				Model:    tt.model,
+			})
+			require.NoError(t, err)
+			if tt.wantMatch {
+				require.NotNil(t, decision)
+				assert.Equal(t, "deepseek", decision.Provider)
+				assert.Equal(t, "deepseek-chat", decision.Model)
+			} else {
+				assert.Nil(t, decision)
+			}
+			assert.Equal(t, tt.wantCalls, calls)
+		})
+	}
+}
+
+// TestEvaluateRoutingRules_CurrentTimeSharedAcrossChain pins one instant for the
+// whole evaluation. The clock would move on a second read; the chained rule must
+// still see the first instant.
+func TestEvaluateRoutingRules_CurrentTimeSharedAcrossChain(t *testing.T) {
+	calls := 0
+	prev := nowFunc
+	t.Cleanup(func() { nowFunc = prev })
+	nowFunc = func() time.Time {
+		calls++
+		if calls == 1 {
+			return time.Date(2026, 1, 7, 2, 0, 0, 0, time.UTC)
+		}
+		return time.Date(2026, 1, 7, 9, 0, 0, 0, time.UTC)
+	}
+
+	store, err := newTestRuleStore()
+	require.NoError(t, err)
+	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	ruleA := &configstoreTables.TableRoutingRule{
+		ID:            "chain-time-a",
+		Name:          "Chain A",
+		CelExpression: `model == "gpt-4o" && current_time.getHours('UTC') == 2`,
+		Targets: []configstoreTables.TableRoutingTarget{{
+			Provider: bifrost.Ptr("openai"),
+			Model:    bifrost.Ptr("off-peak"),
+			Weight:   1,
+		}},
+		Enabled:   bifrost.Ptr(true),
+		Scope:     "global",
+		Priority:  0,
+		ChainRule: true,
+	}
+	ruleB := &configstoreTables.TableRoutingRule{
+		ID:            "chain-time-b",
+		Name:          "Chain B",
+		CelExpression: `model == "off-peak" && current_time.getHours('UTC') == 2`,
+		Targets: []configstoreTables.TableRoutingTarget{{
+			Provider: bifrost.Ptr("deepseek"),
+			Model:    bifrost.Ptr("deepseek-chat"),
+			Weight:   1,
+		}},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "global",
+		Priority: 1,
+	}
+	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
+	require.NoError(t, store.UpsertRule(context.Background(), ruleB))
+
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Unix(0, 0).UTC()), &EvaluationContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "deepseek", decision.Provider)
+	assert.Equal(t, "deepseek-chat", decision.Model)
+	assert.Equal(t, "chain-time-b", decision.MatchedRuleID)
+	assert.Equal(t, 1, calls)
+}
+
+// TestExtractRoutingVariables_CurrentTimePlaceholder does not read the clock.
+// The zero Time is what a referencing rule must not observe.
+func TestExtractRoutingVariables_CurrentTimePlaceholder(t *testing.T) {
+	calls := 0
+	prev := nowFunc
+	t.Cleanup(func() { nowFunc = prev })
+	nowFunc = func() time.Time {
+		calls++
+		return time.Date(2026, 1, 7, 2, 0, 0, 0, time.UTC)
+	}
+
+	variables, err := extractRoutingVariables(&EvaluationContext{Provider: schemas.OpenAI, Model: "gpt-4o"})
+	require.NoError(t, err)
+	assert.Equal(t, 0, calls)
+	got, ok := variables["current_time"].(time.Time)
+	require.True(t, ok)
+	assert.True(t, got.IsZero())
+}
+
+// TestCurrentTimeGoTimeIsCELTimestamp proves the default CEL adapter accepts a
+// time.Time as the timestamp variable, which is what evaluation passes in.
+func TestCurrentTimeGoTimeIsCELTimestamp(t *testing.T) {
+	env, err := createCELEnvironment()
+	require.NoError(t, err)
+	at := time.Date(2026, 1, 7, 2, 15, 0, 0, time.UTC)
+	ast, issues := env.Compile(fmt.Sprintf(
+		`current_time.getHours('UTC') == %d && current_time.getDayOfWeek('UTC') == %d`,
+		at.Hour(), int(at.Weekday()),
+	))
+	require.True(t, issues == nil || issues.Err() == nil)
+	program, err := env.Program(ast)
+	require.NoError(t, err)
+
+	out, _, err := program.Eval(map[string]any{
+		"current_time": at,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, true, out.Value())
+}
+
+// benchLogger drops log lines. Recording loggers grow a slice per call and hide
+// the allocation difference this benchmark exists to measure.
+type benchLogger struct{}
+
+func (benchLogger) Debug(string, ...any)                   {}
+func (benchLogger) Info(string, ...any)                    {}
+func (benchLogger) Warn(string, ...any)                    {}
+func (benchLogger) Error(string, ...any)                   {}
+func (benchLogger) Fatal(string, ...any)                   {}
+func (benchLogger) SetLevel(schemas.LogLevel)              {}
+func (benchLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (benchLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+// BenchmarkEvaluateRoutingRules measures rule evaluation. no_current_time is the
+// baseline that must not allocate more once current_time exists; current_time is
+// the path that reads the clock.
+func BenchmarkEvaluateRoutingRules(b *testing.B) {
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{name: "no_current_time", expr: `model == "gpt-4o"`},
+		// Two getHours calls, same shape as an off-peak window, and true for every hour
+		// so the bench does not depend on when it runs.
+		{name: "current_time", expr: `model == "gpt-4o" && current_time.getHours("UTC") >= 0 && current_time.getHours("UTC") < 24`},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			benchmarkEvaluateRoutingRules(b, tc.expr)
+		})
+	}
+}
+
+func benchmarkEvaluateRoutingRules(b *testing.B, expr string) {
+	b.Helper()
+	store, err := newTestRuleStore()
+	if err != nil {
+		b.Fatal(err)
+	}
+	engine, err := NewEngine(store, NewMockGovernanceStore(), benchLogger{}, schemas.Ptr(10))
+	if err != nil {
+		b.Fatal(err)
+	}
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "bench",
+		Name:          "bench",
+		CelExpression: expr,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1},
+		},
+		Enabled: bifrost.Ptr(true),
+		Scope:   "global",
+	}
+	if err := store.UpsertRule(context.Background(), rule); err != nil {
+		b.Fatal(err)
+	}
+	routingCtx := &EvaluationContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+	}
+	// Warm the compiled program and the complexity-identifier cache. A fresh
+	// context per iteration matches one request: routing logs carry a timestamp,
+	// so reusing one context grows that slice without bound.
+	warmup := schemas.NewBifrostContext(context.Background(), time.Unix(0, 0).UTC())
+	if _, err := engine.EvaluateRoutingRules(warmup, routingCtx); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bg := schemas.NewBifrostContext(context.Background(), time.Unix(0, 0).UTC())
+		decision, err := engine.EvaluateRoutingRules(bg, routingCtx)
+		if err != nil || decision == nil {
+			b.Fatalf("evaluate: decision=%v err=%v", decision, err)
+		}
 	}
 }
