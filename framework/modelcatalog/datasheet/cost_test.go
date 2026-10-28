@@ -2524,6 +2524,89 @@ func TestCalculateCost_VideoLastFrameImageIsNotAClip(t *testing.T) {
 	assert.InDelta(t, 1.50, s.CalculateCost(resp, nil), 1e-9)
 }
 
+// Seedance bills on the task's completion_tokens, not on duration. Its datasheet
+// row carries output_cost_per_video_token and no per-second rate.
+func seedanceTokenPricedStore() *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("dreamina-seedance-2-0-260128", "byteplus", "video_generation"): {
+			Model: "dreamina-seedance-2-0-260128", Provider: "byteplus", Mode: "video_generation",
+			OutputCostPerVideoToken: bifrost.Ptr(0.000007),
+		},
+	})
+}
+
+func TestCalculateCost_VideoOutputTokensUseVideoTokenRate(t *testing.T) {
+	s := seedanceTokenPricedStore()
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("5"),
+			Size:    "720p",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"}},
+			Usage:   &schemas.VideoUsage{OutputTokens: 108900},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor("byteplus", "dreamina-seedance-2-0-260128"),
+			},
+		},
+	}
+
+	// 108900 tokens * $7.00 / 1M
+	assert.InDelta(t, 0.7623, s.CalculateCost(resp, nil), 1e-9)
+}
+
+func TestCalculateVideoCostDetails_UsesVideoTokenRate(t *testing.T) {
+	s := seedanceTokenPricedStore()
+	seconds := 5
+	dims := VideoPricingDimensions{
+		Model:        "dreamina-seedance-2-0-260128",
+		RequestType:  schemas.VideoGenerationRequest,
+		Seconds:      &seconds,
+		Size:         "720p",
+		OutputCount:  1,
+		OutputTokens: 108900,
+	}
+	details := s.CalculateVideoCostDetails(dims, "byteplus", nil)
+	assert.True(t, details.Priced)
+	assert.InDelta(t, 0.7623, details.Cost, 1e-9)
+}
+
+// A token count with no token rate on the row must not zero out a per-second rate.
+func TestCalculateCost_VideoOutputTokensWithoutTokenRateFallBackToPerSecond(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2", "openai", "video_generation"): {
+			Model: "sora-2", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond: bifrost.Ptr(0.10),
+		},
+	})
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("4"),
+			Size:    "1280x720",
+			Videos:  []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"}},
+			Usage:   &schemas.VideoUsage{OutputTokens: 50000},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.40, s.CalculateCost(resp, nil), 1e-9)
+}
+
+func TestVideoDimensionsFromResponse_CarriesOutputTokens(t *testing.T) {
+	dims := VideoDimensionsFromResponse(&schemas.BifrostVideoGenerationResponse{
+		Model: "dreamina-seedance-2-0-260128",
+		Usage: &schemas.VideoUsage{OutputTokens: 108900},
+	})
+	assert.Equal(t, 108900, dims.OutputTokens)
+
+	merged := VideoPricingDimensions{Model: "dreamina-seedance-2-0-260128"}.MergedWith(dims)
+	assert.Equal(t, 108900, merged.OutputTokens)
+}
+
 func TestVideoDimensionsFromResponse_IgnoresImageOutputs(t *testing.T) {
 	resp := &schemas.BifrostVideoGenerationResponse{
 		Videos: []schemas.VideoOutput{

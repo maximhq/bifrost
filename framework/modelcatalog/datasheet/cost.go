@@ -852,11 +852,12 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	case result.VideoGenerationResponse != nil:
 		video := result.VideoGenerationResponse
 		input.videoStatus = video.Status
-		if video.Usage != nil && video.Usage.Cost != nil {
+		if video.Usage != nil && (video.Usage.Cost != nil || video.Usage.OutputTokens > 0) {
 			// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
 			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
-			// etc.) that have no datasheet rate.
-			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost}
+			// etc.) that have no datasheet rate. Metered output tokens (Seedance) ride along as
+			// CompletionTokens for the per-video-token rate.
+			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost, CompletionTokens: video.Usage.OutputTokens}
 		}
 		// Dimensions are kept even when a provider cost is present, so catalog pricing still
 		// works when that provider's reported cost is ignored.
@@ -1803,11 +1804,13 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 		}
 	}
 
-	// Output: completion tokens first, then per-second fallback
+	// Output: completion tokens first, then per-second fallback. A row with no token
+	// rate yields zero here and falls through to its per-second rate.
 	outputCost := 0.0
 	if usage != nil && usage.CompletionTokens > 0 {
-		outputCost = float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
-	} else if videoSeconds != nil && *videoSeconds > 0 {
+		outputCost = float64(usage.CompletionTokens) * videoOutputTokenRate(pricing, tierTokens, tier)
+	}
+	if outputCost == 0 && videoSeconds != nil && *videoSeconds > 0 {
 		// Seconds is one clip's duration, and a single job can return several clips
 		// (Veo's sampleCount). Count is 0 on a job that has not produced its outputs
 		// yet, which still owes one clip's worth rather than nothing.
@@ -1815,6 +1818,15 @@ func computeVideoCost(pricing *configstoreTables.TableModelPricing, usage *schem
 	}
 
 	return newInputOutputCost(inputCost, outputCost)
+}
+
+// videoOutputTokenRate returns the per-token rate for video output, preferring the
+// video-specific rate over the generic output token rate.
+func videoOutputTokenRate(pricing *configstoreTables.TableModelPricing, totalTokens int, tier serviceTier) float64 {
+	if pricing.OutputCostPerVideoToken != nil {
+		return *pricing.OutputCostPerVideoToken
+	}
+	return tieredOutputRate(pricing, totalTokens, tier)
 }
 
 // videoOutputPerSecondRate returns the per-second output rate for a generated video,

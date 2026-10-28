@@ -662,6 +662,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1024p?: number;
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
+	output_cost_per_video_token?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

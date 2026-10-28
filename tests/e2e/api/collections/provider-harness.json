@@ -295250,6 +295250,10 @@
                   "pm.test('byteplus reported output tokens for the image', function () {",
                   "  var usage = pm.response.json().usage;",
                   "  pm.expect(usage && usage.output_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});",
+                  "pm.test('the produced size is reported for pixel-tier pricing', function () {",
+                  "  var size = pm.response.json().size;",
+                  "  pm.expect(size, 'size: ' + pm.response.text().slice(0, 500)).to.match(/^\\d+x\\d+$/);",
                   "});"
                 ],
                 "type": "text/javascript"
