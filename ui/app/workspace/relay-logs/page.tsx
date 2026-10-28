@@ -296,7 +296,8 @@ export default function RelayLogsPage() {
 		columnIds,
 		paramName: "relay_cols",
 		storageKey: "bifrost.relay_logs.cols",
-		defaultHidden: ["app", "model", "user", "team", "customer", "business_unit", "project"],
+		// App is visible by default, as on the LLM logs page; Model stays hidden since most relays carry none.
+		defaultHidden: ["model", "virtual_key", "user", "team", "customer", "business_unit", "project"],
 		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
 	});
 

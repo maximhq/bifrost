@@ -443,3 +443,36 @@ func TestServeReadsModelUnderOperatorContentType(t *testing.T) {
 	require.Len(t, pipeline.pre, 1)
 	assert.Equal(t, "gpt-x", pipeline.pre[0].Model, "the upstream receives JSON, so the model is read as JSON")
 }
+
+// The pre-hook sees, for each header the matched route matches on, the value that selected the
+// route: the relay's own extra header beats the caller's copy, a missing caller header still shows
+// the operator's value, and a value read from the environment is handed over redacted.
+func TestServeReportsMatchedHeaderValues(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "{}") }))
+	defer upstream.Close()
+	t.Setenv("RELAY_TEST_TENANT", "acme")
+	cfg := bearerConfig("textract", upstream.URL)
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{
+		"X-Amz-Target": *schemas.NewSecretVar("Textract.AnalyzeDocument"),
+		"X-Tenant":     *schemas.NewSecretVar("env.RELAY_TEST_TENANT"),
+	}
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.*", "X-Tenant": "*", "Content-Type": "application/x-amz-json-*"}},
+		{Method: "POST", Path: "/plain"},
+	}
+	m, pipeline := newTestManager(t, cfg)
+
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "textract", Method: "POST", Path: "/", Headers: map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis", "content-type": "application/x-amz-json-1.1"}})
+	require.Nil(t, bErr)
+	require.Len(t, pipeline.pre, 1)
+	assert.Equal(t, map[string]string{
+		"x-amz-target": "Textract.AnalyzeDocument", // the operator's value selected the route, not the caller's
+		"x-tenant":     schemas.RedactedAttrValue,  // set by the relay from the environment: never copied into a row
+		"content-type": "application/x-amz-json-1.1",
+	}, pipeline.pre[0].RouteHeaders)
+
+	_, bErr = m.Serve(testCtx(t), Request{Endpoint: "textract", Method: "POST", Path: "/plain", Headers: map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"}})
+	require.Nil(t, bErr)
+	require.Len(t, pipeline.pre, 2)
+	assert.Nil(t, pipeline.pre[1].RouteHeaders, "a route without header matchers reports none")
+}

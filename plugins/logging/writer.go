@@ -1088,6 +1088,9 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	}
 	if entry.endpointLog != nil {
 		size := len(entry.endpointLog.PluginLogs) + len(entry.endpointLog.ErrorDetails) + 512
+		for k, v := range entry.endpointLog.MetadataParsed {
+			size += len(k) + len(fmt.Sprint(v)) + 6
+		}
 		for _, body := range []*string{entry.endpointLog.RequestBody, entry.endpointLog.ResponseBody} {
 			if body != nil {
 				size += len(*body)

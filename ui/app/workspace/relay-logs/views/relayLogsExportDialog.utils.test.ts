@@ -44,17 +44,23 @@ const sampleLog: RelayLog = {
 describe("relayLogsToCSV", () => {
 	it("writes one cell per header, in header order", () => {
 		const row = relayLogToCSVRow(sampleLog);
+		// Same leading columns as the LLM logs export, so the two files line up side by side.
+		expect(RELAY_LOGS_CSV_HEADERS.slice(0, 3)).toEqual(["Time", "Request ID", "Status"]);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Request ID")]).toBe(sampleLog.request_id);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Cost ($)")]).toBe(0.0125);
 		expect(row).toHaveLength(RELAY_LOGS_CSV_HEADERS.length);
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("relay_name")]).toBe("voice");
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("status_code")]).toBe(200);
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("billable")]).toBe("true");
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("streamed")]).toBe("false");
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("virtual_key_name")]).toBe("prod");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Relay")]).toBe("voice");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Status")]).toBe("success");
+		// The HTTP code stays in the detail sheet; the export carries the status only, as the LLM export does.
+		expect(RELAY_LOGS_CSV_HEADERS).not.toContain("Status Code");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Billable")]).toBe("true");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Streamed")]).toBe("false");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Virtual Key")]).toBe("prod");
 		// Falls back to the id when no name is on the row.
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("team_name")]).toBe("team-1");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Team")]).toBe("team-1");
 		// Absent optional numbers are empty cells, not "undefined".
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("input_tokens")]).toBe("");
-		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("job_id")]).toBe("");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Input Tokens")]).toBe("");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Job ID")]).toBe("");
 	});
 
 	it("starts with the header row and never includes bodies or headers", () => {

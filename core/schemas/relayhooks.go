@@ -13,8 +13,13 @@ type BifrostRelayRequest struct {
 	Model      string            // read where the usage mapping says, "" for none
 	RoutePath  string            // the matched route's path glob, "" when none matched
 	RouteIndex int               // index into routes[], -1 when none matched
-	Billable   bool              // a 2xx reply on this call is counted and charged
-	Streams    bool              // relayed as a stream
+	// RouteHeaders holds, by lower-cased name, the value of each header the matched route matches
+	// on: the one that selected the route (the relay's own extra header when it sets one, else the
+	// caller's). A value the relay reads from a secret is already redacted. The logging plugin keeps
+	// these on the row, as it keeps the configured logging headers.
+	RouteHeaders map[string]string
+	Billable     bool // a 2xx reply on this call is counted and charged
+	Streams      bool // relayed as a stream
 }
 
 // BifrostRelayResponse is what PostRelayHook receives. Body is nil for a streamed call, which

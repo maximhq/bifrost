@@ -405,6 +405,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	}
 	if p.route != nil {
 		req.RoutePath = e.cfg.Routes[p.index].Path
+		req.RouteHeaders = p.route.matchedHeaders(in.Headers, e.operatorLogHeaders)
 	}
 	if requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string); requestID == "" {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())

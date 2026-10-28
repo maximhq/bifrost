@@ -1,7 +1,7 @@
 import { formatLatency } from "@/app/workspace/dashboard/utils/chartUtils";
 import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import LogEntryDetailsView from "@/app/workspace/logs/views/logEntryDetailsView";
-import { CopyInlineButton, HeroIdRow, HeroStat, StatusPill, statusCodeBadgeClass } from "@/app/workspace/logs/views/logHeroStat";
+import { CopyInlineButton, HeroIdRow, HeroStat, StatusPill } from "@/app/workspace/logs/views/logHeroStat";
 import PassthroughBodyBox from "@/app/workspace/logs/views/passthroughBodyBox";
 import PluginLogsView from "@/app/workspace/logs/views/pluginLogsView";
 import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
@@ -57,6 +57,9 @@ interface RelayLogDetailSheetProps {
 // sidecar costs rather than formatCost's 2-4 dp rounding.
 export const formatCostPrecise = (value: number): string => `$${parseFloat(value.toFixed(6))}`;
 const usd = (v?: number | null) => (v === undefined || v === null ? null : formatCostPrecise(v));
+
+// The chat request type's colour on the LLM sheet (RequestTypeColors["chat.completion"]).
+const RELAY_KIND_PILL_CLASS = "bg-blue-100 text-blue-800";
 
 const KIND_LABELS: Record<RelayLog["kind"], string> = { call: "Call", job: "Job settlement" };
 
@@ -259,10 +262,8 @@ export function RelayLogDetailSheet({
 								<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
 									<div className="min-w-0 flex-1">
 										<div className="flex flex-wrap items-center gap-2">
-											<Badge
-												variant="outline"
-												className="rounded-sm bg-slate-100 px-2 py-0.5 font-medium text-slate-800 dark:bg-slate-800 dark:text-slate-200"
-											>
+											{/* The kind pill wears the LLM sheet's chat colour, so the two headers read alike. */}
+											<Badge variant="outline" className={cn("rounded-sm px-2 py-0.5 font-medium", RELAY_KIND_PILL_CLASS)}>
 												{KIND_LABELS[display.kind]}
 											</Badge>
 											{display.streamed && (
@@ -274,14 +275,6 @@ export function RelayLogDetailSheet({
 												</Badge>
 											)}
 											<StatusPill status={display.status as Status} />
-											{display.status_code ? (
-												<Badge
-													variant="outline"
-													className={cn("rounded-sm px-2 py-0.5 font-medium tabular-nums", statusCodeBadgeClass(display.status_code))}
-												>
-													{display.status_code}
-												</Badge>
-											) : null}
 											{!display.billable && (
 												<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
 													Not billable
@@ -506,21 +499,27 @@ export function RelayLogDetailSheet({
 											<AttributionLink label="Project" id={display.project_id} name={display.project_name} filterKey="project_ids" />
 										</div>
 									</div>
+									{display.metadata && Object.keys(display.metadata).length > 0 && (
+										<>
+											<DottedSeparator />
+											<div className="space-y-4">
+												<BlockHeader title="Metadata" />
+												<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
+													{Object.entries(display.metadata)
+														.sort(([a], [b]) => a.localeCompare(b))
+														.map(([key, value]) => (
+															<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+														))}
+												</div>
+											</div>
+										</>
+									)}
 									{display.request_headers && Object.keys(display.request_headers).length > 0 && (
 										<>
 											<DottedSeparator />
 											<div className="space-y-4">
-												<BlockHeader title="Request Headers" />
+												<BlockHeader title="Matched Headers" />
 												<HeadersGrid headers={display.request_headers} />
-											</div>
-										</>
-									)}
-									{display.response_headers && Object.keys(display.response_headers).length > 0 && (
-										<>
-											<DottedSeparator />
-											<div className="space-y-4">
-												<BlockHeader title="Response Headers" />
-												<HeadersGrid headers={display.response_headers} />
 											</div>
 										</>
 									)}

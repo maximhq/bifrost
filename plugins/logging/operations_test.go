@@ -5647,7 +5647,7 @@ func TestRelayLogRow(t *testing.T) {
 	require.NotNil(t, entry.UserAgent, "the calling client is recorded as on LLM and MCP rows")
 	require.Equal(t, "claude-code/1.0.0", *entry.UserAgent)
 	require.Equal(t, `{"query":"x"}`, *entry.RequestBody)
-	require.NotEqual(t, "tvly-secret", entry.RequestHeadersParsed["x-api-key"], "credential headers are redacted before they are stored")
+	require.Nil(t, entry.RequestHeadersParsed, "headers are kept only when the logging headers or the route's matchers name them")
 
 	// Content logging off: the row keeps the charge and drops the bodies and headers.
 	hidden := policyTestPlugin(boolPtr(true), nil, false)
@@ -5682,6 +5682,73 @@ func TestRelayLogClampsUserAgent(t *testing.T) {
 	require.NotNil(t, entry.UserAgent)
 	require.LessOrEqual(t, len(*entry.UserAgent), maxPersistedUserAgentLen, "the stored user agent fits its column")
 	require.Equal(t, "Claude Code", *entry.App, "the app is still detected from the full header")
+}
+
+// A row carries the same metadata LLM and MCP rows do (the Logging Headers setting's headers, every
+// x-bf-lh-* label with its prefix stripped, the x-bf-dim-* dimensions, and the key's metadata), and
+// beside it only the headers the matched route matches on; never the reply's headers. Both are
+// metadata, so content logging being off does not drop them.
+func TestRelayLogMetadataAndMatchedHeaders(t *testing.T) {
+	// The caller's headers as the transport collected them (every x-bf-* header included), and the
+	// relayed subset the gateway builds (x-bf-* and credentials stripped), as on the wire.
+	headers := map[string]string{
+		"content-type": "application/json", "x-tenant-id": "acme", "x-other": "no", "x-bf-lh-team": "core", "x-amz-target": "Textract.GetDocumentAnalysis", "x-api-key": "tvly-secret",
+	}
+	relayed := map[string]string{"content-type": "application/json", "x-tenant-id": "acme", "x-other": "no", "x-amz-target": "Textract.AnalyzeDocument"}
+	run := func(t *testing.T, plugin *LoggerPlugin, contentOff bool) *logstore.RelayLog {
+		t.Helper()
+		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		ctx := policyCtx(false, nil)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-headers")
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, headers)
+		ctx.SetValue(schemas.BifrostContextKeyDimensions, map[string]string{"environment": "staging"})
+		// The route layer hands over the values that selected the route: the relay's own extra header
+		// wins over the caller's copy (the caller sent Textract.GetDocumentAnalysis, the relay sets
+		// Textract.AnalyzeDocument). The route also matches on a credential header: kept, redacted.
+		matched := map[string]string{"x-amz-target": "Textract.AnalyzeDocument", "x-api-key": "tvly-secret"}
+		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "textract", Method: "POST", Path: "/", RouteHeaders: matched, Headers: relayed})
+		require.NoError(t, err)
+		// Governance may run after this plugin's pre-hook: the key's metadata lands then, and its
+		// value wins over a caller label of the same name.
+		ctx.SetValue(virtualKeyMetadataContextKey, map[string]string{"cost_center": "r&d", "team": "platform"})
+		if contentOff {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		}
+		_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "textract", StatusCode: 200, Headers: map[string]string{"x-amzn-requestid": "abc"}, Body: []byte(`{}`)}, nil)
+		require.NoError(t, err)
+		return (<-plugin.writeQueue).endpointLog
+	}
+	wantMetadata := map[string]any{"x-tenant-id": "acme", "team": "platform", "environment": "staging", "cost_center": "r&d"}
+	wantMatched := map[string]string{"x-amz-target": "Textract.AnalyzeDocument", "x-api-key": schemas.RedactSensitiveHeaders(map[string]string{"x-api-key": "tvly-secret"})["x-api-key"]}
+
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.loggingHeaders = &[]string{"x-tenant-*"}
+	entry := run(t, plugin, false)
+	require.Equal(t, wantMetadata, entry.MetadataParsed, "the configured pattern, the dimension, and the key's metadata merged after governance (its team wins over the caller's label)")
+	require.Equal(t, wantMatched, entry.RequestHeadersParsed, "only the headers the route matched on, with the value that selected the route, the credential redacted")
+	require.NotEqual(t, "tvly-secret", entry.RequestHeadersParsed["x-api-key"])
+	require.Nil(t, entry.ResponseHeadersParsed, "reply headers are never kept, as on LLM rows")
+
+	plugin = policyTestPlugin(nil, nil, true)
+	plugin.loggingHeaders = &[]string{"x-tenant-*"}
+	entry = run(t, plugin, true)
+	require.True(t, entry.ContentHidden)
+	require.Nil(t, entry.RequestBody, "content logging off drops the bodies")
+	require.Equal(t, wantMetadata, entry.MetadataParsed, "but not the metadata")
+	require.Equal(t, wantMatched, entry.RequestHeadersParsed, "nor the matched headers")
+
+	plugin = policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-no-headers")
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"content-type": "application/json", "x-other": "no"})
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "textract", Method: "POST", Path: "/", Headers: map[string]string{"content-type": "application/json", "x-other": "no"}})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "textract", StatusCode: 200}, nil)
+	require.NoError(t, err)
+	bare := (<-plugin.writeQueue).endpointLog
+	require.Nil(t, bare.MetadataParsed, "with nothing configured and no label or dimension, no metadata")
+	require.Nil(t, bare.RequestHeadersParsed, "and with no matcher, no header")
 }
 
 func TestRelayLogRefusalRecordsLatency(t *testing.T) {
@@ -5785,15 +5852,12 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		require.Equal(t, `{"query":"x"}`, *entry.RequestBody)
 		require.Equal(t, `{"ok":true}`, *entry.ResponseBody)
 		require.Equal(t, "/search?q=private", entry.Path)
-		require.NotNil(t, entry.ResponseHeadersParsed)
 	})
 	t.Run("virtual key turns it off after the request was captured", func(t *testing.T) {
 		entry := run(t, policyTestPlugin(nil, nil, false), boolPtr(true))
 		require.True(t, entry.ContentHidden, "the row says it carries no content")
 		require.Nil(t, entry.RequestBody)
 		require.Nil(t, entry.ResponseBody)
-		require.Nil(t, entry.RequestHeadersParsed)
-		require.Nil(t, entry.ResponseHeadersParsed)
 		require.Equal(t, "/search", entry.Path, "query values are caller content")
 		require.Equal(t, 200, entry.StatusCode, "metadata is still recorded")
 	})
