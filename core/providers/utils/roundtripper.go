@@ -61,10 +61,10 @@ var requestContexts sync.Map // *fasthttp.Request -> context.Context
 
 // bindRequestContext associates ctx with req for the duration of a client.Do call
 // so contextTransport can honor its deadline and cancellation. The returned unbind
-// is idempotent and must run after client.Do has returned. A ctx that can never be
-// cancelled or expire binds nothing.
+// is idempotent and must run after client.Do has returned. Contexts without a
+// Done channel may still carry values required by the transport.
 func bindRequestContext(req *fasthttp.Request, ctx context.Context) (unbind func()) {
-	if req == nil || ctx == nil || ctx.Done() == nil {
+	if req == nil || ctx == nil {
 		return func() {}
 	}
 	requestContexts.Store(req, ctx)

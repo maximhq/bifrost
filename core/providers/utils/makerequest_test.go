@@ -1061,13 +1061,15 @@ func BenchmarkTransport_Streamed_Context(b *testing.B) { benchmarkStreamed(b, Ne
 func TestContextTransport_DisableStaleConnectionRetries(t *testing.T) {
 	falseValue, trueValue := false, true
 	tests := []struct {
-		name      string
-		value     *bool
-		wantDials int32
+		name                string
+		value               *bool
+		withoutCancellation bool
+		wantDials           int32
 	}{
 		{name: "absent", wantDials: 2},
 		{name: "false", value: &falseValue, wantDials: 2},
 		{name: "true", value: &trueValue, wantDials: 1},
+		{name: "true without cancellation", value: &trueValue, withoutCancellation: true, wantDials: 1},
 	}
 	for _, streamed := range []bool{false, true} {
 		mode := "buffered"
@@ -1120,7 +1122,7 @@ func TestContextTransport_DisableStaleConnectionRetries(t *testing.T) {
 					client = BuildStreamingClient(client)
 				}
 
-				send := func(ctx *schemas.BifrostContext) error {
+				send := func(ctx context.Context) error {
 					req := fasthttp.AcquireRequest()
 					resp := fasthttp.AcquireResponse()
 					defer fasthttp.ReleaseRequest(req)
@@ -1151,10 +1153,14 @@ func TestContextTransport_DisableStaleConnectionRetries(t *testing.T) {
 				}
 				warmCancel()
 
-				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-				defer cancel()
+				ctx := context.Context(context.Background())
 				if test.value != nil {
-					ctx.SetValue(schemas.BifrostContextKeyDisableStaleConnectionRetries, *test.value)
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyDisableStaleConnectionRetries, *test.value)
+				}
+				if !test.withoutCancellation {
+					cancelCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
+					defer cancel()
+					ctx = cancelCtx
 				}
 				if err := send(ctx); err == nil {
 					t.Fatal("request after the provider read the body unexpectedly succeeded")
