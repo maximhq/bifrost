@@ -982,13 +982,17 @@ func TestOutboundTokenStickyClient403SkipsReconnect(t *testing.T) {
 	_, bErr := callOutboundEcho(bf, createTestContext(), clientName, "fail")
 	require.NotNil(t, bErr, "403 call must return error")
 
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	after := rec.reqs[nBefore:]
 	// Recovery always redials first; a bare tools/list can come from the listen stream's refresh.
-	for _, req := range after {
-		assert.NotContains(t, []string{"server/discover", "initialize"}, req.method, "must not reconnect on per-call token 403")
-	}
+	require.Never(t, func() bool {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		for _, req := range rec.reqs[nBefore:] {
+			if req.method == "server/discover" || req.method == "initialize" {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 50*time.Millisecond, "must not reconnect on per-call token 403")
 }
 
 func buildAuthEchoSSEServer(t *testing.T) (*httptest.Server, *headerRecorder) {
@@ -1143,4 +1147,165 @@ func TestOutboundTokenCodeModeNestedCallCarriesToken(t *testing.T) {
 	val, hasErr, errMsg := ParseCodeModeResponse(t, *resp.Content.ContentStr)
 	require.False(t, hasErr, errMsg)
 	assert.Equal(t, "from-code|Bearer nested-tok", val)
+}
+
+// nestedOnlyHookPlugin acts only on nested code-mode calls, never on the outer executeToolCode.
+type nestedOnlyHookPlugin struct {
+	schemas.MCPPluginNoOpHooks
+	token  string
+	tenant string
+}
+
+func (p *nestedOnlyHookPlugin) GetName() string { return "nestedOnlyHookPlugin" }
+func (p *nestedOnlyHookPlugin) Cleanup() error  { return nil }
+
+func (p *nestedOnlyHookPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	if req.GetToolName() == "executeToolCode" {
+		return req, nil, nil
+	}
+	if p.token != "" {
+		ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, p.token)
+	}
+	if p.tenant != "" {
+		ctx.SetValue(outboundTenantKey{}, p.tenant)
+	}
+	return req, nil, nil
+}
+
+// TestOutboundTokenCodeModeNestedResolvesAfterHooks proves a nested call resolves its token and
+// dials only after its own PreMCPHook ran.
+func TestOutboundTokenCodeModeNestedResolvesAfterHooks(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		provider schemas.OutboundMCPTokenProvider
+		hook     *nestedOnlyHookPlugin
+		want     string
+	}{
+		{
+			name: "hook_token_on_per_call_dial",
+			hook: &nestedOnlyHookPlugin{token: "hook-tok"},
+			want: "Bearer hook-tok",
+		},
+		{
+			name: "provider_sees_hook_value",
+			provider: funcTokenProvider(func(ctx context.Context, _ string) (string, error) {
+				tenant, _ := ctx.Value(outboundTenantKey{}).(string)
+				if tenant == "" {
+					return "", errors.New("tenant not set before token resolution")
+				}
+				return "prov-" + tenant, nil
+			}),
+			hook: &nestedOnlyHookPlugin{tenant: "acme"},
+			want: "Bearer prov-acme",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, rec := buildAuthEchoServer(t)
+			logger := newTestLogger(t)
+			manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+				OutboundTokenProvider:  tc.provider,
+				PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
+				ReleasePluginPipeline:  func(pipeline interface{}) {},
+			}, nil, logger, starlark.NewStarlarkCodeMode(nil, logger))
+			bf, err := core.Init(context.Background(), schemas.BifrostConfig{
+				Account:    &testAccount{},
+				MCPPlugins: []schemas.MCPPlugin{tc.hook},
+				Logger:     core.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			bf.SetMCPManager(manager)
+			removeClientsOnCleanup(t, manager)
+
+			require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+				ID:               "codemode_target-id",
+				Name:             "codemode_target",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(ts.URL),
+				AuthType:         schemas.MCPAuthTypeHeaders,
+				Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar(outboundStaticAuth)},
+				IsCodeModeClient: true,
+				ToolsToExecute:   []string{"*"},
+			}))
+
+			code := `result = codemode_target.echo(message="from-code")`
+			resp, bErr := bf.ExecuteChatMCPTool(createTestContext(), &schemas.ChatAssistantMessageToolCall{
+				ID: schemas.Ptr("call-code-hook"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{
+					Name:      schemas.Ptr("executeToolCode"),
+					Arguments: fmt.Sprintf(`{"code": %s}`, mustJSONString(code)),
+				},
+			})
+			require.Nil(t, bErr)
+			require.NotNil(t, resp.Content.ContentStr)
+			val, hasErr, errMsg := ParseCodeModeResponse(t, *resp.Content.ContentStr)
+			require.False(t, hasErr, errMsg)
+			assert.Equal(t, "from-code|"+tc.want, val)
+
+			discoverAuth := rec.valuesForMethod("server/discover", "Authorization")
+			require.NotEmpty(t, discoverAuth)
+			assert.Equal(t, tc.want, discoverAuth[len(discoverAuth)-1], "the nested per-call dial must carry the call's token")
+		})
+	}
+}
+
+// TestOutboundTokenCallIsNotRetried proves a token-bearing call is sent once on a transient
+// failure, while a call without one keeps the usual retries.
+func TestOutboundTokenCallIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	s := server.NewMCPServer("test-noretry", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("echo",
+		mcpgo.WithDescription("Echo tool"),
+		mcpgo.WithString("message", mcpgo.Required(), mcpgo.Description("message")),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText("unreachable"), nil
+	})
+	streamable := server.NewStreamableHTTPServer(s)
+	rec := &headerRecorder{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var probe struct {
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &probe)
+		rec.add(probe.Method, r.Header)
+		if probe.Method == "tools/call" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		streamable.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	provider := funcTokenProvider(func(ctx context.Context, _ string) (string, error) {
+		tenant, _ := ctx.Value(outboundTenantKey{}).(string)
+		if tenant == "" {
+			return "", nil
+		}
+		return "once-" + tenant, nil
+	})
+	clientName := "outbound_noretry"
+	_, bf := setupOutboundTokenBifrostWithStickiness(t, provider, clientName, ts.URL, true)
+
+	_, bErr := callOutboundEcho(bf, createTestContext(), clientName, "static")
+	require.NotNil(t, bErr)
+	assert.Len(t, rec.valuesForMethod("tools/call", "Authorization"), 1+mcp.ToolCallRetryConfig.MaxRetries,
+		"a call without a token keeps the usual retries")
+
+	ctx := createTestContext()
+	ctx.SetValue(outboundTenantKey{}, "acme")
+	_, bErr = callOutboundEcho(bf, ctx, clientName, "token")
+	require.NotNil(t, bErr)
+	calls := rec.valuesForMethod("tools/call", "Authorization")
+	tokenCalls := 0
+	for _, v := range calls {
+		if v == "Bearer once-acme" {
+			tokenCalls++
+		}
+	}
+	assert.Equal(t, 1, tokenCalls, "a token-bearing call must be sent once")
 }

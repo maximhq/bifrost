@@ -825,6 +825,11 @@ func (m *ToolsManager) executeToolInternal(
 	// 401/403/unauthorized/forbidden as non-retryable — those fail
 	// immediately here with zero retries and fall through to the
 	// isAuthFailureErrorText handling below unchanged.
+	retryConfig := ToolCallRetryConfig
+	if utils.HasCallToken(toolCtx) {
+		// A call made under a caller's identity is sent once: a resend could repeat its side effects.
+		retryConfig.MaxRetries = 0
+	}
 	toolCallStart := time.Now()
 	var toolResponse *mcp.CallToolResult
 	callErr := ExecuteWithRetry(
@@ -834,7 +839,7 @@ func (m *ToolsManager) executeToolInternal(
 			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
 			return err
 		},
-		ToolCallRetryConfig,
+		retryConfig,
 		m.logger,
 	)
 	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))

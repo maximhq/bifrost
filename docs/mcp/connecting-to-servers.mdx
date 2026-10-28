@@ -480,7 +480,9 @@ mcpConfig := &schemas.MCPConfig{
 - An error fails that tool call, and nothing is sent upstream.
 - Plugins can supply the same token without a Go SDK provider: a `PreMCPHook` sets `schemas.BifrostContextKeyMCPOutboundToken` (a `string`) on the context.
 - Precedence, highest first: the provider's token, the context key, `Authorization` from [forwarded extra headers](#forwarding-request-headers-to-mcp-servers), then the configured credential.
-- Tool discovery, health checks and tool sync run with no caller. They never consult the provider and always use the configured credential.
+- A call that carries a token is sent once: it is not retried on transient errors, and a failure does not trigger a reconnect or credential refresh.
+- The provider runs after `PreMCPHook` plugins, so it can read values a hook set on the context; this holds for nested code mode calls too.
+- Admin tool discovery, health checks and tool sync run with no caller. They never consult the provider and always use the configured credential. A per-call client's fresh dial for a tool call is part of that call, so its `initialize` and `server/discover` carry the call's token.
 - Tokens are not cached or stored by Bifrost; cache them in your provider if minting is expensive.
 
 ### Tools To Execute Semantics

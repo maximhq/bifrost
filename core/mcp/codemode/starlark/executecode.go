@@ -340,28 +340,9 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 
-	// Acquire a connection through the shared ClientManager abstraction outside
-	// the gate, mirroring the gateway's exec.go:prepareToolExecution → gate
-	// ordering. Connection lifecycle is the caller's concern; the gate's op
-	// closure only performs the wire CallTool.
 	// Hooks of this nested call decide its token: drop whatever the outer call carried.
 	nestedCtx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, "")
 	sendsHeaders := client.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO
-	var providerToken string
-	if sendsHeaders && s.outboundTokenProvider != nil {
-		var tokenErr error
-		providerToken, tokenErr = mcputils.ResolveOutboundToken(nestedCtx, s.outboundTokenProvider(), clientName, s.logger)
-		if tokenErr != nil {
-			return nil, tokenErr
-		}
-	}
-	acquireCtx, releaseAcquireToken := mcputils.WithCallToken(nestedCtx, providerToken)
-	defer releaseAcquireToken()
-	conn, release, err := s.clientManager.AcquireClientConn(acquireCtx, client)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()
 
@@ -406,13 +387,29 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			}
 		}
 
-		startTime := time.Now()
-		opToken := providerToken
-		if opToken == "" && sendsHeaders {
-			opToken, _ = nestedCtx.Value(schemas.BifrostContextKeyMCPOutboundToken).(string)
+		// Resolve and acquire after PreMCPHook, as the direct-call path does, so the
+		// provider sees what the hooks set and a per-call dial carries the hook's token.
+		var token string
+		if sendsHeaders {
+			var provider schemas.OutboundMCPTokenProvider
+			if s.outboundTokenProvider != nil {
+				provider = s.outboundTokenProvider()
+			}
+			var tokenErr error
+			token, tokenErr = mcputils.ResolveOutboundToken(nestedCtx, provider, clientName, s.logger)
+			if tokenErr != nil {
+				return nil, tokenErr
+			}
 		}
-		callCtx, releaseCallToken := mcputils.WithCallToken(nestedCtx, opToken)
+		callCtx, releaseCallToken := mcputils.WithCallToken(nestedCtx, token)
 		defer releaseCallToken()
+		conn, release, err := s.clientManager.AcquireClientConn(callCtx, client)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+
+		startTime := time.Now()
 		toolCtx, cancel := context.WithTimeout(callCtx, toolExecutionTimeout)
 		defer cancel()
 
