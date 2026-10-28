@@ -79,6 +79,61 @@ func waitForCounter(t *testing.T, reg *prometheus.Registry, name string, want fl
 	}
 }
 
+// histogramCount sums the observation count of the named histogram family across every
+// series. PostLLMHook's intermediate-chunk branch observes a stream-latency histogram and
+// then returns, so this reaching N is proof that N such goroutines have run to completion
+// and can no longer touch the request counters.
+func histogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var total uint64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return total
+}
+
+// waitForHistogramCount polls until the named histogram has recorded want observations.
+func waitForHistogramCount(t *testing.T, reg *prometheus.Registry, name string, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if got := histogramCount(t, reg, name); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("histogram %s count = %d, want %d (timed out)", name, histogramCount(t, reg, name), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertCounterSettlesAt waits for the named counter to reach want and then keeps reading it
+// for settleFor, failing the moment it moves. A single read after a fixed sleep cannot tell
+// "the goroutines are done" from "the late one has not landed yet"; PostLLMHook records in an
+// unsynchronised goroutine and the plugin exposes no handle to wait on, so the check is a
+// sustained observation rather than one sample.
+func assertCounterSettlesAt(t *testing.T, reg *prometheus.Registry, name string, want float64) {
+	t.Helper()
+	const settleFor = 250 * time.Millisecond
+	waitForCounter(t, reg, name, want)
+	deadline := time.Now().Add(settleFor)
+	for time.Now().Before(deadline) {
+		if got := counterTotal(t, reg, name); got != want {
+			t.Fatalf("counter %s moved to %v during the %s settle window, want a steady %v", name, got, settleFor, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // usageCase describes one usage-bearing response type and the input/output tokens the plugin
 // must record for it.
 type usageCase struct {
@@ -396,6 +451,13 @@ func TestErrorCounterRecordsStreamFailureBeforeStreamStart(t *testing.T) {
 // any failed stream, rather than only for one that never started, makes the mid-stream call
 // record a request of its own and the terminal call record it again. No current path
 // delivers that shape, so this guards the condition rather than a reachable regression.
+//
+// On waiting for the goroutines: a content chunk's goroutine observes a stream-latency
+// histogram and then returns, so that histogram reaching 2 proves both intermediate
+// goroutines finished without reaching the request counters. An erroring intermediate chunk
+// carries no result, so it observes nothing and leaves no such marker -- there the counters
+// are watched over a settle window instead, because the goroutine is unsynchronised and the
+// plugin offers nothing to wait on.
 func TestErrorCounterCountsOneRequestPerStream(t *testing.T) {
 	for _, errorOnIntermediateChunk := range []bool{false, true} {
 		name := "content_chunks_then_failure"
@@ -425,17 +487,14 @@ func TestErrorCounterCountsOneRequestPerStream(t *testing.T) {
 				t.Fatalf("PostLLMHook terminal: %v", err)
 			}
 
-			waitForCounter(t, p.registry, "bifrost_error_requests_total", 1)
-			waitForCounter(t, p.registry, "bifrost_upstream_requests_total", 1)
-			// waitForCounter returns as soon as the value matches, so give the two earlier
-			// calls' goroutines room to add a second request before calling it one.
-			time.Sleep(50 * time.Millisecond)
-			if got := counterTotal(t, p.registry, "bifrost_error_requests_total"); got != 1 {
-				t.Fatalf("error counter = %v, want 1 (one stream, counted once)", got)
+			if !errorOnIntermediateChunk {
+				// Both intermediate goroutines observed their latency and returned, so
+				// neither can reach the request counters after this point.
+				waitForHistogramCount(t, p.registry, "bifrost_stream_first_token_latency_seconds", 2)
 			}
-			if got := counterTotal(t, p.registry, "bifrost_upstream_requests_total"); got != 1 {
-				t.Fatalf("upstream requests = %v, want 1 (one stream, counted once)", got)
-			}
+
+			assertCounterSettlesAt(t, p.registry, "bifrost_error_requests_total", 1)
+			assertCounterSettlesAt(t, p.registry, "bifrost_upstream_requests_total", 1)
 		})
 	}
 }
