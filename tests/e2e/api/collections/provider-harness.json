@@ -297035,6 +297035,130 @@
           }
         }
       ]
+    },
+    {
+      "name": "292. Unfiltered model listing is not narrowed to the caller's virtual key (unfiltered model listing)",
+      "description": "GET /api/models and /api/models/details with unfiltered=true list a provider's whole catalog, which is what the dashboard pickers that configure the gateway ask for (a key's allowed models, deployments). The listing used to narrow that catalog to what the caller's virtual key or access reaches, so a picker offered only the models the provider's keys already allowed and a key's allowlist could not be widened from it. Every caller that reaches the route can already read every provider and key through the provider routes, so the unfiltered listing is no longer narrowed; a listing without unfiltered still is. The profile key sk-bf-test-key-nocontent is granted openai only: the first case pins that the unfiltered anthropic listing still reaches it in full (empty before the change), the second that the plain listing stays narrowed to nothing, and the third that /api/models/details, which parses the same query, lists the full unfiltered catalog too. No provider calls are made. Run with FEATURE=\"unfiltered model listing\".",
+      "item": [
+        {
+          "name": "[EXPECT-200] anthropic claude catalog lists in full for an openai-only virtual key with unfiltered=true - unfiltered model listing",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models?provider=anthropic&unfiltered=true&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unfiltered listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the openai-only virtual key does not narrow the unfiltered anthropic catalog', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.total, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.models, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('every listed model is an anthropic claude model', function () {",
+                  "  var models = pm.response.json().models;",
+                  "  models.forEach(function (m) {",
+                  "    pm.expect(m.provider, 'unexpected provider: ' + JSON.stringify(m)).to.equal('anthropic');",
+                  "  });",
+                  "  var claude = models.filter(function (m) { return m.name.indexOf('claude') === 0; });",
+                  "  pm.expect(claude.length, 'expected claude models in: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude listing stays empty for an openai-only virtual key without unfiltered - unfiltered model listing",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models?provider=anthropic&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('plain listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('without unfiltered the listing stays narrowed to the virtual key, which is not granted anthropic', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.total, 'expected an empty listing, got: ' + pm.response.text()).to.equal(0);",
+                  "  pm.expect(body.models, 'expected an empty listing, got: ' + pm.response.text()).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude model details list in full for an openai-only virtual key with unfiltered=true - unfiltered model listing",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models/details?provider=anthropic&unfiltered=true&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unfiltered model details returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the openai-only virtual key does not narrow the unfiltered anthropic model details', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.total, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.models, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('every listed model is an anthropic claude model', function () {",
+                  "  var models = pm.response.json().models;",
+                  "  models.forEach(function (m) {",
+                  "    pm.expect(m.provider, 'unexpected provider: ' + JSON.stringify(m)).to.equal('anthropic');",
+                  "  });",
+                  "  var claude = models.filter(function (m) { return m.name.indexOf('claude') === 0; });",
+                  "  pm.expect(claude.length, 'expected claude models in: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
