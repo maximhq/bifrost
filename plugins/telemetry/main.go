@@ -195,6 +195,8 @@ type PrometheusPlugin struct {
 	ProviderKeyUp                  *prometheus.GaugeVec
 	MCPToolDuration                *prometheus.HistogramVec
 	A2AOperationDuration           *prometheus.HistogramVec
+	RelayOperationDuration         *prometheus.HistogramVec
+	RelayCostTotal                 *prometheus.CounterVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -705,6 +707,17 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		Buckets: mcpOperationDurationBuckets,
 	}, a2aMetricLabelNames)
 
+	// Relay calls are plain HTTP round trips; _count gives volume and error_type the error rate.
+	relayDuration := factory.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bifrost_relay_operation_duration_seconds",
+		Help:    "Duration of a relay call to a non-LLM upstream API as observed by Bifrost.",
+		Buckets: mcpOperationDurationBuckets,
+	}, relayMetricLabelNames)
+	relayCost := factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "bifrost_relay_cost_total",
+		Help: "USD charged for relay calls.",
+	}, relayMetricLabelNames)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -742,6 +755,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		ProviderKeyUp:                  bifrostProviderKeyUp,
 		MCPToolDuration:                bifrostMCPToolDuration,
 		A2AOperationDuration:           a2aDuration,
+		RelayOperationDuration:         relayDuration,
+		RelayCostTotal:                 relayCost,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -913,6 +928,7 @@ func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error
 		return nil
 	}
 	p.recordA2AMetrics(trace)
+	p.recordRelayMetrics(trace)
 	// Always drain the handoff entry so a toggle flip mid-request can't leak it.
 	joinKey := trace.InternalID
 	if joinKey == "" {
