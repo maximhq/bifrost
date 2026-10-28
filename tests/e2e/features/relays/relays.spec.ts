@@ -1,4 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
+import { createServer } from "http";
+import type { AddressInfo } from "net";
 import { expect, test } from "../../core/fixtures/base.fixture";
 
 const API = "/api/relays";
@@ -374,6 +376,85 @@ test.describe("Relays", () => {
     await page.saveRoute();
     relay = await getRelay(request, name);
     expect(relay.routes[0].usage).toBeUndefined();
+  });
+
+  test("imports routes from an OpenAPI document fetched by URL", async ({ relaysPage: page, request }) => {
+    // The gateway fetches the document (the browser could not, across origins); a relative server
+    // resolves against the URL the document was read from.
+    const spec = JSON.stringify({
+      openapi: "3.0.0",
+      info: { title: "Search API", version: "2" },
+      servers: [{ url: "/v1" }],
+      paths: { "/search": { post: { responses: { "200": { description: "ok" } } } }, "/status": { get: { responses: { "200": { description: "ok" } } } } },
+    });
+    const specServer = createServer((req, res) => {
+      if (req.url === "/slow.json") {
+        // Answers well after the dialog is cancelled; its document must not reach the reopened one.
+        setTimeout(() => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(spec);
+        }, 3000);
+        return;
+      }
+      if (req.url === "/openapi.json") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(spec);
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => specServer.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = specServer.address() as AddressInfo;
+    try {
+      const name = `e2e-pte-import-${Date.now()}`;
+      created.push(name);
+      await page.goto();
+      await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+      await page.select(name);
+
+      await page.page.getByTestId("relay-routes-import").click();
+      await page.page.getByTestId("openapi-spec-source-tab-url").click();
+      const url = page.page.getByTestId("openapi-spec-url-input");
+
+      // Cancelling during a fetch leaves nothing behind: the reopened dialog can fetch at once, and
+      // the cancelled request's document never shows up in it.
+      await url.fill(`http://127.0.0.1:${port}/slow.json`);
+      await page.page.getByTestId("openapi-parse-btn").click();
+      await expect(page.page.getByTestId("openapi-parse-btn")).toBeDisabled();
+      await page.page.keyboard.press("Escape");
+      await page.page.getByTestId("relay-routes-import").click();
+      await page.page.getByTestId("openapi-spec-source-tab-url").click();
+      await url.fill("https://example.invalid/spec.json");
+      await expect(page.page.getByTestId("openapi-parse-btn")).toBeEnabled();
+      await page.page.waitForTimeout(3500);
+      await expect(page.page.getByTestId("relay-openapi-preview")).toHaveCount(0);
+
+      // A relative address is refused before anything is fetched.
+      await url.fill("/openapi.json");
+      await page.page.getByTestId("openapi-parse-btn").click();
+      await expect(page.page.getByTestId("openapi-spec-url-error")).toContainText("absolute http(s) URL");
+
+      // A missing document reports the gateway's error.
+      await url.fill(`http://127.0.0.1:${port}/missing.json`);
+      await page.page.getByTestId("openapi-parse-btn").click();
+      await expect(page.page.getByTestId("openapi-parse-error")).toContainText("could not load spec_url");
+
+      await url.fill(`http://127.0.0.1:${port}/openapi.json`);
+      await page.page.getByTestId("openapi-parse-btn").click();
+      const preview = page.page.getByTestId("relay-openapi-preview");
+      await expect(preview).toContainText("Search API");
+      await expect(preview).toContainText("2 routes");
+      await expect(preview).toContainText(`http://127.0.0.1:${port}/v1`);
+      await page.page.getByTestId("relay-openapi-import").click();
+
+      // The import is staged for review before it replaces the routes.
+      await page.page.getByRole("button", { name: "Apply import" }).click();
+      await page.waitForSuccessToast();
+      const relay = await getRelay(request, name);
+      expect(relay.routes.map((r: { method: string; path: string }) => `${r.method} ${r.path}`)).toEqual(["POST /search", "GET /status"]);
+    } finally {
+      await new Promise<void>((resolve) => specServer.close(() => resolve()));
+    }
   });
 
   // ---------------------------------------------------------------------------------------------
