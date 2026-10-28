@@ -1,6 +1,7 @@
 package overhead
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -321,6 +322,108 @@ func TestComputeOverheadBreakdown_StreamingNoSchedulingResidual(t *testing.T) {
 	}
 }
 
+// A stream's post-hook span covers its plugin's summed per-chunk time at the stream's
+// end, so that time reaches the plugin's bucket and the measured overhead. A result span
+// the plugin opened on the final chunk nests inside it and is not counted twice.
+func TestComputeOverheadBreakdown_StreamingPostHookSpanCounted(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 1000)
+	root.Attributes = map[string]any{schemas.AttrBifrostStreamParseMs: 1.0}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 10, 990),
+			span(base, "post", "llm", "plugin.guard.posthook", schemas.SpanKindPlugin, 970, 990),  // 20ms over all chunks
+			span(base, "output", "post", "plugin.guard.output", schemas.SpanKindPlugin, 975, 990), // the final chunk's check
+		},
+	}
+
+	buckets, measuredMs, _ := Compute(trace, 500, true, 400, true)
+	got := map[string]float64{}
+	for _, b := range buckets {
+		got[b.Name] = b.DurationUs
+	}
+	if got["plugin.guard"] != 20000 {
+		t.Errorf("plugin.guard = %v us, want 20000 (the post-hook span, its output span inside it)", got["plugin.guard"])
+	}
+	if measuredMs < 20.99 || measuredMs > 21.01 {
+		t.Errorf("measuredMs = %v, want ~21 (20ms plugin + 1ms stream-parse)", measuredMs)
+	}
+}
+
+// A stream's post-hook span is placed at the stream's end with its summed hook time,
+// so a span its plugin opened on an earlier chunk can sit wholly before it. That child
+// ran inside the hook, so it comes out of the parent's time and is counted once.
+func TestComputeOverheadBreakdown_StreamingPostHookChildOutsideWindow(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 1000)
+	root.Attributes = map[string]any{schemas.AttrBifrostStreamParseMs: 1.0}
+	post := span(base, "post", "llm", "plugin.guard.posthook", schemas.SpanKindPlugin, 970, 990) // 20ms summed
+	post.Attributes = map[string]any{schemas.AttrPluginInvocations: 40}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 10, 990),
+			post,
+			span(base, "early", "post", "plugin.guard.output", schemas.SpanKindPlugin, 100, 115), // 15ms, on an early chunk
+		},
+	}
+	got := bucketMap(t, trace, 500, true)
+	if got["plugin.guard"] != 20000 {
+		t.Errorf("plugin.guard = %v us, want 20000 (the hook's 20ms, its 15ms child inside it)", got["plugin.guard"])
+	}
+}
+
+// A background span (a guardrail checking the response after delivery) starts inside
+// the plugin's post-hook and runs past the request. The client never waited for it, so
+// it adds nothing to any bucket and takes nothing from the post-hook that started it.
+func TestComputeOverheadBreakdown_BackgroundSpanExcluded(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100)
+	monitor := span(base, "monitor", "post", "plugin.guard.output", schemas.SpanKindPlugin, 92, 1400)
+	monitor.Attributes = map[string]any{schemas.AttrBifrostBackground: true}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 10, 90),
+			span(base, "post", "root", "plugin.guard.posthook", schemas.SpanKindPlugin, 90, 95), // 5ms
+			monitor,
+		},
+	}
+	got := bucketMap(t, trace, 20, true)
+	if got["plugin.guard"] != 5000 {
+		t.Errorf("plugin.guard = %v us, want 5000 (the post-hook alone)", got["plugin.guard"])
+	}
+}
+
+// A background provider call (one a guardrail makes after the response is delivered)
+// is not the request's provider glue: provider-internal covers the request's own call.
+func TestComputeOverheadBreakdown_BackgroundLLMCallExcluded(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 100)
+	judge := span(base, "judge", "root", "chat guard-judge", schemas.SpanKindLLMCall, 95, 1095)
+	judge.Attributes = map[string]any{schemas.AttrBifrostBackground: true}
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 10, 90), // 80ms, 75ms of it upstream
+			judge,
+		},
+	}
+	buckets, _, _ := Compute(trace, 25, true, 75, true)
+	got := map[string]float64{}
+	for _, b := range buckets {
+		got[b.Name] = b.DurationUs
+	}
+	if got["provider-internal"] != 5000 {
+		t.Errorf("provider-internal = %v us, want 5000 (the request's own call only)", got["provider-internal"])
+	}
+}
+
 // ComputeForMetrics rolls each raw bucket into its UI category: plugin.<name> ->
 // "plugins", middleware.<name> -> "middleware", key.selection -> "routing", and the
 // scheduling residual -> "miscellaneous". Raw span names must never leak into the metric.
@@ -416,5 +519,20 @@ func TestMetricComponent_A2APhaseBuckets(t *testing.T) {
 		if got != category {
 			t.Errorf("MetricComponent(%q) = %q, want %q", name, got, category)
 		}
+	}
+}
+
+// BenchmarkCompute breaks down a 30-span trace, as each traced request's log row does.
+func BenchmarkCompute(b *testing.B) {
+	base := time.Now()
+	root := span(base, "root", "", "/v1/chat/completions", schemas.SpanKindHTTPRequest, 0, 300)
+	spans := []*schemas.Span{root, span(base, "llm", "root", "chat gpt-4o-mini", schemas.SpanKindLLMCall, 50, 250)}
+	for i := 0; i < 28; i++ {
+		spans = append(spans, span(base, fmt.Sprintf("p%d", i), "root", fmt.Sprintf("plugin.p%d.prehook", i%12), schemas.SpanKindPlugin, i, i+1))
+	}
+	trace := &schemas.Trace{RootSpan: root, Spans: spans}
+	b.ReportAllocs()
+	for b.Loop() {
+		Compute(trace, 100, true, 200, true)
 	}
 }

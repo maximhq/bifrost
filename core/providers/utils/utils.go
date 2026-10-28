@@ -5126,18 +5126,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, err)
 	}
 
-	// Finalize aggregated post-hook spans before ending the LLM span
-	// This creates one span per plugin with average execution time
-	// We need to set the llm.call span ID in context so post-hook spans become its children
+	// End the per-plugin post-hook spans (opened under this span) before the span itself.
 	if postHookSpanFinalizer != nil {
-		// Get the deferred span ID (the llm.call span) to set as parent for post-hook spans
-		spanID := tracer.GetDeferredSpanID(traceID)
-		if spanID != "" {
-			finalizerCtx := context.WithValue(ctx, schemas.BifrostContextKeySpanID, spanID)
-			postHookSpanFinalizer(finalizerCtx)
-		} else {
-			postHookSpanFinalizer(ctx)
-		}
+		postHookSpanFinalizer(ctx)
 	}
 
 	// Error attributes are stamped by PopulateLLMResponseAttributes above.

@@ -1234,3 +1234,42 @@ func TestPatchPricing_DecisionRatesPassThrough(t *testing.T) {
 	assert.Equal(t, 1.0, *patched.InputCostPerToken)
 	assert.Equal(t, 2.0, *patched.OutputCostPerToken)
 }
+
+func TestPatchPricing_VoiceLiveRates(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-realtime",
+		Provider: "azure",
+		Mode:     "responses",
+	}
+
+	patched := patchPricing(base, Options{
+		InputCostPerTokenVoiceLive:                     bifrost.Ptr(0.000004),
+		OutputCostPerTokenVoiceLive:                    bifrost.Ptr(0.000016),
+		CacheReadInputTokenCostVoiceLive:               bifrost.Ptr(0.0000004),
+		InputCostPerAudioTokenVoiceLive:                bifrost.Ptr(0.000032),
+		OutputCostPerAudioTokenVoiceLive:               bifrost.Ptr(0.000064),
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  bifrost.Ptr(0.000017),
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: bifrost.Ptr(0.000031),
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    bifrost.Ptr(0.00004),
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   bifrost.Ptr(0.000055),
+	})
+
+	require.NotNil(t, patched.InputCostPerTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerTokenVoiceLive)
+	require.NotNil(t, patched.CacheReadInputTokenCostVoiceLive)
+	require.NotNil(t, patched.InputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, patched.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	require.NotNil(t, patched.OutputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000004, *patched.InputCostPerTokenVoiceLive)
+	assert.Equal(t, 0.000016, *patched.OutputCostPerTokenVoiceLive)
+	assert.Equal(t, 0.0000004, *patched.CacheReadInputTokenCostVoiceLive)
+	assert.Equal(t, 0.000032, *patched.InputCostPerAudioTokenVoiceLive)
+	assert.Equal(t, 0.000064, *patched.OutputCostPerAudioTokenVoiceLive)
+	assert.Equal(t, 0.000017, *patched.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000031, *patched.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.00004, *patched.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.Equal(t, 0.000055, *patched.OutputCostPerCustomSpeechAudioTokenVoiceLive)
+}

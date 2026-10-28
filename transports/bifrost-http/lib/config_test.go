@@ -26380,6 +26380,37 @@ func TestRelayGrantsFromConfigFile_NewKeyUnknownRelay(t *testing.T) {
 	assert.Equal(t, map[string][]string{"vk-new": {"tavily"}}, got)
 }
 
+// A relay edited in the dashboard keeps the edit across a restart in split mode when config.json is
+// unchanged, even if the env var behind its credential was rotated in between: the hash records the
+// credential's reference, not the resolved value, so the rotation is not read as a file change.
+func TestRelayFromConfigFile_DashboardEditSurvivesCredentialRotation(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	relays := `"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "env.RELAY_ROTATION_TOKEN"}}],`
+	t.Setenv("RELAY_ROTATION_TOKEN", "tvly-first")
+	loadRelayGrantsConfig(t, dir, "", relays, `[]`)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	edited, err := config.ConfigStore.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	edited.Description = "edited in the dashboard"
+	// An API edit leaves the stored hash in place, as the relays handler does.
+	require.NoError(t, config.ConfigStore.UpdateRelay(ctx, edited, ""))
+	config.Close(ctx)
+
+	t.Setenv("RELAY_ROTATION_TOKEN", "tvly-rotated")
+	loadRelayGrantsConfig(t, dir, "", relays, `[]`)
+	config, err = LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	got, err := config.ConfigStore.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	assert.Equal(t, "edited in the dashboard", got.Description, "an unchanged file does not re-sync the relay over its dashboard edit")
+	assert.Equal(t, "tvly-rotated", got.Credential.Value.GetValue(), "the stored reference resolves to the rotated value")
+}
+
 // A new key's agent_grants naming an agent that is not stored yet (agents are reconciled after
 // governance, so one declared in the same file is not there on its first load) skips that grant
 // instead of failing the governance sync, which would keep every key out of the store.

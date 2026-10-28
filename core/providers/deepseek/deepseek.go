@@ -292,6 +292,9 @@ func (provider *DeepSeekProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 
 func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		if bifrostErr := rejectUnsupportedChatContent(request); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
 			provider.client,
@@ -334,6 +337,9 @@ func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	postHookRunner = servedModelPostHookRunner(request.Model, postHookRunner)
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		if bifrostErr := rejectUnsupportedChatContent(request); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.DeepSeek,
 			IsStreaming:               true,
@@ -392,6 +398,9 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 // Responses performs a Responses API request against DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		if bifrostErr := rejectUnsupportedResponsesContent(request); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 		resp, bifrostErr := anthropic.HandleAnthropicResponsesRequest(
 			ctx,
 			provider.client,
@@ -427,6 +436,9 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 // ResponsesStream performs a streaming Responses API request to DeepSeek's Anthropic-compatible endpoint.
 func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		if bifrostErr := rejectUnsupportedResponsesContent(request); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.DeepSeek,
 			IsStreaming:               true,

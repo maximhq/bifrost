@@ -557,6 +557,16 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": true
+        },
+        {
+          "name": "Azure Speech Key",
+          "value": "env.AZURE_API_KEY",
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "use_speech_endpoints": true
+          },
+          "weight": 1,
+          "models": ["regex:neural|Dragon.*Neural|MAI-Voice-.+|fast-transcription|llm-speech|short-audio|MAI-Transcribe-2"]
         }
       ],
       "network_config": {
