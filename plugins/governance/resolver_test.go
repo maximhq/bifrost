@@ -1512,17 +1512,36 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
+	// A direct key or a skip-key-selection credential bypasses key selection, so the alias is never
+	// resolved and the provider runs the name as sent: those requests are held to the literal name.
+	// The values are set with SetValue directly (the restricted-writes block is not enabled here).
+	const (
+		normal = iota
+		directKey
+		skipKeySelection
+	)
 	for _, tc := range []struct {
 		model   string
+		cred    int
 		blocked bool
 	}{
-		{"best-gpt", false}, // an alias of the allowed model
-		{"gpt-4o", false},   // the allowed model itself
-		{"gpt-4o-mini", true},
-		{"not-an-alias", true},
+		{"best-gpt", normal, false}, // an alias of the allowed model
+		{"gpt-4o", normal, false},   // the allowed model itself
+		{"gpt-4o-mini", normal, true},
+		{"not-an-alias", normal, true},
+		{"best-gpt", directKey, true},
+		{"gpt-4o", directKey, false},
+		{"best-gpt", skipKeySelection, true},
+		{"gpt-4o", skipKeySelection, false},
 	} {
-		t.Run(tc.model, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/cred%d", tc.model, tc.cred), func(t *testing.T) {
 			ctx := presentCtx(mcpTestVKValue)
+			switch tc.cred {
+			case directKey:
+				ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+			case skipKeySelection:
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			}
 			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: tc.model}}
 			require.NoError(t, plugin.PreRequestHook(ctx, req))
 			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)

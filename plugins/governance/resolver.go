@@ -166,14 +166,19 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
 		}
 	}
-	modelAccess := access
-	if evaluationRequest.LiteralModel {
-		modelAccess = r.literalAccess(access)
-	}
-	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !modelAccess.IsModelAllowed(string(provider), model) {
-		return &EvaluationResult{
-			Decision: DecisionModelBlocked,
-			Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) {
+		// A batch item's model, and any request whose credential bypasses key selection (a direct
+		// key, or a bearer that is the credential itself), reaches the provider as written: no key
+		// alias is resolved for it, so it is held to its literal name.
+		modelAccess := access
+		if evaluationRequest.LiteralModel || hasDirectKeyAuth(ctx) || bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
+			modelAccess = r.literalAccess(access)
+		}
+		if !modelAccess.IsModelAllowed(string(provider), model) {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+			}
 		}
 	}
 
