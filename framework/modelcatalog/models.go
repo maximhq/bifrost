@@ -363,13 +363,10 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, model string, keys []schemas.Key, allowedModels schemas.WhiteList) bool {
 	matched := false
 	for i := range keys {
-		if keys[i].Enabled != nil && !*keys[i].Enabled {
-			continue
-		}
-		// Key selection drops a key whose models or blacklisted_models list excludes the requested
-		// name (both are written in alias names), so that key can never serve it and its missing
-		// alias must not veto the request. Mirrors the list checks of core's keySupportsModel.
-		if !keys[i].Models.IsAllowed(model) || keys[i].BlacklistedModels.IsBlocked(model) {
+		// A key that cannot serve the name (disabled, or its models or blacklisted_models exclude
+		// it, both written in alias names) cannot be picked, so its missing alias must not veto
+		// the request.
+		if !keyServesName(&keys[i], model) {
 			continue
 		}
 		// Same resolution as schemas.KeyAliases.ResolveConfig (exact name, then case-insensitive),
@@ -402,6 +399,50 @@ func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, 
 
 func (mc *ModelCatalog) aliasTargetAllowed(provider schemas.ModelProvider, model, target string, allowedModels schemas.WhiteList) bool {
 	return target != "" && target != model && mc.explicitListAllows(provider, target, allowedModels)
+}
+
+// keyServesName reports whether key selection can pick key for the requested name. It mirrors the
+// list checks of core's keySupportsModel; both lists are written in alias names.
+func keyServesName(key *schemas.Key, model string) bool {
+	if key.Enabled != nil && !*key.Enabled {
+		return false
+	}
+	return key.Models.IsAllowed(model) && !key.BlacklistedModels.IsBlocked(model)
+}
+
+// HasKeyAliases reports whether any key carries an alias. Callers gate alias work on it so that a
+// provider without aliases pays one loop over its keys and nothing more.
+func HasKeyAliases(keys []schemas.Key) bool {
+	for i := range keys {
+		if len(keys[i].Aliases) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// KeyAliasTargets calls visit with each model an eligible key maps the requested name to, exact
+// name first, then case-insensitively, the same lookup order as schemas.KeyAliases.ResolveConfig
+// without the pointer it returns. Empty targets and targets equal to the name are skipped.
+// Duplicates are not collapsed: keys that agree call visit once each.
+func KeyAliasTargets(model string, keys []schemas.Key, visit func(target string)) {
+	for i := range keys {
+		key := &keys[i]
+		if len(key.Aliases) == 0 || !keyServesName(key, model) {
+			continue
+		}
+		if ac, ok := key.Aliases[model]; ok {
+			if ac.ModelID != "" && ac.ModelID != model {
+				visit(ac.ModelID)
+			}
+			continue
+		}
+		for name, ac := range key.Aliases {
+			if strings.EqualFold(name, model) && ac.ModelID != "" && ac.ModelID != model {
+				visit(ac.ModelID)
+			}
+		}
+	}
 }
 
 // explicitListAllows matches one model name against an explicit (non-empty, non-wildcard)

@@ -170,3 +170,48 @@ func BenchmarkIsModelAllowedForProvider_ExplicitList(b *testing.B) {
 		})
 	}
 }
+
+func TestKeyAliasTargets(t *testing.T) {
+	anyModel := schemas.WhiteList{"*"}
+	off := false
+	collect := func(model string, keys []schemas.Key) []string {
+		var got []string
+		KeyAliasTargets(model, keys, func(target string) { got = append(got, target) })
+		return got
+	}
+	sonnet := schemas.KeyAliases{"claude-sonnet": {ModelID: "us.anthropic.claude-sonnet-4-6"}}
+	other := schemas.KeyAliases{"claude-sonnet": {ModelID: "us.anthropic.claude-opus-4-6"}}
+
+	cases := []struct {
+		name  string
+		model string
+		keys  []schemas.Key
+		want  []string
+	}{
+		{"one key maps the name", "claude-sonnet", []schemas.Key{{Aliases: sonnet, Models: anyModel}}, []string{"us.anthropic.claude-sonnet-4-6"}},
+		{"case-insensitive like alias resolution", "Claude-Sonnet", []schemas.Key{{Aliases: sonnet, Models: anyModel}}, []string{"us.anthropic.claude-sonnet-4-6"}},
+		{"keys that disagree yield every target", "claude-sonnet", []schemas.Key{{Aliases: sonnet, Models: anyModel}, {Aliases: other, Models: anyModel}}, []string{"us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"}},
+		{"a disabled key is ignored", "claude-sonnet", []schemas.Key{{Aliases: sonnet, Models: anyModel, Enabled: &off}}, nil},
+		{"a key restricted to other models is ignored", "claude-sonnet", []schemas.Key{{Aliases: sonnet, Models: schemas.WhiteList{"titan-*"}}}, nil},
+		{"a key that blacklists the name is ignored", "claude-sonnet", []schemas.Key{{Aliases: sonnet, Models: anyModel, BlacklistedModels: schemas.BlackList{"claude-sonnet"}}}, nil},
+		{"an empty target is skipped", "claude-sonnet", []schemas.Key{{Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: ""}}, Models: anyModel}}, nil},
+		{"a target equal to the name is skipped", "claude-sonnet", []schemas.Key{{Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: "claude-sonnet"}}, Models: anyModel}}, nil},
+		{"an unknown name has no targets", "claude-opus", []schemas.Key{{Aliases: sonnet, Models: anyModel}}, nil},
+		{"keys without aliases have no targets", "claude-sonnet", []schemas.Key{{Models: anyModel}}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collect(tc.model, tc.keys)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("KeyAliasTargets(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+
+	if HasKeyAliases([]schemas.Key{{Models: anyModel}}) {
+		t.Error("HasKeyAliases = true for keys without aliases")
+	}
+	if !HasKeyAliases([]schemas.Key{{Models: anyModel}, {Aliases: sonnet, Models: anyModel}}) {
+		t.Error("HasKeyAliases = false when a key has an alias")
+	}
+}
