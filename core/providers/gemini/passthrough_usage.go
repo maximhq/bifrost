@@ -190,7 +190,6 @@ func extractGeminiGenerateContentUsage(body []byte) *schemas.BifrostPassthroughU
 	}
 	if ru.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-			TextTokens:      ru.OutputTokensDetails.TextTokens,
 			ReasoningTokens: ru.OutputTokensDetails.ReasoningTokens,
 			AudioTokens:     ru.OutputTokensDetails.AudioTokens,
 		}

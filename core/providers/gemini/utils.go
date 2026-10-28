@@ -289,7 +289,7 @@ func setThinkingBudgetZeroIfSupported(config *GenerationConfig, caps schemas.Mod
 		}
 		config.ThinkingConfig.IncludeThoughts = false
 		config.ThinkingConfig.ThinkingBudget = nil
-		config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(caps, schemas.ReasoningEffortMinimal))
+		config.ThinkingConfig.ThinkingLevel = schemas.Ptr(lowestThinkingLevel(model))
 		return
 	}
 	if !caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
