@@ -285228,6 +285228,79 @@
           ]
         },
         {
+          "name": "266.12 azure/whisper native /v1/audio/transcriptions text is billed from Azure's Csp-Billing-Usage header (azure whisper)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A text reply carries no duration, so this call used to log $0. The gateway now takes the billed",
+                  "// seconds from Azure's Csp-Billing-Usage header (CognitiveServices.OpenAI.Whisper=<seconds>).",
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper text returns the transcript', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(body.trim(), 'empty transcript').to.not.be.empty;",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('Azure Whisper text: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer and starts as processing, so poll the logs API until it",
+                  "// settles. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status === 'success') {",
+                  "      pm.test('Azure Whisper text is billed from the billing header', function () {",
+                  "        pm.expect(j.cost || 0, 'log cost for a text reply: ' + JSON.stringify({ cost: j.cost, status: j.status, model: j.model })).to.be.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('Azure Whisper text: log row settled', function () { pm.expect.fail('log ' + reqId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "270.11 azure /azure/cognitiveservices/v1 SSML text to speech with the virtual key in Ocp-Apim-Subscription-Key returns mp3 (azure speech)",
           "request": {
             "method": "POST",
@@ -285702,6 +285775,49 @@
                   "  });",
                   "  var voiceSuffixes = ids.filter(function (id) { return id.indexOf('azure/MAI-Voice-') === 0; });",
                   "  pm.expect(voiceSuffixes.length, 'no azure/MAI-Voice-* voice suffix in: ' + ids.join(', ').slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.20 azure/neural native /v1/audio/speech with an HD voice is priced as the voice suffix (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/neural\",\n  \"input\": \"Harness Azure Speech probe.\",\n  \"voice\": \"en-US-Ava:DragonHDLatestNeural\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Azure synthesizes, and bills, the voice it is sent. A voice suffix that differs from the requested",
+                  "// model is reported as the served model, which pricing reads first, so this call is priced as the HD voice.",
+                  "pm.test('an HD voice under neural reports the voice suffix as the served model', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model header').to.equal('DragonHDLatestNeural');",
                   "});"
                 ]
               }
