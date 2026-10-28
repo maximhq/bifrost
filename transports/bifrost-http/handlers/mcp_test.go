@@ -996,6 +996,86 @@ func TestUpdateMCPClient_ExposeLists(t *testing.T) {
 	}
 }
 
+// refusingExchangeResolver is an available identity-provider integration that refuses every
+// token_exchange settings it is asked to check. Its other methods panic through the nil embedded
+// interface, since a refused save must not resolve or exchange anything.
+type refusingExchangeResolver struct {
+	schemas.TokenExchangeIdPResolver
+}
+
+// Available reports the integration as configured, so token_exchange clients can be created.
+func (refusingExchangeResolver) Available() bool { return true }
+
+// ValidateTokenExchangeConfig refuses the settings with a synthetic reason.
+func (refusingExchangeResolver) ValidateTokenExchangeConfig(context.Context, *schemas.MCPTokenExchangeConfig) error {
+	return errors.New("synthetic refusal of these token_exchange settings")
+}
+
+// newRefusingExchangeProvider is an OAuth provider whose identity-provider integration is refusingExchangeResolver.
+func newRefusingExchangeProvider(store configstore.ConfigStore) *oauth2.OAuth2Provider {
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider.SetTokenExchangeIdPResolver(refusingExchangeResolver{})
+	return provider
+}
+
+// A token_exchange client whose settings the identity-provider integration refuses is rejected at
+// create with the integration's reason, before anything is stored or dialed.
+func TestAddMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	manager := &capturingAddMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: newRefusingExchangeProvider(store)}, mcpManager: manager}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"name":"exchange","connection_type":"http","connection_string":"http://127.0.0.1:1/mcp","auth_type":"token_exchange","token_exchange":{"audience":"api://exchange","use_idp_credentials":true}}`)
+	ctx := initCtx(&req)
+	ctx.SetUserValue(schemas.BifrostContextKeyIsEnterprise, true)
+	h.addMCPClient(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "synthetic refusal of these token_exchange settings")
+	assert.Nil(t, manager.got, "rejected before dialing")
+}
+
+// An edit to a token_exchange client's settings that the identity-provider integration refuses is
+// rejected with the integration's reason, and neither the stored nor the live client changes.
+func TestUpdateMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	existing := &schemas.MCPClientConfig{
+		ID: "client-1", Name: "exchange", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"),
+		AuthType:         schemas.MCPAuthTypeTokenExchange,
+		TokenExchange:    &schemas.MCPTokenExchangeConfig{Audience: "api://exchange", UseIdPCredentials: true},
+	}
+	require.NoError(t, store.CreateMCPClientConfig(context.Background(), existing))
+	manager := &capturingUpdateMCPManager{}
+	cfg := &lib.Config{
+		MCPConfig:     &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+		ClientConfig:  &configstore.ClientConfig{},
+		ConfigStore:   store,
+		OAuthProvider: newRefusingExchangeProvider(store),
+	}
+	h := &MCPHandler{store: cfg, mcpManager: manager, mcpCredentialCacheManager: &recordingCredentialCache{}}
+	// Init attaches a server, so the store's queries can use the request as their context.
+	var req fasthttp.Request
+	req.SetBodyString(`{"token_exchange":{"audience":"api://edited","use_idp_credentials":true}}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	ctx.SetUserValue("id", existing.ID)
+	h.updateMCPClient(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "synthetic refusal of these token_exchange settings")
+	assert.Nil(t, manager.got, "nothing applied")
+	assert.Equal(t, "api://exchange", existing.TokenExchange.Audience, "the live client keeps its settings")
+	stored, err := store.GetMCPClientConfigByID(context.Background(), existing.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TokenExchange)
+	assert.Equal(t, "api://exchange", stored.TokenExchange.Audience, "the stored client keeps its settings")
+}
+
 // The resources and prompts lists are always arrays on the wire, empty when the server offers none, so clients
 // can iterate them like tools.
 func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {

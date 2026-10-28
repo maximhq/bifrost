@@ -2583,6 +2583,13 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
+		// The identity-provider integration may refuse these settings;
+		// asking it now reports that to the editor at save rather than on
+		// the first tool call.
+		if err := h.store.OAuthProvider.ValidateTokenExchangeConfig(ctx, req.TokenExchange); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		// Token-exchange clients rely on requests that may carry both an
 		// identity token and a virtual key; the 'error' conflict behavior
 		// would reject exactly those requests, so the two settings are
@@ -3321,6 +3328,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		if err := req.TokenExchange.ValidateProfile(); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
+		}
+		// Same check as at create.
+		if h.store.OAuthProvider != nil {
+			if err := h.store.OAuthProvider.ValidateTokenExchangeConfig(ctx, req.TokenExchange); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
 		}
 	}
 	// A real change to the token_exchange scoping block invalidates the
