@@ -290494,6 +290494,231 @@
           }
         }
       ]
+    },
+    {
+      "name": "284. OpenAI Responses keeps id and status of a native web_search_call (#8382 / PR #8776) (native web search replay)",
+      "description": "ToOpenAIResponsesRequest removed the status of every input item and the id of every web_search_call, so a conversation that included a completed OpenAI web search was replayed without the required `id` and `status` and failed with \"Missing required parameter: 'input[N].status'\" on Codex-style backends (#8382). OpenAI's own API tolerates the stripped item, so the status code cannot tell fixed from broken; the case reads the request Bifrost sent upstream (x-bf-send-back-raw-request) and pins that a native item captured from a live web search (ws_ id, a status OpenAI defines) reaches the provider with both fields. The id is captured rather than invented because OpenAI resolves input item ids against its store and answers 400 \"Item with id ... not found\" for an unknown one, while a Gemini-shaped history item (msg_..._ws_N id, or the bare ws_N Gemini synthesizes for an ID-less search call) is still stripped.",
+      "item": [
+        {
+          "name": "openai/gpt-4o /v1/responses native web_search_call captures replay input - #8382",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI returned a native web_search_call', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var out = pm.response.json().output || [];",
+                  "  var calls = out.filter(function (o) { return o.type === 'web_search_call'; });",
+                  "  pm.expect(calls.length, 'no web_search_call came back, so the replay row would test nothing').to.be.above(0);",
+                  "  pm.expect(calls[0].id, 'id is not a native ws_ id').to.match(/^ws_/);",
+                  "  pm.expect(calls[0].status, 'no status on the web_search_call').to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.collectionVariables.unset('nativeWsCall8382');",
+                  "try {",
+                  "  var call = pm.response.json().output.filter(function (o) { return o.type === 'web_search_call'; })[0];",
+                  "  if (call && call.id && call.status) { pm.collectionVariables.set('nativeWsCall8382', JSON.stringify({ type: 'web_search_call', id: call.id, status: call.status, action: call.action })); }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o\",\"input\":\"Latest news on AI regulation in EU.\",\"tools\":[{\"type\":\"web_search_preview\"}],\"tool_choice\":\"required\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o /v1/responses native web_search_call keeps id and status on the wire - #8382",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai native web_search_call replay: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('openai native web_search_call replay: id and status reach the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var sent = JSON.parse(pm.collectionVariables.get('nativeWsCall8382') || '{}');",
+                  "  pm.expect(sent.id, 'capture row stored nothing, so this row cannot verify anything').to.be.a('string').that.is.not.empty;",
+                  "  var calls = (rr.input || []).filter(function (x) { return x.type === 'web_search_call'; });",
+                  "  pm.expect(calls.length, 'web_search_call missing from outbound input: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(calls[0].id, 'id stripped: ' + wire.slice(0, 600)).to.eql(sent.id);",
+                  "  pm.expect(calls[0].status, 'status stripped: ' + wire.slice(0, 600)).to.eql(sent.status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o\", \"max_output_tokens\": 16, \"input\": [{{nativeWsCall8382}}, {\"role\": \"user\", \"content\": \"Summarize the search results above in one sentence.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o responses foreign-shaped web_search_call is still stripped on the wire - #8382",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai gemini-shaped web_search_call: accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('openai gemini-shaped web_search_call: id and status are not forwarded', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var calls = (rr.input || []).filter(function (x) { return x.type === 'web_search_call'; });",
+                  "  pm.expect(calls.length, 'web_search_call missing from outbound input: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(calls[0].id, 'Gemini-shaped id leaked to OpenAI: ' + wire.slice(0, 600)).to.be.undefined;",
+                  "  pm.expect(calls[0].status, 'status leaked to OpenAI: ' + wire.slice(0, 600)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o\",\"max_output_tokens\":16,\"input\":[{\"type\":\"web_search_call\",\"id\":\"msg_8382_ws_0\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"queries\":[\"weather in paris\"]}},{\"role\":\"user\",\"content\":\"Summarize the search results above in one sentence.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o responses synthetic ws_<n> web_search_call id is still stripped on the wire - #8382",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai synthetic ws_<n> web_search_call: accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('openai synthetic ws_<n> web_search_call: id and status are not forwarded', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var calls = (rr.input || []).filter(function (x) { return x.type === 'web_search_call'; });",
+                  "  pm.expect(calls.length, 'web_search_call missing from outbound input: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(calls[0].id, 'synthetic ws_<n> id leaked to OpenAI: ' + wire.slice(0, 600)).to.be.undefined;",
+                  "  pm.expect(calls[0].status, 'status leaked to OpenAI: ' + wire.slice(0, 600)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o\",\"max_output_tokens\":16,\"input\":[{\"type\":\"web_search_call\",\"id\":\"ws_0\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"queries\":[\"weather in paris\"]}},{\"role\":\"user\",\"content\":\"Summarize the search results above in one sentence.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
