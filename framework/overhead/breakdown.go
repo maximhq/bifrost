@@ -67,6 +67,16 @@ func isOverheadSpanKind(kind schemas.SpanKind) bool {
 	}
 }
 
+// isStreamPostHook reports whether s is a plugin's streaming post-hook span, which
+// stands for the plugin's per-chunk hook time summed over the stream.
+func isStreamPostHook(s *schemas.Span) bool {
+	if s.Kind != schemas.SpanKindPlugin {
+		return false
+	}
+	_, ok := s.GetAttribute(schemas.AttrPluginInvocations)
+	return ok
+}
+
 // overheadBucketName maps an overhead-side span to its breakdown bucket.
 func overheadBucketName(s *schemas.Span) string {
 	if s.Kind == schemas.SpanKindPlugin {
@@ -124,6 +134,12 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 		}
 		parent := spanByID[s.ParentID]
 		if parent == nil {
+			continue
+		}
+		if isStreamPostHook(parent) {
+			// Placed by its summed hook time, not by when its children ran; they ran
+			// inside the hook, so each comes out of it in full.
+			childDur[s.ParentID] += spanWall(s)
 			continue
 		}
 		childDur[s.ParentID] += spanOverlap(parent, s)
