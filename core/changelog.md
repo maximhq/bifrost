@@ -1,3 +1,4 @@
+- fix: anthropic - native Sonnet 5.5 requests keep the caller's thinking settings on both the typed and raw paths (#7895) [@valentinyanakiev](https://github.com/valentinyanakiev)
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
@@ -28,6 +29,7 @@
 - fix: Agent Gateway OAuth caches bounded at 5,000 entries, A2A relay goroutine leak, destination permissions and credential boundaries (#8552, #8596, #8608, #8657)
 - fix: code mode stubs render restored tool schemas, and nested tool results arrive as structured values (#8603, #8604)
 - chore: Go 1.27.2 (#8570)
+- chore: upgraded Go to 1.27.3
 - [fix]: Gemini and Vertex batch results include thinking tokens (thoughtsTokenCount) in completion_tokens and report reasoning_tokens (#8684) [@Shashank2985](https://github.com/Shashank2985)
 - [fix]: Gemini/Vertex tool-call ids reach the provider without the embedded thought signature - functionCall.id and functionResponse.id are sent as the base id Gemini issued, so the model no longer sees (and copies) a ~500-char id carrying the base64 signature as text; the signature still travels in thoughtSignature (#8546) [@Vivek1898](https://github.com/Vivek1898)
 - [fix]: Anthropic-compatible requests keep a client tool_use named web_search or web_fetch as a function call. Only server_tool_use blocks become web_search_call / web_fetch_call, so the tool_result is no longer orphaned and Bedrock stops rejecting the replay with "toolResult blocks ... exceeds the number of toolUse blocks" [@jacob-pattern](https://github.com/jacob-pattern)
@@ -46,7 +48,10 @@
 - [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
 - [fix]: record output items before closing open items on Gemini streaming Responses. When parts (thoughts, function calls, text) and finishReason share a single upstream frame, response.completed now correctly populates the Output array instead of emitting empty output (#7341) [@wofiporia](https://github.com/wofiporia)
 - [fix]: web search action sources round-trip their name and no longer fabricate an empty url. OpenAI Responses web search can return specialized API sources ({"type":"api","name":"oai-weather"}) that carry a name and no URL; the typed source schema only modeled type and a required url, so decode dropped name and re-encode emitted "url":"", and the OpenAI request-side source sanitization rebuilt sources without name. url is now omitempty and name survives both the schema round-trip and the sanitization path (#7356) [@g-yixuan](https://github.com/g-yixuan)
+- fix: OpenAI Responses requests keep the id and status of a native web_search_call, which OpenAI and Codex backends require on replay (#8382)
 - [fix]: Bedrock invoke-with-response-stream ends a tool-call turn with stop_reason tool_use instead of end_turn, matching the non-streaming invoke response (thanks [@pcbeingused333](https://github.com/pcbeingused333)!) (#8550)
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
 - feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
+- [fix]: OpenAI passthrough with a caller ChatGPT/Codex token no longer swaps in a stored OpenAI API key, which the ChatGPT backend refused with api_key_not_supported; key selection is skipped for OpenAI passthrough the way it already was for Claude Code on Anthropic
+- fix: anthropic - streaming message_delta keeps its required delta object and reported usage (#7896) [@valentinyanakiev](https://github.com/valentinyanakiev)
 - fix: Responses to chat conversion keeps only the leading system and developer messages in place; a later one becomes a user turn wrapped in system-reminder, so chat templates that reject a system message after the first turn accept it (#8145) (thanks [@hmdsefi](https://github.com/hmdsefi)!)

@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -85,6 +86,9 @@ func (g *liveGateway) prepareRequest(ctx *fasthttp.RequestCtx) (*liveRequest, bo
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveRequest)
 	if strings.HasPrefix(path, "/openai") {
 		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	}
+	if integrations.IsAzureSDKRequest(ctx) {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 	}
 	if authErr := g.refuseAnonymous(preReqCtx); authErr != nil {
 		cancel()
@@ -247,8 +251,15 @@ func (g *liveGateway) checkLiveSessionOwner(ctx *schemas.BifrostContext, provide
 
 // resolveTarget runs the pre-request pipeline (credential resolution, routing) and resolves the
 // session's provider and models. Nothing is spent yet: no key is selected and no upstream opened.
+// A model without a provider prefix runs on the provider the session's later routes default to,
+// so a control route by id finds it: Azure for the Azure OpenAI SDK, else the route's own, OpenAI
+// on /openai, as file and batch creates resolve it.
 func (g *liveGateway) resolveTarget(preReqCtx *schemas.BifrostContext, path string, start *schemas.LiveSession) (liveTarget, *schemas.BifrostError) {
-	providerKey, voiceModel := schemas.ParseModelString(start.Model, realtimeDefaultProviderForPath(path))
+	defaultProvider := realtimeDefaultProviderForPath(path)
+	if azureSDK, _ := preReqCtx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); azureSDK {
+		defaultProvider = schemas.Azure
+	}
+	providerKey, voiceModel := schemas.ParseModelString(start.Model, defaultProvider)
 	preReq := &schemas.BifrostRequest{
 		RequestType:      schemas.LiveRequest,
 		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: providerKey, Model: voiceModel},
@@ -321,26 +332,32 @@ func (g *liveGateway) sessionContext(auth *authHeaders, preReqCtx *schemas.Bifro
 }
 
 // liveControlProviderName is the provider a caller names on a route that only carries a session
-// id: the ?provider= query parameter, else the x-model-provider header, as the file, batch and
-// video routes accept.
+// id: the ?provider= query parameter, else the x-model-provider header, else azure for the Azure
+// OpenAI SDK, as the file, batch and video routes accept.
 func liveControlProviderName(ctx *fasthttp.RequestCtx) string {
 	if named := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider"))); named != "" {
 		return named
 	}
-	return strings.TrimSpace(string(ctx.Request.Header.Peek("x-model-provider")))
+	if named := strings.TrimSpace(string(ctx.Request.Header.Peek("x-model-provider"))); named != "" {
+		return named
+	}
+	if integrations.IsAzureSDKRequest(ctx) {
+		return string(schemas.Azure)
+	}
+	return ""
 }
 
-// controlProvider resolves the provider a route on an existing session names: the integration
-// prefix, else the provider the caller named, else, on the bare route, the standard OpenAI
+// controlProvider resolves the provider a route on an existing session names: the provider the
+// caller named, else the integration prefix, else, on the bare route, the standard OpenAI
 // provider when configured, else the one configured provider that serves live sessions. Custom
 // OpenAI-based providers serve live sessions too, so the bare route cannot be left to a scan alone.
 func (g *liveGateway) controlProvider(path, named string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
-	providerKey := realtimeDefaultProviderForPath(path)
-	if providerKey == "" && named != "" {
-		providerKey = schemas.ModelProvider(named)
-		if g.client.GetProviderByKey(providerKey) == nil {
-			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("provider %q is not configured", named))
-		}
+	providerKey := schemas.ModelProvider(named)
+	if providerKey != "" && g.client.GetProviderByKey(providerKey) == nil {
+		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("provider %q is not configured", named))
+	}
+	if providerKey == "" {
+		providerKey = realtimeDefaultProviderForPath(path)
 	}
 	if providerKey == "" {
 		configured, err := g.client.GetConfiguredProviders()
@@ -361,7 +378,7 @@ func (g *liveGateway) controlProvider(path, named string) (schemas.LiveProvider,
 		case len(candidates) == 0:
 			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "no configured provider serves live sessions")
 		default:
-			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "several providers serve live sessions; use the provider's route, such as /openai/v1/live/sessions/{session_id}/...")
+			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "several providers serve live sessions; name one with ?provider= or the x-model-provider header")
 		}
 	}
 	provider, ok := g.client.GetProviderByKey(providerKey).(schemas.LiveProvider)

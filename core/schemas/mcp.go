@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -239,6 +240,8 @@ type MCPConfig struct {
 	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
+	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
+	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -509,6 +512,30 @@ type MCPServerInstructions struct {
 	Instructions string `json:"instructions"`
 	// MaxLength is this server's own byte cap; 0 defers to the global one.
 	MaxLength int `json:"max_length,omitempty"`
+}
+
+// MCP protocol versions an upstream connection can be capped at.
+const (
+	MCPMaxProtocolVersionAuto  = "auto" // newest version Bifrost supports
+	MCPProtocolVersion20260728 = mcp.ProtocolVersion20260728
+	MCPProtocolVersion20251125 = mcp.ProtocolVersion20251125
+	MCPProtocolVersion20250618 = mcp.ProtocolVersion20250618
+)
+
+// MCPMaxProtocolVersions lists the values a max protocol version can be set to, newest first.
+var MCPMaxProtocolVersions = []string{MCPMaxProtocolVersionAuto, MCPProtocolVersion20260728, MCPProtocolVersion20251125, MCPProtocolVersion20250618}
+
+// IsValidMCPMaxProtocolVersion reports whether v is "" (use the default) or one of MCPMaxProtocolVersions.
+func IsValidMCPMaxProtocolVersion(v string) bool {
+	return v == "" || slices.Contains(MCPMaxProtocolVersions, v)
+}
+
+// ValidateMCPMaxProtocolVersion rejects a value IsValidMCPMaxProtocolVersion does not accept, naming field.
+func ValidateMCPMaxProtocolVersion(field, v string) error {
+	if IsValidMCPMaxProtocolVersion(v) {
+		return nil
+	}
+	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
 }
 
 // MCPAuthType defines the authentication type for MCP connections
@@ -808,7 +835,9 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable *bool `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	PromptsToExpose   WhiteList `json:"prompts_to_expose"`           // Prompt names (unprefixed) served through the gateway; nil = all, [] = none
+	ResourcesToExpose WhiteList `json:"resources_to_expose"`         // Resource URIs and URI templates served through the gateway; nil = all, [] = none
+	IsPingAvailable   *bool     `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
 	// NeedsSessionStickiness controls whether this shared client (auth_type
 	// oauth/headers) maintains one persistent connection reused across every
 	// caller (true) or connects fresh per call, same model as the per-user
@@ -825,6 +854,7 @@ type MCPClientConfig struct {
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
 	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
 	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	MaxProtocolVersion     string             `json:"max_protocol_version,omitempty"`    // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest supported)
 	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
 	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
@@ -844,6 +874,10 @@ type MCPClientConfig struct {
 	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
 	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
 	DiscoveredInstructions string `json:"-"`
+	// The upstream's resources, resource templates and prompts, persisted for the same reason.
+	DiscoveredResources         []mcp.Resource         `json:"-"`
+	DiscoveredResourceTemplates []mcp.ResourceTemplate `json:"-"`
+	DiscoveredPrompts           []mcp.Prompt           `json:"-"` // names prefixed like tools
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -1357,7 +1391,23 @@ type MCPClientState struct {
 	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
 	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
 	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	LastDiscoveryHash  string                `json:"-"`                      // Content hash of the last discovery (tools, mapping, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
+
+	Resources         []mcp.Resource         `json:"-"` // As the server lists them
+	ResourceTemplates []mcp.ResourceTemplate `json:"-"` // As the server lists them
+	Prompts           []mcp.Prompt           `json:"-"` // Names prefixed with the client name, like tools
+}
+
+// MCPDiscovery is what an MCP server exposed as of one connection: its tools, instructions,
+// resources and prompts. Tool and prompt names are prefixed with the client name; resource URIs
+// and templates are the server's own.
+type MCPDiscovery struct {
+	Tools             map[string]ChatTool
+	ToolNameMapping   map[string]string // sanitized_name -> original_mcp_name
+	Instructions      string
+	Resources         []mcp.Resource
+	ResourceTemplates []mcp.ResourceTemplate
+	Prompts           []mcp.Prompt
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
@@ -1372,7 +1422,119 @@ type MCPClientConnectionInfo struct {
 // It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
 	Config      *MCPClientConfig      `json:"config"`                 // Tool filtering settings
-	Tools       []ChatToolFunction    `json:"tools"`                  // Available tools
+	Tools       []MCPClientTool       `json:"tools"`                  // Available tools
 	State       MCPConnectionState    `json:"state"`                  // Connection state
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy
+
+	Resources         []mcp.Resource         `json:"resources,omitempty"`
+	ResourceTemplates []mcp.ResourceTemplate `json:"resource_templates,omitempty"`
+	Prompts           []mcp.Prompt           `json:"prompts,omitempty"`
+}
+
+// SetMCPResult keeps the MCP server's own result beside content, the message content Bifrost made from
+// it, so the /mcp gateway can pass the result through unchanged.
+func (m *ChatToolMessage) SetMCPResult(result *mcp.CallToolResult, content *ChatMessageContent) {
+	m.mcpResult = result
+	if content != nil && len(content.ContentBlocks) == 0 && content.ContentStr != nil {
+		m.mcpResultText, m.mcpResultIsText = *content.ContentStr, true
+		return
+	}
+	m.mcpResultContent = toolContentFields(content)
+}
+
+// MCPResult returns the MCP server's own result while content still matches what Bifrost made from it,
+// so a plugin's rewrite (a redaction, say) never leaks the original.
+func (m *ChatToolMessage) MCPResult(content *ChatMessageContent) *mcp.CallToolResult {
+	if m == nil || m.mcpResult == nil {
+		return nil
+	}
+	if m.mcpResultIsText {
+		if content == nil || len(content.ContentBlocks) != 0 || content.ContentStr == nil || *content.ContentStr != m.mcpResultText {
+			return nil
+		}
+		return m.mcpResult
+	}
+	if !slices.Equal(toolContentFields(content), m.mcpResultContent) {
+		return nil
+	}
+	return m.mcpResult
+}
+
+// toolContentFields lists the strings content carries. Copying and comparing unchanged strings copies
+// no data, so this stays cheap for media.
+func toolContentFields(content *ChatMessageContent) []string {
+	if content == nil {
+		return nil
+	}
+	// Presence is recorded apart from the value, so an unset field and a set one never compare equal.
+	value := func(s *string) string {
+		if s == nil {
+			return "0"
+		}
+		return "1" + *s
+	}
+	fields := make([]string, 0, 1+5*len(content.ContentBlocks))
+	fields = append(fields, value(content.ContentStr))
+	for _, block := range content.ContentBlocks {
+		fields = append(fields, string(block.Type), value(block.Text))
+		switch {
+		case block.ImageURLStruct != nil:
+			fields = append(fields, block.ImageURLStruct.URL)
+		case block.InputAudio != nil:
+			fields = append(fields, block.InputAudio.Data, value(block.InputAudio.Format))
+		case block.File != nil:
+			fields = append(fields, value(block.File.FileData), value(block.File.FileURL), value(block.File.Filename), value(block.File.FileType))
+		}
+	}
+	return fields
+}
+
+// MCPClientTool is a tool as an MCP client lists it: its function definition plus what the MCP
+// server declared about it.
+type MCPClientTool struct {
+	ChatToolFunction
+	Title        string              `json:"title,omitempty"`
+	Icons        []mcp.Icon          `json:"icons,omitempty"`
+	OutputSchema json.RawMessage     `json:"output_schema,omitempty"`
+	Annotations  *MCPToolAnnotations `json:"annotations,omitempty"`
+}
+
+// MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
+// Bifrost-internal: never sent to providers.
+type MCPToolMetadata struct {
+	Title        string          `json:"title,omitempty"`
+	Icons        []mcp.Icon      `json:"icons,omitempty"`
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+}
+
+// MCPToolDetails is a discovered tool's annotations and metadata, persisted beside the tool because
+// ChatTool's JSON leaves both out.
+type MCPToolDetails struct {
+	Annotations *MCPToolAnnotations `json:"annotations,omitempty"`
+	Metadata    *MCPToolMetadata    `json:"metadata,omitempty"`
+}
+
+// ToolDetails returns, by name, the annotations and metadata of the tools that carry any.
+func ToolDetails(tools map[string]ChatTool) map[string]MCPToolDetails {
+	var details map[string]MCPToolDetails
+	for name, tool := range tools {
+		if tool.Annotations == nil && tool.MCP == nil {
+			continue
+		}
+		if details == nil {
+			details = make(map[string]MCPToolDetails)
+		}
+		details[name] = MCPToolDetails{Annotations: tool.Annotations, Metadata: tool.MCP}
+	}
+	return details
+}
+
+// ApplyToolDetails sets the annotations and metadata of each named tool in tools.
+func ApplyToolDetails(tools map[string]ChatTool, details map[string]MCPToolDetails) {
+	for name, detail := range details {
+		if tool, ok := tools[name]; ok {
+			tool.Annotations, tool.MCP = detail.Annotations, detail.Metadata
+			tools[name] = tool
+		}
+	}
 }

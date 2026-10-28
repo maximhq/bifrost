@@ -1,5 +1,5 @@
-import { describe, test, expect } from "vitest";
-import { cleanNumericInput, isSentinelValue, titleCaseFromSnakeCase, trimFields } from "./strings";
+import { describe, expect, it, test } from "vitest";
+import { cleanNumericInput, isSentinelValue, secondsToHumanReadable, titleCaseFromSnakeCase, trimFields } from "./strings";
 
 // Simulate what onChange does: clean → Number()
 function simulateOnChange(raw: string): { display: string; value: number | undefined } {
@@ -250,5 +250,16 @@ describe("isSentinelValue", () => {
 		expect(isSentinelValue("all")).toBe(false);
 		expect(isSentinelValue("____")).toBe(false);
 		expect(isSentinelValue("__none")).toBe(false);
+	});
+});
+
+describe("secondsToHumanReadable", () => {
+	it("words a duration, dropping zero parts", () => {
+		expect(secondsToHumanReadable(0)).toBe("0 seconds");
+		expect(secondsToHumanReadable(1)).toBe("1 second");
+		expect(secondsToHumanReadable(120)).toBe("2 minutes");
+		expect(secondsToHumanReadable(125)).toBe("2 minutes 5 seconds");
+		expect(secondsToHumanReadable(3600)).toBe("1 hour");
+		expect(secondsToHumanReadable(90061)).toBe("1 day 1 hour 1 minute 1 second");
 	});
 });

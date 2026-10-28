@@ -327,6 +327,36 @@ func TestGetExchangedAccessTokenUnavailable(t *testing.T) {
 	}
 }
 
+// validatingIdPResolver is a fakeIdPResolver that also validates token_exchange settings.
+type validatingIdPResolver struct {
+	fakeIdPResolver
+	validateErr error
+}
+
+// ValidateTokenExchangeConfig returns the scripted verdict.
+func (v *validatingIdPResolver) ValidateTokenExchangeConfig(context.Context, *schemas.MCPTokenExchangeConfig) error {
+	return v.validateErr
+}
+
+// ValidateTokenExchangeConfig returns the resolver's verdict when it validates, and nil when there is
+// no resolver or it does not validate, since there is nothing to check against.
+func TestValidateTokenExchangeConfig(t *testing.T) {
+	cfg := exchangeTestClientConfig().TokenExchange
+	p := NewOAuth2Provider(nil, nil)
+	if err := p.ValidateTokenExchangeConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("err = %v with no resolver, want nil", err)
+	}
+	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{available: true})
+	if err := p.ValidateTokenExchangeConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("err = %v with a resolver that does not validate, want nil", err)
+	}
+	refused := errors.New("synthetic refusal")
+	p.SetTokenExchangeIdPResolver(&validatingIdPResolver{fakeIdPResolver: fakeIdPResolver{available: true}, validateErr: refused})
+	if err := p.ValidateTokenExchangeConfig(context.Background(), cfg); !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want the resolver's refusal", err)
+	}
+}
+
 // vkExchangeContext builds a VK-mode context: a shared virtual key plus a
 // caller-specific inbound bearer token, mirroring an on-behalf-of deployment
 // where a Virtual Key routes/bills a team or service while each request

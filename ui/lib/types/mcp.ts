@@ -223,6 +223,7 @@ export interface OAuthConfig {
 	scopes?: string[]; // Optional, can be discovered
 	server_url?: string; // MCP server URL for OAuth discovery (automatically set from connection_string)
 	resource?: string; // Optional OAuth resource indicator; omitted when empty
+	use_client_metadata_document?: boolean; // Register with Bifrost's Client ID Metadata Document; excludes client_id
 }
 
 /** OAuth fields allowed on MCP client update. Any field left unset keeps its stored value. */
@@ -260,6 +261,8 @@ export interface MCPClientConfig {
 	oauth_resource?: string;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	prompts_to_expose?: string[] | null; // Prompts served through the gateway; null/absent = all, [] = none
+	resources_to_expose?: string[] | null; // Resource URIs and URI templates served; null/absent = all, [] = none
 	headers?: Record<string, SecretVar>;
 	// per_user_header_keys: admin-declared header *names* that each caller
 	// must supply when auth_type === "per_user_headers". Values live per-user
@@ -281,6 +284,7 @@ export interface MCPClientConfig {
 	// public address. Never cleared once set.
 	require_public_target?: boolean;
 	tool_pricing?: Record<string, number>;
+	max_protocol_version?: string; // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest)
 	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
 	// toolSyncIntervalToMinutes before showing or resending this value.
@@ -330,9 +334,57 @@ export interface MCPClientCredential {
 	updated_at: string;
 }
 
+export interface MCPToolIcon {
+	src: string;
+	mimeType?: string;
+	sizes?: string[];
+	theme?: string;
+}
+
+// A tool as an MCP client lists it, with what its MCP server declares about it.
+export interface MCPClientTool extends ToolFunction {
+	title?: string;
+	icons?: MCPToolIcon[];
+	output_schema?: Record<string, unknown>;
+	annotations?: {
+		title?: string;
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	};
+}
+
+// A prompt, resource or resource template an MCP server lists. Prompt names carry the client prefix.
+export interface MCPPrompt {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: { name: string; description?: string; required?: boolean }[];
+}
+
+export interface MCPResource {
+	uri: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
+export interface MCPResourceTemplate {
+	uriTemplate: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
 export interface MCPClient {
 	config: MCPClientConfig;
-	tools: ToolFunction[];
+	tools: MCPClientTool[];
+	prompts?: MCPPrompt[];
+	resources?: MCPResource[];
+	resource_templates?: MCPResourceTemplate[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
 	// The failure behind a `state` other than healthy, as recorded by the
@@ -382,6 +434,7 @@ export interface CreateMCPClientRequest {
 	// Only meaningful when connection_type === "http". See MCPClientConfig's
 	// field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	max_protocol_version?: string; // omitted or "" = follow the global setting, "auto" = newest supported
 	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allowed_extra_headers?: string[];
 }
@@ -426,6 +479,8 @@ export interface UpdateMCPClientRequest {
 	per_user_header_keys?: string[];
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	prompts_to_expose?: string[]; // ["*"] = all, [] = none; omitted = keep
+	resources_to_expose?: string[]; // ["*"] = all, [] = none; omitted = keep
 	is_ping_available?: boolean;
 	// Only meaningful when connection_type === "http". Toggling this on an
 	// existing client takes effect immediately: switching to true dials the
@@ -434,6 +489,7 @@ export interface UpdateMCPClientRequest {
 	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
+	max_protocol_version?: string; // "" = use global, "auto" = newest
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.

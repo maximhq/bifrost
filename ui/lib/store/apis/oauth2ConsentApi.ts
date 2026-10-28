@@ -2,7 +2,11 @@ import { baseApi } from "./baseApi";
 
 export interface OAuth2ConsentFlowDetail {
 	redirect_uri: string;
+	redirect_host: string;
 	client_name: string;
+	// CIMD clients only.
+	client_host?: string;
+	localhost_only_redirect?: boolean;
 	available_modes: Array<"vk" | "session" | "user">;
 	logged_in_user?: { id: string; name?: string };
 	expires_at: string;
