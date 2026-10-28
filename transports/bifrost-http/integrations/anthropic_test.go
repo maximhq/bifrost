@@ -7,9 +7,11 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
@@ -1333,4 +1335,32 @@ func TestAnthropicMessagesGPTPromptCacheRollingMarker(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnthropicMessagesStreamDeclaresItsCleanup pins the wiring the stream
+// prompt-usage ledger depends on for an ORDINARY close.
+//
+// The ErrorConverter release covers a stream that failed, and rendering
+// message_stop covers one that finished. A stream whose upstream simply closes
+// without a terminal frame has neither, and before this hook its ledger entry
+// survived until the next stream opened and ran the sweep. handleStreaming now
+// calls StreamConfig.Cleanup from the producer's deferred cleanup, after the
+// chunk loop has drained, which is the ordering ReleaseStreamPromptUsage
+// requires. Dropping that field here puts the delayed reclaim back.
+func TestAnthropicMessagesStreamDeclaresItsCleanup(t *testing.T) {
+	routes := createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NotEmpty(t, routes)
+
+	var streaming int
+	for _, route := range routes {
+		if route.StreamConfig == nil {
+			continue
+		}
+		streaming++
+		require.NotNil(t, route.StreamConfig.ErrorConverter,
+			"route %s: the error path must keep its own release", route.Path)
+		require.NotNil(t, route.StreamConfig.Cleanup,
+			"route %s: a stream that closes without a terminal frame has no other release point", route.Path)
+	}
+	require.NotZero(t, streaming, "expected at least one streaming Anthropic messages route")
 }
