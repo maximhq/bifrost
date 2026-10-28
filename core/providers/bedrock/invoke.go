@@ -1911,6 +1911,7 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 			OutputTokens:             usage.OutputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 			CacheCreationInputTokens: usage.CacheWriteInputTokens,
+			CacheCreation:            invokeCacheCreation(resp.Usage),
 		}
 		// Thinking tokens are already inside OutputTokens on both sides, so only the
 		// breakdown is added; OutputTokens is left untouched (#7649).
@@ -1920,6 +1921,19 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 	}
 
 	return result
+}
+
+// invokeCacheCreation preserves the provider's cache-write TTL breakdown. A missing
+// breakdown stays absent: the flat write count alone does not identify its TTL.
+func invokeCacheCreation(usage *schemas.ResponsesResponseUsage) *BedrockInvokeMessagesCacheCreation {
+	if usage == nil || usage.InputTokensDetails == nil || usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+		return nil
+	}
+	details := usage.InputTokensDetails.CachedWriteTokenDetails
+	return &BedrockInvokeMessagesCacheCreation{
+		Ephemeral5mInputTokens: details.CachedWriteTokens5m,
+		Ephemeral1hInputTokens: details.CachedWriteTokens1h,
+	}
 }
 
 // invokeThinkingTokens returns the extended-thinking token count Bifrost holds for a
@@ -2209,6 +2223,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				if usage.CacheWriteInputTokens > 0 {
 					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
 				}
+				if creation := invokeCacheCreation(resp.Response.Usage); creation != nil {
+					usageMap["cache_creation"] = creation
+				}
 				if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
 					usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
 				}
@@ -2428,6 +2445,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			if usage.CacheWriteInputTokens > 0 {
 				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			if creation := invokeCacheCreation(resp.Response.Usage); creation != nil {
+				usageMap["cache_creation"] = creation
 			}
 			// Native Anthropic reports the thinking breakdown on message_delta (#7649).
 			if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
