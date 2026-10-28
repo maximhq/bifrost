@@ -49,6 +49,11 @@ func TestSyncFromURLBedrockRowBeatsMantleRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create config store: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := cs.Close(ctx); err != nil {
+			t.Errorf("failed to close config store: %v", err)
+		}
+	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(bedrockMantleCollisionDatasheet))
 	}))
