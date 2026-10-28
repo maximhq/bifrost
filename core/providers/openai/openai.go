@@ -691,6 +691,13 @@ func HandleOpenAITextCompletionStreaming(
 		return responseChan, nil
 	}
 
+	// After setup, only raw capture needs the serialized input for terminal hooks.
+	// Drop it before the goroutine captures it; setup errors above retain diagnostics.
+	captureRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest)
+	if !captureRawRequest {
+		jsonBody = nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -796,7 +803,7 @@ func HandleOpenAITextCompletionStreaming(
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if handlerErr != nil {
 					// TODO fix this
-					if sendBackRawRequest {
+					if captureRawRequest {
 						handlerErr.ExtraFields.RawRequest = rawRequest
 					}
 					if sendBackRawResponse {
@@ -972,7 +979,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 		}
 		// Set raw request if enabled
-		if sendBackRawRequest {
+		if captureRawRequest {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -1417,6 +1424,13 @@ func HandleOpenAIChatCompletionStreaming(
 		return responseChan, nil
 	}
 
+	// After setup, only raw capture needs the serialized input for terminal hooks.
+	// Drop it before the goroutine captures it; setup errors above retain diagnostics.
+	captureRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest)
+	if !captureRawRequest {
+		jsonBody = nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -1592,7 +1606,7 @@ func HandleOpenAIChatCompletionStreaming(
 				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if handlerErr != nil {
-					if sendBackRawRequest {
+					if captureRawRequest {
 						handlerErr.ExtraFields.RawRequest = rawRequest
 					}
 					if sendBackRawResponse {
@@ -1909,7 +1923,7 @@ func HandleOpenAIChatCompletionStreaming(
 				if usageSeen && pendingFinalEvent.Response != nil {
 					pendingFinalEvent.Response.Usage = usage.ToResponsesResponseUsage()
 				}
-				if sendBackRawRequest {
+				if captureRawRequest {
 					providerUtils.ParseAndSetRawRequest(&pendingFinalEvent.ExtraFields, jsonBody)
 				}
 				// The usage-only frame produces no event of its own and arrives after
@@ -1940,7 +1954,7 @@ func HandleOpenAIChatCompletionStreaming(
 				response.ServiceTier = serviceTier
 			}
 			// Set raw request if enabled
-			if sendBackRawRequest {
+			if captureRawRequest {
 				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 			}
 			// The finish-only and usage-only frames always arrive after the last
@@ -2339,6 +2353,13 @@ func HandleOpenAIResponsesStreaming(
 		return responseChan, nil
 	}
 
+	// After setup, only raw capture needs the serialized input for terminal hooks.
+	// Drop it before the goroutine captures it; setup errors above retain diagnostics.
+	captureRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest)
+	if !captureRawRequest {
+		jsonBody = nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -2411,7 +2432,7 @@ func HandleOpenAIResponsesStreaming(
 				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if bifrostErr != nil {
-					if sendBackRawRequest {
+					if captureRawRequest {
 						bifrostErr.ExtraFields.RawRequest = rawRequest
 					}
 					if sendBackRawResponse {
@@ -2484,7 +2505,7 @@ func HandleOpenAIResponsesStreaming(
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 				// Set raw request if enabled
-				if sendBackRawRequest {
+				if captureRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
