@@ -148,6 +148,18 @@ type TableModelPricing struct {
 	OutputCostPerVideoPerSecond *float64 `gorm:"default:null;column:output_cost_per_video_per_second" json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `gorm:"default:null;column:output_cost_per_second" json:"output_cost_per_second,omitempty"` // For both speech and video models
 
+	// Azure Voice Live rates, used on Voice Live turns in place of the matching rates above when set. The
+	// speech rates price the audio Azure Speech handled.
+	InputCostPerTokenVoiceLive                     *float64 `gorm:"default:null;column:input_cost_per_token_voice_live" json:"input_cost_per_token_voice_live,omitempty"`
+	OutputCostPerTokenVoiceLive                    *float64 `gorm:"default:null;column:output_cost_per_token_voice_live" json:"output_cost_per_token_voice_live,omitempty"`
+	CacheReadInputTokenCostVoiceLive               *float64 `gorm:"default:null;column:cache_read_input_token_cost_voice_live" json:"cache_read_input_token_cost_voice_live,omitempty"`
+	InputCostPerAudioTokenVoiceLive                *float64 `gorm:"default:null;column:input_cost_per_audio_token_voice_live" json:"input_cost_per_audio_token_voice_live,omitempty"`
+	OutputCostPerAudioTokenVoiceLive               *float64 `gorm:"default:null;column:output_cost_per_audio_token_voice_live" json:"output_cost_per_audio_token_voice_live,omitempty"`
+	InputCostPerStandardSpeechAudioTokenVoiceLive  *float64 `gorm:"default:null;column:input_cost_per_standard_speech_audio_token_voice_live" json:"input_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerStandardSpeechAudioTokenVoiceLive *float64 `gorm:"default:null;column:output_cost_per_standard_speech_audio_token_voice_live" json:"output_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	InputCostPerCustomSpeechAudioTokenVoiceLive    *float64 `gorm:"default:null;column:input_cost_per_custom_speech_audio_token_voice_live" json:"input_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerCustomSpeechAudioTokenVoiceLive   *float64 `gorm:"default:null;column:output_cost_per_custom_speech_audio_token_voice_live" json:"output_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+
 	// Resolution-banded video output rates, matched on the short edge of the generated
 	// video's size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
 	OutputCostPerVideoPerSecond480p  *float64 `gorm:"default:null;column:output_cost_per_video_per_second_480p" json:"output_cost_per_video_per_second_480p,omitempty"`

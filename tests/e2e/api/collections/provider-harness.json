@@ -297371,6 +297371,204 @@
           }
         }
       ]
+    },
+    {
+      "name": "294. Azure Voice Live rates on pricing overrides (azure voice live pricing) [SERIAL]",
+      "description": "Pins the nine Azure Voice Live _voice_live pricing fields on the pricing-override API: a create keeps every rate in pricing_patch, the list returns them, and the override is deleted. Before the fields existed the patch type had no _voice_live keys, so the create dropped them. The Voice Live turns these rates price run over the realtime WebSocket, which this collection does not drive; the cost engine and relay are covered by Go tests (TestCalculateCost_VoiceLiveRates, TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns).",
+      "item": [
+        {
+          "name": "Setup - pricing override with the _voice_live rates [EXPECT-201] - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'e2e-voice-live-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+                  "  // Matches a model no other case calls, so the override cannot reprice anything else in the suite.",
+                  "  scope_kind: 'global',",
+                  "  match_type: 'exact',",
+                  "  pattern: 'voice-live-rates-probe',",
+                  "  request_types: ['responses'],",
+                  "  patch: {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055}",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override with the _voice_live rates is created', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && body.pricing_override;",
+                  "pm.test('Override exposes an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('voiceLiveRatesOverrideId', ov.id); }",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('create response', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "pricing override list returns the _voice_live rates - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override list is returned', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "});",
+                  "var id = pm.collectionVariables.get('voiceLiveRatesOverrideId');",
+                  "var overrides = (pm.response.json().pricing_overrides || []);",
+                  "var ov = overrides.filter(function (o) { return o.id === id; })[0];",
+                  "pm.test('The created override is listed', function () {",
+                  "  pm.expect(ov, 'override ' + id + ' among ' + overrides.length).to.be.an('object');",
+                  "});",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('listed override', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=global&limit=500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ],
+              "query": [
+                {
+                  "key": "scope_kind",
+                  "value": "global"
+                },
+                {
+                  "key": "limit",
+                  "value": "500"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - delete the _voice_live rates override - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{voiceLiveRatesOverrideId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{voiceLiveRatesOverrideId}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
