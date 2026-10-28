@@ -3731,9 +3731,11 @@ func GateSendChunk(ctx *schemas.BifrostContext, chunk *schemas.BifrostStreamChun
 // pause/resume gate when one has been engaged for this stream. If gating is
 // active, the close blocks on the tracer's WaitForFlusher so any chunks
 // buffered while paused (including a terminal chunk that arrived during
-// pause) reach the consumer before EOS. For non-gated streams (the common
-// case), this is a single map read on the context — identical cost to a
-// bare close.
+// pause) reach the consumer before EOS.
+//
+// It also completes a deferred LLM span the terminal path left open, before the
+// close: once the channel closes, the retry loop may register the next attempt's
+// span under the same trace ID, so a provider goroutine does no span work after it.
 //
 // Provider streaming goroutines should `defer providerUtils.CloseStream(ctx,
 // responseChan)` instead of `defer close(responseChan)`.
@@ -3748,7 +3750,32 @@ func CloseStream(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChun
 			}
 		}
 	}
+	completeUnfinishedStreamSpan(ctx)
 	close(ch)
+}
+
+// completeUnfinishedStreamSpan completes a deferred span the stream's terminal path
+// left open, so a goroutine that died before completing it cannot leak the span, or
+// the accumulated response it pins. The stream-end indicator sets the status: an
+// unended stream is marked failed, an ended one (its final send failed) keeps OK.
+// An unended stream that produced no chunk is left to the retry loop, which ends an
+// empty stream's span itself. A noop when the terminal path already cleared it.
+func completeUnfinishedStreamSpan(ctx *schemas.BifrostContext) {
+	var streamErr *schemas.BifrostError
+	if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+		tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+		if tracer == nil || traceID == "" {
+			return
+		}
+		if _, _, chunks := tracer.GetAccumulatedChunks(traceID); chunks == 0 {
+			return
+		}
+		streamErr = &schemas.BifrostError{
+			Error: &schemas.ErrorField{Message: "stream ended before completion"},
+		}
+	}
+	completeDeferredSpan(ctx, nil, streamErr, nil)
 }
 
 // ProcessAndSendResponse handles post-hook processing and sends the response to the channel.
@@ -3862,12 +3889,8 @@ func ProcessAndSendBifrostError(
 // path — e.g. a panic mid-stream — which would otherwise leak the plugin
 // pipeline back-reference held by the finalizer closure.
 //
-// It also completes any deferred LLM span still parked for this trace so a
-// goroutine that died before completing it cannot leak the span — and the
-// accumulated response it pins. The stream-end indicator sets the status: an
-// unended stream is marked failed, an ended one keeps its success status.
-// completeDeferredSpan is idempotent (nil-handle guard), so this is a noop when
-// the terminal path already cleared it.
+// A span the terminal path left open is completed by CloseStream, which runs
+// before this: after the close, the trace's deferred span may be the next attempt's.
 //
 // Panics inside the finalizer are recovered and logged so they never mask an
 // in-flight panic that triggered the defer.
@@ -3877,18 +3900,6 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 			getLogger().Debug("recovered panic in deferred stream finalizer: %v", r)
 		}
 	}()
-
-	// Complete any span the terminal path left parked. Unended = died mid-flight
-	// (mark failed); ended = delivery failed after success (keep the OK status).
-	if bfCtx, ok := ctx.(*schemas.BifrostContext); ok {
-		var streamErr *schemas.BifrostError
-		if ended, _ := bfCtx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
-			streamErr = &schemas.BifrostError{
-				Error: &schemas.ErrorField{Message: "stream ended before completion"},
-			}
-		}
-		completeDeferredSpan(bfCtx, nil, streamErr, finalizer)
-	}
 
 	if finalizer == nil {
 		return
