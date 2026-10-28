@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -99,43 +101,45 @@ func (c pricingCandidate) beats(other pricingCandidate) bool {
 	return c.modelKey < other.modelKey
 }
 
-func sameListPrice(a, b Entry) bool {
-	return equalCost(a.InputCostPerToken, b.InputCostPerToken) && equalCost(a.OutputCostPerToken, b.OutputCostPerToken)
-}
-
-func equalCost(a, b *float64) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
+// samePricing reports whether two rows carry identical prices on every cost field, not just the
+// base token rates. Options is all pointer fields, so == would compare addresses; its encoding
+// compares the values instead (struct fields encode in declaration order, nil ones are omitted), and
+// new cost fields are covered without maintenance here. Only rows that fold pay for this.
+func samePricing(a, b Entry) bool {
+	ea, errA := sonic.Marshal(a.Options)
+	eb, errB := sonic.Marshal(b.Options)
+	return errA == nil && errB == nil && bytes.Equal(ea, eb)
 }
 
 // resolvePricingRows turns the parsed datasheet into one stored row per (model, provider, mode).
 // Several datasheet rows can fold onto one key: extractModelName drops the "bedrock_mantle/" prefix
 // and normalizeProvider maps both providers to "bedrock". The survivor is chosen by rule so every
 // sync of the same datasheet stores the same price: a row whose own provider already is the stored
-// provider beats a folded-in one, then the smaller datasheet key wins. Rows come back in key order,
-// and a fold between rows with different prices is logged.
+// provider beats a folded-in one, then the smaller datasheet key wins. Rows come back in key order.
+//
+// A fold that drops a row with different pricing is logged. When the exact-provider rule picked the
+// survivor it is the intended outcome and goes to Debug; when only key order separated the rows the
+// choice is arbitrary, so it is a Warn worth looking at.
 func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTables.TableModelPricing {
 	winners := make(map[string]pricingCandidate, len(pricingData))
-	var losers map[string][]string // stored key -> datasheet keys that lost it; empty unless rows fold
+	var losers map[string][]pricingCandidate // stored key -> rows that lost it; empty unless rows fold
 	for modelKey, entry := range pricingData {
 		// Same identity convertEntryToTablePricing stores the row under.
 		provider := normalizeProvider(entry.Provider)
 		key := makeKey(extractModelName(modelKey), provider, entry.Mode)
 		cand := pricingCandidate{modelKey: modelKey, exact: entry.Provider == provider}
 		cur, taken := winners[key]
-		lost := cand.modelKey
+		lost := cand
 		switch {
 		case !taken:
 			winners[key] = cand
 			continue
 		case cand.beats(cur):
 			winners[key] = cand
-			lost = cur.modelKey
+			lost = cur
 		}
 		if losers == nil {
-			losers = make(map[string][]string)
+			losers = make(map[string][]pricingCandidate)
 		}
 		losers[key] = append(losers[key], lost)
 	}
@@ -147,30 +151,48 @@ func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTa
 	sort.Strings(keys)
 
 	records := make([]configstoreTables.TableModelPricing, 0, len(keys))
-	var conflicts []string
+	var byKeyOrder, byRule []string
 	for _, key := range keys {
 		win := winners[key]
 		records = append(records, convertEntryToTablePricing(win.modelKey, pricingData[win.modelKey]))
 		var dropped []string
+		arbitrary := false
 		for _, lost := range losers[key] {
-			if !sameListPrice(pricingData[win.modelKey], pricingData[lost]) {
-				dropped = append(dropped, lost)
+			if samePricing(pricingData[win.modelKey], pricingData[lost.modelKey]) {
+				continue
 			}
+			dropped = append(dropped, lost.modelKey)
+			arbitrary = arbitrary || lost.exact == win.exact
 		}
-		if len(dropped) > 0 {
-			sort.Strings(dropped)
-			conflicts = append(conflicts, fmt.Sprintf("%s kept over %s", win.modelKey, strings.Join(dropped, ", ")))
+		if len(dropped) == 0 {
+			continue
+		}
+		sort.Strings(dropped)
+		conflict := fmt.Sprintf("%s kept over %s", win.modelKey, strings.Join(dropped, ", "))
+		if arbitrary {
+			byKeyOrder = append(byKeyOrder, conflict)
+		} else {
+			byRule = append(byRule, conflict)
 		}
 	}
-	if len(conflicts) > 0 && s.logger != nil {
-		const shown = 5
-		examples := conflicts
-		if len(examples) > shown {
-			examples = examples[:shown]
+	if s.logger != nil {
+		if len(byKeyOrder) > 0 {
+			s.logger.Warn("pricing datasheet has %d stored keys where rows with different prices fold onto one key and only datasheet key order chose the kept row (e.g. %s)", len(byKeyOrder), foldExamples(byKeyOrder))
 		}
-		s.logger.Warn("pricing datasheet has %d stored keys with rows at different prices that fold onto one key; kept the row whose provider matches, else the smaller datasheet key (e.g. %s)", len(conflicts), strings.Join(examples, "; "))
+		if len(byRule) > 0 {
+			s.logger.Debug("pricing datasheet has %d stored keys where a folded-in row with different prices lost to the row whose provider matches (e.g. %s)", len(byRule), foldExamples(byRule))
+		}
 	}
 	return records
+}
+
+// foldExamples joins the first few fold conflicts for a log line.
+func foldExamples(conflicts []string) string {
+	const shown = 5
+	if len(conflicts) > shown {
+		conflicts = conflicts[:shown]
+	}
+	return strings.Join(conflicts, "; ")
 }
 
 // LoadFromDB reloads the in-memory pricing cache + datasheet view from the

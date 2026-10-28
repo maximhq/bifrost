@@ -105,14 +105,19 @@ func TestApplyPricingDataBedrockRowBeatsMantleRow(t *testing.T) {
 	}
 }
 
-// warnRecorder captures Warn output; the embedded nil Logger covers the methods a test never reaches.
+// warnRecorder captures Warn and Debug output; the embedded nil Logger covers the methods a test never reaches.
 type warnRecorder struct {
 	schemas.Logger
-	warns []string
+	warns  []string
+	debugs []string
 }
 
 func (r *warnRecorder) Warn(format string, args ...any) {
 	r.warns = append(r.warns, fmt.Sprintf(format, args...))
+}
+
+func (r *warnRecorder) Debug(format string, args ...any) {
+	r.debugs = append(r.debugs, fmt.Sprintf(format, args...))
 }
 
 func costEntry(provider string, input float64) Entry {
@@ -154,6 +159,39 @@ func TestResolvePricingRowsSamePriceFoldIsSilent(t *testing.T) {
 	})
 	if len(rows) != 2 || len(rec.warns) != 0 {
 		t.Fatalf("rows=%d warnings=%q, want 2 rows and no warning", len(rows), rec.warns)
+	}
+}
+
+// Rows that agree on list prices but differ on another cost field still lose pricing in the fold,
+// so the fold is reported.
+func TestResolvePricingRowsNonListPriceFoldWarns(t *testing.T) {
+	rec := &warnRecorder{}
+	s := NewTestStore(nil)
+	s.logger = rec
+	a, b := costEntry("bedrock_mantle", 2e-06), costEntry("bedrock_x", 2e-06)
+	cacheA, cacheB := 2e-07, 3e-07
+	a.CacheReadInputTokenCost, b.CacheReadInputTokenCost = &cacheA, &cacheB
+	rows := s.resolvePricingRows(map[string]Entry{"bedrock_mantle/m": a, "bedrock_x/m": b})
+	if len(rows) != 1 || len(rec.warns) != 1 || !strings.Contains(rec.warns[0], "bedrock_mantle/m kept over bedrock_x/m") {
+		t.Fatalf("rows=%d warnings=%q, want 1 row and one warning for the cache-read price difference", len(rows), rec.warns)
+	}
+}
+
+// When the exact-provider rule picks the survivor the outcome is intended, so it is logged at Debug
+// and never as a Warn on every sync.
+func TestResolvePricingRowsExactRuleFoldLogsDebugNotWarn(t *testing.T) {
+	rec := &warnRecorder{}
+	s := NewTestStore(nil)
+	s.logger = rec
+	rows := s.resolvePricingRows(map[string]Entry{
+		"m":                costEntry("bedrock", 2e-06),
+		"bedrock_mantle/m": costEntry("bedrock_mantle", 2.2e-06),
+	})
+	if len(rows) != 1 || len(rec.warns) != 0 {
+		t.Fatalf("rows=%d warnings=%q, want 1 row and no warning", len(rows), rec.warns)
+	}
+	if len(rec.debugs) != 1 || !strings.Contains(rec.debugs[0], "m kept over bedrock_mantle/m") {
+		t.Fatalf("debugs=%q, want one debug line naming the kept and dropped rows", rec.debugs)
 	}
 }
 
