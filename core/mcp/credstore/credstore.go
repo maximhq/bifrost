@@ -51,7 +51,7 @@ func NewCredStore(oauth2Provider schemas.OAuth2Provider, headersProvider schemas
 			schemas.MCPAuthTypeOauth:          &sharedOAuthResolver{provider: oauth2Provider},
 			schemas.MCPAuthTypePerUserOauth:   &perUserOAuthResolver{provider: oauth2Provider},
 			schemas.MCPAuthTypePerUserHeaders: &perUserHeadersResolver{provider: headersProvider},
-			schemas.MCPAuthTypeTokenExchange:  &tokenExchangeResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeTokenExchange:  &tokenExchangeResolver{provider: oauth2Provider, logger: logger},
 		},
 		logger: logger,
 	}

@@ -28,6 +28,7 @@ import (
 // opens a fresh ephemeral HTTP transport per call.
 type tokenExchangeResolver struct {
 	provider schemas.OAuth2Provider
+	logger   schemas.Logger
 }
 
 func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
@@ -65,7 +66,14 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 				Message:       fmt.Sprintf("The identity provider declined to issue a token for %s on your behalf. Re-authenticate and retry; if the problem persists, ask an administrator to check your access to this server.", config.Name),
 			}
 		}
-		return nil, fmt.Errorf("failed to get exchanged access token for MCP server %s: %w", config.Name, err)
+		// Anything else is a deployment problem the caller cannot fix, and its
+		// text can name deployment configuration such as hosts and endpoints.
+		// The caller gets a message without it; the detail goes to the log for
+		// an administrator.
+		if r.logger != nil {
+			r.logger.Warn("token exchange for MCP server %s failed: %v", config.Name, err)
+		}
+		return nil, fmt.Errorf("could not get a token for MCP server %s from the identity provider: retry, and if it keeps failing ask an administrator to check the server's token exchange settings", config.Name)
 	}
 
 	return bearerHeader(accessToken), nil

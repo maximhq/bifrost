@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -174,6 +175,61 @@ func TestTokenExchangeConnectionHeadersRejected(t *testing.T) {
 	}
 	if authErr.ExchangeError != `{"error":"invalid_grant"}` {
 		t.Fatalf("ExchangeError = %q, want provider detail", authErr.ExchangeError)
+	}
+}
+
+// warnRecorder is a schemas.Logger that records Warn lines; any other method panics through the nil
+// embedded Logger, so a test also fails if the resolver logs at a level it should not.
+type warnRecorder struct {
+	schemas.Logger
+	warnings []string
+}
+
+// Warn records the formatted line.
+func (w *warnRecorder) Warn(msg string, args ...any) {
+	w.warnings = append(w.warnings, fmt.Sprintf(msg, args...))
+}
+
+// An exchange failure the caller cannot fix can name deployment configuration, such as hosts and
+// endpoints, in its text. The caller gets a message without it, and the detail goes to the log.
+// Synthetic payloads.
+func TestTokenExchangeConnectionHeadersHidesDeploymentDetail(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		detail string
+	}{
+		{
+			name:   "resolution failed",
+			err:    fmt.Errorf("failed to resolve identity provider for token exchange: %w", errors.New("synthetic resolver failure for https://as.example.net/token")),
+			detail: "as.example.net",
+		},
+		{
+			name:   "token endpoint unreachable",
+			err:    fmt.Errorf("token exchange for MCP client Exchange Client failed: %w", &url.Error{Op: "Post", URL: "https://idp.example.com/token", Err: errors.New("connection refused")}),
+			detail: "idp.example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := &warnRecorder{}
+			store := NewCredStore(&fakeExchangeProvider{exchangedTokenErr: tt.err}, nil, logger)
+			_, err := store.ConnectionHeaders(newExchangeTestContext(), exchangeClientConfig())
+			if err == nil {
+				t.Fatal("ConnectionHeaders returned no error")
+			}
+			for _, leaked := range []string{"example.com", "example.net"} {
+				if strings.Contains(err.Error(), leaked) {
+					t.Fatalf("caller error = %q, must not contain %q", err, leaked)
+				}
+			}
+			if !strings.Contains(err.Error(), "Exchange Client") || !strings.Contains(err.Error(), "administrator") {
+				t.Fatalf("caller error = %q, want it to name the server and send the caller to an administrator", err)
+			}
+			if len(logger.warnings) != 1 || !strings.Contains(logger.warnings[0], tt.detail) {
+				t.Fatalf("warnings = %q, want one line carrying %q", logger.warnings, tt.detail)
+			}
+		})
 	}
 }
 
