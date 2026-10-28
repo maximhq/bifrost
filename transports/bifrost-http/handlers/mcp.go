@@ -1867,7 +1867,9 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-	// Reject reconnect requests for disabled clients — the client must be enabled first.
+	// Reject reconnect requests for unknown clients (404, as refresh-tools answers)
+	// and for disabled ones, which must be enabled first.
+	known := false
 	if h.store.MCPConfig != nil {
 		for _, client := range h.store.MCPConfig.ClientConfigs {
 			if client.ID == id {
@@ -1875,9 +1877,14 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 					SendError(ctx, fasthttp.StatusBadRequest, "cannot reconnect a disabled MCP client: enable the client first")
 					return
 				}
+				known = true
 				break
 			}
 		}
+	}
+	if !known {
+		SendError(ctx, fasthttp.StatusNotFound, schemas.ErrMCPClientNotFound.Error())
+		return
 	}
 	if err := h.mcpManager.ReconnectMCPClient(ctx, id); err != nil {
 		// Per-user OAuth (and any future client type that opts out of the
@@ -2330,9 +2337,25 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 	// connection_type is validated first: both gates below key on it, and an
 	// unknown value would otherwise match neither and reach the connect path
-	// unchecked (every later branch treats non-stdio as HTTP/SSE).
+	// unchecked (every later branch treats non-stdio as HTTP/SSE). The target
+	// the type connects to is required here too, so a client without one is
+	// refused before any branch stores or dials it.
 	switch schemas.MCPConnectionType(req.ConnectionType) {
-	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeSTDIO, schemas.MCPConnectionTypeOpenAPI:
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE:
+		if req.ConnectionString == nil || strings.TrimSpace(req.ConnectionString.GetValue()) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("connection_string is required for %s connection type", req.ConnectionType))
+			return
+		}
+	case schemas.MCPConnectionTypeSTDIO:
+		if req.StdioConfig == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "stdio_config is required for stdio connection type")
+			return
+		}
+		if strings.TrimSpace(req.StdioConfig.Command) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "stdio_config.command is required for stdio connection type")
+			return
+		}
+	case schemas.MCPConnectionTypeOpenAPI:
 	default:
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid connection_type %q: must be one of http, sse, stdio, openapi", req.ConnectionType))
 		return
@@ -3671,6 +3694,12 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
+			// The name is the only unique column an update can change (the endpoint
+			// slug is fixed at create), so a conflict means the name is taken.
+			if errors.Is(err, configstore.ErrAlreadyExists) {
+				SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+				return
+			}
 			status := fasthttp.StatusInternalServerError
 			if errors.Is(err, configstore.ErrNotFound) {
 				status = fasthttp.StatusNotFound

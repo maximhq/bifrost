@@ -3770,6 +3770,11 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 			args = overrides.StdioArgs
 		}
 	}
+	// Checked after the overrides, which a connection hook can set: mcp-go starts no process for an
+	// empty command and leaves its stdout nil, which its reader goroutine then dereferences.
+	if strings.TrimSpace(cmd) == "" {
+		return nil, nil, fmt.Errorf("a stdio command is required for MCP client %s", config.Name)
+	}
 
 	cmdString := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
 
