@@ -137,6 +137,7 @@ export function RelayLogDetailSheet({
 	const queryIndex = display?.path.indexOf("?") ?? -1;
 	const pathOnly = display ? (queryIndex >= 0 ? display.path.slice(0, queryIndex) : display.path) : "";
 	const queryOnly = display && queryIndex >= 0 ? display.path.slice(queryIndex + 1) : "";
+	const queryParams = useMemo(() => [...new URLSearchParams(queryOnly).entries()], [queryOnly]);
 	const requestLine = display ? (display.kind === "job" ? `job ${display.job_id ?? "—"}` : `${display.method} ${pathOnly}`) : "";
 
 	// Client app, mapped the same way the LLM sheet maps it: the backend-detected app first, then the User-Agent.
@@ -456,7 +457,6 @@ export function RelayLogDetailSheet({
 											)}
 											<LogEntryDetailsView className="w-full" label="Method" value={display.method || "—"} />
 											<LogEntryDetailsView className="w-full" label="Path" value={pathOnly || "—"} />
-											{queryOnly && <LogEntryDetailsView className="w-full" label="Query" value={queryOnly} />}
 											<LogEntryDetailsView className="w-full" label="Matched route" value={display.route_path || "None"} />
 											<LogEntryDetailsView className="w-full" label="Billable" value={display.billable ? "Yes" : "No"} />
 											<LogEntryDetailsView className="w-full" label="Streamed" value={display.streamed ? "Yes" : "No"} />
@@ -499,6 +499,21 @@ export function RelayLogDetailSheet({
 											<AttributionLink label="Project" id={display.project_id} name={display.project_name} filterKey="project_ids" />
 										</div>
 									</div>
+									{queryParams.length > 0 && (
+										<>
+											<DottedSeparator />
+											{/* Laid out like Matched Headers below: one field per parameter, full value on hover. Names
+											    are shown as sent, since query parameters are case-sensitive. */}
+											<div className="space-y-4" data-testid="relay-log-query">
+												<BlockHeader title="Query Parameters" />
+												<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
+													{queryParams.map(([key, value], i) => (
+														<LogEntryDetailsView key={`${key}-${i}`} className="w-full" label={key} rawLabel value={value || "—"} />
+													))}
+												</div>
+											</div>
+										</>
+									)}
 									{display.metadata && Object.keys(display.metadata).length > 0 && (
 										<>
 											<DottedSeparator />

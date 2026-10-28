@@ -242,23 +242,6 @@ interface FilterComponentProps {
 	defaultOpen?: boolean;
 }
 
-/** The per-section "N selected" clear button, as mcpFilterSidebar's `mcp-clear-<key>`. */
-function ClearSectionButton({ count, filterKey, onClear }: { count: number; filterKey: string; onClear: () => void }) {
-	if (count === 0) return null;
-	return (
-		<Button
-			variant="ghost"
-			size="sm"
-			className="w-full justify-between rounded-none"
-			data-testid={`relay-clear-${filterKey}`}
-			onClick={onClear}
-		>
-			<span>{count} selected</span>
-			<RotateCcw className="size-3" />
-		</Button>
-	);
-}
-
 // ---------------------------------------------------------------------------
 // NamesFilter – a plain string dimension (relay names, methods, apps). Fetches only once the
 // section is opened or carries a value; search is server-side where the dimension supports it.
@@ -319,7 +302,6 @@ function NamesFilter({
 			onOpenChange={setOpened}
 			testId={`${testIdPrefix}-toggle`}
 		>
-			<ClearSectionButton count={selected.length} filterKey={filterKey} onClear={() => onFiltersChange({ ...filters, [filterKey]: [] })} />
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
 				placeholder={placeholder}
@@ -394,7 +376,6 @@ function EntityFilter({
 			onOpenChange={setOpened}
 			testId={`${testIdPrefix}-toggle`}
 		>
-			<ClearSectionButton count={selected.length} filterKey={filterKey} onClear={() => onFiltersChange({ ...filters, [filterKey]: [] })} />
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
 				placeholder={placeholder}
@@ -442,18 +423,6 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 
 	return (
 		<FilterSection title="Cost" defaultOpen={defaultOpen || hasActive} testId="relay-cost-filter-toggle">
-			{hasActive && (
-				<Button
-					variant="ghost"
-					size="sm"
-					className="w-full justify-between rounded-none"
-					data-testid="relay-clear-cost"
-					onClick={() => onFiltersChange({ ...filters, min_cost: undefined, max_cost: undefined })}
-				>
-					<span>Bounded</span>
-					<RotateCcw className="size-3" />
-				</Button>
-			)}
 			<div className="grid grid-cols-2 gap-2 px-3 py-2">
 				<Input
 					type="number"

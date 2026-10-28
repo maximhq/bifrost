@@ -27,8 +27,8 @@ describe("openapiImport", () => {
 		expect(result.routes).toEqual([
 			{ method: "GET", path: "/pets" },
 			{ method: "POST", path: "/pets" },
-			{ method: "GET", path: "/pets/*" },
 			{ method: "DELETE", path: "/pets/*" },
+			{ method: "GET", path: "/pets/*" },
 			{ method: "POST", path: "/pets/*/photo" },
 		]);
 		expect(result.warnings).toEqual([]);
