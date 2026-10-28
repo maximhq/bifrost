@@ -623,6 +623,30 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// SetStartTime moves the span's start, for work measured before its span was opened.
+func (s *Span) SetStartTime(start time.Time) {
+	if s == nil || start.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StartTime = start
+}
+
+// SetStartTimeIfMatch is SetStartTime guarded like EndIfMatch against a recycled span.
+func (s *Span) SetStartTimeIfMatch(id string, start time.Time) bool {
+	if s == nil || start.IsZero() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.StartTime = start
+	return true
+}
+
 // GetAttribute reads one attribute under the span's lock.
 func (s *Span) GetAttribute(key string) (any, bool) {
 	if s == nil {
