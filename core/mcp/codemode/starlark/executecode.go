@@ -340,8 +340,6 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 
-	// Hooks of this nested call decide its token: drop whatever the outer call carried.
-	nestedCtx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, "")
 	sendsHeaders := client.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()
@@ -395,8 +393,12 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			if s.outboundTokenProvider != nil {
 				provider = s.outboundTokenProvider()
 			}
+			var hookToken string
+			if preReq != nil {
+				hookToken = preReq.OutboundToken
+			}
 			var tokenErr error
-			token, tokenErr = mcputils.ResolveOutboundToken(nestedCtx, provider, clientName, s.logger)
+			token, tokenErr = mcputils.ResolveOutboundToken(nestedCtx, provider, clientName, hookToken, s.logger)
 			if tokenErr != nil {
 				return nil, tokenErr
 			}

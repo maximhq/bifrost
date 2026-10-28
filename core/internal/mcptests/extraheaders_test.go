@@ -458,7 +458,7 @@ func removeClientsOnCleanup(t *testing.T, manager *mcp.MCPManager) {
 }
 
 // setupOutboundTokenBifrostWithStickiness wires manager and client with configured stickiness.
-func setupOutboundTokenBifrostWithStickiness(t *testing.T, provider schemas.OutboundMCPTokenProvider, clientName, serverURL string, sticky bool) (*mcp.MCPManager, *core.Bifrost) {
+func setupOutboundTokenBifrostWithStickiness(t *testing.T, provider schemas.OutboundMCPTokenProvider, clientName, serverURL string, sticky bool, plugins ...schemas.MCPPlugin) (*mcp.MCPManager, *core.Bifrost) {
 	t.Helper()
 
 	logger := newTestLogger(t)
@@ -470,8 +470,9 @@ func setupOutboundTokenBifrostWithStickiness(t *testing.T, provider schemas.Outb
 		ReleasePluginPipeline: func(pipeline interface{}) {},
 	}, nil, logger, nil)
 	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
-		Account: &testAccount{},
-		Logger:  core.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &testAccount{},
+		MCPPlugins: plugins,
+		Logger:     core.NewDefaultLogger(schemas.LogLevelError),
 	})
 	require.NoError(t, err)
 	bf.SetMCPManager(manager)
@@ -632,12 +633,12 @@ func (p *outboundTokenHookPlugin) GetName() string { return "outboundTokenHookPl
 func (p *outboundTokenHookPlugin) Cleanup() error  { return nil }
 
 func (p *outboundTokenHookPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
-	ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, p.token)
+	req.OutboundToken = p.token
 	return req, nil, nil
 }
 
-// TestOutboundTokenContextKeyWithoutProvider proves hook context key alone works across stickiness modes.
-func TestOutboundTokenContextKeyWithoutProvider(t *testing.T) {
+// TestOutboundTokenHookTokenWithoutProvider proves a hook token alone works across stickiness modes.
+func TestOutboundTokenHookTokenWithoutProvider(t *testing.T) {
 	t.Parallel()
 
 	for _, sticky := range []bool{false, true} {
@@ -681,8 +682,8 @@ func TestOutboundTokenContextKeyWithoutProvider(t *testing.T) {
 	}
 }
 
-// TestOutboundTokenProviderTakesPrecedenceOverContextKey proves provider wins over hook key.
-func TestOutboundTokenProviderTakesPrecedenceOverContextKey(t *testing.T) {
+// TestOutboundTokenProviderTakesPrecedenceOverHookToken proves provider wins over hook token.
+func TestOutboundTokenProviderTakesPrecedenceOverHookToken(t *testing.T) {
 	t.Parallel()
 
 	for _, sticky := range []bool{false, true} {
@@ -694,18 +695,16 @@ func TestOutboundTokenProviderTakesPrecedenceOverContextKey(t *testing.T) {
 			ts, _ := buildAuthEchoServer(t)
 			provider := funcTokenProvider(func(context.Context, string) (string, error) { return "provider-token", nil })
 			clientName := "outbound_prec_" + name
-			_, bf := setupOutboundTokenBifrostWithStickiness(t, provider, clientName, ts.URL, sticky)
+			_, bf := setupOutboundTokenBifrostWithStickiness(t, provider, clientName, ts.URL, sticky, &outboundTokenHookPlugin{token: "hook-token"})
 
-			ctx := createTestContext()
-			ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, "ctx-token")
-			out, bErr := callOutboundEcho(bf, ctx, clientName, "hi")
+			out, bErr := callOutboundEcho(bf, createTestContext(), clientName, "hi")
 			require.Nil(t, bErr)
 			assert.Equal(t, "hi|Bearer provider-token", out)
 		})
 	}
 }
 
-// TestOutboundTokenNeverOnProbes proves probes carry static auth on sticky client even with hook writing key.
+// TestOutboundTokenNeverOnProbes proves probes carry static auth on sticky client even with a hook setting a token.
 func TestOutboundTokenNeverOnProbes(t *testing.T) {
 	t.Parallel()
 
@@ -776,7 +775,7 @@ func (p *targetedHookPlugin) Cleanup() error  { return nil }
 
 func (p *targetedHookPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	if req.GetToolName() == p.targetTool {
-		ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, p.token)
+		req.OutboundToken = p.token
 	}
 	return req, nil, nil
 }
@@ -867,8 +866,8 @@ func TestOutboundTokenSequentialTwoClientsScopedOnSameCtx(t *testing.T) {
 	})
 }
 
-// TestOutboundTokenProviderEmptyFallsBackToContextKey proves empty provider falls back to context key.
-func TestOutboundTokenProviderEmptyFallsBackToContextKey(t *testing.T) {
+// TestOutboundTokenProviderEmptyFallsBackToHookToken proves empty provider falls back to hook token.
+func TestOutboundTokenProviderEmptyFallsBackToHookToken(t *testing.T) {
 	t.Parallel()
 
 	ts, rec := buildAuthEchoServer(t)
@@ -1164,7 +1163,7 @@ func (p *nestedOnlyHookPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *sche
 		return req, nil, nil
 	}
 	if p.token != "" {
-		ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, p.token)
+		req.OutboundToken = p.token
 	}
 	if p.tenant != "" {
 		ctx.SetValue(outboundTenantKey{}, p.tenant)
@@ -1325,7 +1324,7 @@ func (p *perMessageTokenHookPlugin) PreMCPHook(ctx *schemas.BifrostContext, req 
 	if req.ChatAssistantMessageToolCall != nil {
 		_ = json.Unmarshal([]byte(req.ChatAssistantMessageToolCall.Function.Arguments), &args)
 	}
-	ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, "tok-"+args.Message)
+	req.OutboundToken = "tok-" + args.Message
 	return req, nil, nil
 }
 

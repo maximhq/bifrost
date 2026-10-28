@@ -630,3 +630,11 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 		})
 	}
 }
+
+// TestReleaseMCPRequestClearsOutboundToken proves a pooled request never carries a hook's token
+// into the next call that reuses it.
+func TestReleaseMCPRequestClearsOutboundToken(t *testing.T) {
+	req := &schemas.BifrostMCPRequest{ClientName: "c", OutboundToken: "tok"}
+	resetMCPRequest(req)
+	assert.Equal(t, schemas.BifrostMCPRequest{}, *req)
+}

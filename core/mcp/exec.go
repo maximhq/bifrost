@@ -30,6 +30,7 @@ var mcpRequestPool = sync.Pool{
 func resetMCPRequest(req *schemas.BifrostMCPRequest) {
 	req.RequestType = ""
 	req.ClientName = ""
+	req.OutboundToken = ""
 	req.BifrostMCPPingRequest = nil
 	req.BifrostMCPListToolsRequest = nil
 	req.BifrostMCPExecuteToolRequest = nil
@@ -82,15 +83,6 @@ func (m *MCPManager) executeToolWithHooks(
 			}
 		}
 	}
-
-	// Hooks write to a context of this call's own: a nil ctx means the instance-wide one, and
-	// parallel calls sharing it must not see each other's outbound token.
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = schemas.NoDeadline
-	}
-	ctx = schemas.NewBifrostContext(ctx, deadline)
-	defer ctx.Cancel()
 
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
@@ -185,14 +177,22 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	if state.State == schemas.MCPConnectionStateNeedsReauth {
 		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
 	}
-	callCtx, releaseToken := ctx, func() {}
+	var token string
 	if state.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO {
-		token, tokenErr := utils.ResolveOutboundToken(ctx, m.toolsManager.getOutboundTokenProvider(), clientName, m.logger)
+		var tokenErr error
+		token, tokenErr = utils.ResolveOutboundToken(ctx, m.toolsManager.getOutboundTokenProvider(), clientName, request.OutboundToken, m.logger)
 		if tokenErr != nil {
 			return nil, nil, nil, nil, tokenErr
 		}
-		callCtx, releaseToken = utils.WithCallToken(ctx, token)
 	}
+	if token == "" {
+		conn, release, err := m.AcquireClientConn(ctx, state)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		return state, ctx, conn, release, nil
+	}
+	callCtx, releaseToken := utils.WithCallToken(ctx, token)
 	conn, release, err := m.AcquireClientConn(callCtx, state)
 	if err != nil {
 		releaseToken()

@@ -53,12 +53,6 @@ func TestPerRequestHeaders(t *testing.T) {
 		assert.NotContains(t, got, "X-Denied")
 	})
 
-	t.Run("public key alone does not affect wire headers", func(t *testing.T) {
-		ctx := context.WithValue(base, schemas.BifrostContextKeyMCPOutboundToken, "tok")
-		got := PerRequestHeaders(ctx, extrasConfig())
-		assert.Equal(t, "Bearer from-extras", got["Authorization"])
-	})
-
 	t.Run("token without extras", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), callTokenKey{}, "tok")
 		assert.Equal(t, map[string]string{"Authorization": "Bearer tok"}, PerRequestHeaders(ctx, extrasConfig()))
@@ -79,10 +73,6 @@ func TestApplyOutboundToken(t *testing.T) {
 	ApplyOutboundToken(context.Background(), h)
 	assert.Equal(t, "Bearer old", h.Get("Authorization"))
 
-	ctxWithKeyOnly := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPOutboundToken, "tok")
-	ApplyOutboundToken(ctxWithKeyOnly, h)
-	assert.Equal(t, "Bearer old", h.Get("Authorization"))
-
 	ctxWithCarrier := context.WithValue(context.Background(), callTokenKey{}, "tok")
 	ApplyOutboundToken(ctxWithCarrier, h)
 	assert.Equal(t, []string{"Bearer tok"}, h["Authorization"])
@@ -93,24 +83,23 @@ func TestResolveOutboundToken(t *testing.T) {
 
 	t.Run("provider returns token", func(t *testing.T) {
 		p := &stubTokenProvider{token: "prov-token"}
-		tok, err := ResolveOutboundToken(context.Background(), p, "srv", logger)
+		tok, err := ResolveOutboundToken(context.Background(), p, "srv", "hook-token", logger)
 		require.NoError(t, err)
 		assert.Equal(t, "prov-token", tok)
 		assert.Equal(t, "srv", p.got)
 	})
 
-	t.Run("provider returns empty string falls back to context key", func(t *testing.T) {
+	t.Run("provider returns empty string falls back to hook token", func(t *testing.T) {
 		p := &stubTokenProvider{token: ""}
-		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPOutboundToken, "ctx-token")
-		tok, err := ResolveOutboundToken(ctx, p, "srv", logger)
+		tok, err := ResolveOutboundToken(context.Background(), p, "srv", "hook-token", logger)
 		require.NoError(t, err)
-		assert.Equal(t, "ctx-token", tok)
+		assert.Equal(t, "hook-token", tok)
 	})
 
 	t.Run("provider error is wrapped with fixed message and logged", func(t *testing.T) {
 		l := &stubLogger{}
 		p := &stubTokenProvider{err: errors.New("secret backend detail")}
-		tok, err := ResolveOutboundToken(context.Background(), p, "srv", l)
+		tok, err := ResolveOutboundToken(context.Background(), p, "srv", "hook-token", l)
 		require.Error(t, err)
 		assert.Empty(t, tok)
 		assert.Equal(t, "failed to resolve outbound token for MCP server 'srv'", err.Error())
@@ -119,15 +108,14 @@ func TestResolveOutboundToken(t *testing.T) {
 		assert.Contains(t, l.warns[0], "secret backend detail")
 	})
 
-	t.Run("nil provider falls back to context key", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPOutboundToken, "ctx-token")
-		tok, err := ResolveOutboundToken(ctx, nil, "srv", logger)
+	t.Run("nil provider falls back to hook token", func(t *testing.T) {
+		tok, err := ResolveOutboundToken(context.Background(), nil, "srv", "hook-token", logger)
 		require.NoError(t, err)
-		assert.Equal(t, "ctx-token", tok)
+		assert.Equal(t, "hook-token", tok)
 	})
 
-	t.Run("no provider and no key returns empty string", func(t *testing.T) {
-		tok, err := ResolveOutboundToken(context.Background(), nil, "srv", logger)
+	t.Run("no provider and no hook token returns empty string", func(t *testing.T) {
+		tok, err := ResolveOutboundToken(context.Background(), nil, "srv", "", logger)
 		require.NoError(t, err)
 		assert.Empty(t, tok)
 	})

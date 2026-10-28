@@ -218,9 +218,9 @@ func ApplyOutboundToken(ctx context.Context, h http.Header) {
 func HasCallToken(ctx context.Context) bool { return callToken(ctx) != "" }
 
 // ResolveOutboundToken returns the token for one call to serverName: the provider's
-// when it returns one, else the value a hook left on BifrostContextKeyMCPOutboundToken.
+// when it returns one, else hookToken, the value a hook set on BifrostMCPRequest.OutboundToken.
 // Provider errors are logged and returned as a fixed message that omits the provider's text.
-func ResolveOutboundToken(ctx context.Context, provider schemas.OutboundMCPTokenProvider, serverName string, logger schemas.Logger) (string, error) {
+func ResolveOutboundToken(ctx context.Context, provider schemas.OutboundMCPTokenProvider, serverName, hookToken string, logger schemas.Logger) (string, error) {
 	if provider != nil {
 		token, err := provider.GetTokenForUpstream(ctx, serverName)
 		if err != nil {
@@ -233,8 +233,7 @@ func ResolveOutboundToken(ctx context.Context, provider schemas.OutboundMCPToken
 			return token, nil
 		}
 	}
-	token, _ := ctx.Value(schemas.BifrostContextKeyMCPOutboundToken).(string)
-	return token, nil
+	return hookToken, nil
 }
 
 // WithCallToken returns a child context carrying token for this call only, and a release

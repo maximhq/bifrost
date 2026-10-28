@@ -478,8 +478,8 @@ mcpConfig := &schemas.MCPConfig{
 - A non-empty token is sent as `Authorization: Bearer <token>` on that JSON-RPC request only. Concurrent calls over the same connection each send their own token.
 - An empty string means "no per-request token": the call uses the configured credential unchanged.
 - An error fails that tool call, and nothing is sent upstream.
-- Plugins can supply the same token without a Go SDK provider: a `PreMCPHook` sets `schemas.BifrostContextKeyMCPOutboundToken` (a `string`) on the context.
-- Precedence, highest first: the provider's token, the context key, `Authorization` from [forwarded extra headers](#forwarding-request-headers-to-mcp-servers), then the configured credential.
+- Plugins can supply the same token without a Go SDK provider: a `PreMCPHook` sets `OutboundToken` on the `*schemas.BifrostMCPRequest` it returns. The field belongs to that call alone, so parallel calls never see each other's token.
+- Precedence, highest first: the provider's token, the hook's `OutboundToken`, `Authorization` from [forwarded extra headers](#forwarding-request-headers-to-mcp-servers), then the configured credential.
 - A call that carries a token is sent once: it is not retried on transient errors, and a failure does not trigger a reconnect or credential refresh.
 - The provider runs after `PreMCPHook` plugins, so it can read values a hook set on the context; this holds for nested code mode calls too.
 - Admin tool discovery, health checks and tool sync run with no caller. They never consult the provider and always use the configured credential. A per-call client's fresh dial for a tool call is part of that call, so its `initialize` and `server/discover` carry the call's token.
@@ -938,7 +938,7 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 
 ### Per-Call Authorization
 
-To give each tool call its own bearer token rather than forwarding a caller header, use `MCPConfig.OutboundTokenProvider` (Go SDK) or set `BifrostContextKeyMCPOutboundToken` from a `PreMCPHook` plugin. The token replaces `Authorization` for that one request, whether it came from the configured credential or from `allowed_extra_headers`. Precedence is provider, then context key, then extra headers, then the configured credential. Health checks and tool sync never use it. See [Per-Call Outbound Tokens](#per-call-outbound-tokens).
+To give each tool call its own bearer token rather than forwarding a caller header, use `MCPConfig.OutboundTokenProvider` (Go SDK) or set `OutboundToken` on the request from a `PreMCPHook` plugin. The token replaces `Authorization` for that one request, whether it came from the configured credential or from `allowed_extra_headers`. Precedence is provider, then the hook's token, then extra headers, then the configured credential. Health checks and tool sync never use it. See [Per-Call Outbound Tokens](#per-call-outbound-tokens).
 
 ---
 
