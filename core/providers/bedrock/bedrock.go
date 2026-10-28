@@ -3471,7 +3471,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	// Build request
 	bedrockReq := &BedrockBatchJobRequest{
 		JobName: jobName,
-		ModelID: request.Model,
+		ModelID: schemas.Ptr(resolveBedrockBatchModelID(ctx, key, *request.Model)),
 		RoleArn: roleArn,
 		InputDataConfig: BedrockInputDataConfig{
 			S3InputDataConfig: BedrockS3InputDataConfig{

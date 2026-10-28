@@ -54,3 +54,4 @@
 - feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
 - [fix]: OpenAI passthrough with a caller ChatGPT/Codex token no longer swaps in a stored OpenAI API key, which the ChatGPT backend refused with api_key_not_supported; key selection is skipped for OpenAI passthrough the way it already was for Claude Code on Anthropic
 - fix: anthropic - streaming message_delta keeps its required delta object and reported usage (#7896) [@valentinyanakiev](https://github.com/valentinyanakiev)
+- fix: Bedrock batch jobs send the full inference profile ARN as modelId [@jeremym-tanium](https://github.com/jeremym-tanium)
