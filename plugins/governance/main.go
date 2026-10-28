@@ -764,13 +764,13 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
-	if evaluationRequest.LiteralModel {
-		ctx.SetValue(literalLimitsContextKey, true)
-	}
-	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
-	if evaluationRequest.LiteralModel {
-		ctx.SetValue(literalLimitsContextKey, false)
-	}
+	limits, limitsErr := func() (schemas.Limits, error) {
+		if evaluationRequest.LiteralModel {
+			ctx.SetValue(literalLimitsContextKey, true)
+			defer ctx.SetValue(literalLimitsContextKey, false)
+		}
+		return resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	}()
 
 	// The order of everything below is load bearing:
 	//
