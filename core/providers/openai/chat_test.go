@@ -3,8 +3,10 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -146,6 +148,45 @@ func TestToOpenAIChatRequest_InvalidatesStaleSerializedCache(t *testing.T) {
 		"converted tool must marshal from normalized params, not the stale serialized cache")
 	require.NotEqual(t, string(staleJSON), string(gotJSON),
 		"converted tool must not emit the pre-normalized cached bytes")
+}
+
+// TestToOpenAIChatRequest_DisableStoreContextKey pins that the disable-store context flag forces
+// store=false on the converted request, including a passthrough extra_params store, without touching
+// the caller's request that fallbacks to other providers share.
+func TestToOpenAIChatRequest_DisableStoreContextKey(t *testing.T) {
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ChatParameters{Store: schemas.Ptr(true), ExtraParams: map[string]interface{}{"store": true}},
+		}
+	}
+
+	t.Run("flag_set_forces_store_false", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		out := ToOpenAIChatRequest(ctx, req)
+		require.False(t, *out.Store)
+		require.Equal(t, false, out.ExtraParams["store"])
+		require.True(t, *req.Params.Store)
+		require.Equal(t, true, req.Params.ExtraParams["store"])
+	})
+
+	t.Run("flag_set_without_params", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		req.Params = nil
+		require.False(t, *ToOpenAIChatRequest(ctx, req).Store)
+	})
+
+	t.Run("flag_unset_keeps_store", func(t *testing.T) {
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.True(t, *out.Store)
+		require.Equal(t, true, out.ExtraParams["store"])
+	})
 }
 
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
@@ -415,6 +456,27 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 // reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
 // Vertex case should drop a "none" effort for these models while preserving it for
 // Mistral on Vertex (which does accept "none").
+func TestToOpenAIChatRequest_VertexEndpoint(t *testing.T) {
+	for _, model := range []string{"custom-qwen", "mistral-custom"} {
+		t.Run(model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{
+				VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat},
+			}}})
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex, Model: model,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("none")}},
+			}
+			result := ToOpenAIChatRequest(ctx, request)
+			require.NotNil(t, result)
+			require.Equal(t, model, result.Model)
+			require.NotNil(t, result.Reasoning)
+			require.Equal(t, "none", *result.Reasoning.Effort)
+		})
+	}
+}
+
 func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -999,6 +1061,8 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		model    string
 	}{
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
+		{name: "mistral", provider: schemas.Mistral, model: "zai-glm-5-3"},
+		{name: "vertex mistral", provider: schemas.Vertex, model: "mistral-medium-3"},
 	}
 
 	for _, tt := range tests {
@@ -1828,8 +1892,10 @@ func TestToOpenAIChatRequest_ToolCallCacheControl_OpenRouterOnly(t *testing.T) {
 						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
 					}},
 				}},
-				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
-					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")}},
+				{
+					Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")},
+				},
 			},
 		}
 	}
@@ -2907,6 +2973,39 @@ func gjsonExists(raw []byte, path string) bool {
 // BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat measures the DeepSeek
 // conversion with no response_format (the common case, which must not pay for
 // the downgrade) and with a json_schema response_format (which does).
+// BenchmarkToOpenAIChatRequest_BytePlusReasoning measures the BytePlus compat case against the
+// generic default branch it replaces, so the reasoning rewrite's cost is visible per request shape.
+func BenchmarkToOpenAIChatRequest_BytePlusReasoning(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		effort   *string
+	}{
+		{"default_no_reasoning", schemas.Nebius, nil},
+		{"byteplus_no_reasoning", schemas.BytePlus, nil},
+		{"default_effort_low", schemas.Nebius, schemas.Ptr("low")},
+		{"byteplus_effort_low", schemas.BytePlus, schemas.Ptr("low")},
+		{"byteplus_effort_none", schemas.BytePlus, schemas.Ptr("none")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    "seed-2-0-lite-260228",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			if tc.effort != nil {
+				bifrostReq.Params = &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: tc.effort}}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
+	}
+}
+
 func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 	plainBody := `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}]}`
 	for _, tc := range []struct{ name, body string }{
@@ -2922,4 +3021,274 @@ func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestOpenAIChatRequestUnknownFields pins which top-level chat fields count as
+// unknown: every field OpenAIChatRequest decodes (its own, ChatParameters', the
+// reasoning_* shorthands, fallbacks and extra_params) is known, anything else
+// such as Azure's data_sources is returned compacted, and a body with only
+// known fields allocates nothing.
+func TestOpenAIChatRequestUnknownFields(t *testing.T) {
+	known := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":8,` +
+		`"max_completion_tokens":8,"temperature":0.1,"top_p":1,"tools":[],"tool_choice":"auto","response_format":{"type":"text"},` +
+		`"reasoning_effort":"low","reasoning_max_tokens":5,"reasoning_display":"summarized","reasoning":{"effort":"low"},` +
+		`"prompt_cache_isolation_key":"k","fallbacks":["openai/gpt-4o"],"extra_params":{"a":1},"stream_options":{"include_usage":true},` +
+		`"web_search_options":{},"user":"u","service_tier":"auto","context_management":{}}`)
+	require.Nil(t, OpenAIChatRequestUnknownFields(known))
+	require.Nil(t, OpenAIChatRequestUnknownFields(nil))
+	allocs := testing.AllocsPerRun(100, func() { _ = OpenAIChatRequestUnknownFields(known) })
+	require.Zero(t, allocs, "a body with only known fields must not allocate")
+
+	body := []byte(`{"model":"gpt-4o","messages":[],"data_sources":[ {"type": "azure_search", "parameters": {"index_name": "idx"}} ],"x_new":7}`)
+	got := OpenAIChatRequestUnknownFields(body)
+	require.Len(t, got, 2)
+	require.Equal(t, json.RawMessage(`[{"type":"azure_search","parameters":{"index_name":"idx"}}]`), got["data_sources"])
+	require.Equal(t, json.RawMessage(`7`), got["x_new"])
+
+	// The kept names and values must not alias the body, which fasthttp reuses.
+	copy(body, strings.Repeat("x", len(body)))
+	require.Equal(t, json.RawMessage(`7`), got["x_new"])
+	require.Contains(t, got, "data_sources")
+
+	// sonic matches field names case-insensitively, so these spellings are decoded into the
+	// typed fields; forwarding them as well would send each one to the provider twice.
+	folded := []byte(`{"MODEL":"gpt-4o","Messages":[{"role":"user","content":"hi"}],"Temperature":0.2,"Reasoning_Effort":"low","data_sources":[]}`)
+	var decoded OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal(folded, &decoded))
+	require.Equal(t, "gpt-4o", decoded.Model, "precondition: sonic folds the case of MODEL")
+	require.Len(t, decoded.Messages, 1, "precondition: sonic folds the case of Messages")
+	got = OpenAIChatRequestUnknownFields(folded)
+	require.Equal(t, []string{"data_sources"}, slices.Sorted(maps.Keys(got)), "only the field sonic does not decode is unknown")
+	foldedKnown := []byte(`{"MODEL":"gpt-4o","Messages":[{"role":"user","content":"hi"}],"Temperature":0.2,"Reasoning_Effort":"low"}`)
+	require.Nil(t, OpenAIChatRequestUnknownFields(foldedKnown))
+	allocs = testing.AllocsPerRun(100, func() { _ = OpenAIChatRequestUnknownFields(foldedKnown) })
+	require.Zero(t, allocs, "case-folded known fields must not allocate either")
+}
+
+// BenchmarkOpenAIChatRequestUnknownFields measures the top-level scan on a
+// typical chat body with no unknown fields.
+func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
+	body := []byte(`{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"stream":true,"stream_options":{"include_usage":true}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = OpenAIChatRequestUnknownFields(body)
+	}
+}
+
+// TestToOpenAIChatRequest_MidConversationSystemFromDatasheet pins that a datasheet row with
+// supports_mid_conversation_system_messages=false turns system/developer messages after the
+// leading run into <system-reminder> user turns, and that a silent row leaves them alone.
+func TestToOpenAIChatRequest_MidConversationSystemFromDatasheet(t *testing.T) {
+	const model = "accounts/fireworks/models/qwen3p8-max"
+	input := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("be brief")}},
+		{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("no emoji")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("answer in french"), CacheControl: &schemas.CacheControl{Type: "ephemeral"}},
+		}}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("how are you")}},
+	}
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.Fireworks, Model: model, Input: slices.Clone(input)}
+	}
+
+	t.Run("datasheet_false_inlines_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+		req := newReq()
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Len(t, out.Messages, 6)
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+		require.Equal(t, schemas.ChatMessageRoleDeveloper, out.Messages[1].Role)
+		inlined := out.Messages[4]
+		require.Equal(t, schemas.ChatMessageRoleUser, inlined.Role)
+		require.Len(t, inlined.Content.ContentBlocks, 1)
+		require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *inlined.Content.ContentBlocks[0].Text)
+		require.NotNil(t, inlined.Content.ContentBlocks[0].CacheControl)
+		// The caller's input is not rewritten.
+		require.Equal(t, schemas.ChatMessageRoleSystem, req.Input[4].Role)
+		require.Equal(t, "answer in french", *req.Input[4].Content.ContentBlocks[0].Text)
+	})
+
+	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[4].Role)
+	})
+
+	// A custom provider has no row of its own, so it reads the base provider's row.
+	t.Run("custom_provider_falls_back_to_base_row", func(t *testing.T) {
+		installProviderCapabilityRecords(t, model, map[schemas.ModelProvider]*schemas.ModelCapabilities{
+			schemas.Fireworks: {SupportsMidConversationSystem: schemas.Ptr(false)},
+		})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Fireworks)
+		req := newReq()
+		req.Provider = "my-fireworks"
+		out := ToOpenAIChatRequest(ctx, req)
+		require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[4].Role)
+	})
+}
+
+// installProviderCapabilityRecords installs a capability resolver keyed by provider for one model.
+func installProviderCapabilityRecords(t *testing.T, model string, records map[schemas.ModelProvider]*schemas.ModelCapabilities) {
+	t.Helper()
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if m != model {
+			return nil
+		}
+		return records[p]
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+// stubDeveloperRoleDatasheet marks glm-5 as rejecting the developer role and
+// qwen3-dev as accepting it; every other model has no row.
+func stubDeveloperRoleDatasheet(t *testing.T) {
+	rows := map[string]bool{"glm-5": false, "qwen3-dev": true}
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		supported, ok := rows[model]
+		if !ok {
+			return nil
+		}
+		return &schemas.ModelCapabilities{SupportsDeveloperRole: schemas.Ptr(supported)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+func developerChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Be brief.")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	}
+}
+
+func TestToOpenAIChatRequest_DeveloperRoleAsSystem(t *testing.T) {
+	stubDeveloperRoleDatasheet(t)
+	req := developerChatRequest(schemas.Fireworks, "glm-5")
+	result := ToOpenAIChatRequest(nil, req)
+	require.NotNil(t, result)
+	require.Equal(t, schemas.ChatMessageRoleSystem, result.Messages[0].Role)
+	require.Equal(t, schemas.ChatMessageRoleUser, result.Messages[1].Role)
+	require.Equal(t, schemas.ChatMessageRoleDeveloper, req.Input[0].Role)
+
+	result = ToOpenAIChatRequest(nil, developerChatRequest(schemas.Fireworks, "qwen3-dev"))
+	require.Equal(t, schemas.ChatMessageRoleDeveloper, result.Messages[0].Role)
+}
+
+// TestToOpenAIChatRequest_DeveloperRoleAndMidConversationSystem pins that the two gates act
+// independently and compose: developer unsupported sends every developer message as system,
+// mid-conversation system unsupported turns every system/developer message after the leading
+// run into a <system-reminder> user turn.
+func TestToOpenAIChatRequest_DeveloperRoleAndMidConversationSystem(t *testing.T) {
+	const model = "test-model"
+	text := func(role schemas.ChatMessageRole, s string) schemas.ChatMessage {
+		return schemas.ChatMessage{Role: role, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(s)}}
+	}
+	input := []schemas.ChatMessage{
+		text(schemas.ChatMessageRoleDeveloper, "lead dev"),
+		text(schemas.ChatMessageRoleSystem, "lead sys"),
+		text(schemas.ChatMessageRoleUser, "hi"),
+		text(schemas.ChatMessageRoleDeveloper, "mid dev"),
+		text(schemas.ChatMessageRoleSystem, "mid sys"),
+		text(schemas.ChatMessageRoleUser, "bye"),
+	}
+	const (
+		dev  = schemas.ChatMessageRoleDeveloper
+		sys  = schemas.ChatMessageRoleSystem
+		user = schemas.ChatMessageRoleUser
+	)
+	tests := []struct {
+		name           string
+		developerRole  bool
+		midConvSystem  bool
+		wantRoles      []schemas.ChatMessageRole
+		wantMidInlined bool
+	}{
+		{"both_supported", true, true, []schemas.ChatMessageRole{dev, sys, user, dev, sys, user}, false},
+		{"developer_unsupported", false, true, []schemas.ChatMessageRole{sys, sys, user, sys, sys, user}, false},
+		{"mid_conversation_unsupported", true, false, []schemas.ChatMessageRole{dev, sys, user, user, user, user}, true},
+		{"both_unsupported", false, false, []schemas.ChatMessageRole{sys, sys, user, user, user, user}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+				SupportsDeveloperRole:         schemas.Ptr(tt.developerRole),
+				SupportsMidConversationSystem: schemas.Ptr(tt.midConvSystem),
+			})
+			req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model, Input: slices.Clone(input)}
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.Len(t, out.Messages, len(tt.wantRoles))
+			for i, want := range tt.wantRoles {
+				require.Equal(t, want, out.Messages[i].Role, "message %d", i)
+			}
+			require.Equal(t, "lead dev", *out.Messages[0].Content.ContentStr)
+			if tt.wantMidInlined {
+				require.Equal(t, "<system-reminder>\nmid dev\n</system-reminder>\n", *out.Messages[3].Content.ContentStr)
+				require.Equal(t, "<system-reminder>\nmid sys\n</system-reminder>\n", *out.Messages[4].Content.ContentStr)
+			} else {
+				require.Equal(t, "mid dev", *out.Messages[3].Content.ContentStr)
+			}
+			require.Equal(t, dev, req.Input[0].Role)
+			require.Equal(t, dev, req.Input[3].Role)
+		})
+	}
+}
+
+// TestInlineChatMidConversationSystem_NilContent pins that a mid-conversation system or developer
+// message without content still becomes a user turn, while the leading run is left alone.
+func TestInlineChatMidConversationSystem_NilContent(t *testing.T) {
+	out := inlineChatMidConversationSystem([]OpenAIMessage{
+		{Role: schemas.ChatMessageRoleSystem},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: schemas.ChatMessageRoleDeveloper, Name: schemas.Ptr("ops")},
+	})
+	require.Equal(t, schemas.ChatMessageRoleSystem, out[0].Role)
+	require.Equal(t, schemas.ChatMessageRoleUser, out[2].Role)
+	require.Equal(t, "ops", *out[2].Name)
+	require.Nil(t, out[2].Content)
+}
+
+// A tool result's explicit prompt-cache breakpoint survives the media in it being named instead of
+// sent: the tool message stays a part array carrying the breakpoint.
+func TestToOpenAIChatRequest_ToolResultBreakpointSurvivesMediaPlaceholder(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-sol",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("plot"), Arguments: `{}`},
+			}}}},
+			{
+				Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below"), PromptCacheBreakpoint: &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}},
+					{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+				}},
+			},
+		},
+		Params: &schemas.ChatParameters{},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	out := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, out)
+	b, err := out.MarshalJSON()
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+	msgs, _ := m["messages"].([]any)
+	require.Len(t, msgs, 3, string(b))
+	tool, _ := msgs[2].(map[string]any)
+	parts, ok := tool["content"].([]any)
+	require.True(t, ok, "the tool message must stay a part array; raw=%s", string(b))
+	first, _ := parts[0].(map[string]any)
+	require.NotNil(t, first["prompt_cache_breakpoint"], "raw=%s", string(b))
 }

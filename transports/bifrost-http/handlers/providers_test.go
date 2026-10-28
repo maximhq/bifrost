@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -376,6 +377,128 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
 			}
 		})
+	}
+}
+
+// A passthrough block the typed payload would silently reshape must be rejected: a
+// misspelled or missing allowed_routes decodes to an empty list, which forwards no routes
+// at all, and a rule the matcher cannot honour would block routes without saying why.
+// Both write paths are covered.
+func TestProviderWrites_RejectMalformedPassthrough(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	blocks := map[string]struct{ body, reason string }{
+		"not an object":          {`[]`, "passthrough must be an object"},
+		"missing allowed_routes": {`{}`, "allowed_routes is required"},
+		"misspelled field":       {`{"allowed_route": []}`, `unknown field \"allowed_route\"`},
+		"null rule":              {`{"allowed_routes": [null]}`, "allowed_routes[0] must be an object"},
+		"unknown rule field":     {`{"allowed_routes": [{"method": "GET", "path": "/v1/files"}]}`, `unknown field \"method\"`},
+		"rule without a path":    {`{"allowed_routes": [{"methods": ["GET"]}]}`, "path must start with /"},
+		"inner double star":      {`{"allowed_routes": [{"path": "/v1/**/content"}]}`, "only allowed as the last"},
+		"unsupported method":     {`{"allowed_routes": [{"methods": ["TRACE"], "path": "/v1/files"}]}`, "unsupported method"},
+	}
+	for name, tc := range blocks {
+		t.Run("add/"+name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBody([]byte(`{"provider": "mock-openai", "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "passthrough": ` + tc.body + `}`))
+			h.addProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
+				t.Fatalf("expected passthrough rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if len(h.inMemoryStore.Providers) != 0 {
+				t.Fatal("invalid provider was persisted")
+			}
+		})
+		t.Run("update/"+name, func(t *testing.T) {
+			modelsManager := &mockModelsManager{}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+						},
+					},
+				},
+				modelsManager: modelsManager,
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "passthrough": ` + tc.body + `}`))
+			ctx.SetUserValue("provider", "mock-openai")
+			h.updateProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
+				t.Fatalf("expected passthrough rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if got := h.inMemoryStore.Providers["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
+				t.Fatalf("rejected update changed the stored provider: concurrency=%d", got)
+			}
+			if len(modelsManager.reloadCalls) != 0 {
+				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
+			}
+		})
+	}
+}
+
+// A valid passthrough policy on create is stored, returned, and an update that does not
+// mention it leaves it in place.
+func TestProviderWrites_StorePassthrough(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+		{Methods: []string{"POST"}, Path: "/v1/models/*/predict"},
+	}}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+		Passthrough:          policy,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	h.addProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("add status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	var created ProviderResponse
+	if err := sonic.Unmarshal(ctx.Response.Body(), &created); err != nil {
+		t.Fatalf("decode add response: %v", err)
+	}
+	if !reflect.DeepEqual(created.Passthrough, policy) {
+		t.Fatalf("add response passthrough %+v, want %+v", created.Passthrough, policy)
+	}
+	if got := h.inMemoryStore.Providers["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
+		t.Fatalf("stored passthrough %+v, want %+v", got, policy)
+	}
+
+	attachBifrostClient(t, h.inMemoryStore)
+	ctx = &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/mock-openai")
+	ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}}`))
+	ctx.SetUserValue("provider", "mock-openai")
+	h.updateProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("update status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if got := h.inMemoryStore.Providers["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
+		t.Fatalf("an update without passthrough changed it to %+v", got)
 	}
 }
 
@@ -1052,6 +1175,136 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 	}
 }
 
+// TestProviderHandler_RejectsUnrestorableMaskedHeaders checks that update and add return 400
+// when an extra header carries a masked value that no stored header of the same name can
+// restore, instead of saving the mask as the header value.
+func TestProviderHandler_RejectsUnrestorableMaskedHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	newHandler := func() *ProviderHandler {
+		return &ProviderHandler{
+			inMemoryStore: &lib.Config{
+				ClientConfig: &configstore.ClientConfig{},
+				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+					schemas.OpenAI: {
+						Keys: []schemas.Key{{ID: "key-existing"}},
+						NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
+							"Authorization": *schemas.NewSecretVar("Bearer real-token"),
+						}},
+					},
+				},
+			},
+			modelsManager: &mockModelsManager{},
+		}
+	}
+	assertMaskedHeaderError := func(t *testing.T, ctx *fasthttp.RequestCtx, header string) {
+		t.Helper()
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		var bifrostErr schemas.BifrostError
+		if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil || bifrostErr.Error == nil {
+			t.Fatalf("unexpected error body %s: %v", ctx.Response.Body(), err)
+		}
+		if msg := bifrostErr.Error.Message; !strings.Contains(msg, "masked value") || !strings.Contains(msg, header) {
+			t.Fatalf("expected a masked-value error naming %s, got %q", header, msg)
+		}
+	}
+
+	t.Run("update with a case-only rename", func(t *testing.T) {
+		h := newHandler()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+		ctx.Request.SetRequestURI("/api/providers/openai")
+		ctx.Request.SetBody([]byte(`{
+			"network_config": {"extra_headers": {"authorization": "<REDACTED>"}},
+			"concurrency_and_buffer_size": {"concurrency": 1, "buffer_size": 1}
+		}`))
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+
+		h.updateProvider(ctx)
+
+		assertMaskedHeaderError(t, ctx, "authorization")
+		if stored := h.inMemoryStore.Providers[schemas.OpenAI].NetworkConfig.ExtraHeaders["Authorization"]; stored.GetValue() != "Bearer real-token" {
+			t.Fatalf("stored header changed to %q", stored.GetValue())
+		}
+	})
+
+	t.Run("add with a masked value", func(t *testing.T) {
+		h := newHandler()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.SetBody([]byte(`{
+			"provider": "hyperpod",
+			"custom_provider_config": {"base_provider_type": "openai"},
+			"network_config": {"extra_headers": {"X-Client-Secret": "<REDACTED>"}},
+			"concurrency_and_buffer_size": {"concurrency": 1, "buffer_size": 1}
+		}`))
+
+		h.addProvider(ctx)
+
+		assertMaskedHeaderError(t, ctx, "X-Client-Secret")
+	})
+}
+
+// TestProviderResponse_ExtraHeadersSecretVars checks that a provider response keeps
+// extra_headers as the stored string map and adds extra_headers_secret_vars with the same
+// redacted headers as SecretVar objects, leaking no literal or resolved value, and that the
+// field is omitted when there are no headers.
+func TestProviderResponse_ExtraHeadersSecretVars(t *testing.T) {
+	t.Setenv("BF_TEST_RESPONSE_HDR", "resolved-env-secret")
+	h := &ProviderHandler{}
+	config := configstore.ProviderConfig{NetworkConfig: &schemas.NetworkConfig{
+		BaseURL: "https://upstream.example",
+		ExtraHeaders: map[string]schemas.SecretVar{
+			"X-Plain": *schemas.NewSecretVar("literal-secret"),
+			"X-Env":   *schemas.NewSecretVar("env.BF_TEST_RESPONSE_HDR"),
+		},
+	}}
+	body, err := sonic.ConfigStd.Marshal(h.getProviderResponseFromConfig(schemas.OpenAI, *config.Redacted(), ProviderStatusActive))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out struct {
+		NetworkConfig struct {
+			BaseURL                string                       `json:"base_url"`
+			ExtraHeaders           map[string]string            `json:"extra_headers"`
+			ExtraHeadersSecretVars map[string]map[string]string `json:"extra_headers_secret_vars"`
+		} `json:"network_config"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	nc := out.NetworkConfig
+	if nc.BaseURL != "https://upstream.example" {
+		t.Errorf("base_url lost: %q", nc.BaseURL)
+	}
+	if nc.ExtraHeaders["X-Plain"] != "<REDACTED>" || nc.ExtraHeaders["X-Env"] != "env.BF_TEST_RESPONSE_HDR" {
+		t.Errorf("extra_headers string map changed: %v", nc.ExtraHeaders)
+	}
+	if got := nc.ExtraHeadersSecretVars["X-Plain"]; got["value"] != "<REDACTED>" || got["type"] != string(schemas.SecretTypePlainText) {
+		t.Errorf("X-Plain secret var: %v", got)
+	}
+	if got := nc.ExtraHeadersSecretVars["X-Env"]; got["ref"] != "env.BF_TEST_RESPONSE_HDR" || got["type"] != string(schemas.SecretTypeEnv) {
+		t.Errorf("X-Env secret var: %v", got)
+	}
+	for _, leaked := range []string{"literal-secret", "resolved-env-secret"} {
+		if strings.Contains(string(body), leaked) {
+			t.Errorf("response leaks %q: %s", leaked, body)
+		}
+	}
+
+	empty, err := sonic.ConfigStd.Marshal(h.getProviderResponseFromConfig(schemas.OpenAI, configstore.ProviderConfig{}, ProviderStatusActive))
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if strings.Contains(string(empty), "extra_headers_secret_vars") {
+		t.Errorf("field should be omitted without headers: %s", empty)
+	}
+}
+
 func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.ModelCatalog {
 	t.Helper()
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
@@ -1437,11 +1690,111 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	}
 }
 
-// TestListModels_DecisionsAzureListsMicrosoftDecisionModels pins that decisions=true
-// lists Microsoft's decision models on Azure, by name or through a key alias whose
-// target is a deployment named otherwise, and not gpt-6-luna or chat deployments:
-// Azure serves those as chat models.
-func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
+// TestListModels_DecisionsVLLMListsEveryModel pins that decisions=true lists every
+// model a vLLM server serves: the engine answers /v1/systemone for whatever it loads.
+func TestListModels_DecisionsVLLMListsEveryModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
+	h := providerHandlerForTest(schemas.VLLM, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=vllm&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"Qwen/Qwen3-0.6B", "clef-flash"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsVLLMIgnoresNegativeRows pins that a datasheet row marking a
+// model supports_decisions=false does not hide it on vLLM or SGLang: the engine answers
+// /v1/systemone for every model it loads, whatever the row says.
+func TestListModels_DecisionsVLLMIgnoresNegativeRows(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(false)}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("%s: failed to unmarshal response: %v", provider, err)
+		}
+		names := make([]string, 0, len(resp.Models))
+		for _, model := range resp.Models {
+			names = append(names, model.Name)
+		}
+		slices.Sort(names)
+		if want := []string{"Qwen/Qwen3-0.6B", "clef-flash"}; !slices.Equal(names, want) {
+			t.Fatalf("%s: expected %v, got %v", provider, want, names)
+		}
+	}
+}
+
+// TestListModels_DecisionsSGLListsEveryModel pins the same for an SGLang server.
+func TestListModels_DecisionsSGLListsEveryModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"clef-flash", "jaredpalmer/kev-4b"}
+	h := providerHandlerForTest(schemas.SGL, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=sgl&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"clef-flash", "jaredpalmer/kev-4b"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsAzureListsDecisionModels pins that decisions=true lists
+// Azure's decision models, Microsoft's (by name or through a key alias whose target
+// is a deployment named otherwise) and the gpt-6-luna family, which Azure serves on
+// /openai/v1/decisions, and not chat deployments.
+func TestListModels_DecisionsAzureListsDecisionModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
@@ -1449,7 +1802,7 @@ func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
 	key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
 		"Microsoft-Decision-1": {ModelID: "Decision-1"},
 	}}
-	listed := []string{"Microsoft-Decision-1", "microsoft-decision-2", "gpt-6-luna", "gpt-4o"}
+	listed := []string{"Microsoft-Decision-1", "microsoft-decision-2", "gpt-6-luna", "gpt-6-luna-2026-09-22", "gpt-4o"}
 	h := providerHandlerForTest(schemas.Azure, []schemas.Key{key}, listed, listed)
 	catalog := modelCatalogForPricingJSON(t, []byte(`{"azure/gpt-4o": {"provider":"azure","mode":"chat"}}`))
 	catalog.SetKeyConfigForProvider(schemas.Azure, []schemas.Key{key})
@@ -1472,20 +1825,24 @@ func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
 		names = append(names, model.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"Microsoft-Decision-1", "microsoft-decision-2"}; !slices.Equal(names, want) {
+	if want := []string{"Microsoft-Decision-1", "gpt-6-luna", "gpt-6-luna-2026-09-22", "microsoft-decision-2"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
 	}
 }
 
-// TestListModels_DecisionsDatabricksListsAIDecide pins that a decisions listing on
-// Databricks offers ai_decide, the one model its Decision serves natively, and not the
-// workspace's serving endpoints.
-func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
+// TestListModels_DecisionsDatabricksListsDecisionModels pins that a decisions listing on
+// Databricks offers the models its Decision serves natively, ai_decide and the System One
+// models by their Unity Catalog names, and not the workspace's serving endpoints, including
+// a System One model's own endpoint name, which the systemone route rejects.
+func TestListModels_DecisionsDatabricksListsDecisionModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	listed := []string{"ai_decide", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b"}
+	listed := []string{
+		"ai_decide", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0",
+		"databricks-openjev-qwen35-4b", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b",
+	}
 	h := providerHandlerForTest(schemas.Databricks, []schemas.Key{{ID: "key-a"}}, listed, listed)
 
 	ctx := &fasthttp.RequestCtx{}
@@ -1504,27 +1861,22 @@ func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
 	for _, model := range resp.Models {
 		names = append(names, model.Name)
 	}
-	if want := []string{"ai_decide"}; !slices.Equal(names, want) {
+	if want := []string{"ai_decide", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
 	}
 }
 
-// TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase pins that the gpt-6-luna name rule
-// lists the family only on OpenAI or a custom provider on its base; any other provider
-// hosting it lists it only with a supports_decisions row.
-func TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase(t *testing.T) {
+// TestListModels_DecisionsGPT6LunaOnlyOnOpenAI pins that the gpt-6-luna name rule
+// lists the family only on OpenAI; any other provider hosting it lists it only
+// with a supports_decisions row.
+func TestListModels_DecisionsGPT6LunaOnlyOnOpenAI(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	for provider, wantListed := range map[schemas.ModelProvider]bool{"my-openai": true, schemas.Groq: false} {
+	for provider, wantListed := range map[schemas.ModelProvider]bool{schemas.OpenAI: true, schemas.Groq: false} {
 		models := []string{"gpt-6-luna", "gpt-4o"}
 		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
-		if provider == "my-openai" {
-			config := h.inMemoryStore.Providers[provider]
-			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
-			h.inMemoryStore.Providers[provider] = config
-		}
 
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.Header.SetMethod("GET")
@@ -1541,6 +1893,73 @@ func TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase(t *testing.T) {
 		listed := len(resp.Models) == 1 && resp.Models[0].Name == "gpt-6-luna"
 		if listed != wantListed || (!wantListed && len(resp.Models) != 0) {
 			t.Fatalf("%s: listed gpt-6-luna = %v (models %#v), want %v", provider, listed, resp.Models, wantListed)
+		}
+	}
+}
+
+// TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase pins that a
+// custom provider on OpenAI's base allowing decisions (set, or allowed requests
+// unset) lists every model under decisions=true, matching its Decision call,
+// which is gated by its allowed requests alone.
+func TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for name, allowed := range map[string]*schemas.AllowedRequests{"decisions on": {ListModels: true, Decision: true}, "unset": nil} {
+		models := []string{"my-decider", "gpt-6-luna"}
+		h := providerHandlerForTest("kserve", []schemas.Key{{ID: "key-a"}}, models, models)
+		config := h.inMemoryStore.Providers["kserve"]
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, AllowedRequests: allowed}
+		h.inMemoryStore.Providers["kserve"] = config
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=kserve&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", name, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Total != len(models) {
+			t.Fatalf("%s: expected every model listed, got %#v", name, resp.Models)
+		}
+	}
+}
+
+// TestListModels_DecisionsListsEveryModelOnCustomEngineBase pins that decisions=true
+// lists every model of a custom provider built on the vLLM or SGLang base once it
+// allows decisions: both engines serve /v1/systemone for whatever they load.
+func TestListModels_DecisionsListsEveryModelOnCustomEngineBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, base := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
+		h := providerHandlerForTest("my-engine", []schemas.Key{{ID: "key-a"}}, models, models)
+		config := h.inMemoryStore.Providers["my-engine"]
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+		h.inMemoryStore.Providers["my-engine"] = config
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=my-engine&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", base, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Total != len(models) {
+			t.Fatalf("%s: expected every model listed, got %#v", base, resp.Models)
 		}
 	}
 }
@@ -1671,7 +2090,7 @@ func TestEnrichListModelsResponse_MarksDeprecatedPricingRows(t *testing.T) {
 		{ID: "openai/provider-deprecated", IsDeprecated: true},
 	}}
 
-	enrichListModelsResponse(resp, catalog)
+	catalog.EnrichListModelsResponse(resp)
 
 	if len(resp.Data) != 3 {
 		t.Fatalf("expected all models retained, got %#v", resp.Data)

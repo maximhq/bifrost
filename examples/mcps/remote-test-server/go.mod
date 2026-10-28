@@ -1,6 +1,6 @@
 module remote-test-server
 
-go 1.27.2
+go 1.27.3
 
 require github.com/mark3labs/mcp-go v0.43.2
 

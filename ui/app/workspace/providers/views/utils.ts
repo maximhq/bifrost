@@ -18,5 +18,7 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		prompt_cache: updates.prompt_cache ?? provider.prompt_cache,
 		// null is how the tools tab clears the list, so presence decides, not ??.
 		injected_tools: "injected_tools" in updates ? updates.injected_tools : provider.injected_tools,
+		// null resets passthrough to the provider default, so presence decides here too.
+		passthrough: "passthrough" in updates ? updates.passthrough : provider.passthrough,
 	};
 };

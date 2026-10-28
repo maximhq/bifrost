@@ -131,11 +131,27 @@ function ConsentView({ flowId }: { flowId: string }) {
 					<ShieldCheck className="text-primary size-7" />
 				</div>
 				<h1 className="text-xl font-semibold tracking-tight">{clientName} wants to connect</h1>
+				{flow.client_host && (
+					<p className="text-muted-foreground mt-1 text-sm" data-testid="oauth-consent-client-host">
+						Published by <span className="text-foreground font-mono">{flow.client_host}</span>
+					</p>
+				)}
 				<p className="text-muted-foreground mt-1.5 text-sm">Choose how you'd like to identify yourself to Bifrost</p>
 				<p className="mt-4 text-sm">Continue only if you recognize this application and its callback destination:</p>
-				<p className="mt-2 font-mono text-sm break-all" data-testid="oauth-consent-redirect-uri">
+				<p className="mt-2 text-sm font-semibold break-all" data-testid="oauth-consent-redirect-host">
+					{flow.redirect_host}
+				</p>
+				<p className="text-muted-foreground mt-1 font-mono text-xs break-all" data-testid="oauth-consent-redirect-uri">
 					{flow.redirect_uri}
 				</p>
+				{flow.localhost_only_redirect && (
+					<p
+						className="mt-3 rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
+						data-testid="oauth-consent-localhost-warning"
+					>
+						This application only returns to your own computer, so its name cannot be verified. Any app running locally could use it.
+					</p>
+				)}
 			</div>
 
 			<div className="space-y-3">

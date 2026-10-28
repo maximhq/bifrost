@@ -80,7 +80,8 @@ export default function VirtualKeyDetailSheet({
 	hasPrev = false,
 	hasNext = false,
 }: VirtualKeyDetailSheetProps) {
-	const { assignedUsers, isManagedByProfile, managingProfile, displayBudgets, displayRateLimit } = useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
+		useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const deletesAfterExpire = virtualKey.delete_after_expire ?? coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
@@ -164,7 +165,11 @@ export default function VirtualKeyDetailSheet({
 				</SheetHeader>
 
 				<div className="space-y-6 px-4 py-4 md:px-8">
-					<ManagedVirtualKeyNotice isManagedByProfile={isManagedByProfile} managingProfile={managingProfile} />
+					<ManagedVirtualKeyNotice
+						isManagedByProfile={isManagedByProfile}
+						managingProfile={managingProfile}
+						ownerGoverned={isOwnerGoverned}
+					/>
 
 					{assignedUsers.length > 0 ? (
 						<div className="space-y-1">
@@ -629,6 +634,30 @@ export default function VirtualKeyDetailSheet({
 										{virtualKey.agent_grants.map((grant) => (
 											<Badge key={grant.agent_name} variant="secondary" className="text-xs">
 												{grant.agent_name}
+											</Badge>
+										))}
+									</div>
+								)}
+							</div>
+
+							{/* Relay access: the relays granted by name. */}
+							<div className="space-y-4" data-testid="vk-details-relay-access">
+								<h3 className="font-semibold">Relay access</h3>
+
+								{!virtualKey.relay_grants || virtualKey.relay_grants.length === 0 ? (
+									<span className="text-muted-foreground text-sm" data-testid="vk-details-relay-none">
+										No relays granted
+									</span>
+								) : (
+									<div className="flex flex-wrap gap-1">
+										{virtualKey.relay_grants.map((grant) => (
+											<Badge
+												key={grant.relay_name}
+												variant="secondary"
+												className="text-xs"
+												data-testid={`vk-details-relay-grant-${grant.relay_name}`}
+											>
+												{grant.relay_name}
 											</Badge>
 										))}
 									</div>

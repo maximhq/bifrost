@@ -55,6 +55,8 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Replicate: {},
 	schemas.Runway:    {},
 	schemas.Runware:   {},
+	schemas.MiniMax:   {},
+	schemas.BytePlus:  {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,

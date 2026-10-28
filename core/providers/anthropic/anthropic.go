@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -207,7 +208,7 @@ func completeRequest(
 	url string,
 	jsonBody []byte,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	betaHeaderOverrides map[string]bool,
 	providerName schemas.ModelProvider,
 	requestType schemas.RequestType,
@@ -598,7 +599,7 @@ func HandleAnthropicChatCompletionRequest(
 	request *schemas.BifrostChatRequest,
 	config AnthropicRequestBuildConfig,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
@@ -732,6 +733,10 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			if converted := ConvertAnthropicUsageToBifrostUsage(&usageToProcess.Iterations[i]); converted != nil {
 				usage.Iterations[i] = *converted
 			}
+		}
+		// Mirrored so a stream cut before its final chunk still bills the advisor passes.
+		if billedUsage != nil {
+			billedUsage.Iterations = slices.Clone(usage.Iterations)
 		}
 	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)
@@ -868,7 +873,7 @@ func HandleAnthropicChatCompletionStreaming(
 	url string,
 	jsonBody []byte,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	betaHeaderOverrides map[string]bool,
 	sendBackRawRequest bool,
@@ -1256,6 +1261,9 @@ func HandleAnthropicChatCompletionStreaming(
 					if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
 						// Convert tool use delta to content delta
 						content := *event.Delta.PartialJSON
+						// Keep the content length in step so citation spans on
+						// later text blocks stay aligned with the content string.
+						streamState.contentLen += len(content)
 						response := &schemas.BifrostChatResponse{
 							ID:     messageID,
 							Object: "chat.completion.chunk",
@@ -1421,7 +1429,7 @@ func HandleAnthropicResponsesRequest(
 	request *schemas.BifrostResponsesRequest,
 	config AnthropicRequestBuildConfig,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
@@ -1545,7 +1553,7 @@ func HandleAnthropicResponsesStream(
 	url string,
 	jsonBody []byte,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	betaHeaderOverrides map[string]bool,
 	sendBackRawRequest bool,
@@ -3115,7 +3123,7 @@ func HandleAnthropicCountTokensRequest(
 	request *schemas.BifrostResponsesRequest,
 	config AnthropicRequestBuildConfig,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 ) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {

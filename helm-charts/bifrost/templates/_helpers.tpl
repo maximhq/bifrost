@@ -299,6 +299,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if hasKey .Values.bifrost "disableOnboarding" }}
+{{- $_ := set $config "disable_onboarding" .Values.bifrost.disableOnboarding }}
+{{- end }}
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
@@ -315,6 +318,40 @@ false
 {{- if hasKey . "enableForInference" }}{{- $_ := set $proxy "enable_for_inference" .enableForInference }}{{- end }}
 {{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
 {{- $_ := set $config "proxy_config" $proxy }}
+{{- end }}
+{{- /* Warp: numbers render whenever set, since an explicit 0 means the default (or a reset) */ -}}
+{{- with .Values.bifrost.warp }}
+{{- $warp := dict }}
+{{- if hasKey . "enabled" }}{{- $_ := set $warp "enabled" .enabled }}{{- end }}
+{{- if .provider }}{{- $_ := set $warp "provider" .provider }}{{- end }}
+{{- if .model }}{{- $_ := set $warp "model" .model }}{{- end }}
+{{- if .apiKeyId }}{{- $_ := set $warp "api_key_id" .apiKeyId }}{{- end }}
+{{- if hasKey . "additionalModels" }}
+{{- $models := list }}
+{{- range .additionalModels }}
+{{- $m := dict "provider" .provider "model" .model }}
+{{- if .apiKeyId }}{{- $_ := set $m "api_key_id" .apiKeyId }}{{- end }}
+{{- $models = append $models $m }}
+{{- end }}
+{{- $_ := set $warp "additional_models" $models }}
+{{- end }}
+{{- if hasKey . "maxIterations" }}{{- $_ := set $warp "max_iterations" (.maxIterations | int) }}{{- end }}
+{{- if hasKey . "requestTimeoutSeconds" }}{{- $_ := set $warp "request_timeout_seconds" (.requestTimeoutSeconds | int) }}{{- end }}
+{{- if hasKey . "historyRetentionDays" }}{{- $_ := set $warp "history_retention_days" (.historyRetentionDays | int) }}{{- end }}
+{{- if .systemPromptSuffix }}{{- $_ := set $warp "system_prompt_suffix" .systemPromptSuffix }}{{- end }}
+{{- if hasKey . "temperature" }}{{- $_ := set $warp "temperature" (.temperature | float64) }}{{- end }}
+{{- if .reasoningEffort }}{{- $_ := set $warp "reasoning_effort" .reasoningEffort }}{{- end }}
+{{- /* hasKey: "" must clear the stored embedding provider, model or key, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "embeddingProvider" }}{{- $_ := set $warp "embedding_provider" .embeddingProvider }}{{- end }}
+{{- if hasKey . "embeddingModel" }}{{- $_ := set $warp "embedding_model" .embeddingModel }}{{- end }}
+{{- if hasKey . "embeddingApiKeyId" }}{{- $_ := set $warp "embedding_api_key_id" .embeddingApiKeyId }}{{- end }}
+{{- if hasKey . "embeddingDimension" }}{{- $_ := set $warp "embedding_dimension" (.embeddingDimension | int) }}{{- end }}
+{{- /* hasKey: "" must reset to the default namespace, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "logVectorStoreNamespace" }}{{- $_ := set $warp "log_vector_store_namespace" .logVectorStoreNamespace }}{{- end }}
+{{- if hasKey . "semanticSearchThreshold" }}{{- $_ := set $warp "semantic_search_threshold" (.semanticSearchThreshold | float64) }}{{- end }}
+{{- if hasKey . "semanticSearchLimit" }}{{- $_ := set $warp "semantic_search_limit" (.semanticSearchLimit | int) }}{{- end }}
+{{- if hasKey . "topicDiscoveryMinRequests" }}{{- $_ := set $warp "topic_discovery_min_requests" (.topicDiscoveryMinRequests | int) }}{{- end }}
+{{- if $warp }}{{- $_ := set $config "warp" $warp }}{{- end }}
 {{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
@@ -448,6 +485,12 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyCreation" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_creation" .Values.bifrost.client.skipAccessProfileUserVirtualKeyCreation }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
@@ -696,6 +739,7 @@ false
 {{- if .expires_at }}{{- $_ := set $vk "expires_at" .expires_at }}{{- end }}
 {{- if hasKey . "delete_after_expire" }}{{- $_ := set $vk "delete_after_expire" .delete_after_expire }}{{- end }}
 {{- if hasKey . "disable_content_logging" }}{{- $_ := set $vk "disable_content_logging" .disable_content_logging }}{{- end }}
+{{- if hasKey . "metadata" }}{{- $_ := set $vk "metadata" .metadata }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if .business_unit_id }}{{- $_ := set $vk "business_unit_id" .business_unit_id }}{{- end }}
@@ -950,6 +994,7 @@ false
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
+{{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -1146,6 +1191,9 @@ false
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- $_ := set $pgConfig "matview_refresh_temp_file_limit" .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- end }}
 {{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- end }}
@@ -1214,6 +1262,12 @@ false
 {{- if $os.compress }}
 {{- $_ := set $osConfig "compress" true }}
 {{- end }}
+{{- if hasKey $os "format" }}
+{{- $_ := set $osConfig "format" $os.format }}
+{{- end }}
+{{- if hasKey $os "compression" }}
+{{- $_ := set $osConfig "compression" $os.compression }}
+{{- end }}
 {{- if eq $os.type "s3" }}
 {{- if $os.region }}
 {{- $_ := set $osConfig "region" $os.region }}
@@ -1258,6 +1312,16 @@ false
 {{- $_ := set $osConfig "credentials_json" "env.BIFROST_OBJECT_STORAGE_CREDENTIALS_JSON" }}
 {{- else if $os.credentialsJson }}
 {{- $_ := set $osConfig "credentials_json" $os.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $os.type "azure" }}
+{{- if hasKey $os "endpoint" }}
+{{- $_ := set $osConfig "endpoint" $os.endpoint }}
+{{- end }}
+{{- if $os.existingSecret }}
+{{- $_ := set $osConfig "connection_string" "env.BIFROST_OBJECT_STORAGE_CONNECTION_STRING" }}
+{{- else if hasKey $os "connectionString" }}
+{{- $_ := set $osConfig "connection_string" $os.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
@@ -1438,6 +1502,16 @@ false
 {{- else if hasKey $client "toolsToAutoExecute" }}
 {{- $_ := set $cc "tools_to_auto_execute" $client.toolsToAutoExecute }}
 {{- end }}
+{{- if hasKey $client "prompts_to_expose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.prompts_to_expose }}
+{{- else if hasKey $client "promptsToExpose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.promptsToExpose }}
+{{- end }}
+{{- if hasKey $client "resources_to_expose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resources_to_expose }}
+{{- else if hasKey $client "resourcesToExpose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resourcesToExpose }}
+{{- end }}
 {{- if hasKey $client "auth_type" }}
 {{- $_ := set $cc "auth_type" $client.auth_type }}
 {{- else if hasKey $client "authType" }}
@@ -1466,6 +1540,16 @@ false
 {{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
 {{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
 {{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- with $client.tokenExchange.profile }}{{- $_ := set $te "profile" . }}{{- end }}
+{{- with $client.tokenExchange.resource }}{{- $_ := set $te "resource" . }}{{- end }}
+{{- with $client.tokenExchange.resourceTokenEndpoint }}{{- $_ := set $te "resource_token_endpoint" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientId }}{{- $_ := set $te "resource_client_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientSecret }}{{- $_ := set $te "resource_client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.resourcePrivateKey }}{{- $_ := set $te "resource_private_key" . }}{{- end }}
+{{- with $client.tokenExchange.resourceKeyId }}{{- $_ := set $te "resource_key_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceSigningAlgorithm }}{{- $_ := set $te "resource_signing_algorithm" . }}{{- end }}
+{{- with $client.tokenExchange.resourceAssertionAudience }}{{- $_ := set $te "resource_assertion_audience" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientAuthMethod }}{{- $_ := set $te "resource_client_auth_method" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
@@ -1482,6 +1566,9 @@ false
 {{- end }}
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
+{{- end }}
+{{- if $client.maxProtocolVersion }}
+{{- $_ := set $cc "max_protocol_version" $client.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
@@ -1591,6 +1678,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
+{{- end }}
+{{- if .Values.bifrost.mcp.maxProtocolVersion }}
+{{- $_ := set $mcpConfig "max_protocol_version" .Values.bifrost.mcp.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}
@@ -1875,6 +1965,12 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "enable_llm_obs" }}
 {{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
+{{- end }}
+{{- if $inputConfig.otel_llmobs_conversion }}
+{{- $_ := set $datadogConfig "otel_llmobs_conversion" $inputConfig.otel_llmobs_conversion }}
+{{- end }}
+{{- if hasKey $inputConfig "llmobs_gateway_mode" }}
+{{- $_ := set $datadogConfig "llmobs_gateway_mode" $inputConfig.llmobs_gateway_mode }}
 {{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
@@ -2185,6 +2281,14 @@ false
 {{- end }}
 {{- if $aos.credentialsJson }}
 {{- $_ := set $aosConfig "credentials_json" $aos.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $aos.type "azure" }}
+{{- if hasKey $aos "endpoint" }}
+{{- $_ := set $aosConfig "endpoint" $aos.endpoint }}
+{{- end }}
+{{- if hasKey $aos "connectionString" }}
+{{- $_ := set $aosConfig "connection_string" $aos.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set $auditLogs "object_storage" $aosConfig }}

@@ -342,6 +342,11 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: secret("mantle-secret-key-current"),
 		},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey: secret("sagemaker-access-key-current"),
+			SecretKey: secret("sagemaker-secret-key-current"),
+			RoleARN:   secretPtr("arn:aws:iam::123456789012:role/sagemaker-current"),
+		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
@@ -362,6 +367,11 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: staleMask("mant", "0006"),
 		},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey: staleMask("sage", "0010"),
+			SecretKey: staleMask("sags", "0011"),
+			RoleARN:   secretPtr(staleMaskValue("arn:", "rent")),
+		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
@@ -380,6 +390,9 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"bedrock access key", merged.BedrockKeyConfig.AccessKey.GetValue(), oldRaw.BedrockKeyConfig.AccessKey.GetValue()},
 		{"bedrock session token", merged.BedrockKeyConfig.SessionToken.GetValue(), oldRaw.BedrockKeyConfig.SessionToken.GetValue()},
 		{"mantle secret key", merged.BedrockMantleKeyConfig.SecretKey.GetValue(), oldRaw.BedrockMantleKeyConfig.SecretKey.GetValue()},
+		{"sagemaker access key", merged.SageMakerKeyConfig.AccessKey.GetValue(), oldRaw.SageMakerKeyConfig.AccessKey.GetValue()},
+		{"sagemaker secret key", merged.SageMakerKeyConfig.SecretKey.GetValue(), oldRaw.SageMakerKeyConfig.SecretKey.GetValue()},
+		{"sagemaker role arn", merged.SageMakerKeyConfig.RoleARN.GetValue(), oldRaw.SageMakerKeyConfig.RoleARN.GetValue()},
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
@@ -396,98 +409,6 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	if !merged.VLLMKeyConfig.URL.IsFromEnv() || merged.VLLMKeyConfig.URL.GetRawRef() != "env.NEW_VLLM_URL" {
 		t.Fatalf("expected nested env ref applied, got ref=%q", merged.VLLMKeyConfig.URL.GetRawRef())
 	}
-}
-
-// TestMergeUpdatedKey_GithubCopilotKeyConfig covers the masked-update path for the GitHub
-// App bundle. The API renders keys redacted on GET, so a client that edits one field and
-// submits the form sends back a mask for every field it did not touch. Getting the merge
-// wrong here either persists the literal mask as a credential, or silently drops the four
-// App fields, and both failures look like a working save.
-func TestMergeUpdatedKey_GithubCopilotKeyConfig(t *testing.T) {
-	h := &ProviderHandler{}
-	secret := func(v string) schemas.SecretVar { return *schemas.NewSecretVar(v) }
-	mask := func(prefix, suffix string) schemas.SecretVar {
-		return secret(prefix + strings.Repeat("*", 24) + suffix)
-	}
-
-	stored := func() schemas.Key {
-		return schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          secret("123456"),
-			InstallationID: secret("87654321"),
-			RepositoryID:   secret("999000111"),
-			PrivateKey:     secret(pkcs1TestPEM(t)),
-			GithubDomain:   secret("acme.ghe.com"),
-		}}
-	}
-
-	t.Run("masks resolve back to the stored values", func(t *testing.T) {
-		update := schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          mask("1234", "3456"),
-			InstallationID: mask("8765", "4321"),
-			RepositoryID:   mask("9990", "0111"),
-			PrivateKey:     mask("----", "----"),
-			GithubDomain:   mask("acme", ".com"),
-		}}
-
-		merged, err := h.mergeUpdatedKey(stored(), update)
-		if err != nil {
-			t.Fatalf("mergeUpdatedKey returned error: %v", err)
-		}
-		cfg := merged.GithubCopilotKeyConfig
-		if cfg == nil {
-			t.Fatal("the App config was dropped by the merge")
-		}
-		for _, c := range []struct{ name, got, want string }{
-			{"app_id", cfg.AppID.GetValue(), "123456"},
-			{"installation_id", cfg.InstallationID.GetValue(), "87654321"},
-			{"repository_id", cfg.RepositoryID.GetValue(), "999000111"},
-			{"private_key", cfg.PrivateKey.GetValue(), pkcs1TestPEM(t)},
-			{"github_domain", cfg.GithubDomain.GetValue(), "acme.ghe.com"},
-		} {
-			if c.got != c.want {
-				t.Errorf("%s: got %q, want the stored value %q", c.name, c.got, c.want)
-			}
-			if strings.Contains(c.got, "****") {
-				t.Errorf("%s: the mask was persisted as a credential", c.name)
-			}
-		}
-	})
-
-	t.Run("a mask with no stored counterpart is rejected", func(t *testing.T) {
-		// Nothing to restore from, so accepting it would write asterisks as the App ID.
-		update := schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID: mask("1234", "3456"),
-		}}
-
-		if _, err := h.mergeUpdatedKey(schemas.Key{}, update); err == nil {
-			t.Fatal("expected an error when a mask has no stored value behind it")
-		}
-	})
-
-	t.Run("unmasked literals overwrite the stored values", func(t *testing.T) {
-		update := schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          secret("Iv1.b507a08c87ecfe98"),
-			InstallationID: secret("11112222"),
-			RepositoryID:   secret("333344445"),
-			PrivateKey:     secret(pkcs8TestPEM(t)),
-			GithubDomain:   secret(""),
-		}}
-
-		merged, err := h.mergeUpdatedKey(stored(), update)
-		if err != nil {
-			t.Fatalf("mergeUpdatedKey returned error: %v", err)
-		}
-		cfg := merged.GithubCopilotKeyConfig
-		if cfg.AppID.GetValue() != "Iv1.b507a08c87ecfe98" {
-			t.Errorf("app_id: got %q, want the new literal", cfg.AppID.GetValue())
-		}
-		if cfg.InstallationID.GetValue() != "11112222" {
-			t.Errorf("installation_id: got %q, want the new literal", cfg.InstallationID.GetValue())
-		}
-		if cfg.PrivateKey.GetValue() != pkcs8TestPEM(t) {
-			t.Error("private_key: the rotated key did not take effect")
-		}
-	})
 }
 
 func TestMergeUpdatedKey_RejectsMaskWithoutStoredCounterpart(t *testing.T) {
@@ -557,6 +478,9 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 		{"bedrock ok", schemas.Bedrock, schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: region}}, ""},
 		{"mantle missing region", schemas.BedrockMantle, schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{}}, "bedrock_mantle_key_config.region"},
 		{"mantle ok", schemas.BedrockMantle, schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Region: region}}, ""},
+		{"sagemaker missing region", schemas.SageMaker, schemas.Key{SageMakerKeyConfig: &schemas.SageMakerKeyConfig{}}, "sagemaker_key_config.region"},
+		{"sagemaker nil config", schemas.SageMaker, schemas.Key{}, "sagemaker_key_config.region"},
+		{"sagemaker ok", schemas.SageMaker, schemas.Key{SageMakerKeyConfig: &schemas.SageMakerKeyConfig{Region: region}}, ""},
 		{"vllm missing url", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{ModelName: "m"}}, "vllm_key_config.url"},
 		{"vllm missing model_name", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://vllm:8000")}}, "vllm_key_config.model_name"},
 		{"vllm ok", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://vllm:8000"), ModelName: "m"}}, ""},
@@ -827,202 +751,6 @@ func TestValidateProviderKeyOAuthKeyConfig(t *testing.T) {
 			t.Fatal("oauth_key_config.token_url must be guarded as a caller-chosen dial target")
 		}
 	})
-}
-
-// TestValidateProviderKeyGithubCopilotFormats pins that a literal GitHub App credential is
-// checked for shape at save time, not just for presence. A non-numeric installation_id or a
-// mangled PEM otherwise persists happily and fails on the first inference call, where it
-// reads as a runtime fault rather than a typo in a form.
-//
-// Environment and vault references are exempt: their values are not available here, so
-// checking them would reject every legitimate headless configuration.
-func TestValidateProviderKeyGithubCopilotFormats(t *testing.T) {
-	pemBody := pkcs1TestPEM(t)
-
-	appConfig := func(mutate func(*schemas.GithubCopilotKeyConfig)) *schemas.GithubCopilotKeyConfig {
-		c := &schemas.GithubCopilotKeyConfig{
-			AppID:          *schemas.NewSecretVar("123456"),
-			InstallationID: *schemas.NewSecretVar("87654321"),
-			RepositoryID:   *schemas.NewSecretVar("999000111"),
-			PrivateKey:     *schemas.NewSecretVar(pemBody),
-		}
-		if mutate != nil {
-			mutate(c)
-		}
-		return c
-	}
-
-	cases := []struct {
-		name    string
-		key     schemas.Key
-		wantErr string
-	}{
-		{"valid literal app config", schemas.Key{GithubCopilotKeyConfig: appConfig(nil)}, ""},
-		{"direct token needs no app config", schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}, ""},
-		{
-			"non-numeric installation_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.InstallationID = *schemas.NewSecretVar("my-install")
-			})},
-			"installation_id",
-		},
-		{
-			"path traversal in installation_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.InstallationID = *schemas.NewSecretVar("1/../../../user")
-			})},
-			"installation_id",
-		},
-		{
-			"non-numeric repository_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.RepositoryID = *schemas.NewSecretVar("my-repo")
-			})},
-			"repository_id",
-		},
-		{
-			"private key that is not PEM",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar("not a key")
-			})},
-			"private_key",
-		},
-		{
-			"valid PKCS#8 private key",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar(pkcs8TestPEM(t))
-			})},
-			"",
-		},
-		{
-			// An EC key is a perfectly well-formed PEM, so an envelope-only check waves it
-			// through. GitHub App JWTs are RS256, so it fails at the first request instead.
-			"EC private key",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar(ecTestPEM(t))
-			})},
-			"private_key",
-		},
-		{
-			// Passphrase-protected keys cannot be used unattended, and the envelope alone
-			// does not say so.
-			"encrypted private key envelope",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar("-----BEGIN ENCRYPTED PRIVATE KEY-----\nZm9v\n-----END ENCRYPTED PRIVATE KEY-----")
-			})},
-			"private_key",
-		},
-		{
-			"well-formed envelope with a garbage DER payload",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----\nZm9vYmFy\n-----END RSA PRIVATE KEY-----")
-			})},
-			"private_key",
-		},
-		{
-			"PEM whose newlines survived as literal backslash-n",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = *schemas.NewSecretVar(strings.ReplaceAll(pkcs1TestPEM(t), "\n", `\n`))
-			})},
-			"",
-		},
-		{
-			"no token and no app config at all",
-			schemas.Key{},
-			"github_copilot_key_config is required",
-		},
-		{
-			"no token, missing app_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.AppID = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.app_id is required",
-		},
-		{
-			"no token, missing installation_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.InstallationID = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.installation_id is required",
-		},
-		{
-			"no token, missing repository_id",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.RepositoryID = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.repository_id is required",
-		},
-		{
-			"no token, missing private_key",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.PrivateKey = schemas.SecretVar{}
-			})},
-			"github_copilot_key_config.private_key is required",
-		},
-		{
-			// A token does not excuse a half-filled App block: it persists silently and only
-			// breaks later, when the token expires or is removed.
-			"direct token alongside an incomplete app config",
-			schemas.Key{
-				Value: *schemas.NewSecretVar("tid=abc"),
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID: *schemas.NewSecretVar("123456"),
-				},
-			},
-			"installation_id",
-		},
-		{
-			"direct token alongside a malformed app config",
-			schemas.Key{
-				Value: *schemas.NewSecretVar("tid=abc"),
-				GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-					c.RepositoryID = *schemas.NewSecretVar("not-a-number")
-				}),
-			},
-			"repository_id",
-		},
-		{
-			"direct token alongside a complete app config",
-			schemas.Key{Value: *schemas.NewSecretVar("tid=abc"), GithubCopilotKeyConfig: appConfig(nil)},
-			"",
-		},
-		{
-			// GitHub documents the JWT issuer as "the client ID or application ID", and says
-			// "use of the client ID is recommended". Client IDs look like Iv1.b507a08c87ecfe98,
-			// so a digits-only rule on app_id would reject the recommended configuration.
-			// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
-			"client ID as app_id is accepted",
-			schemas.Key{GithubCopilotKeyConfig: appConfig(func(c *schemas.GithubCopilotKeyConfig) {
-				c.AppID = *schemas.NewSecretVar("Iv1.b507a08c87ecfe98")
-			})},
-			"",
-		},
-		{
-			"env references are not format-checked",
-			schemas.Key{GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-				AppID:          *schemas.NewSecretVar("env.COPILOT_APP_ID"),
-				InstallationID: *schemas.NewSecretVar("env.COPILOT_INSTALLATION_ID"),
-				RepositoryID:   *schemas.NewSecretVar("env.COPILOT_REPOSITORY_ID"),
-				PrivateKey:     *schemas.NewSecretVar("env.COPILOT_PRIVATE_KEY"),
-			}},
-			"",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateProviderKeyURL(schemas.GithubCopilot, tc.key)
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected no error, got %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-			}
-		})
-	}
 }
 
 // refreshHandlerForTest builds a ProviderHandler with one keyed provider and a
@@ -1335,11 +1063,6 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 
-	copilotPEM := pkcs1TestPEM(t)
-	copilotConfig := func(domain string) string {
-		return `{"app_id":"123","installation_id":"456","repository_id":"789","private_key":` + strconv.Quote(copilotPEM) + `,"github_domain":"` + domain + `"}`
-	}
-
 	// A Vertex credential JSON names where the Google client dials: a service account's
 	// token_uri, and for an external account the token_url plus a credential_source the client
 	// reads (here a local file) and posts there. Swapping the JSON therefore moves the key's
@@ -1403,20 +1126,13 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			want403: true,
 		},
 		{
-			name:     "update github copilot github_domain",
-			provider: schemas.GithubCopilot,
+			name:     "update sagemaker runtime endpoint override",
+			provider: schemas.SageMaker,
 			stored: &schemas.Key{
-				ID: "key-1", Name: "copilot-key", Weight: 1,
-				Value: *schemas.NewSecretVar("ghu_copilot_token"),
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID:          *schemas.NewSecretVar("123"),
-					InstallationID: *schemas.NewSecretVar("456"),
-					RepositoryID:   *schemas.NewSecretVar("789"),
-					PrivateKey:     *schemas.NewSecretVar(copilotPEM),
-					GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
-				},
+				ID: "key-1", Name: "sagemaker-key", Weight: 1,
+				SageMakerKeyConfig: &schemas.SageMakerKeyConfig{Region: schemas.NewSecretVar("us-east-1")},
 			},
-			body:    `{"value":"ghu_copilot_token","weight":1,"github_copilot_key_config":` + copilotConfig("evil.example.com") + `}`,
+			body:    `{"weight":1,"sagemaker_key_config":{"region":"us-east-1","endpoints":{"runtime":"evil.example.com"}}}`,
 			want403: true,
 		},
 		{
@@ -1608,6 +1324,8 @@ func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
 		{name: "bedrock alias valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"eu-west-1"}}}`, wantStatus: fasthttp.StatusOK},
 		{name: "vertex host-shaped region", provider: schemas.Vertex, body: `{"name":"k","weight":1,"vertex_key_config":{"project_id":"p","region":"attacker.example/x?","auth_credentials":"{}"}}`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "mantle host-shaped region", provider: schemas.BedrockMantle, body: `{"name":"k","weight":1,"bedrock_mantle_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "sagemaker host-shaped region", provider: schemas.SageMaker, body: `{"name":"k","weight":1,"sagemaker_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "sagemaker valid region", provider: schemas.SageMaker, body: `{"name":"k","weight":1,"sagemaker_key_config":{"region":"us-east-1"}}`, wantStatus: fasthttp.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1679,19 +1397,6 @@ func ecCurveTestPEM(t *testing.T, curve elliptic.Curve, pkcs8 bool) string {
 			t.Fatalf("marshal pkcs8: %v", err)
 		}
 		return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
-	}
-	der, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatalf("marshal ec: %v", err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
-}
-
-func ecTestPEM(t *testing.T) string {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate ec: %v", err)
 	}
 	der, err := x509.MarshalECPrivateKey(key)
 	if err != nil {

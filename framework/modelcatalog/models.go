@@ -30,6 +30,18 @@ var providersWithListModelsOnly = map[schemas.ModelProvider]bool{
 	schemas.Cloudflare: true,
 }
 
+// GetModelCreatedTimes returns the creation time, in Unix seconds, that the
+// provider last reported for each of its listed models, taken from the cached
+// list-models responses in the given mode, so times line up with the listing
+// read in that mode. It never calls the provider. Models the provider gave no
+// time for are absent. The returned map is owned by the caller.
+func (mc *ModelCatalog) GetModelCreatedTimes(provider schemas.ModelProvider, unfiltered bool) map[string]int64 {
+	if mc == nil || mc.live == nil {
+		return map[string]int64{}
+	}
+	return mc.live.CreatedForProvider(provider, unfiltered)
+}
+
 // GetModelsForProvider returns the effective allowed model set for the
 // provider. Filtered live entries are authoritative when present (they were
 // pre-gated by ListModelsPipeline against the key's allow/block/aliases);
@@ -390,6 +402,11 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
 	case schemas.Databricks:
+		// A key alias is resolved later, against the name it is given, so prefixing it here
+		// would turn "my-alias" into a name no key alias matches.
+		if _, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+			return model, nil
+		}
 		return refineDatabricksModel(model), nil
 	}
 	return model, nil
@@ -400,7 +417,8 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 // - Other names get the `system.ai.` prefix.
 // - A single dot is treated as a version separator (e.g. `gpt-5.5`).
 //
-// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+// Key aliases never reach here (the Databricks case returns them unchanged). Explicit
+// `api_format` is handled by the provider and is not visible here.
 func refineDatabricksModel(model string) string {
 	const (
 		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes

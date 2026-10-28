@@ -245,7 +245,7 @@ Available operations:
 - **`transcription`**: Speech-to-text conversion
 - **`transcription_stream`**: Streaming speech-to-text
 - **`rerank`**: Document reranking via `/v1/rerank` (OpenAI-compatible base only)
-- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` base serves them natively, and so does an `openai` base for the models the datasheet marks `supports_decisions` (such as `gpt-6-luna`); other models and bases return `unsupported_operation`, or are emulated through the Responses API when `convert_decision_to_responses` is on. Leave that setting off if a custom provider serves decisions natively: the model catalog has no entries for custom providers, so with it on a decision model under an unrecognized name is diverted away from its native endpoint ([why](/features/compat-plugin#4-decision-to-responses-emulation)). See [Self-Hosted Decision Models](/providers/self-hosted-decision-models) for Laya and Nimble
+- **`decisions`**: Decision requests via `/v1/decisions`. A `typesafe` or `openai` base forwards every model to its upstream's decisions endpoint, and the upstream rejects a model it does not serve; set `decisions: false` here for an upstream that has no such endpoint. Other bases return `unsupported_operation`, or are emulated through the Responses API when `convert_decision_to_responses` is on. Leave that setting off if a custom provider serves decisions natively: the model catalog has no entries for custom providers, so with it on a decision model under an unrecognized name is diverted away from its native endpoint ([why](/features/compat-plugin#4-decision-to-responses-emulation)). See [Self-Hosted Decision Models](/providers/self-hosted-decision-models) for Laya and Nimble
 
 ### Base Provider Types
 

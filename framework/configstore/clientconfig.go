@@ -90,57 +90,60 @@ type ClientConfig struct {
 	// Input-only presence information; never persisted or included in responses/hashes.
 	inferenceAuthProvided bool
 
-	DropExcessRequests                    bool                                  `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
-	InitialPoolSize                       int                                   `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
-	PrometheusLabels                      []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
-	EnableLogging                         *bool                                 `json:"enable_logging"`                             // Enable logging of requests and responses
-	DisableContentLogging                 bool                                  `json:"disable_content_logging"`                    // Disable logging of content
-	RetainContentInObjectStorage          bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
-	AllowPerRequestContentStorageOverride bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
-	AllowPerRequestRawOverride            bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
-	AllowDirectKeys                       bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
-	VKRotationCooldown                    schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
-	DisableDBPingsInHealth                bool                                  `json:"disable_db_pings_in_health"`
-	LogRetentionDays                      int                                   `json:"log_retention_days" validate:"min=1"`         // Number of days to retain logs (minimum 1 day)
-	EnforceAuthOnInference                bool                                  `json:"enforce_auth_on_inference"`                   // Require auth (VK, API key, or user token) on inference endpoints
-	DualCredentialConflictBehavior        tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"` // Behavior when both an IDP token and a VK are present on an inference request
-	ExtraFieldsPlacement                  tables.ExtraFieldsPlacement           `json:"extra_fields_placement,omitempty"`            // Where inference responses carry extra_fields: "body" (default) or "headers"
-	EnforceGovernanceHeader               bool                                  `json:"enforce_governance_header,omitempty"`         // Deprecated: use EnforceAuthOnInference
-	EnforceSCIMAuth                       bool                                  `json:"enforce_scim_auth,omitempty"`                 // Deprecated: use EnforceAuthOnInference
-	AllowedOrigins                        []string                              `json:"allowed_origins,omitempty"`                   // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
-	AllowedHeaders                        []string                              `json:"allowed_headers,omitempty"`                   // Additional allowed headers for CORS and WebSocket
-	MaxRequestBodySizeMB                  int                                   `json:"max_request_body_size_mb"`                    // The maximum request body size in MB
-	Compat                                CompatConfig                          `json:"compat"`                                      // Compat plugin configuration
-	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
-	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
-	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
-	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
-	MCPOAuthPrivateAllowlist              []string                              `json:"mcp_oauth_private_allowlist,omitempty"`       // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
-	A2APrivateAllowlist                   []string                              `json:"a2a_private_allowlist,omitempty"`             // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
-	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
-	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
-	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
-	MCPDisableAutoToolInject              bool                                  `json:"mcp_disable_auto_tool_inject"`                // When true, MCP tools are not injected into requests by default
-	MCPEnableTempTokenAuth                bool                                  `json:"mcp_enable_temp_token_auth"`                  // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
-	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`              // Global header filtering configuration for x-bf-eh-* headers
-	AsyncJobResultTTL                     int                                   `json:"async_job_result_ttl"`                        // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeaders                       []string                              `json:"required_headers,omitempty"`                  // Headers that must be present on every request (case-insensitive)
-	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
-	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
-	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
-	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
-	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
-	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
-	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
-	SkillsExternalClientURL               *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`        // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
-	A2AStoreRawRequestResponse            bool                                  `json:"a2a_store_raw_request_response"`
-	A2AExternalClientURL                  *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
-	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`    // How /mcp authenticates inbound clients: headers (default), both, or oauth.
-	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`    // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
-	ConfigHash                            string                                `json:"-"`                                 // Config hash for reconciliation (not serialized)
-	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`       // Dump error details in console logs
-	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`          // Global webhook delivery settings; nil means all defaults
+	DropExcessRequests                      bool                                  `json:"drop_excess_requests"`                       // Drop excess requests if the provider queue is full
+	InitialPoolSize                         int                                   `json:"initial_pool_size"`                          // The initial pool size for the bifrost client
+	PrometheusLabels                        []string                              `json:"prometheus_labels"`                          // The labels to be used for prometheus metrics
+	EnableLogging                           *bool                                 `json:"enable_logging"`                             // Enable logging of requests and responses
+	DisableContentLogging                   bool                                  `json:"disable_content_logging"`                    // Disable logging of content
+	RetainContentInObjectStorage            bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
+	AllowPerRequestContentStorageOverride   bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
+	AllowPerRequestRawOverride              bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
+	AllowDirectKeys                         bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
+	VKRotationCooldown                      schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
+	DisableDBPingsInHealth                  bool                                  `json:"disable_db_pings_in_health"`
+	LogRetentionDays                        int                                   `json:"log_retention_days" validate:"min=1"`           // Number of days to retain logs (minimum 1 day)
+	EnforceAuthOnInference                  bool                                  `json:"enforce_auth_on_inference"`                     // Require auth (VK, API key, or user token) on inference endpoints
+	DualCredentialConflictBehavior          tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"`   // Behavior when both an IDP token and a VK are present on an inference request
+	ExtraFieldsPlacement                    tables.ExtraFieldsPlacement           `json:"extra_fields_placement,omitempty"`              // Where inference responses carry extra_fields: "body" (default) or "headers"
+	EnforceGovernanceHeader                 bool                                  `json:"enforce_governance_header,omitempty"`           // Deprecated: use EnforceAuthOnInference
+	EnforceSCIMAuth                         bool                                  `json:"enforce_scim_auth,omitempty"`                   // Deprecated: use EnforceAuthOnInference
+	AllowedOrigins                          []string                              `json:"allowed_origins,omitempty"`                     // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
+	AllowedHeaders                          []string                              `json:"allowed_headers,omitempty"`                     // Additional allowed headers for CORS and WebSocket
+	MaxRequestBodySizeMB                    int                                   `json:"max_request_body_size_mb"`                      // The maximum request body size in MB
+	Compat                                  CompatConfig                          `json:"compat"`                                        // Compat plugin configuration
+	MCPAgentDepth                           int                                   `json:"mcp_agent_depth"`                               // The maximum depth for MCP agent mode tool execution
+	MCPMaxInstructionsPerClient             int                                   `json:"mcp_max_instructions_per_client"`               // Byte bound on one server's forwarded instructions; 0 is the default
+	MCPMaxInstructionsTotal                 int                                   `json:"mcp_max_instructions_total"`                    // Byte bound on the whole forwarded aggregate; 0 is the default
+	MCPCodeModeLimits                       *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`                // Per-execution code mode limits; nil or zero fields use the defaults
+	MCPOAuthPrivateAllowlist                []string                              `json:"mcp_oauth_private_allowlist,omitempty"`         // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
+	A2APrivateAllowlist                     []string                              `json:"a2a_private_allowlist,omitempty"`               // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
+	MCPToolExecutionTimeout                 int                                   `json:"mcp_tool_execution_timeout"`                    // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel                 string                                `json:"mcp_code_mode_binding_level"`                   // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval                     int                                   `json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
+	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
+	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
+	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
+	AsyncJobResultTTL                       int                                   `json:"async_job_result_ttl"`                          // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeaders                         []string                              `json:"required_headers,omitempty"`                    // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders                          []string                              `json:"logging_headers,omitempty"`                     // Headers to capture in log metadata
+	WhitelistedRoutes                       []string                              `json:"whitelisted_routes,omitempty"`                  // Routes that bypass auth middleware
+	HideDeletedVirtualKeysInFilters         bool                                  `json:"hide_deleted_virtual_keys_in_filters"`          // Hide deleted virtual keys from logs/MCP filter data
+	DeleteExpiredVirtualKeys                bool                                  `json:"delete_expired_virtual_keys"`                   // Delete expired virtual keys by default; a key's delete_after_expire overrides this
+	EnforceVKObjectOwnership                bool                                  `json:"enforce_vk_object_ownership"`                   // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
+	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
+	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
+	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
+	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	SkillsExternalClientURL                 *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`          // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
+	A2AStoreRawRequestResponse              bool                                  `json:"a2a_store_raw_request_response"`
+	A2AExternalClientURL                    *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
+	MCPServerAuthMode                       tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`    // How /mcp authenticates inbound clients: headers (default), both, or oauth.
+	OAuth2ServerConfig                      *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`    // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
+	ConfigHash                              string                                `json:"-"`                                 // Config hash for reconciliation (not serialized)
+	DumpErrorsInConsoleLogs                 bool                                  `json:"dump_errors_in_console_logs"`       // Dump error details in console logs
+	WebhookConfig                           *tables.WebhookConfig                 `json:"webhook_config,omitempty"`          // Global webhook delivery settings; nil means all defaults
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
@@ -256,6 +259,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.DeleteExpiredVirtualKeys {
 		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+	}
+	if c.SkipAccessProfileUserVirtualKeyCreation {
+		hash.Write([]byte("skipAccessProfileUserVirtualKeyCreation:true"))
+	}
+	if c.SkipAccessProfileUserVirtualKeyDeletion {
+		hash.Write([]byte("skipAccessProfileUserVirtualKeyDeletion:true"))
 	}
 	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
 	if !c.EnforceVKObjectOwnership {
@@ -660,6 +669,7 @@ type ProviderConfig struct {
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP relays may forward
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -683,6 +693,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
 		InjectedTools:            p.InjectedTools,
+		Passthrough:              p.Passthrough,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -762,6 +773,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if len(key.AzureKeyConfig.Scopes) > 0 {
 				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
+			azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
+			azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
 
@@ -774,6 +787,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+			vertexConfig.UseSessionRouting = key.VertexKeyConfig.UseSessionRouting
 			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
@@ -846,6 +860,30 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
 
+		// Redact SageMaker key config if present
+		if key.SageMakerKeyConfig != nil {
+			smConfig := &schemas.SageMakerKeyConfig{}
+			smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
+			smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
+			if key.SageMakerKeyConfig.SessionToken != nil {
+				smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
+			}
+			if key.SageMakerKeyConfig.Region != nil {
+				smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
+			}
+			if key.SageMakerKeyConfig.RoleARN != nil {
+				smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
+			}
+			if key.SageMakerKeyConfig.ExternalID != nil {
+				smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
+			}
+			if key.SageMakerKeyConfig.RoleSessionName != nil {
+				smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
+			}
+			smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
+			redactedConfig.Keys[i].SageMakerKeyConfig = smConfig
+		}
+
 		if key.VLLMKeyConfig != nil {
 			vllmConfig := &schemas.VLLMKeyConfig{
 				ModelName: key.VLLMKeyConfig.ModelName,
@@ -899,18 +937,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
 			}
 			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
-		}
-
-		if key.GithubCopilotKeyConfig != nil {
-			// The private key is the whole credential, so it is redacted like any other
-			// secret rather than surfaced in a config read.
-			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
-				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
-				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
-				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
-				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
-				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
-			}
 		}
 
 		if key.OAuthKeyConfig != nil {
@@ -986,6 +1012,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash InjectedTools
 	if len(p.InjectedTools) > 0 {
 		data, err := sonic.Marshal(p.InjectedTools)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Passthrough
+	if p.Passthrough != nil {
+		data, err := sonic.Marshal(p.Passthrough)
 		if err != nil {
 			return "", err
 		}
@@ -1223,6 +1258,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash SageMakerKeyConfig
+	if key.SageMakerKeyConfig != nil {
+		data, err := sonic.Marshal(key.SageMakerKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Aliases (encoded by the caller, see GenerateKeyHash).
 	if aliases != nil {
 		hash.Write(aliases)
@@ -1270,14 +1313,6 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash DatabricksKeyConfig
 	if key.DatabricksKeyConfig != nil {
 		data, err := sonic.Marshal(key.DatabricksKeyConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-	}
-	// Hash GithubCopilotKeyConfig
-	if key.GithubCopilotKeyConfig != nil {
-		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -1397,6 +1432,16 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		}
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
+	}
+	// Hash relay grants only when the key declares them, so every key that predates
+	// relays keeps its hash. Grant names are sorted so file order cannot move it.
+	if vk.RelayGrants != nil {
+		names := make([]string, 0, len(vk.RelayGrants))
+		for _, g := range vk.RelayGrants {
+			names = append(names, g.RelayName)
+		}
+		sort.Strings(names)
+		hash.Write([]byte("relayGrants:" + strings.Join(names, ",")))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -2110,6 +2155,26 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			hash.Write([]byte("needs_session_stickiness:true"))
 		} else {
 			hash.Write([]byte("needs_session_stickiness:false"))
+		}
+	}
+
+	// Only a set value contributes, so existing hashes are unchanged.
+	if m.MaxProtocolVersion != "" {
+		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
+	}
+	// nil (expose all) contributes nothing; [] and listed entries do.
+	for _, list := range []struct {
+		name  string
+		value schemas.WhiteList
+	}{{"prompts_to_expose", m.PromptsToExpose}, {"resources_to_expose", m.ResourcesToExpose}} {
+		if list.value != nil {
+			// JSON keeps entry boundaries: ["a,b"] and ["a","b"] hash apart.
+			data, err := sonic.Marshal([]string(list.value))
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte(list.name + ":"))
+			hash.Write(data)
 		}
 	}
 
