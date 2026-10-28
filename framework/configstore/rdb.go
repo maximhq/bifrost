@@ -8850,6 +8850,37 @@ func needsReauthColumns(reason string) map[string]any {
 	return map[string]any{"status": "needs_reauth", "status_reason": reason}
 }
 
+// MarkOauthTokenNeedsReauthIfUnrenewable flips an active row with no refresh token and an expired
+// access token to 'needs_reauth', under a row lock so a concurrent reauthorize wins.
+func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+	marked := false
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current tables.TableMCPOauthToken
+		if err := dbForUpdate(tx).Where("id = ?", tokenID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if current.Status != "active" || strings.TrimSpace(current.RefreshToken) != "" ||
+			current.ExpiresAt == nil || !time.Now().After(*current.ExpiresAt) {
+			return nil
+		}
+		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {
+			return err
+		}
+		marked = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to mark oauth token %s needs_reauth: %w", tokenID, err)
+	}
+	return marked, nil
+}
+
 // MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a single
 // token row, regardless of auth_mode. Called by the unified refresh function
 // when the upstream credential is permanently rejected: the row stays

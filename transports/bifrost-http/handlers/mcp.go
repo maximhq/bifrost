@@ -3444,10 +3444,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// secret to a caller-supplied endpoint the admin never explicitly
 		// paired it with — require the secret to be resent explicitly
 		// whenever either endpoint changes, rather than trusting the old
-		// pairing across an endpoint change.
+		// pairing across an endpoint change. A public client stores no secret,
+		// so it has nothing to resend.
 		endpointChanged := resolvedOauthFields.AuthorizeURL != existingOauthConfig.AuthorizeURL ||
 			resolvedOauthFields.TokenURL != existingOauthConfig.TokenURL
-		if endpointChanged && req.OauthConfig.ClientSecret.ShouldPreserveStored() {
+		if endpointChanged && existingOauthConfig.ClientSecret.IsSet() && req.OauthConfig.ClientSecret.ShouldPreserveStored() {
 			SendError(ctx, fasthttp.StatusBadRequest, "client_secret must be resent explicitly when authorize_url or token_url changes")
 			return
 		}
