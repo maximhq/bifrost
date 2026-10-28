@@ -398,6 +398,8 @@ Long operations run in the background so you can keep using the page. Find them 
 |-----|------------|
 | Recalculating log costs | Recalculate cost on the logs page |
 | Indexing logs for Warp | A Warp log index backfill |
+| Computing Warp topics | Seed topics in Warp settings, once per embedding model |
+| Discovering new Warp topics | Warp itself, hourly, once the new topic threshold of indexed requests match no existing topic (100 by default) |
 | Virtual key expiry cleanup | The daily cleanup of [expired virtual keys](/features/governance/virtual-keys#key-expiry) |
 
 Each job shows its status and, if it reports progress, a progress bar. Totals are approximate, so a finished job's count can be slightly off. To stop a running job, click **Cancel** on its row, then **Stop job**. A cancelled job does not resume. Dismiss a finished job from its row, or click **Clear finished** in the panel header to remove them all. On the Notifications tab, that spot holds **Mark all read**.
@@ -504,6 +506,8 @@ There are two ways headers get captured into log metadata:
 | `x-bf-lh-region: us-east-1` | `region` | `us-east-1` |
 
 Both methods can be used together - configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
+
+Requests made with a virtual key that has [metadata](/features/governance/virtual-keys#metadata-per-key) also get the key's metadata in the same map. The key's values are applied last, so on a key collision they override header values.
 
 ### Configuring Logging Headers
 

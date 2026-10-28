@@ -35,8 +35,15 @@ import { useGetMCPLogByIdQuery, useGetUserAgentMappingsQuery } from "@/lib/store
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
-import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, type MCPLogPillTone } from "@/lib/utils/mcpLogPresentation";
+import {
+	getMCPLogPillTone,
+	getMCPLogPresentation,
+	getMCPLogTimeline,
+	getMCPReadKind,
+	type MCPLogPillTone,
+} from "@/lib/utils/mcpLogPresentation";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { OsIcon } from "@enterprise/lib/constants/edgeApps";
 import { useGetDeviceQuery } from "@enterprise/lib/store/apis/edgeControlApi";
 import { Link } from "@tanstack/react-router";
@@ -118,7 +125,7 @@ function HeroStat({
 }) {
 	return (
 		<div className={cn("border-border/70 min-w-0 border-b px-5 py-3 md:border-b-0", hasRightBorder && "md:border-r")}>
-			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{label}</div>
+			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase truncate">{label}</div>
 			<div className={cn("mt-0.5 truncate text-[18px] font-semibold tabular-nums", mono && "font-mono text-[15px]", valueClass)}>
 				{value}
 			</div>
@@ -160,9 +167,11 @@ export function MCPLogDetailSheet({
 		skip: !open || !log?.id,
 	});
 
-	// Device metadata (hostname, OS) comes from the Edge device registry; fall back to the raw id when absent.
+	// Device metadata (hostname, OS) comes from the Edge device registry; fall back to the raw id when absent,
+	// including for a caller without Devices:View, for whom the lookup is skipped.
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
 	const deviceId = fullLog?.device_id ?? log?.device_id ?? "";
-	const { data: deviceData } = useGetDeviceQuery(deviceId, { skip: !open || !deviceId });
+	const { data: deviceData } = useGetDeviceQuery(deviceId, { skip: !open || !deviceId || !hasDevicesAccess });
 	const device = deviceData?.device;
 
 	// Keyboard navigation: arrow up/down to navigate between logs
@@ -378,7 +387,12 @@ export function MCPLogDetailSheet({
 									) : null}
 								</div>
 								<div className="mt-3 flex items-center gap-2">
-									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Tool</div>
+									<div
+										className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase"
+										data-testid="mcplogdetails-tool-label"
+									>
+										{getMCPReadKind(displayLog) ?? "Tool"}
+									</div>
 									<Link
 										to="/workspace/mcp-logs"
 										search={{ tool_names: [displayLog.tool_name] }}
@@ -447,7 +461,6 @@ export function MCPLogDetailSheet({
 							/>
 							<HeroStat
 								label="Server"
-								mono
 								value={displayLog.source === "native" ? "Local" : displayLog.server_label || "—"}
 								sub={displayLog.source === "native" ? "native" : "mcp"}
 								valueClass="whitespace-normal overflow-visible break-all"
@@ -553,7 +566,7 @@ export function MCPLogDetailSheet({
 													search={{ server_labels: [displayLog.server_label] }}
 													data-testid="mcplogdetails-server-link"
 												>
-													<Badge variant="secondary" className="font-mono hover:underline">
+													<Badge variant="secondary" className="hover:underline">
 														{displayLog.server_label}
 													</Badge>
 												</Link>

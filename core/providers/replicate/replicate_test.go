@@ -1460,6 +1460,38 @@ func TestBifrostToReplicateResponsesRequestConversion(t *testing.T) {
 			},
 		},
 		{
+			name: "Instructions_Lead_System_Input",
+			input: &schemas.BifrostResponsesRequest{
+				Model: "meta/llama-3.1-70b-instruct",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Answer in French"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Hello"),
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{
+					Instructions: &instructions,
+				},
+			},
+			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
+				require.NotNil(t, result)
+				require.NotNil(t, result.Input)
+				// Instructions and system input are complementary: both survive, instructions first
+				require.NotNil(t, result.Input.SystemPrompt)
+				assert.Equal(t, instructions+"\nAnswer in French", *result.Input.SystemPrompt)
+			},
+		},
+		{
 			name: "Version_ID",
 			input: &schemas.BifrostResponsesRequest{
 				Model: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
@@ -1876,4 +1908,22 @@ func BenchmarkFileListPagination(b *testing.B) {
 			b.Fatalf("follow-up page: %v", bifrostErr.Error.Message)
 		}
 	}
+}
+
+// On an OpenAI model's message input, a tool result's media is named instead of sent.
+func TestToReplicateChatRequest_FlattensToolResultMedia(t *testing.T) {
+	req, err := replicate.ToReplicateChatRequest(&schemas.BifrostChatRequest{
+		Model: "openai/gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, req.Input.Messages, 2)
+	require.NotNil(t, req.Input.Messages[1].Content.ContentStr, "the tool message is text")
+	assert.Contains(t, *req.Input.Messages[1].Content.ContentStr, "[image/png")
 }

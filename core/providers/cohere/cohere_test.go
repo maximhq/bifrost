@@ -120,3 +120,88 @@ func TestCohereModelRetrieve(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
 }
+
+// TestToCohereResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input both reach the system turn, instructions first (OpenAI places
+// instructions ahead of input). Previously instructions were dropped whenever the input
+// carried system content.
+func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         string
+	}{
+		{"instructions and developer input both reach system, instructions first", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{developer, user}, "BASE_MUST_SURVIVE\nDEVELOPER_MUST_SURVIVE"},
+		{"instructions alone", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{user}, "BASE_MUST_SURVIVE"},
+		{"developer input alone", nil, []schemas.ResponsesMessage{developer, user}, "DEVELOPER_MUST_SURVIVE"},
+		{"empty instructions add nothing", schemas.Ptr(""), []schemas.ResponsesMessage{developer, user}, "DEVELOPER_MUST_SURVIVE"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := cohere.ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+				Provider: schemas.Cohere,
+				Model:    "command-a-03-2025",
+				Input:    tc.input,
+				Params:   &schemas.ResponsesParameters{Instructions: tc.instructions},
+			})
+			require.NoError(t, err)
+			require.Len(t, out.Messages, 2)
+			require.Equal(t, "system", out.Messages[0].Role)
+			require.NotNil(t, out.Messages[0].Content)
+			require.NotNil(t, out.Messages[0].Content.StringContent)
+			require.Equal(t, tc.want, *out.Messages[0].Content.StringContent)
+			require.Equal(t, "user", out.Messages[1].Role)
+		})
+	}
+}
+
+// Media in a Responses tool output reaches Cohere as a placeholder, as on the Chat path.
+func TestToCohereResponsesRequest_ToolOutputNamesMedia(t *testing.T) {
+	req, err := cohere.ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+		Provider: schemas.Cohere,
+		Model:    "command-a-03-2025",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("c1"), Name: schemas.Ptr("chart"), Arguments: schemas.Ptr(`{}`)},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("c1"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("chart below")},
+						{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr("data:image/png;base64,iVBORw0KGgo=")}},
+						{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("JVBERi0xLjQK"), FileType: schemas.Ptr("application/pdf"), Filename: schemas.Ptr("report.pdf")}},
+					}},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	var toolMsg *cohere.CohereMessage
+	for i := range req.Messages {
+		if req.Messages[i].Role == "tool" {
+			toolMsg = &req.Messages[i]
+		}
+	}
+	require.NotNil(t, toolMsg, "no tool message")
+	wire, err := schemas.MarshalSorted(toolMsg)
+	require.NoError(t, err)
+	for _, want := range []string{"chart below", "[image/png", "[application/pdf report.pdf"} {
+		require.Contains(t, string(wire), want)
+	}
+	require.NotContains(t, string(wire), "image_url", "no image part may reach a Cohere tool message")
+}

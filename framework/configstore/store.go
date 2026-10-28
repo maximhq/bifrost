@@ -29,6 +29,9 @@ type VirtualKeyQueryParams struct {
 	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
 	ExcludeAssignedVirtualKeys         bool   // When true, exclude VKs that already have any user assignment
 	ForUserAssignment                  bool   // When true, exclude VKs assigned to any entity (team, customer, access profile, or user) — intended for user-assignment pickers
+	// MetadataFilters narrows to keys whose metadata has every listed key set to exactly the given
+	// value (AND). Keys failing tables.IsValidVirtualKeyMetadataKey match nothing.
+	MetadataFilters map[string]string
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
@@ -311,11 +314,8 @@ type ConfigStore interface {
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
-	// UpdateMCPClientTools is a targeted column update for
-	// discovered_tools_json/tool_name_mapping_json/discovered_instructions only —
-	// safe to call from a periodic background tool-sync without racing a concurrent
-	// full UpdateMCPClientConfig call over unrelated fields.
-	UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error
+	// UpdateMCPClientDiscovery writes only the discovery columns; safe from a background refresh.
+	UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)
@@ -381,6 +381,16 @@ type ConfigStore interface {
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
 	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyRelayGrants(ctx context.Context, virtualKeyID string, endpointNames []string, tx ...*gorm.DB) error
+
+	// Relay CRUD.
+	ListRelays(ctx context.Context) ([]*schemas.RelayConfig, error)
+	GetRelay(ctx context.Context, name string) (*schemas.RelayConfig, error)
+	CreateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error
+	UpdateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error
+	DeleteRelay(ctx context.Context, name string) error
+	GetRelayConfigHashes(ctx context.Context) (map[string]string, error)
+	GetRelayGrantedVirtualKeyIDs(ctx context.Context, name string) ([]string, error)
 
 	// Agent Gateway registration CRUD. Declared on the interface (not just the
 	// RDB implementation) so wrappers that embed ConfigStore — like the
@@ -751,6 +761,9 @@ type ConfigStore interface {
 	GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error)
 	CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error
 	UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error
+	// RecordOAuthFlowIssuer writes only a flow's expected issuer, while the flow is still pending with
+	// state; it reports whether the row matched.
+	RecordOAuthFlowIssuer(ctx context.Context, id, state, issuer string, issParameterSupported bool) (bool, error)
 
 	// Per-user OAuth token CRUD. These operate on the same TableMCPOauthToken /
 	// oauth_tokens rows as the shared-token methods above, scoped to
@@ -819,6 +832,9 @@ type ConfigStore interface {
 	// config changes behave identically from both entry points. Returns
 	// whether a rotation actually happened.
 	RotateMCPOAuthConfig(ctx context.Context, existingOauthConfig *tables.TableOauthConfig, fields MCPOAuthConfigFields) (bool, error)
+	// BindOAuthConfigIssuer writes only an oauth config's issuer binding, while its stored issuer and
+	// token_url are still the expected ones; it reports whether the row matched.
+	BindOAuthConfigIssuer(ctx context.Context, id, expectedIssuer, expectedTokenURL, issuer string, issParameterSupported bool) (bool, error)
 	// GetOauthUserTokenByID looks up a single per-user token row by primary
 	// key. Returns nil, nil when not found. Unlike GetOauthTokenByID above,
 	// this DOES filter to auth_mode IN ('user','vk','session'): the sessions
@@ -853,6 +869,10 @@ type ConfigStore interface {
 	// DeleteExpiredOauthUserSessions hard-deletes pending OAuth flow rows
 	// whose ExpiresAt has passed. Returns the number of rows removed.
 	DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error)
+	// DeleteAbandonedOauthConfigs hard-deletes 'pending' or 'failed'
+	// oauth_configs rows older than olderThan that no MCP client, live flow,
+	// or token row references. Returns the number of rows removed.
+	DeleteAbandonedOauthConfigs(ctx context.Context, olderThan time.Duration) (int64, error)
 	// DeleteOrphanedOauthUserTokens hard-deletes token rows where status='orphaned'
 	// and updated_at is older than olderThan. Returns the number of rows removed.
 	// Scoped to auth_mode IN ('user','vk','session') — a shared token can't
@@ -1012,7 +1032,7 @@ type ConfigStore interface {
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
-	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
@@ -1165,7 +1185,11 @@ type ConfigStore interface {
 }
 
 // NewConfigStore creates a new config store based on the configuration
-func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) (ConfigStore, error) {
+func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger, opts ...Option) (ConfigStore, error) {
+	var o storeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -1181,7 +1205,7 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 	case ConfigStoreTypePostgres:
 		if postgresConfig, ok := config.Config.(*PostgresConfig); ok {
-			return newPostgresConfigStore(ctx, postgresConfig, logger)
+			return newPostgresConfigStore(ctx, postgresConfig, logger, o.migrationMatViewPause)
 		}
 		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 	}

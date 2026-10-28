@@ -37,8 +37,9 @@ import (
 
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
-	matcher         *HeaderMatcher
-	allowDirectKeys bool
+	matcher              *HeaderMatcher
+	allowDirectKeys      bool
+	extraFieldsInHeaders bool
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -53,9 +54,14 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
+
+func (s testHandlerStore) GetCustomProviderPassthrough(schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	return "", false, false
+}
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
@@ -824,6 +830,12 @@ func TestBuildBaseURL(t *testing.T) {
 		{name: "x-bf-forwarded-proto uppercase trimmed", host: host, xbfProto: " HTTPS ", want: "https://" + host},
 		{name: "x-bf-forwarded-proto comma list", host: host, xbfProto: "https, http", want: "https://" + host},
 		{name: "x-bf-forwarded-proto http stays http", host: host, xbfProto: "http", want: "http://" + host},
+		{name: "hostname missing", external: "https://:8080", host: host, want: "http://" + host},
+		{name: "empty fragment override rejected", external: "https://proxy.example.com#", host: host, want: "http://" + host},
+		{name: "userinfo override rejected", external: "https://user:password@proxy.example.com", host: host, want: "http://" + host},
+		{name: "query override rejected", external: "https://proxy.example.com?token=private", host: host, want: "http://" + host},
+		{name: "fragment override rejected", external: "https://proxy.example.com#private", host: host, want: "http://" + host},
+		{name: "non HTTP override rejected", external: "ftp://proxy.example.com", host: host, want: "http://" + host},
 		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
 		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
 		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
@@ -874,6 +886,36 @@ func TestConvertToBifrostContext_APIKeyHeaderNonVirtualKeyIgnored(t *testing.T) 
 
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
 		t.Fatalf("virtual key should not be set from a non-VK api-key value, got %#v", got)
+	}
+}
+
+// Azure AI Speech clients send their key as Ocp-Apim-Subscription-Key, so a virtual key there is
+// captured, and a real Speech resource key is not mistaken for one.
+func TestConvertToBifrostContext_VirtualKeyFromAzureSpeechHeader(t *testing.T) {
+	for value, want := range map[string]interface{}{"sk-bf-azure-speech-vk": "sk-bf-azure-speech-vk", "real-speech-resource-key": nil} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Ocp-Apim-Subscription-Key", value)
+
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey)
+		cancel()
+		if got != want {
+			t.Errorf("Ocp-Apim-Subscription-Key %q: virtual key = %#v, want %#v", value, got, want)
+		}
+	}
+}
+
+// BenchmarkConvertToBifrostContextVirtualKeyHeader measures the header walk on a request that names
+// its virtual key in x-bf-vk, the common case the Ocp-Apim-Subscription-Key branch must not slow down.
+func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Request.Header.Set("User-Agent", "OpenAI/Python 2.8.1")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-benchmark-vk")
+	b.ReportAllocs()
+	for b.Loop() {
+		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		cancel()
 	}
 }
 
@@ -2984,5 +3026,21 @@ func TestGatewayRefusedDirectKeyIsTheCallersOwn401(t *testing.T) {
 			}
 			requireGWHits(t, u, map[string]int{"sk-caller": 1, "sk-a1": 0})
 		})
+	}
+}
+
+func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
+	bodyCtx := &fasthttp.RequestCtx{}
+	_, cancel := ConvertToBifrostContext(bodyCtx, testHandlerStore{})
+	cancel()
+	if ExtraFieldsInHeaders(bodyCtx) {
+		t.Fatal("body mode must not mark the request")
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	_, cancel = ConvertToBifrostContext(headersCtx, testHandlerStore{extraFieldsInHeaders: true})
+	cancel()
+	if !ExtraFieldsInHeaders(headersCtx) {
+		t.Fatal("headers mode must mark the request")
 	}
 }

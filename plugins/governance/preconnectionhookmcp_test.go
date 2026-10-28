@@ -13,10 +13,12 @@ package governance
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,6 +155,41 @@ func TestPreMCPConnectionHook_StampsContentLoggingDecision(t *testing.T) {
 	}
 }
 
+// A tool call opens its connection after the request's access was resolved, and that resolution
+// may have applied a project whose decision overrides the key's. The connect hook must leave such a
+// decision alone: neither the context value nor the root span's mark goes back to the key's.
+func TestPreMCPConnectionHook_KeepsAResolvedContentLoggingDecision(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	vk.DisableContentLogging = new(true)
+	plugin := newPluginForConnectionHook(t, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	})
+
+	traceStore := tracing.NewTraceStore(time.Minute, nil)
+	t.Cleanup(traceStore.Stop)
+	tracer := tracing.NewTracer(traceStore, nil, nil)
+	t.Cleanup(tracer.Stop)
+	traceID := tracer.CreateTrace("")
+	ctx := connectCtx(mcpTestVKValue)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpanID(ctx, "request", schemas.SpanKindHTTPRequest)
+	require.NotNil(t, handle, "root span must open for the trace")
+	// Resolution already decided content stays on for this request.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
+
+	_, shortCircuit, err := plugin.PreMCPConnectionHook(ctx, connectReq("sentry"))
+
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key still resolved")
+	assert.Equal(t, false, ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging), "the resolved decision must survive the connect")
+	trace := traceStore.GetTrace(traceID)
+	require.NotNil(t, trace)
+	require.NotNil(t, trace.RootSpan)
+	assert.False(t, schemas.ContentLoggingDisabledForTrace(trace), "the key's off must not be marked over the resolved decision")
+}
+
 // A key owned by a team stamps the team, and the customer that team belongs to. The customer is
 // reached through the team rather than off the key, which is the case a key holding a direct
 // customer cannot cover.
@@ -205,4 +242,20 @@ func TestPreMCPConnectionHook_CustomerOwnedVirtualKeyStampsCustomerOnly(t *testi
 	assert.Equal(t, "Globex", ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName))
 	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceTeamID))
 	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceTeamName))
+}
+
+// TestPreMCPConnectionHook_StampsVirtualKeyMetadata covers the connect path, which stamps the key
+// by hand rather than through StampVirtualKeyScope, so it must carry the metadata on its own.
+func TestPreMCPConnectionHook_StampsVirtualKeyMetadata(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	vk.Metadata = map[string]string{"cost_center": "cc-42"}
+	plugin := newPluginForConnectionHook(t, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	})
+	ctx := connectCtx(mcpTestVKValue)
+
+	_, shortCircuit, err := plugin.PreMCPConnectionHook(ctx, connectReq("sentry"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42"}, ctx.Value(VirtualKeyMetadataContextKey))
 }

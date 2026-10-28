@@ -233,6 +233,152 @@ BudgetOverrideRequest:
         Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
       minimum: 1
 
+ApproveBudgetRequestRequest:
+  type: object
+  description: |
+    Optional approver overrides for a budget increase request. `amount`, `mode` and `cycles` default to
+    the requested values.
+  properties:
+    amount:
+      type: number
+      description: Amount in dollars to approve. Must be greater than 0.
+      exclusiveMinimum: 0
+    mode:
+      type: string
+      description: |
+        `cycles` keeps the override active for `cycles` reset windows starting with the current one.
+        `forever` keeps it active until it is removed.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: |
+        Number of reset windows the override stays active for. Must be 1-120 when the effective mode is
+        `cycles`, where the effective mode is this body's `mode`, else the requested mode. Ignored when the
+        effective mode is `forever`, and ignored with `add_keep_lifetime` when the budget has an active override.
+    note:
+      type: string
+      description: Optional note shown with the decision.
+      maxLength: 2000
+    override_strategy:
+      type: string
+      description: |
+        How to combine the approval with an active override on the budget. Empty or `add` adds the amount
+        and returns `409` when the lifetimes differ. `replace` replaces the active override.
+        `add_keep_lifetime` adds the amount and keeps the active override's mode and remaining cycles.
+      enum:
+        - ""
+        - add
+        - replace
+        - add_keep_lifetime
+
+BudgetRequest:
+  type: object
+  description: A budget increase request, with the target budget's current state.
+  properties:
+    id:
+      type: string
+    requester_user_id:
+      type: string
+    requester_name:
+      type: string
+    requester_email:
+      type: string
+    target_kind:
+      type: string
+      enum:
+        - virtual_key
+        - access_profile
+    virtual_key_id:
+      type: string
+      description: Set when `target_kind` is `virtual_key`.
+    access_profile_id:
+      type: integer
+      description: Set when `target_kind` is `access_profile`.
+    target_name:
+      type: string
+      description: Name of the virtual key or access profile.
+    budget_id:
+      type: string
+    amount:
+      type: number
+      description: Requested amount in dollars.
+    mode:
+      type: string
+      description: Requested duration mode.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: Requested number of cycles.
+    reason:
+      type: string
+    status:
+      type: string
+      enum:
+        - pending
+        - approved
+        - denied
+        - cancelled
+    decided_by_user_id:
+      type: string
+    decided_by_user_name:
+      type: string
+    decision_note:
+      type: string
+    approved_amount:
+      type: number
+    approved_mode:
+      type: string
+      description: Duration mode actually applied.
+      enum:
+        - cycles
+        - forever
+    approved_cycles:
+      type: integer
+      description: Number of cycles actually applied.
+    created_at:
+      type: string
+      format: date-time
+    decided_at:
+      type: string
+      format: date-time
+    budget:
+      $ref: "#/BudgetRequestBudgetSnapshot"
+    live_reload:
+      type: string
+      description: |
+        `retrying` when the approval is saved but applying it to live governance state failed and is being
+        retried in the background. Omitted otherwise.
+      enum:
+        - retrying
+
+BudgetRequestBudgetSnapshot:
+  type: object
+  description: The target budget's current state.
+  properties:
+    max_limit:
+      type: number
+    current_usage:
+      type: number
+    reset_duration:
+      type: string
+    override_amount:
+      type: number
+    override_mode:
+      type: string
+      enum:
+        - cycles
+        - forever
+    override_cycles_remaining:
+      type: integer
+      description: Remaining cycles of the active override. Omitted for an override that lasts until removed.
+    effective_max_limit:
+      type: number
+      description: "`max_limit` plus any active override."
+
 BudgetOverrideResponse:
   type: object
   description: The persisted budget and the additive limit now in force.
@@ -297,7 +443,8 @@ VirtualKeyProviderConfig:
       type: string
     weight:
       type: [number, 'null']
-      description: Weight for provider load balancing. Null means excluded from weighted routing.
+      minimum: 0
+      description: Weight for provider load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
     allowed_models:
       type: array
       items:
@@ -374,6 +521,16 @@ VirtualKey:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+      additionalProperties:
+        type: string
+        maxLength: 512
     is_active:
       type: boolean
     expires_at:
@@ -413,6 +570,22 @@ VirtualKey:
         When true, this virtual key may use every configured provider. provider_configs still apply as
         optional per-provider overrides (budgets, rate limits, model allow/blacklists, key selection);
         a provider without a config gets all models, all keys, and no per-provider limits.
+    relay_grants:
+      type: array
+      description: Relays this key may call, one by one. With no grants, the key may call no relay.
+      items:
+        type: object
+        properties:
+          virtual_key_id:
+            type: string
+          relay_name:
+            type: string
+          created_at:
+            type: string
+            format: date-time
+        required:
+          - virtual_key_id
+          - relay_name
     disable_content_logging:
       type: [boolean, 'null']
       description: >
@@ -480,6 +653,20 @@ CreateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       description: Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.
@@ -490,7 +677,8 @@ CreateVirtualKeyRequest:
             type: string
           weight:
             type: [number, 'null']
-            description: Weight for load balancing. Null means excluded from weighted routing.
+            minimum: 0
+            description: Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
           allowed_models:
             type: array
             items:
@@ -547,6 +735,16 @@ CreateVirtualKeyRequest:
       description: >
         When true, this virtual key may use every configured provider. provider_configs remain optional
         per-provider overrides for budgets, rate limits, model allow/blacklists, and key selection.
+    relay_grants:
+      type: array
+      description: Relays this key may call, one by one; with no grants, the key may call no relay. Each relay_name must be an existing relay; an unknown or duplicate name is rejected with 400.
+      items:
+        type: object
+        required:
+          - relay_name
+        properties:
+          relay_name:
+            type: string
     disable_content_logging:
       type: [boolean, 'null']
       description: >
@@ -589,6 +787,20 @@ UpdateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: [object, 'null']
+      description: >-
+        Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       items:
@@ -600,7 +812,8 @@ UpdateVirtualKeyRequest:
             type: string
           weight:
             type: [number, 'null']
-            description: Weight for load balancing. Null means excluded from weighted routing.
+            minimum: 0
+            description: Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
           allowed_models:
             type: array
             items:
@@ -656,6 +869,16 @@ UpdateVirtualKeyRequest:
       description: >
         When true, this virtual key may use every configured provider. provider_configs remain optional
         per-provider overrides. Omit to leave the current setting unchanged.
+    relay_grants:
+      type: array
+      description: Replaces the key's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must be an existing relay; an unknown or duplicate name is rejected with 400.
+      items:
+        type: object
+        required:
+          - relay_name
+        properties:
+          relay_name:
+            type: string
     disable_content_logging:
       type: [boolean, 'null']
       description: >
@@ -1318,6 +1541,7 @@ TableKey:
         type: string
     weight:
       type: [number, 'null']
+      minimum: 0
     enabled:
       type: [boolean, 'null']
       default: true
@@ -1448,6 +1672,9 @@ RoutingRule:
     id:
       type: string
       description: Unique identifier for the routing rule
+    config_hash:
+      type: string
+      description: Hash of the config.json entry the rule was last synced from. Empty for rules created through the API.
     name:
       type: string
       description: Name of the routing rule
@@ -1457,6 +1684,9 @@ RoutingRule:
     enabled:
       type: boolean
       description: Whether the rule is enabled and active
+    chain_rule:
+      type: boolean
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
       description: CEL (Common Expression Language) expression for matching
@@ -1472,14 +1702,14 @@ RoutingRule:
       description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
-      enum: [global, team, customer, virtual_key]
-      description: Scope level for the rule
+      enum: [global, team, customer, virtual_key, user]
+      description: Scope level for the rule. Scopes are evaluated in the order virtual_key, user, team, customer, global. The user scope can be set through the API and UI only; config.json does not support it.
     scope_id:
       type: [string, 'null']
-      description: ID for the scope (empty for global scope)
+      description: ID of the team, customer, virtual key or user the rule is scoped to; null for global scope
     priority:
       type: integer
-      description: Priority for rule evaluation (lower number = higher priority)
+      description: Priority for rule evaluation (lower number = higher priority). Unique within a scope and scope_id.
     query:
       type: [object, 'null']
       description: Visual rule tree structure from query builder
@@ -1502,7 +1732,7 @@ RoutingRule:
       properties:
         scope:
           type: string
-          enum: [team, customer, virtual_key]
+          enum: [team, customer, virtual_key, user]
         scope_id:
           type: string
       required:
@@ -1515,9 +1745,6 @@ CreateRoutingRuleRequest:
   description: Request to create a routing rule
   required:
     - name
-    - cel_expression
-    - scope
-    - priority
     - targets
   properties:
     name:
@@ -1528,10 +1755,15 @@ CreateRoutingRuleRequest:
       description: Optional description
     enabled:
       type: boolean
+      default: true
       description: Whether the rule is enabled
+    chain_rule:
+      type: boolean
+      default: false
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
-      description: CEL expression for matching
+      description: CEL expression for matching. Empty or omitted matches every request.
     targets:
       type: array
       minItems: 1
@@ -1545,14 +1777,16 @@ CreateRoutingRuleRequest:
       description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
-      enum: [global, team, customer, virtual_key]
-      description: Scope level for the rule
+      enum: [global, team, customer, virtual_key, user]
+      default: global
+      description: Scope level for the rule. The team, customer or virtual key named by scope_id must exist (400 otherwise); a user scope_id is not checked.
     scope_id:
       type: [string, 'null']
-      description: ID for the scope (required if scope is not global)
+      description: ID for the scope. Required when scope is not global; stored as null for global.
     priority:
       type: integer
-      description: Priority for rule evaluation (lower number = higher priority)
+      default: 0
+      description: Priority for rule evaluation (lower number = higher priority). Must be unique within the same scope and scope_id; a duplicate returns 409.
     query:
       type: [object, 'null']
       description: Visual rule tree structure
@@ -1562,16 +1796,15 @@ CreateRoutingRuleRequest:
         scope:
           type: string
           enum: [global]
-      required:
-        - scope
-      description: Global scope routing rule
+      description: Global scope routing rule (scope omitted or global)
     - type: object
       properties:
         scope:
           type: string
-          enum: [team, customer, virtual_key]
+          enum: [team, customer, virtual_key, user]
         scope_id:
           type: string
+          minLength: 1
       required:
         - scope
         - scope_id
@@ -1583,10 +1816,14 @@ UpdateRoutingRuleRequest:
   properties:
     name:
       type: string
+      description: New name. An empty string is ignored.
     description:
       type: string
     enabled:
       type: boolean
+    chain_rule:
+      type: boolean
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
     targets:
@@ -1599,9 +1836,17 @@ UpdateRoutingRuleRequest:
       type: array
       items:
         $ref: '#/RoutingFallback'
-      description: Ordered fallback chain, tried after the selected target fails
+      description: Replaces the fallback chain when provided; send an empty array to clear it.
     priority:
       type: integer
+      description: Must stay unique within the rule's scope and scope_id; a conflict returns 409.
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key, user]
+      description: Moves the rule to another scope. An empty string is ignored. A scope other than global needs a scope_id, sent here or already stored; global clears scope_id.
+    scope_id:
+      type: [string, 'null']
+      description: New scope ID, checked against the scope when scope or scope_id is sent.
     query:
       type: [object, 'null']
 
@@ -1625,6 +1870,15 @@ ListRoutingRulesResponse:
     count:
       type: integer
       description: Number of routing rules returned
+    total_count:
+      type: integer
+      description: Number of rules matching the filter before limit and offset
+    limit:
+      type: integer
+      description: Page size applied (default 25, maximum 100). Without limit, offset or search, the number of rules returned.
+    offset:
+      type: integer
+      description: Offset applied; 0 without limit, offset or search
 
 # Model Configs
 
@@ -2275,6 +2529,15 @@ PricingPatch:
         Per-second output rate for 4K video. Matched on the short edge of the
         generated video's size; falls back to output_cost_per_video_per_second
         when unset.
+    output_cost_per_video_token:
+      type: number
+      minimum: 0
+      description: >-
+        Per-token output rate for video, for providers that meter generated
+        video in tokens (BytePlus Seedance bills on the task's
+        completion_tokens). Takes precedence over output_cost_per_token for
+        video output tokens. When no token rate applies (unset or zero), video
+        output falls back to the per-second video rates.
     # Costs - Other
     web_search_cost_per_request:
       type: number

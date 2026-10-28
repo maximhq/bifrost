@@ -48,6 +48,26 @@ func TestGenerateMCPClientHash_NeedsSessionStickiness_NilVsFalseVsTrue(t *testin
 	assert.NotEqual(t, trueHash, falseHash, "true and false must hash differently from each other")
 }
 
+// TestGenerateMCPClientHash_EndpointSlug: an omitted slug leaves the hash exactly as before the field was
+// hashed (no mass re-sync of stored clients), a declared one drifts it, and spellings that normalise
+// to the same slug hash the same.
+func TestGenerateMCPClientHash_EndpointSlug(t *testing.T) {
+	base := func(slug string) tables.TableMCPClient {
+		return tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", EndpointSlug: slug}
+	}
+	hash := func(slug string) string {
+		h, err := GenerateMCPClientHash(base(slug))
+		require.NoError(t, err)
+		return h
+	}
+
+	assert.Equal(t, "4e079178fdf0b46b348e3f1b415589e6bd519a73a280faf9200ad204ad389edf", hash(""),
+		"an omitted slug must not move existing stored hashes")
+	assert.NotEqual(t, hash(""), hash("custom"), "declaring a slug must drift the hash")
+	assert.NotEqual(t, hash("custom"), hash("other"), "changing a declared slug must drift the hash")
+	assert.Equal(t, hash("my-slug"), hash("My Slug"), "spellings of the same slug must hash the same")
+}
+
 // TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
 // the same on every call. extra_params is a map; an encoder that walks it in iteration order
 // makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key
@@ -297,4 +317,36 @@ func TestGenerateMCPClientHash_OpenAPIConfig(t *testing.T) {
 	after, err := GenerateMCPClientHash(plain)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+}
+
+// TestGenerateMCPClientHash_MaxProtocolVersion: an omitted cap leaves stored hashes as they were,
+// a declared one drifts the hash so a config.json edit is synced.
+func TestGenerateMCPClientHash_MaxProtocolVersion(t *testing.T) {
+	hash := func(version string) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", MaxProtocolVersion: version})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(""))
+	assert.NotEqual(t, before, hash(schemas.MCPProtocolVersion20250618))
+	assert.NotEqual(t, hash(schemas.MCPProtocolVersion20250618), hash(schemas.MCPMaxProtocolVersionAuto))
+}
+
+// Unset allow-lists leave the hash as it was; [] and a list each drift it, so editing them in
+// config.json is reconciled.
+func TestGenerateMCPClientHash_ExposeLists(t *testing.T) {
+	hash := func(prompts, resources schemas.WhiteList) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", PromptsToExpose: prompts, ResourcesToExpose: resources})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(nil, nil))
+	assert.NotEqual(t, before, hash(schemas.WhiteList{}, nil))
+	assert.NotEqual(t, hash(schemas.WhiteList{}, nil), hash(schemas.WhiteList{"review"}, nil))
+	assert.NotEqual(t, hash(schemas.WhiteList{"review"}, nil), hash(nil, schemas.WhiteList{"review"}), "the two lists hash apart")
+	assert.NotEqual(t, hash(schemas.WhiteList{"review,approve"}, nil), hash(schemas.WhiteList{"review", "approve"}, nil), "entry boundaries count")
 }

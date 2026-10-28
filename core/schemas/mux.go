@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -151,6 +152,21 @@ func (rtm *ResponsesToolMessage) ToChatAssistantMessageToolCall() *ChatAssistant
 	return toolCall
 }
 
+// responsesInputBlockType maps a chat content block type onto its Responses input
+func responsesInputBlockType(t ChatContentBlockType) ResponsesMessageContentBlockType {
+	switch t {
+	case ChatContentBlockTypeText:
+		return ResponsesInputMessageContentBlockTypeText
+	case ChatContentBlockTypeImage:
+		return ResponsesInputMessageContentBlockTypeImage
+	case ChatContentBlockTypeFile:
+		return ResponsesInputMessageContentBlockTypeFile
+	case ChatContentBlockTypeInputAudio:
+		return ResponsesInputMessageContentBlockTypeAudio
+	}
+	return ResponsesMessageContentBlockType(t)
+}
+
 // ToResponsesToolMessage converts a ChatToolMessage (tool execution result) to ResponsesToolMessage format.
 // This creates a function_call_output message suitable for the Responses API.
 //
@@ -195,7 +211,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 			respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
 			for i, block := range cm.Content.ContentBlocks {
 				respBlocks[i] = ResponsesMessageContentBlock{
-					Type:         ResponsesMessageContentBlockType(block.Type),
+					Type:         responsesInputBlockType(block.Type),
 					Text:         block.Text,
 					CacheControl: block.CacheControl,
 					GuardContent: block.GuardContent,
@@ -695,7 +711,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		// For function_call_output, get content from cm.Content since rm.Content is not set
 		if messageType == ResponsesMessageTypeFunctionCallOutput && cm.Content != nil {
 			// Prefer ContentStr if present
-			if cm.Content.ContentStr != nil && *cm.Content.ContentStr != "" {
+			if cm.Content.ContentStr != nil {
 				rm.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
 					ResponsesToolCallOutputStr: cm.Content.ContentStr,
 				}
@@ -704,7 +720,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
 				for i, block := range cm.Content.ContentBlocks {
 					respBlocks[i] = ResponsesMessageContentBlock{
-						Type:         ResponsesMessageContentBlockType(block.Type),
+						Type:         responsesInputBlockType(block.Type),
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
 						GuardContent: block.GuardContent,
@@ -804,6 +820,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	}
 
 	for _, rm := range rms {
+		// Chat Completions has no mid-conversation effort item; emitting it would produce a
+		// roleless, contentless chat message.
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
+			continue
+		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
 			// Buffer reasoning so it attaches to the next assistant message.
 			if rm.Content != nil {
@@ -1128,6 +1149,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(cu.Iterations)
 
 	return usage
 }
@@ -1168,6 +1190,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(ru.Iterations) // advisor passes are priced from these, so they survive the round trip
 
 	return usage
 }
@@ -1272,7 +1295,12 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
 	for _, chatMsg := range cr.Input {
-		responsesMessages := chatMsg.ToResponsesMessages()
+		msg := &chatMsg
+		if chatMsg.Role == ChatMessageRoleTool {
+			// A function_call_output carries only the media every Responses provider reads.
+			msg = ToolResultForResponses(msg)
+		}
+		responsesMessages := msg.ToResponsesMessages()
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages
@@ -2073,7 +2101,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
-	if hasContent {
+	// Content that arrives after a tool call closed the text item is dropped: that item
+	// already sent output_item.done, so another delta on it is a malformed stream.
+	if hasContent && !state.TextItemClosed {
 		closeReasoningItem()
 
 		if !state.TextItemAdded {

@@ -157,12 +157,14 @@ if [ -n "$POSTGRES_CONTAINER" ]; then
 fi
 
 echo "📝 Building merged config (tests/config.json + postgres overlay)..."
+# Marketplace manifests require an explicit serving URL, including in tests.
 jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES_USER" \
    --arg pass "$POSTGRES_PASSWORD" --arg db "$POSTGRES_DB" --arg ssl "$POSTGRES_SSLMODE" \
+   --arg skills_url "http://localhost:$PORT" \
    '. + {
      "config_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}},
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
-   }' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
+   } | .client.skills_external_client_url = $skills_url' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
 
 # The authenticated newman pass needs a first admin account. Creating it is the one
 # config write the server accepts unauthenticated, and it demands a bootstrap token

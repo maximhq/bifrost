@@ -41,7 +41,12 @@ import {
 	useUpdateMCPClientMutation
 } from "@/lib/store";
 import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
-import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
+import {
+	mcpClientUpdateSchema,
+	RESOURCE_CREDENTIAL_RESEND_MESSAGE,
+	resourceCredentialResendRequired,
+	type MCPClientUpdateSchema,
+} from "@/lib/types/schemas";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
@@ -53,6 +58,8 @@ import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "luci
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
+import { MCPToolIconImage } from "./mcpToolIcon";
+import { MCPExposeList, type MCPExposeItem } from "./mcpExposeList";
 import {
 	applyParsedPreview,
 	buildOpenAPIConfigPayload,
@@ -72,13 +79,19 @@ import {
 	type OpenAPICredentialField,
 	type OpenAPISourceMode
 } from "./mcpClientOpenApiUtils";
+import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { ConnectionFailureBlock } from "./mcpConnectionFailure";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
-import { TokenExchangeFields } from "./tokenExchangeFields";
+import {
+	exchangesAsSSOApplication,
+	TokenExchangeFields,
+	tokenExchangeProfileFormValues,
+	tokenExchangeProfilePayload,
+} from "./tokenExchangeFields";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -201,6 +214,7 @@ export default function MCPClientSheet({
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
+	const globalMaxProtocolVersion = bifrostConfig?.client_config?.mcp_max_protocol_version || "auto";
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
 	const globalMaxInstructionsLength = bifrostConfig?.client_config?.mcp_max_instructions_per_client || 4096;
 	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
@@ -209,6 +223,26 @@ export default function MCPClientSheet({
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
+	// Prompts are listed with the client prefix; the allow-list holds the server's own names.
+	const promptExposeItems = useMemo<MCPExposeItem[]>(() => {
+		const prefix = `${mcpClient.config.name}-`;
+		return (mcpClient.prompts ?? []).map((prompt) => {
+			const name = prompt.name.startsWith(prefix) ? prompt.name.slice(prefix.length) : prompt.name;
+			return { key: name, label: prompt.title || name, detail: prompt.title ? name : undefined, description: prompt.description };
+		});
+	}, [mcpClient.prompts, mcpClient.config.name]);
+	const resourceExposeItems = useMemo<MCPExposeItem[]>(
+		() => [
+			...(mcpClient.resources ?? []).map((r) => ({ key: r.uri, label: r.title || r.name, detail: r.uri, description: r.description })),
+			...(mcpClient.resource_templates ?? []).map((t) => ({
+				key: t.uriTemplate,
+				label: t.title || t.name,
+				detail: t.uriTemplate,
+				description: t.description,
+			})),
+		],
+		[mcpClient.resources, mcpClient.resource_templates],
+	);
 
 	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
 	const initialVKConfigs = useMemo<MCPVKConfig[]>(
@@ -455,7 +489,10 @@ export default function MCPClientSheet({
 	// Entra's on-behalf-of grant requires use_idp_credentials — see the
 	// Prerequisites warning in docs/mcp/auth/token-exchange.mdx for why a
 	// dedicated exchange app structurally can't work there.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate });
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, {
+		skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate || !hasUserProvisioningAccess,
+	});
 	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
 	// Matches the create form's idpConfigured gate: without an enabled
 	// provider there's nothing for use_idp_credentials to resolve against at
@@ -505,8 +542,11 @@ export default function MCPClientSheet({
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			prompts_to_expose: mcpClient.config.prompts_to_expose ?? ["*"],
+			resources_to_expose: mcpClient.config.resources_to_expose ?? ["*"],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
@@ -531,6 +571,7 @@ export default function MCPClientSheet({
 					client_id: mcpClient.config.token_exchange?.client_id,
 					client_secret: mcpClient.config.token_exchange?.client_secret,
 					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
 				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
@@ -579,8 +620,11 @@ export default function MCPClientSheet({
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			prompts_to_expose: mcpClient.config.prompts_to_expose ?? ["*"],
+			resources_to_expose: mcpClient.config.resources_to_expose ?? ["*"],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
@@ -605,6 +649,7 @@ export default function MCPClientSheet({
 					client_id: mcpClient.config.token_exchange?.client_id,
 					client_secret: mcpClient.config.token_exchange?.client_secret,
 					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
 				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
@@ -656,6 +701,16 @@ export default function MCPClientSheet({
 		form.formState.dirtyFields.token_exchange?.client_id ||
 		form.formState.dirtyFields.token_exchange?.client_secret ||
 		form.formState.dirtyFields.token_exchange?.authorization_server_url ||
+		form.formState.dirtyFields.token_exchange?.profile ||
+		form.formState.dirtyFields.token_exchange?.resource ||
+		form.formState.dirtyFields.token_exchange?.resource_token_endpoint ||
+		form.formState.dirtyFields.token_exchange?.resource_client_id ||
+		form.formState.dirtyFields.token_exchange?.resource_client_secret ||
+		form.formState.dirtyFields.token_exchange?.resource_client_auth_method ||
+		form.formState.dirtyFields.token_exchange?.resource_private_key ||
+		form.formState.dirtyFields.token_exchange?.resource_key_id ||
+		form.formState.dirtyFields.token_exchange?.resource_signing_algorithm ||
+		form.formState.dirtyFields.token_exchange?.resource_assertion_audience ||
 		tokenExchangeScopesDirty
 	);
 	// Gates the "takes effect immediately" warning below the toggle — the
@@ -689,6 +744,16 @@ export default function MCPClientSheet({
 					description: "Declare at least one header name users must supply.",
 					variant: "destructive",
 				});
+				return;
+			}
+			// The server refuses an id_jag edit that moves where the upstream credential
+			// is sent while keeping its saved mask, so ask for it again beside the field.
+			const resendField =
+				data.token_exchange?.profile === "id_jag"
+					? resourceCredentialResendRequired(mcpClient.config.token_exchange, data.token_exchange)
+					: undefined;
+			if (resendField) {
+				form.setError(`token_exchange.${resendField}`, { message: RESOURCE_CREDENTIAL_RESEND_MESSAGE });
 				return;
 			}
 			// A replacement document must have been parsed (and not edited since)
@@ -824,12 +889,15 @@ export default function MCPClientSheet({
 					per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? data.per_user_header_keys : undefined,
 					tools_to_execute: resolvedToolsToExecute,
 					tools_to_auto_execute: resolvedToolsToAutoExecute,
+					prompts_to_expose: form.formState.dirtyFields.prompts_to_expose ? data.prompts_to_expose : undefined,
+					resources_to_expose: form.formState.dirtyFields.resources_to_expose ? data.resources_to_expose : undefined,
 					tool_pricing: resolvedToolPricing,
 					// Sent only when edited: PUT has PATCH semantics, and the
 					// nanoseconds-to-minutes normalization is lossy for a sub-minute
 					// interval set in config.json, so echoing the field back on an
 					// unrelated edit would silently rewrite it.
 					tool_sync_interval: form.formState.dirtyFields.tool_sync_interval ? (data.tool_sync_interval ?? 0) : undefined,
+					max_protocol_version: form.formState.dirtyFields.max_protocol_version ? (data.max_protocol_version ?? "") : undefined,
 					tool_execution_timeout: data.tool_execution_timeout ?? 0,
 					max_instructions_length: data.max_instructions_length ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
@@ -847,13 +915,14 @@ export default function MCPClientSheet({
 					token_exchange: shouldUpdateTokenExchange
 						? {
 							audience: data.token_exchange?.audience?.trim() || "",
-							use_idp_credentials: data.token_exchange?.use_idp_credentials ?? false,
-							client_id: data.token_exchange?.use_idp_credentials
+							use_idp_credentials: exchangesAsSSOApplication(data.token_exchange),
+							client_id: exchangesAsSSOApplication(data.token_exchange)
 								? undefined
 								: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
-							client_secret: data.token_exchange?.use_idp_credentials ? undefined : data.token_exchange?.client_secret,
+							client_secret: exchangesAsSSOApplication(data.token_exchange) ? undefined : data.token_exchange?.client_secret,
 							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
 							scopes: tokenExchangeScopes,
+							...tokenExchangeProfilePayload(data.token_exchange),
 						}
 						: undefined,
 					tls_config:
@@ -1024,6 +1093,9 @@ export default function MCPClientSheet({
 											</TabsTrigger>
 											<TabsTrigger value="tools" data-testid="mcpclient-tab-tools">
 												Tools
+											</TabsTrigger>
+											<TabsTrigger value="resources" data-testid="mcpclient-tab-resources">
+												Prompts & Resources
 											</TabsTrigger>
 											<TabsTrigger value="access" data-testid="mcpclient-tab-access">
 												Access
@@ -1419,6 +1491,38 @@ export default function MCPClientSheet({
 														);
 													}}
 												/>
+												{!isOpenAPIClient && (
+													<FormField
+														control={form.control}
+														name="max_protocol_version"
+														render={({ field }) => (
+															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																<div className="flex flex-col items-start gap-0.5">
+																	<div className="flex items-start gap-2">
+																		<FormLabel>Max Protocol Version</FormLabel>
+																		<TooltipProvider>
+																			<Tooltip>
+																				<TooltipTrigger asChild>
+																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																				</TooltipTrigger>
+																				<TooltipContent className="max-w-xs">
+																					<p>
+																						Newest MCP protocol version Bifrost offers this server. Changing it reconnects the server at the
+																						new version.
+																					</p>
+																				</TooltipContent>
+																			</Tooltip>
+																		</TooltipProvider>
+																	</div>
+																	{field.value === "" && <p className="text-muted-foreground text-xs">Using global setting</p>}
+																</div>
+																<FormControl>
+																	<MaxProtocolVersionSelect value={field.value ?? ""} onChange={field.onChange} globalValue={globalMaxProtocolVersion} />
+																</FormControl>
+															</FormItem>
+														)}
+													/>
+												)}
 												<FormField
 													control={form.control}
 													name="tool_execution_timeout"
@@ -1827,7 +1931,7 @@ export default function MCPClientSheet({
 																		clientSecretMaskNonEnvValue={true}
 																		clientSecretRedactNonEnvValue={false}
 																		authServerUrlLabel="Authorization Server URL"
-																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer."
+																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer. Enter an issuer, or a full token endpoint ending in /token to use it as is."
 																		authServerUrlTestId="mcpclient-input-token-exchange-authorization-server-url"
 																		scopes={{
 																			variant: "input",
@@ -2032,16 +2136,25 @@ export default function MCPClientSheet({
 																					type="button"
 																					className="hover:bg-muted flex h-8 w-8 items-center justify-center rounded-md transition-colors"
 																					onClick={() => toggleToolExpanded(tool.name)}
+																					data-testid={`mcp-tool-expand-${tool.name}`}
 																				>
 																					{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
 																				</button>
 																			</TableCell>
 																			<TableCell className="max-w-[300px]">
-																				<div className="min-w-0">
-																					<div className="text-foreground truncate text-sm font-medium">{tool.name}</div>
-																					{tool.description && (
-																						<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
-																					)}
+																				<div className="flex min-w-0 items-start gap-2">
+																					<MCPToolIconImage tool={tool} />
+																					<div className="min-w-0">
+																						<div className="text-foreground truncate text-sm font-medium" data-testid={`mcp-tool-title-${tool.name}`}>
+																							{tool.title || tool.annotations?.title || tool.name}
+																						</div>
+																						{(tool.title || tool.annotations?.title) && (tool.title || tool.annotations?.title) !== tool.name && (
+																							<div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>
+																						)}
+																						{tool.description && (
+																							<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
+																						)}
+																					</div>
 																				</div>
 																			</TableCell>
 																			<TableCell className="text-center">
@@ -2141,6 +2254,26 @@ export default function MCPClientSheet({
 																						) : (
 																							<div className="text-muted-foreground text-sm">No parameters defined</div>
 																						)}
+																						{tool.output_schema && (
+																							<div data-testid={`mcp-tool-output-schema-${tool.name}`}>
+																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Output Schema</div>
+																								<CodeEditor
+																									className="z-0 w-full rounded-sm border"
+																									shouldAdjustInitialHeight={true}
+																									maxHeight={300}
+																									wrap={true}
+																									code={JSON.stringify(tool.output_schema, null, 2)}
+																									lang="json"
+																									readonly={true}
+																									options={{
+																										scrollBeyondLastLine: false,
+																										collapsibleBlocks: true,
+																										lineNumbers: "off",
+																										alwaysConsumeMouseWheel: false,
+																									}}
+																								/>
+																							</div>
+																						)}
 																					</div>
 																				</td>
 																			</tr>
@@ -2157,6 +2290,37 @@ export default function MCPClientSheet({
 												</div>
 											)}
 										</div>
+									</TabsContent>
+
+									<TabsContent value="resources" className="space-y-8 pb-10">
+										<FormField
+											control={form.control}
+											name="prompts_to_expose"
+											render={({ field }) => (
+												<MCPExposeList
+													kind="prompts"
+													title="Prompts"
+													description="Prompts this server lists, and which of them MCP clients connected to Bifrost can use."
+													items={promptExposeItems}
+													value={field.value}
+													onChange={(next) => form.setValue("prompts_to_expose", next, { shouldDirty: true })}
+												/>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="resources_to_expose"
+											render={({ field }) => (
+												<MCPExposeList
+													kind="resources"
+													title="Resources"
+													description="Resources and resource templates this server lists, and which of them MCP clients connected to Bifrost can read."
+													items={resourceExposeItems}
+													value={field.value}
+													onChange={(next) => form.setValue("resources_to_expose", next, { shouldDirty: true })}
+												/>
+											)}
+										/>
 									</TabsContent>
 
 									<TabsContent value="access" className="space-y-6 pb-10">

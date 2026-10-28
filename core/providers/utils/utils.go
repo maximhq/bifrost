@@ -1518,11 +1518,13 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level and credential-bearing headers are excluded, except
-// content-type, which the passthrough response must retain.
+// content-type, which the passthrough response must retain. A content-type the upstream did
+// not send stays absent: fasthttp otherwise reports text/plain for it, which mislabels streams.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
+	resp.Header.SetNoDefaultContentType(true)
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
@@ -1590,7 +1592,7 @@ func ExtractPassthroughProviderResponseHeadersFromHTTP(resp *http.Response) map[
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -1600,7 +1602,7 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if len(req.Header.Peek(canonicalKey)) == 0 {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 	// Give priority to extra headers in the context
@@ -2700,7 +2702,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -2710,7 +2712,7 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if req.Header.Get(canonicalKey) == "" {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 
@@ -4198,6 +4200,7 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 		costCopy := *usage.Cost
 		usageCopy.Cost = &costCopy
 	}
+	usageCopy.Iterations = slices.Clone(usage.Iterations)
 	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
@@ -5088,12 +5091,13 @@ const jsonSchemaFormatKey = "format"
 type ToolSchemaPolicy struct {
 	NormalizeNULEscape bool     // rewrite `\0` to `\x00` in patterns
 	StripLookaround    bool     // remove lookaround assertions from patterns
+	DropPattern        bool     // remove the pattern keyword outright
 	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
 }
 
 // IsZero reports whether the policy leaves every schema untouched.
 func (p ToolSchemaPolicy) IsZero() bool {
-	return !p.NormalizeNULEscape && !p.StripLookaround && p.StringFormats == nil
+	return !p.NormalizeNULEscape && !p.StripLookaround && !p.DropPattern && p.StringFormats == nil
 }
 
 // rewritePattern applies the policy's regex rewrites, returning pattern unchanged
@@ -5145,6 +5149,9 @@ func normalizeSchemaEntry(key string, value, typ any, p ToolSchemaPolicy, names 
 		switch key {
 		case jsonSchemaPatternKey:
 			if pattern, ok := value.(string); ok {
+				if p.DropPattern {
+					return value, false, true
+				}
 				if rewritten := p.rewritePattern(pattern); rewritten != pattern {
 					return rewritten, true, false
 				}
@@ -5283,7 +5290,9 @@ func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaP
 	}
 
 	if params.Pattern != nil {
-		if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
+		if p.DropPattern {
+			edit().Pattern = nil
+		} else if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
 			edit().Pattern = &rewritten
 		}
 	}
@@ -5586,7 +5595,8 @@ type DecisionImageURLBody struct {
 // reaches the model as JSON text, so a message object next to an image skews the answer
 // (gpt-6-luna on OpenRouter reads a red image as 0.03 red that way, and as 1.0 with plain
 // strings). Each message contributes its text and images in their original order; roles are
-// dropped, since the format has no place for them.
+// dropped, since the format has no place for them. A tool call or output has no place in it
+// either, so it is sent as its JSON text, which keeps the call an output answers.
 //
 // It returns the input without images, which the Typesafe converter validates as usual
 // (rejecting any other part type), and the state to send. state is nil when the input
@@ -5602,8 +5612,15 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 	for _, message := range input.Messages {
 		if message.Content.Parts == nil {
 			messages = append(messages, message)
-			if message.Content.Text != nil {
+			switch {
+			case message.Content.Text != nil:
 				items = append(items, *message.Content.Text)
+			case message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage:
+				item, err := schemas.Marshal(message)
+				if err != nil {
+					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input item could not be encoded as text: %v", err)
+				}
+				items = append(items, string(item))
 			}
 			continue
 		}
@@ -5619,9 +5636,17 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 					ImageURL: DecisionImageURLBody{URL: *part.ImageURL, Detail: part.Detail},
 				})
 				continue
-			case schemas.DecisionInputPartTypeText:
+			case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeOutputText:
 				if part.Text != nil {
 					items = append(items, *part.Text)
+				}
+			case schemas.DecisionInputPartTypeRefusal:
+				if part.Refusal != nil {
+					items = append(items, *part.Refusal)
+				}
+			case schemas.DecisionInputPartTypeJSON:
+				if part.Data.Structured != nil {
+					items = append(items, renderStructuredText(part.Data.Structured))
 				}
 			}
 			parts = append(parts, part)
@@ -5632,6 +5657,41 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 		}
 	}
 	return schemas.DecisionInput{Messages: messages}, items, nil
+}
+
+// SplitDecisionImages removes the input's image parts and returns them, in order, for a
+// provider whose request carries one top-level images array shared by every question
+// (vLLM, SGLang). URLs are sent as given, so the server decides whether the model reads
+// them. A message left with no parts is dropped. Text and structured inputs are returned
+// unchanged. The input is not modified.
+func SplitDecisionImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, error) {
+	if !hasDecisionImage(input.Messages) {
+		return input, nil, nil
+	}
+	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
+	var images []string
+	for _, message := range input.Messages {
+		if message.Content.Parts == nil {
+			messages = append(messages, message)
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			if part.Type != schemas.DecisionInputPartTypeImage {
+				parts = append(parts, part)
+				continue
+			}
+			if part.ImageURL == nil || *part.ImageURL == "" {
+				return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
+			}
+			images = append(images, *part.ImageURL)
+		}
+		if len(parts) > 0 {
+			message.Content.Parts = parts
+			messages = append(messages, message)
+		}
+	}
+	return schemas.DecisionInput{Messages: messages}, images, nil
 }
 
 // hasDecisionImage reports whether any message carries an input_image part.

@@ -410,9 +410,114 @@ func TestToBifrostBatchCreateRequestModelLookup(t *testing.T) {
 	})
 }
 
+// mustMarshal serializes v to JSON bytes, failing the test if serialization fails.
 func mustMarshal(t *testing.T, v interface{}) []byte {
 	t.Helper()
 	b, err := sonic.Marshal(v)
 	require.NoError(t, err)
 	return b
+}
+
+// TestVertexNormalizeBatchUsage_ThinkingTokens verifies that vertexNormalizeBatchUsage
+// accounts for thinking tokens by adding thoughtsTokenCount to completion_tokens
+// and creating completion_tokens_details.reasoning_tokens.
+func TestVertexNormalizeBatchUsage_ThinkingTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		body                 map[string]any
+		wantPromptTokens     int
+		wantCompletionTokens int
+		wantTotalTokens      int
+		wantReasoningTokens  int
+		wantCachedTokens     int
+	}{
+		{
+			name: "WithThinkingTokens",
+			body: map[string]any{
+				"usageMetadata": map[string]any{
+					"promptTokenCount":     100,
+					"candidatesTokenCount": 50,
+					"thoughtsTokenCount":   400,
+					"totalTokenCount":      550,
+				},
+			},
+			wantPromptTokens:     100,
+			wantCompletionTokens: 450, // 50 candidates + 400 thoughts
+			wantTotalTokens:      550,
+			wantReasoningTokens:  400,
+		},
+		{
+			name: "WithThinkingTokensAndCachedTokens",
+			body: map[string]any{
+				"usageMetadata": map[string]any{
+					"promptTokenCount":        150,
+					"candidatesTokenCount":    75,
+					"thoughtsTokenCount":      225,
+					"totalTokenCount":         450,
+					"cachedContentTokenCount": 50,
+				},
+			},
+			wantPromptTokens:     150,
+			wantCompletionTokens: 300, // 75 candidates + 225 thoughts
+			wantTotalTokens:      450,
+			wantReasoningTokens:  225,
+			wantCachedTokens:     50,
+		},
+		{
+			name: "ZeroThinkingTokensUnchanged",
+			body: map[string]any{
+				"usageMetadata": map[string]any{
+					"promptTokenCount":     15,
+					"candidatesTokenCount": 25,
+					"thoughtsTokenCount":   0,
+					"totalTokenCount":      40,
+				},
+			},
+			wantPromptTokens:     15,
+			wantCompletionTokens: 25,
+			wantTotalTokens:      40,
+			wantReasoningTokens:  0,
+		},
+		{
+			name: "NoUsageMetadataPassesThrough",
+			body: map[string]any{
+				"response": "ok",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			normalized := vertexNormalizeBatchUsage(tt.body)
+			if tt.wantPromptTokens == 0 && tt.wantCompletionTokens == 0 {
+				assert.NotContains(t, normalized, "usage")
+				return
+			}
+
+			usage, ok := normalized["usage"].(map[string]any)
+			require.True(t, ok)
+			assert.EqualValues(t, tt.wantPromptTokens, usage["prompt_tokens"])
+			assert.EqualValues(t, tt.wantCompletionTokens, usage["completion_tokens"])
+			assert.EqualValues(t, tt.wantTotalTokens, usage["total_tokens"])
+
+			if tt.wantReasoningTokens > 0 {
+				details, ok := usage["completion_tokens_details"].(map[string]any)
+				require.True(t, ok, "completion_tokens_details should be present")
+				assert.EqualValues(t, tt.wantReasoningTokens, details["reasoning_tokens"])
+			} else {
+				assert.Nil(t, usage["completion_tokens_details"])
+			}
+
+			if tt.wantCachedTokens > 0 {
+				details, ok := usage["prompt_tokens_details"].(map[string]any)
+				require.True(t, ok, "prompt_tokens_details should be present")
+				assert.EqualValues(t, tt.wantCachedTokens, details["cached_tokens"])
+			}
+		})
+	}
 }

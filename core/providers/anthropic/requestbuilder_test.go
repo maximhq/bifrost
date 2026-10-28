@@ -1038,6 +1038,37 @@ func TestBuildAnthropicChatRequestBody_BedrockInvokeShape(t *testing.T) {
 	assertBedrockInvokeBodyShape(t, body)
 }
 
+// A client fallback-credit beta must reach the InvokeModel body with its own date:
+// Bedrock validates anthropic_beta and rejects the undocumented -06-09.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsFallbackCreditDate(t *testing.T) {
+	for _, date := range []string{"fallback-credit-2026-06-01", "fallback-credit-2026-07-01"} {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{AnthropicBetaHeader: {date}})
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-6",
+			Input:    makeSimpleInput("Hello!"),
+			Params: &schemas.ResponsesParameters{
+				ContextManagement: json.RawMessage(bedrockInvokeCompactionContextManagement),
+			},
+		}
+		body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-6",
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", date, err)
+		}
+		var betas []string
+		for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+			betas = append(betas, b.String())
+		}
+		if !slices.Contains(betas, date) || slices.Contains(betas, "fallback-credit-2026-06-09") {
+			t.Errorf("anthropic_beta = %v, want %s unchanged", betas, date)
+		}
+	}
+}
+
 // Tool search is InvokeModel-only on Bedrock (see the routing tests in the
 // bedrock package). Once a request is routed there, the shared builder must keep
 // the tool_search tool, keep defer_loading on the deferred function tool, and
@@ -3367,4 +3398,52 @@ func TestClampedMaxTokensRefitsTheRestoredBudget(t *testing.T) {
 		installMaxOutputRow(t, model, 200000)
 		assertWire(t, surfaceProbe{model: model, thinking: enabledWithBudget()}, wEnabled)
 	})
+}
+
+// thinking.display:"updates" reaches a provider only together with its beta. Where the surface
+// carries it (Anthropic, Vertex) the value is kept and the beta is derived from the body, which
+// is what lets a Chat Completions client (no way to set anthropic-beta) use it; elsewhere it is
+// downgraded to "omitted" so the request still succeeds. The Responses neutral shape has no
+// "updates" value, so only its raw-body form is built here.
+func TestThinkingDisplayUpdatesRequestBuilders(t *testing.T) {
+	const model = "claude-opus-5-5"
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		for _, keeps := range []bool{true, false} {
+			for _, raw := range []bool{false, true} {
+				for _, chat := range []bool{false, true} {
+					if !chat && !raw {
+						continue
+					}
+					t.Run(fmt.Sprintf("%s/supported=%v/raw=%v/chat=%v", provider, keeps, raw, chat), func(t *testing.T) {
+						setThinkingDisplayUpdates(t, provider, keeps)
+						ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+						body := []byte(`{"model":"` + model + `","max_tokens":64,"thinking":{"type":"adaptive","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`)
+						cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model}
+						var out []byte
+						var err *schemas.BifrostError
+						if chat {
+							out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, RawRequestBody: body, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}, Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("high"), Display: new("updates")}}}, cfg)
+						} else {
+							out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: model, RawRequestBody: body, Input: makeSimpleInput("hi")}, cfg)
+						}
+						if err != nil {
+							t.Fatalf("build: %v", err)
+						}
+						want := "omitted"
+						if keeps {
+							want = AnthropicThinkingDisplayUpdates
+						}
+						if got := providerUtils.GetJSONField(out, "thinking.display").String(); got != want {
+							t.Errorf("thinking.display = %q, want %q; body=%s", got, want, out)
+						}
+						betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+						if got := slices.Contains(betas, AnthropicThinkingDisplayUpdatesBetaHeader); got != keeps {
+							t.Errorf("beta %s present = %v, want %v (betas: %v)", AnthropicThinkingDisplayUpdatesBetaHeader, got, keeps, betas)
+						}
+					})
+				}
+			}
+		}
+	}
 }

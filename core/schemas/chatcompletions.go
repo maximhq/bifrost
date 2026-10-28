@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -435,6 +437,7 @@ type ChatTool struct {
 	Custom       *ChatToolCustom     `json:"custom,omitempty"`        // Custom tool definition (shape 2)
 	CacheControl *CacheControl       `json:"cache_control,omitempty"` // Cache control for the tool
 	Annotations  *MCPToolAnnotations `json:"-"`                       // MCP tool annotations (Bifrost-internal, never forwarded to providers)
+	MCP          *MCPToolMetadata    `json:"-"`                       // MCP title, icons and output schema (Bifrost-internal)
 
 	// Anthropic-native tool flags promoted to the neutral layer. All optional;
 	// ignored by providers that don't support them. Gating per ProviderFeatures
@@ -1236,7 +1239,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Only set if any field is populated
 	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
 		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
-		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil {
+		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil || len(assistantMsg.Images) > 0 {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
@@ -1577,12 +1580,18 @@ type ChatToolMessage struct {
 	// OpenAI-wire converters strip it before serialization so providers that
 	// reject unknown message parameters never see it.
 	IsError *bool `json:"is_error,omitempty"`
+
+	mcpResult        *mcp.CallToolResult // the MCP server's own result; see SetMCPResult
+	mcpResultIsText  bool                // whether the content made from it is mcpResultText
+	mcpResultText    string              // that text, copied so in-place edits show
+	mcpResultContent []string            // else its content blocks, as toolContentFields lists them
 }
 
 // ChatAssistantMessage represents a message in a chat conversation.
 type ChatAssistantMessage struct {
 	Refusal          *string                          `json:"refusal"`
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`
+	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`
 	Reasoning        *string                          `json:"reasoning,omitempty"`
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
@@ -1713,6 +1722,12 @@ func pruneEmptyReasoningDetails(details []ChatReasoningDetails) []ChatReasoningD
 	return kept
 }
 
+// ChatAssistantMessageImage is a model-generated image, in OpenRouter's message.images shape.
+type ChatAssistantMessageImage struct {
+	Type     string         `json:"type"`
+	ImageURL ChatInputImage `json:"image_url"`
+}
+
 // ChatAssistantMessageAnnotation represents an annotation in a response.
 type ChatAssistantMessageAnnotation struct {
 	Type        string                                 `json:"type"`
@@ -1741,6 +1756,7 @@ type ChatAssistantMessageToolCall struct {
 	ID           *string                              `json:"id,omitempty"`
 	Function     ChatAssistantMessageToolCallFunction `json:"function"`
 	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
+	CacheControl *CacheControl                        `json:"cache_control,omitempty"` // Anthropic-family cache breakpoint on the tool_use block
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
@@ -1848,6 +1864,7 @@ type ChatStreamResponseChoiceDelta struct {
 	Content          *string                          `json:"content,omitempty"`   // May be empty string or null
 	Refusal          *string                          `json:"refusal,omitempty"`   // Refusal content if any
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`     // Audio data if any
+	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`    // Generated images, whole per chunk
 	Reasoning        *string                          `json:"reasoning,omitempty"` // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search
@@ -1949,6 +1966,7 @@ type BifrostLLMUsage struct {
 	PromptTokensDetails     *ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	ReasoningTokens         int                          `json:"reasoning_tokens,omitempty"` // SGLang's top-level spelling; folded by NormalizeReasoningTokens
 	TotalTokens             int                          `json:"total_tokens"`
 	// AudioSeconds carries duration-based audio usage when a provider reports
 	// seconds instead of tokens.
@@ -1976,7 +1994,23 @@ type BifrostLLMUsage struct {
 	// Carried here for the same reason as the two above: the bare-usage billing path
 	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
 	// turn is priced at the requested model's rates.
-	ServerSideFallbackModel *string `json:"-"`
+	ServerSideFallbackModel *string                  `json:"-"`
+	Iterations              []ResponsesResponseUsage `json:"-"` // Anthropic per-pass usage, so an interrupted stream still bills its advisor passes
+}
+
+// NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
+// (sglang sets reasoning tokens in usage.reasoning_tokens instead of usage.completion_tokens_details.reasoning_tokens).
+func (u *BifrostLLMUsage) NormalizeReasoningTokens() {
+	if u == nil || u.ReasoningTokens == 0 {
+		return
+	}
+	if u.CompletionTokensDetails == nil {
+		u.CompletionTokensDetails = &ChatCompletionTokensDetails{}
+	}
+	if u.CompletionTokensDetails.ReasoningTokens == 0 {
+		u.CompletionTokensDetails.ReasoningTokens = u.ReasoningTokens
+	}
+	u.ReasoningTokens = 0
 }
 
 type ChatPromptTokensDetails struct {
@@ -2149,6 +2183,9 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
+	if len(base.Iterations)+len(add.Iterations) > 0 {
+		merged.Iterations = append(slices.Clone(base.Iterations), add.Iterations...)
+	}
 
 	return merged
 }

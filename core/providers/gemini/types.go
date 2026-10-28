@@ -103,6 +103,8 @@ const (
 	FinishReasonMissingThoughtSignature FinishReason = "MISSING_THOUGHT_SIGNATURE"
 	// Finished due to malformed response.
 	FinishReasonMalformedResponse FinishReason = "MALFORMED_RESPONSE"
+	// A long-decode hop hit its per-call cap; resend the request with the candidate's continuationToken.
+	FinishReasonContinuation FinishReason = "CONTINUATION"
 )
 
 // googleRetryInfoType is the @type of the error detail Google APIs use to say how long to
@@ -120,6 +122,8 @@ type GeminiGenerationRequest struct {
 	ToolConfig        *ToolConfig              `json:"toolConfig,omitempty"`
 	Labels            map[string]string        `json:"labels,omitempty"`
 	CachedContent     string                   `json:"cachedContent,omitempty"`
+	SessionID         *GeminiSessionID         `json:"session_id,omitempty"` // snake_case as Vertex documents it; Vertex routes the same ID to one replica
+	ContinuationToken string                   `json:"continuationToken,omitempty"`
 	// Optional. The service tier to use for the request. For example, ServiceTier.FLEX.
 	ServiceTier       ServiceTier `json:"serviceTier,omitempty"`
 	Stream            bool        `json:"-"` // Internal field to track streaming requests
@@ -161,6 +165,7 @@ func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
 		ToolConfigSnake        *ToolConfig       `json:"tool_config,omitempty"`
 		CachedContentSnake     string            `json:"cached_content,omitempty"`
 		ServiceTierSnake       ServiceTier       `json:"service_tier,omitempty"`
+		ContinuationTokenSnake string            `json:"continuation_token,omitempty"`
 	}{
 		Alias: (*Alias)(g),
 	}
@@ -192,6 +197,9 @@ func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
 	if !hasJSONKey(data, "serviceTier") && aux.ServiceTierSnake != "" {
 		g.ServiceTier = aux.ServiceTierSnake
 	}
+	if !hasJSONKey(data, "continuationToken") && aux.ContinuationTokenSnake != "" {
+		g.ContinuationToken = aux.ContinuationTokenSnake
+	}
 
 	return nil
 }
@@ -199,6 +207,35 @@ func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
 // GetExtraParams implements the RequestBodyWithExtraParams interface
 func (r *GeminiGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+// GeminiSessionID is the request's session ID: a string on Vertex AI, an int64 on the Gemini API.
+type GeminiSessionID struct {
+	Value   string
+	Numeric bool // received as a JSON number; marshaled back as one
+}
+
+// MarshalJSON writes the session ID in the form it was received.
+func (s GeminiSessionID) MarshalJSON() ([]byte, error) {
+	if s.Numeric {
+		return []byte(s.Value), nil
+	}
+	return sonic.Marshal(s.Value)
+}
+
+// UnmarshalJSON accepts a string or a number.
+func (s *GeminiSessionID) UnmarshalJSON(data []byte) error {
+	switch v := gjson.ParseBytes(data); v.Type {
+	case gjson.String:
+		*s = GeminiSessionID{Value: v.Str}
+	case gjson.Number:
+		*s = GeminiSessionID{Value: v.Raw, Numeric: true}
+	case gjson.Null:
+		*s = GeminiSessionID{}
+	default:
+		return fmt.Errorf("session_id must be a string or a number, got %s", v.Raw)
+	}
+	return nil
 }
 
 // ImagenInstance represents a single instance in an Imagen request
@@ -2668,6 +2705,8 @@ type Candidate struct {
 	// Optional. The reason why the model stopped generating tokens.
 	// If empty, the model has not stopped generating the tokens.
 	FinishReason FinishReason `json:"finishReason,omitempty"`
+	// Optional. Long decode: state token to resend for the next hop while finishReason is CONTINUATION.
+	ContinuationToken string `json:"continuationToken,omitempty"`
 	// Optional. Metadata related to URL context retrieval tool.
 	URLContextMetadata *URLContextMetadata `json:"urlContextMetadata,omitempty"`
 	// Output only. Average log probability score of the candidate.

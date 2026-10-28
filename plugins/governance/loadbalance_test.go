@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,6 +80,31 @@ func TestLoadBalanceProvider_UnprefixedModelLoadBalances(t *testing.T) {
 	got, err := loadBalance(t, p, ctx, "gpt-4o")
 	require.NoError(t, err)
 	assert.Equal(t, "openai/gpt-4o", got)
+}
+
+// TestLoadBalanceProvider_KeyAliasIsNotRefined covers a virtual key that load balances a bare
+// key alias onto Databricks. The alias must reach key selection under its own name, or alias
+// resolution misses and the refined "system.ai.<alias>" is sent upstream as a model.
+func TestLoadBalanceProvider_KeyAliasIsNotRefined(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("databricks", []string{"*"}),
+	})
+	p := newLoadBalanceTestPlugin(t, vk)
+	mc := modelcatalog.NewTestCatalog(nil)
+	mc.SetKeyConfigForProvider(schemas.Databricks, []schemas.Key{{
+		ID:      "dbx-key",
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"my-alias": {ModelID: "my-provisioned-endpoint"}},
+	}})
+	p.modelCatalog = mc
+
+	got, err := loadBalance(t, p, presentCtx("sk-bf-lb"), "my-alias")
+	require.NoError(t, err)
+	assert.Equal(t, "databricks/my-alias", got)
+
+	got, err = loadBalance(t, p, presentCtx("sk-bf-lb"), "gpt-5.5")
+	require.NoError(t, err)
+	assert.Equal(t, "databricks/system.ai.gpt-5.5", got)
 }
 
 // TestLoadBalanceProvider_UnknownPrefixIsTreatedAsModelNamespace verifies that a
@@ -236,6 +262,18 @@ func TestPublishRoutingAllowlist(t *testing.T) {
 
 		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders),
 			"an empty allowlist would mean no provider is permitted")
+	})
+
+	// A missing grant is a wiring fault that evaluation refuses; publishing stays out of it, so a
+	// routing layer never reads an allowlist built from nothing.
+	t.Run("a request carrying no grant publishes nothing", func(t *testing.T) {
+		p := newLoadBalanceTestPlugin(t, vk)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		p.PublishRoutingAllowlist(ctx, "gpt-4o")
+
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders),
+			"a request with no grant has nothing to allow or deny")
 	})
 
 	// Publishing keys off what the request holds, not off how it authenticated: a store that

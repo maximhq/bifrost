@@ -9,7 +9,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Store | Purpose | Backends |
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
-| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS/Azure Blob offload |
 | `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
 
 <Note>
@@ -335,9 +335,19 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`); positive values below `5s` are clamped up to `5s`. Set `"off"` or a zero duration (`"0s"`) to disable matview maintenance entirely. |
+| `matview_refresh_timeout` | 5x the interval, at least `"5m"` | Maximum time for one refresh pass (min `30s`, max `30m`). The database also enforces it, so a pass started by a pod that was killed still stops shortly after this time. A pass that times out leaves the views intact but staler. If passes keep timing out, Bifrost logs an error: raise this value or turn maintenance off. |
+| `matview_refresh_temp_file_limit` | unset | Caps the temp files each Postgres process running a materialized view statement may write (Postgres `temp_file_limit`, for example `"10GB"`). Size it so that the cap times the parallel workers plus one stays well under the free space on the volume that holds temp files. A refresh over a very large `logs` table can spill tens of GB, and a full disk fails every query on the server. A refresh that hits the cap fails and the view keeps its previous contents. A first build that hits the cap fails too: Bifrost logs a warning, and that pod's dashboard queries read the raw tables until it restarts. The database role needs superuser or `GRANT SET ON PARAMETER temp_file_limit TO <role>`; without it the cap is skipped with a warning. |
+
+When a pod stops (restart, scale-down, eviction), it cancels its running refresh and releases the refresh lock before exiting. If the Bifrost process is killed without warning (for example `SIGKILL` or an OOM kill), PostgreSQL notices the closed connection within about 10 seconds and stops the statement, which frees the lock for other replicas. Two cases take longer:
+
+- **The whole node disappears.** No close reaches the database, so it learns the connection is gone only when TCP keepalives fail (PostgreSQL `tcp_keepalives_idle`, `tcp_keepalives_interval`, `tcp_keepalives_count`; the OS default can be hours).
+- **The database server cannot run connection checks** (PostgreSQL supports them on Linux, macOS, illumos and BSD, not on Windows). Bifrost logs a warning once and keeps the other limits.
+
+In both cases a refresh still stops shortly after `matview_refresh_timeout`, because the database enforces that limit itself. The first build of the views has no time limit, since it can legitimately run long on a large `logs` table, so in these cases it runs until it finishes or hits `matview_refresh_temp_file_limit`. Once the statement ends, the database closes the session after one minute idle, which frees the refresh lock for other replicas.
 
 **Notes**
 
+- The interval is a **cluster-wide** cadence. Every replica runs its own refresh ticker, but each refresh is recorded in the database (`matview_refresh_state`), and a replica skips any view whose last successful refresh, by any replica, finished less than `matview_refresh_interval` ago. So adding replicas does not add refreshes, and a pass that takes longer than the interval is followed by a quiet gap of at least the interval rather than an immediate next pass. A failed or cancelled refresh does not count, so that view is retried on the next tick.
 - Refreshes are already **activity-gated**: when no INSERT/UPDATE/DELETE has hit the `logs` table since the last refresh, the scheduled tick short-circuits without touching the views. So idle clusters don't pay for the configured cadence — they only pay when there's actual log activity.
 - Dashboard freshness lag will be **at most** the configured interval. Stats and histograms over the last 24 hours come straight from the raw `logs` table (no matview), so short-window dashboards stay real-time regardless of this setting.
 - A 10-minute safety-net refresh runs even on totally idle clusters so the rolling 30-day filter dropdown window evicts aged-out values.
@@ -356,9 +366,31 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 - You don't use the Bifrost dashboard (e.g. Bifrost runs headless behind your own observability stack). With `"off"`, the views are neither created nor refreshed, and any dashboard query transparently uses the raw tables.
 
+#### Materialized views during upgrades
+
+Schema migrations pause materialized-view refreshes on every replica for as long as they run. On a large `logs` table a single refresh pass can take many minutes, and while it runs it holds a snapshot that every `CREATE INDEX CONCURRENTLY` in the database waits on, plus a lock that `ALTER TABLE logs` cannot get past. The pause works during a rolling upgrade too: older replicas skip their refresh when the migrating pod holds the refresh lock.
+
+A refresh pass that is already running when migrations start is given `migration_matview_cancel_after` to finish. After that its `REFRESH` statements are cancelled. A cancelled concurrent refresh rolls back harmlessly: the view keeps its previous contents and is refreshed again once migrations finish. Sessions are never terminated, and nothing other than a `REFRESH MATERIALIZED VIEW` is ever cancelled.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `migration_matview_cancel_after` | `"60s"` | How long migrations (log store, config store and enterprise) wait for an in-flight refresh pass before cancelling it. Config store migrations read it from `logs_store` in config.json; if the log store is configured only through the UI/database, config store migrations use the 60s default because they run before that configuration can be read. Accepts a Go duration string. Set `"off"` to never cancel: migrations then wait for the pass to end on its own, and if it can't be paused within 10 minutes they proceed without the pause. |
+
+#### Lock waits during upgrades
+
+A migration that alters a table (`ALTER TABLE logs ADD COLUMN`, for example) needs an exclusive lock, which it only gets in a gap between other sessions' queries on that table. Each attempt waits at most 5 seconds, then the step backs off and retries. The first timeout logs the sessions holding the table, with a `pg_cancel_backend` hint, so an operator can cancel an old replica's long read instead of waiting it out. When the budget runs out the process exits and the next start retries from where it left off.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `migration_lock_retry_budget` | `"10m"` | How long one migration step keeps retrying after lock timeouts. Set on `config_store.config` for config store and enterprise migrations and on `logs_store.config` for log store migrations. Accepts a Go duration string. Raise it on large deployments where older replicas run long queries during a rolling upgrade, and keep the Kubernetes startup probe (`startupProbe` in the Helm chart, 30 minutes by default) at least as long, or the pod is killed before the budget is spent. |
+
+<Note>
+Upgrading to a release **without** this pause (for example 2.2.x to 2.3.0) on a large log store: the old replicas keep refreshing and the new pods' migrations can stall behind them. Before you roll, either restart the old replicas with `matview_refresh_interval` set to `"off"` (restore it after the upgrade), or have an operator cancel `REFRESH MATERIALIZED VIEW` statements from the old pods with `pg_cancel_backend` while the new pods migrate.
+</Note>
+
 ### Object Storage for Logs
 
-Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
+Offload LLM request/response logs and MCP tool logs from the database to S3, GCS, or Azure Blob Storage. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 #### AWS S3
 
@@ -429,7 +461,9 @@ The IAM user or role needs the following permissions on your bucket:
 |-------|-------------|
 | `bucket` | S3 bucket name (supports `env.` prefix) |
 | `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
-| `compress` | Enable gzip compression (default: `false`) |
+| `compress` | Legacy gzip switch, same as `"compression": "gzip"` (default: `false`) |
+| `format` | Payload object format: `json` (default) or `parquet` (S3 and Azure). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
+| `compression` | `none`, `gzip`, `snappy` or `zstd`. JSON allows `none` or `gzip` (whole object); Parquet uses it as the page codec (default `snappy`) |
 | `region` | AWS region |
 | `access_key_id` | AWS access key ID (omit for default credential chain) |
 | `secret_access_key` | AWS secret access key |
@@ -493,6 +527,39 @@ Omit `credentials_json` to use Application Default Credentials (Workload Identit
 |-------|-------------|
 | `project_id` | GCP project ID (supports `env.` prefix) |
 | `credentials_json` | Service account JSON or path - omit for ADC |
+
+#### Azure Blob Storage
+
+Create the container before starting Bifrost. Set `bucket` to the container name, not the storage account name.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "/app/data/logs.db" },
+    "object_storage": {
+      "type": "azure",
+      "bucket": "bifrost-logs",
+      "endpoint": "https://myaccount.blob.core.windows.net",
+      "prefix": "bifrost",
+      "compress": true
+    }
+  }
+}
+```
+
+`endpoint` uses `DefaultAzureCredential`: managed identity, workload identity, or a service principal configured through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. These credentials are separate from Azure model-provider credentials.
+
+For connection-string authentication, replace `endpoint` with `"connection_string": "env.AZURE_STORAGE_CONNECTION_STRING"`. Set only one. `bucket`, `endpoint`, and `connection_string` accept environment or vault references and must resolve to nonempty values.
+
+Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete permissions. Blob index-tag permissions are not needed.
+
+Azure supports JSON/gzip and Parquet for logs, and also stores skills files. See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) for format options.
+
+<Warning>
+Restart after changing storage configuration or credentials; identity tokens refresh automatically. Apply lifecycle expiry only to log paths, not `skills/`. Before switching stores, copy existing objects with their keys and content headers intact. See [Azure operations](/enterprise/log-exports#azure-operations).
+</Warning>
 
 #### MinIO (Self-Hosted)
 

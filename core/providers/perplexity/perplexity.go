@@ -321,43 +321,30 @@ func (provider *PerplexityProvider) Rerank(ctx *schemas.BifrostContext, key sche
 
 // Decision runs a decision on Perplexity's decider models (pplx-decider-*). The model is
 // sent as is; Perplexity rejects one it does not serve, and that error is passed through.
+// The body carries no id, so it is taken from the x-request-id header.
 func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
+	var authHeaders map[string]string
+	if key.Value.GetValue() != "" {
+		authHeaders = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+	}
+	bifrostResponse, bifrostErr := typesafe.HandleTypesafeDecisionRequest(
 		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToPerplexityDecisionRequest(request)
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath), key.Value.GetValue(), request.Model)
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	var response typesafe.TypesafeDecisionResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		ToPerplexityDecisionRequest,
+		authHeaders,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		openai.ParseOpenAIError,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		false,
+	)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, bifrostErr
 	}
-
-	bifrostResponse, bifrostErr := ToBifrostDecisionResponse(&response, request, decisionRequestID(providerResponseHeaders))
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-
-	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		bifrostResponse.ExtraFields.RawRequest = rawRequest
-	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResponse.ExtraFields.RawResponse = rawResponse
-	}
-
+	bifrostResponse.ID = decisionRequestID(bifrostResponse.ExtraFields.ProviderResponseHeaders)
 	return bifrostResponse, nil
 }
 

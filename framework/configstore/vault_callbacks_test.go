@@ -199,3 +199,42 @@ func TestVaultCallbacks_NoOpWhenDisabled(t *testing.T) {
 	require.NoError(t, db.First(&row, "client_id = ?", "client-2").Error)
 	require.False(t, strings.Contains(row.HeadersJSON, "vault."), "no vault ref expected when disabled: %s", row.HeadersJSON)
 }
+
+// TestVaultCallbacks_RelaySecrets verifies that every relay secret (the
+// credential, AWS fields, extra headers and proxy secrets) is stored to the vault as plaintext and
+// persisted as a vault reference, with encryption on, and that a delete removes them.
+func TestVaultCallbacks_RelaySecrets(t *testing.T) {
+	stored, removed := stubVaultHooks(t)
+	encrypt.Init(testEncryptionKey, bifrost.NewDefaultLogger(schemas.LogLevelInfo))
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	RegisterVaultCallbacks(db)
+	require.NoError(t, db.AutoMigrate(&tables.TableRelay{}, &tables.TableVirtualKeyRelayGrant{}))
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+
+	cfg := &schemas.RelayConfig{
+		Name:         "tavily",
+		BaseURL:      "https://search.example.com",
+		Credential:   &schemas.RelayCredential{Value: schemas.NewSecretVar("tvly-secret")},
+		ExtraHeaders: map[string]schemas.SecretVar{"X-Tenant": *schemas.NewSecretVar("acme")},
+		ProxyConfig:  &schemas.ProxyConfig{Type: schemas.ProxyType("http"), URL: schemas.NewSecretVar("http://proxy:8080"), Password: schemas.NewSecretVar("proxy-pass")},
+	}
+	require.NoError(t, store.CreateRelay(context.Background(), cfg, ""))
+
+	base := "bifrost/config_relays/tavily"
+	require.Equal(t, "tvly-secret", stored[base+"/credential_value"], "the credential is stored to vault as plaintext")
+	require.Equal(t, "acme", stored[base+"/extra_headers/X-Tenant"])
+	require.Equal(t, "proxy-pass", stored[base+"/proxy_password"])
+
+	var raw tables.TableRelay
+	require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).First(&raw, "name = ?", "tavily").Error)
+	require.NotNil(t, raw.CredentialValue)
+	require.Equal(t, schemas.SecretTypeVault, raw.CredentialValue.SecretType, "the column holds the vault ref, not plaintext or ciphertext")
+	require.True(t, strings.Contains(raw.ExtraHeadersJSON, "vault."+base+"/extra_headers/X-Tenant"))
+
+	require.NoError(t, store.DeleteRelay(context.Background(), "tavily"))
+	require.Contains(t, *removed, base+"/credential_value", "a delete removes the endpoint's vault secrets")
+	require.Contains(t, *removed, base+"/extra_headers/X-Tenant")
+}

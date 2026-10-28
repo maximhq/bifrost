@@ -219,6 +219,9 @@ type anthropicToResponsesStreamState struct {
 	// converter-built, so consuming the index would skip a number.
 	passthrough bool
 
+	pendingHostedToolSearches []hostedToolSearchCall // hosted tool_search_calls awaiting their outputs, oldest first
+	emittedToolUse            bool                   // a tool_use block went out, so an unspecified stop reason is tool_use
+
 	// codeExecToolNameByItem remembers each code_interpreter_call's Anthropic
 	// sub-tool name (captured at output_item.added) so the code block's input can be
 	// reconstructed and closed on code.done — emitted before the nested web_search
@@ -434,6 +437,20 @@ func attemptModel(extra schemas.BifrostResponseExtraFields) string {
 	return extra.OriginalModelRequested //nolint:staticcheck // SA1019
 }
 
+// streamEmbedsReasoningItemID reports whether a streamed reasoning item's id is
+// smuggled into its signature/data (see providerUtils.ShouldEmbedReasoningItemID).
+// Every stream call site goes through here so the halves of one item agree (see
+// attemptProvider).
+//
+// A stream bridged from Chat Completions (ConvertedRequestType) is excluded: Chat
+// Completions has no reasoning item, so the chat-to-responses stream converter mints
+// the id itself and never carries an encrypted token, and embedding it would hand the
+// client a signature no upstream issued.
+func streamEmbedsReasoningItemID(ctx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) bool {
+	return extra.ConvertedRequestType != schemas.ChatCompletionRequest &&
+		providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(extra), extra.RoutingInfo.Model)
+}
+
 // markReasoningPayloadSent records that key's encrypted reasoning payload already
 // reached the client, so output_item.done does not emit it a second time.
 func (s *anthropicToResponsesStreamState) markReasoningPayloadSent(key string) {
@@ -499,7 +516,7 @@ func upgradeLateSummaryToThinkingBlock(
 	// client replaying this turn folds the thinking half back together with the
 	// redacted half (see reasoningIndexByID in the ingress converter).
 	signature := ""
-	if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+	if streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields) {
 		signature = providerUtils.EmbedReasoningItemID(bifrostResp.ItemID, "")
 	}
 	events = append(events, &AnthropicStreamEvent{
@@ -603,6 +620,30 @@ func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *an
 	state := &anthropicToResponsesStreamState{}
 	ctx.SetValue(anthropicToResponsesStreamStateKey, state)
 	return state
+}
+
+type anthropicClientToolSearchKeyType struct{}
+
+var anthropicClientToolSearchKey = anthropicClientToolSearchKeyType{}
+
+// setAnthropicClientToolSearch records the name of the function an inbound Anthropic
+// request runs as its own tool search. A provider that runs the search as a
+// client-executed tool_search (OpenAI) returns a tool_search_call, which egress turns
+// back into a tool_use for this name.
+func setAnthropicClientToolSearch(ctx *schemas.BifrostContext, name string) {
+	if ctx == nil || name == "" {
+		return
+	}
+	ctx.SetValue(anthropicClientToolSearchKey, name)
+}
+
+// anthropicClientToolSearchFrom returns the name recorded by setAnthropicClientToolSearch.
+func anthropicClientToolSearchFrom(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	name, _ := ctx.Value(anthropicClientToolSearchKey).(string)
+	return name
 }
 
 type anthropicNativeEffortKeyType struct{}
@@ -3083,27 +3124,38 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 
 	case AnthropicStreamEventTypeMessageDelta:
-		// The sandbox container is delivered here, after all content blocks; fold
-		// it onto the code_interpreter_call(s) at message_stop.
-		if chunk.Delta.Container != nil {
-			state.Container = chunk.Delta.Container
-		}
-		if chunk.Delta.StopReason != nil {
-			mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
-			if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
-				mapped == string(schemas.BifrostFinishReasonToolCalls) {
-				mapped = string(schemas.BifrostFinishReasonStop)
+		// The delta object is REQUIRED on this event, and a well-formed upstream
+		// always sends it -- but reading it unconditionally made a malformed one
+		// fatal rather than merely wrong: this streaming goroutine has no
+		// recover(), so an upstream `message_delta` carrying usage and no delta
+		// object took the whole process down on a nil dereference (reproduced
+		// against a running gateway, and covered by
+		// TestMessageDeltaWithoutAnUpstreamDeltaObjectIsServed). The event
+		// still carries usage worth relaying, and the egress supplies the stop
+		// fields the client requires, so the turn is served instead.
+		if chunk.Delta != nil {
+			// The sandbox container is delivered here, after all content blocks; fold
+			// it onto the code_interpreter_call(s) at message_stop.
+			if chunk.Delta.Container != nil {
+				state.Container = chunk.Delta.Container
 			}
-			state.StopReason = &mapped
-			if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
-				state.StopSequence = chunk.Delta.StopSequence
+			if chunk.Delta.StopReason != nil {
+				mapped := ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason)
+				if state.UsedStructuredOutputTool && !state.SeenRealToolCall &&
+					mapped == string(schemas.BifrostFinishReasonToolCalls) {
+					mapped = string(schemas.BifrostFinishReasonStop)
+				}
+				state.StopReason = &mapped
+				if *chunk.Delta.StopReason == AnthropicStopReasonStopSequence {
+					state.StopSequence = chunk.Delta.StopSequence
+				}
 			}
-		}
-		if chunk.Delta.StopDetails != nil {
-			state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
-		}
-		if len(chunk.Delta.SafeguardResults) > 0 {
-			state.SafeguardResults = chunk.Delta.SafeguardResults
+			if chunk.Delta.StopDetails != nil {
+				state.StopDetails = stopDetailsToBifrost(chunk.Delta.StopDetails)
+			}
+			if len(chunk.Delta.SafeguardResults) > 0 {
+				state.SafeguardResults = chunk.Delta.SafeguardResults
+			}
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
@@ -3289,6 +3341,16 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	state := getOrCreateAnthropicToResponsesStreamState(ctx)
 	events = enforceStreamBlockTypes(state, events)
 	state.recordEmittedTextEvents(events)
+	// The terminal frame is the last one that can carry usage worth reshaping, so
+	// the prompt-usage readings are released once it has been rendered -- here,
+	// rather than when the reader goroutine returned, because this frame is
+	// marshalled from the chunk channel after that goroutine has already exited.
+	for _, event := range events {
+		if event != nil && event.Type == AnthropicStreamEventTypeMessageStop {
+			closeAnthropicStreamDeltaPromptUsageLedger(ctx)
+			break
+		}
+	}
 	return events
 }
 
@@ -3316,6 +3378,9 @@ func enforceStreamBlockTypes(state *anthropicToResponsesStreamState, events []*A
 		case AnthropicStreamEventTypeContentBlockStart:
 			if event.ContentBlock != nil {
 				state.setBlockType(index, event.ContentBlock.Type)
+				if event.ContentBlock.Type == AnthropicContentBlockTypeToolUse {
+					state.emittedToolUse = true
+				}
 			}
 		case AnthropicStreamEventTypeContentBlockDelta:
 			// An index with no recorded start is left alone: block-index bookkeeping
@@ -3424,6 +3489,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 		// Every output item starts exactly one primary Anthropic content block here;
 		// allocate its index once (deltas/stops look it up, result blocks get fresh
 		// indices). This is the single source of truth for block numbering.
+		// OpenAI tool search items carry their whole payload on output_item.done, so
+		// their blocks, and the indices for them, are all decided there: some render no
+		// block, and a reserved but unused index would skip a number.
+		if isVerbatimToolSearchItem(bifrostResp.Item) {
+			return nil
+		}
 		addedState := getOrCreateAnthropicToResponsesStreamState(ctx)
 		blockIdx := addedState.allocBlockIndex(reverseStreamItemKey(bifrostResp))
 
@@ -3581,7 +3652,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						// embedID gates smuggling the real OpenAI reasoning item id into
 						// signature/data (see providerUtils.ShouldEmbedReasoningItemID and
 						// convertBifrostReasoningToAnthropicThinking for why).
-						embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model)
+						embedID := streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields)
 						encrypted, hasSummary := reasoningPayloadAndSummary(bifrostResp.Item)
 						// Redacted-only reasoning (encrypted payload, nothing visible) is an
 						// atomic block: the payload rides in `data` on this very frame and no
@@ -3627,7 +3698,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 							// not dropped -- output_item.done splits it into its own
 							// redacted_thinking block, which is why isReasoningItem has to route
 							// this shape there as well.
-							embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model)
+							embedID := streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields)
 							encrypted, hasSummary := reasoningPayloadAndSummary(bifrostResp.Item)
 							if encrypted != "" && !hasSummary {
 								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
@@ -3852,6 +3923,9 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 	case schemas.ResponsesStreamResponseTypeOutputItemDone:
 		getOrCreateAnthropicToResponsesStreamState(ctx).clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
+		if isVerbatimToolSearchItem(bifrostResp.Item) {
+			return openAIToolSearchItemStreamEvents(ctx, bifrostResp)
+		}
 		// Handle WebSearch tool completion with sanitization and synthetic delta generation
 		if bifrostResp.Item != nil &&
 			bifrostResp.Item.Type != nil &&
@@ -4160,7 +4234,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// that was closed. Emitting it again would duplicate the reasoning state.
 			if encrypted != "" && encrypted != signatureSent && openedAsThinking && !state.reasoningPayloadSent(key) {
 				data := encrypted
-				if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+				if streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields) {
 					data = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, data)
 				}
 				redactedIdx := state.allocBlockIndex("")
@@ -4279,6 +4353,11 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					StopReason:   schemas.Ptr(reason),
 					StopSequence: nil,
 				}
+			} else if getOrCreateAnthropicToResponsesStreamState(ctx).emittedToolUse {
+				// OpenAI-shaped upstreams send no stop reason; a turn that handed the client
+				// a tool_use (a function call or a client tool search) ends on tool_use, as
+				// the non-streaming conversion infers.
+				anthropicContentDeltaEvent.Delta.StopReason = schemas.Ptr(AnthropicStopReasonToolUse)
 			}
 			if sd := stopDetailsToAnthropic(bifrostResp.Response.StopDetails); sd != nil {
 				if anthropicContentDeltaEvent.Delta == nil {
@@ -4347,6 +4426,14 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// Convert usage from Bifrost format to Anthropic format using common converter
 			if bifrostResp.Response != nil {
 				streamResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+				// Report no prompt-side counter the upstream event behind this chunk
+				// did not report. The neutral usage cannot tell an omitted counter
+				// from a zero one, and `input_tokens: 0` on a terminal frame erases
+				// the message_start figure in every accumulating client, while
+				// Bifrost's own accumulated usage stays correct -- so the client's
+				// final prompt count disagreed with the one Bifrost billed. A real
+				// reported zero is still reported. See streamdeltausage.go.
+				applyAnthropicStreamDeltaPromptUsage(ctx, bifrostResp.SequenceNumber, streamResp.Usage)
 			}
 
 			// Convert stop reason from Bifrost format to Anthropic format
@@ -4388,6 +4475,37 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					streamResp.Delta = &AnthropicStreamDelta{}
 				}
 				streamResp.Delta.SafeguardResults = bifrostResp.Response.SafeguardResults
+			}
+
+			// A `message_delta` ALWAYS carries a delta object WITH the two
+			// message-level stop fields: the event declares `stop_reason` and
+			// `stop_sequence` as required-and-nullable and the supported clients
+			// read `event.delta.stop_reason` unguarded. An ABSENT object throws
+			// there and aborts the stream; an object that merely omits the key
+			// reads as `undefined` and is ASSIGNED: that read is unconditional on
+			// every message_delta, so the LAST one decides the turn's stop state
+			// and an earlier frame's reported reason does not survive a later
+			// omission. Both are required-field omissions, measured, and only the
+			// first is the exception. An upstream reporting its running usage on several
+			// message_delta frames sets no stop reason on the non-final ones, so
+			// every branch above left Delta nil and `delta,omitempty` dropped the
+			// key: a correctly relayed, correctly billed turn a supported client
+			// could not consume. This reports the stop state the upstream actually
+			// reported -- a null stop_reason, never a fabricated end_turn. See
+			// streamdeltaframe.go.
+			//
+			// The null is set on an object the branches above ALREADY built, not
+			// only on one supplied here: `stop_details`, `container` and a text
+			// delta each allocate one, so such a frame with no stop reason rendered
+			// without `stop_reason` -- the same omission. An empty reason renders
+			// as JSON null (AnthropicStopReason.MarshalJSON) and only frames that
+			// set it pay for that, so content_block_delta keeps stock encoding and
+			// a terminal frame with its own reason is byte-unchanged.
+			if streamResp.Delta == nil {
+				streamResp.Delta = &AnthropicStreamDelta{}
+			}
+			if streamResp.Delta.StopReason == nil {
+				streamResp.Delta.StopReason = new(AnthropicStopReason(""))
 			}
 		}
 
@@ -4697,11 +4815,18 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		if bifrostToolChoice != nil {
 			bifrostReq.Params.ToolChoice = bifrostToolChoice
 		}
+		if req.ToolChoice.DisableParallelToolUse != nil {
+			bifrostReq.Params.ParallelToolCalls = new(!*req.ToolChoice.DisableParallelToolUse)
+		}
 	}
 
 	// Set the converted messages
 	if len(bifrostMessages) > 0 {
 		bifrostReq.Input = bifrostMessages
+	}
+
+	if bifrostReq.Params != nil {
+		setAnthropicClientToolSearch(ctx, schemas.ClientToolSearchFunctionName(bifrostReq.Params.Tools, bifrostReq.Input))
 	}
 
 	return bifrostReq
@@ -5156,6 +5281,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 
+		// Anthropic carries parallel_tool_calls on tool_choice only; "auto" is its default.
+		if anthropicReq.ToolChoice != nil {
+			applyParallelToolUse(anthropicReq.ToolChoice, bifrostReq.Params.ParallelToolCalls)
+		} else if len(anthropicReq.Tools) > 0 &&
+			bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls {
+			anthropicReq.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			applyParallelToolUse(anthropicReq.ToolChoice, bifrostReq.Params.ParallelToolCalls)
+		}
+
 		// DeepSeek rejects a forced tool_choice while thinking is on. Force thinking
 		// off when tool_choice pins a specific tool.
 		if bifrostReq.Provider == schemas.DeepSeek && anthropicReq.ToolChoice != nil &&
@@ -5167,13 +5301,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	if bifrostReq.Input != nil {
 		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, input, true, caps)
 
-		// Set system message if present
-		if systemContent != nil {
-			anthropicReq.System = systemContent
-		} else if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
-			// if no system content, check if instructions are present
-			// system messages take precedence over instructions
-			anthropicReq.System = &AnthropicContent{
+		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+		if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
+			instructions := &AnthropicContent{
 				ContentBlocks: []AnthropicContentBlock{
 					{
 						Type: AnthropicContentBlockTypeText,
@@ -5181,6 +5311,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					},
 				},
 			}
+			if systemContent != nil {
+				instructions = appendToSystemContent(instructions, *systemContent)
+			}
+			systemContent = instructions
+		}
+
+		// Set system message if present
+		if systemContent != nil {
+			anthropicReq.System = systemContent
 		}
 
 		// Set regular messages
@@ -5507,8 +5646,9 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
-			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model))
+		anthropicMessages, _ := convertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
+			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model),
+			bifrostResp.ExtraFields.ConvertedRequestType == schemas.ChatCompletionRequest)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -5639,6 +5779,14 @@ func convertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 // This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content.
 // provider and model are used to gate mid-conversation system message support (Anthropic + Opus 4.8+ only).
 func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps) ([]AnthropicMessage, *AnthropicContent) {
+	return convertBifrostMessagesToAnthropicMessages(ctx, bifrostMessages, isRequestMessage, caps, false)
+}
+
+// convertBifrostMessagesToAnthropicMessages is ConvertBifrostMessagesToAnthropicMessages
+// for a response render: bridgedFromChat marks output converted from a Chat Completions
+// response (see convertBifrostReasoningToAnthropicThinking).
+func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps, bridgedFromChat bool) ([]AnthropicMessage, *AnthropicContent) {
+	bifrostMessages = normalizeOpenAIToolSearchItems(ctx, bifrostMessages, isRequestMessage)
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		if systemContent := convertBifrostMessageToAnthropicSystemContent(caps, &bifrostMessages[0]); systemContent != nil {
@@ -6044,7 +6192,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolResults()
 
 			// Handle reasoning as thinking content
-			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, caps.Provider(), caps.Model())
+			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, caps.Provider(), caps.Model(), bridgedFromChat)
 			pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 
 		case schemas.ResponsesMessageTypeFunctionCall:
@@ -6635,7 +6783,9 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 		if err := sonic.Unmarshal(toolBlock.Input, &inputMap); err == nil {
 			setResponsesComputerCallAction(bifrostMsg.ResponsesToolMessage, convertAnthropicToResponsesComputerAction(inputMap))
 		}
-	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
+	} else if toolBlock.Type == AnthropicContentBlockTypeServerToolUse && toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
+		// Client tool_use blocks may reuse the web_search / web_fetch names; only
+		// server_tool_use blocks are Anthropic's server tools.
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
 		if q := providerUtils.GetJSONField(toolBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
@@ -6648,7 +6798,7 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 				},
 			}
 		}
-	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
+	} else if toolBlock.Type == AnthropicContentBlockTypeServerToolUse && toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
 		if u := providerUtils.GetJSONField(toolBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
@@ -8165,9 +8315,16 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 // echoes the block back on a later turn, a fresh random id gets minted and paired
 // with the original (still real) encrypted_content -- a mismatch OpenAI rejects
 // with "Encrypted content item_id did not match the target item id."
-func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
+//
+// bridgedFromChat marks reasoning converted from a Chat Completions response. Chat
+// Completions has no reasoning item, so its id is one the chat-to-responses converter
+// minted and is embedded only when the item also carries an encrypted token, whose id
+// came from the upstream's reasoning_details. Otherwise the client would get a
+// signature no upstream issued.
+func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string, bridgedFromChat bool) []AnthropicContentBlock {
 	var thinkingBlocks []AnthropicContentBlock
-	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model)
+	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model) &&
+		(!bridgedFromChat || (msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != ""))
 
 	// Track whether the content blocks actually yielded reasoning rather than
 	// branching on Content being non-nil. `ContentBlocks != nil` is true for an
@@ -8920,13 +9077,211 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 			})
 		}
 	}
-	resultBlock := AnthropicContentBlock{
-		Type:           AnthropicContentBlockTypeToolSearchToolResult,
-		ToolUseID:      toolUseID,
-		ToolReferences: toolReferences,
+	return []AnthropicContentBlock{serverToolUseBlock, anthropicToolSearchResultBlock(toolUseID, toolReferences)}
+}
+
+// normalizeOpenAIToolSearchItems rewrites the tool_search_call / tool_search_output
+// items an OpenAI model emits into the shapes the message conversion below renders
+// for an Anthropic client:
+//   - a client-executed tool_search_call becomes a function_call to the caller's own
+//     search function, so it surfaces as a tool_use the client runs;
+//   - a hosted (server) tool_search_call absorbs the tool names its paired
+//     tool_search_output loaded, so it surfaces as server_tool_use plus
+//     tool_search_tool_result; the output item itself is folded away.
+//
+// On the request path these verbatim OpenAI items have no Anthropic equivalent, so
+// they are dropped. Returns msgs unchanged when it holds no verbatim tool_search item.
+func normalizeOpenAIToolSearchItems(ctx *schemas.BifrostContext, msgs []schemas.ResponsesMessage, isRequestMessage bool) []schemas.ResponsesMessage {
+	isVerbatimToolSearch := func(m *schemas.ResponsesMessage) bool {
+		return m.Type != nil && (*m.Type == schemas.ResponsesMessageTypeToolSearchCall ||
+			*m.Type == schemas.ResponsesMessageTypeToolSearchOutput) && m.IsVerbatimItem() &&
+			!isAnthropicToolSearchReplay(m)
+	}
+	if !slices.ContainsFunc(msgs, func(m schemas.ResponsesMessage) bool { return isVerbatimToolSearch(&m) }) {
+		return msgs
+	}
+	searchName := anthropicClientToolSearchFrom(ctx)
+	if searchName == "" {
+		searchName = "tool_search"
+	}
+	out := make([]schemas.ResponsesMessage, 0, len(msgs))
+	var pendingHosted []int // indices in out of hosted calls awaiting their outputs, oldest first
+	for i := range msgs {
+		msg := msgs[i]
+		if !isVerbatimToolSearch(&msg) {
+			out = append(out, msg)
+			continue
+		}
+		if isRequestMessage {
+			continue
+		}
+		if *msg.Type == schemas.ResponsesMessageTypeToolSearchOutput {
+			if msg.IsClientToolSearchItem() || len(pendingHosted) == 0 {
+				continue
+			}
+			// Hosted items carry call_id null, so an output pairs with the oldest call still
+			// waiting; a call_id, when one is present, picks its own call.
+			pick := 0
+			if msg.ResponsesToolMessage != nil && msg.CallID != nil {
+				for i, idx := range pendingHosted {
+					if c := out[idx].ResponsesToolMessage.CallID; c != nil && *c == *msg.CallID {
+						pick = i
+						break
+					}
+				}
+			}
+			idx := pendingHosted[pick]
+			pendingHosted = slices.Delete(pendingHosted, pick, pick+1)
+			toolMsg := *out[idx].ResponsesToolMessage
+			toolMsg.ResponsesToolSearchCall = &schemas.ResponsesToolSearchCall{ToolReferences: msg.ToolSearchOutputToolNames()}
+			out[idx].ResponsesToolMessage = &toolMsg
+			continue
+		}
+		var toolMsg schemas.ResponsesToolMessage
+		if msg.ResponsesToolMessage != nil {
+			toolMsg.CallID = msg.CallID
+			toolMsg.Arguments = msg.Arguments
+		}
+		if msg.IsClientToolSearchItem() {
+			if toolMsg.CallID == nil {
+				continue
+			}
+			toolMsg.Name = schemas.Ptr(searchName)
+			out = append(out, schemas.ResponsesMessage{
+				ID:                   msg.ID,
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status:               msg.Status,
+				ResponsesToolMessage: &toolMsg,
+			})
+			continue
+		}
+		// OpenAI's hosted search reads natural-language queries, as bm25 does.
+		toolMsg.Name = schemas.Ptr(string(AnthropicToolNameToolSearchBM25))
+		out = append(out, schemas.ResponsesMessage{
+			ID:                   msg.ID,
+			Type:                 msg.Type,
+			Status:               msg.Status,
+			ResponsesToolMessage: &toolMsg,
+		})
+		pendingHosted = append(pendingHosted, len(out)-1)
+	}
+	return out
+}
+
+// hostedToolSearchCall is a hosted tool_search_call the stream rendered and whose
+// tool_search_output has not arrived yet.
+type hostedToolSearchCall struct {
+	toolUseID *string // the server_tool_use id the paired result must reference
+	callID    *string // upstream call_id, nil for OpenAI hosted search
+}
+
+// isVerbatimToolSearchItem reports whether item is a tool_search_call or
+// tool_search_output decoded verbatim from an OpenAI-shaped upstream.
+func isVerbatimToolSearchItem(item *schemas.ResponsesMessage) bool {
+	return item != nil && item.Type != nil &&
+		(*item.Type == schemas.ResponsesMessageTypeToolSearchCall || *item.Type == schemas.ResponsesMessageTypeToolSearchOutput) &&
+		item.IsVerbatimItem()
+}
+
+// openAIToolSearchItemStreamEvents renders a completed OpenAI tool search item as
+// whole Anthropic blocks, allocating the block index only once a block is emitted, matching the
+// non-streaming normalizeOpenAIToolSearchItems: a client-executed call becomes a
+// tool_use for the caller's search function, a hosted call becomes server_tool_use,
+// and the hosted output becomes the paired tool_search_tool_result.
+func openAIToolSearchItemStreamEvents(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
+	state := getOrCreateAnthropicToResponsesStreamState(ctx)
+	item := bifrostResp.Item
+	var callID, args *string
+	if item.ResponsesToolMessage != nil {
+		callID, args = item.CallID, item.Arguments
+	}
+	input := json.RawMessage("{}")
+	if args != nil && *args != "" && json.Valid([]byte(*args)) {
+		input = json.RawMessage(*args)
 	}
 
-	return []AnthropicContentBlock{serverToolUseBlock, resultBlock}
+	var block AnthropicContentBlock
+	var partial *string
+	switch {
+	case *item.Type == schemas.ResponsesMessageTypeToolSearchCall && item.IsClientToolSearchItem():
+		if callID == nil {
+			return nil
+		}
+		name := anthropicClientToolSearchFrom(ctx)
+		if name == "" {
+			name = "tool_search"
+		}
+		block = AnthropicContentBlock{
+			Type:  AnthropicContentBlockTypeToolUse,
+			ID:    providerUtils.SanitizeAnthropicToolUseIDPtr(callID),
+			Name:  schemas.Ptr(name),
+			Input: json.RawMessage("{}"),
+		}
+		partial = schemas.Ptr(string(input))
+	case *item.Type == schemas.ResponsesMessageTypeToolSearchCall:
+		id := item.ID
+		if callID != nil {
+			id = callID
+		}
+		if id == nil {
+			return nil
+		}
+		toolUseID := providerUtils.SanitizeAnthropicToolUseIDPtr(id)
+		state.pendingHostedToolSearches = append(state.pendingHostedToolSearches, hostedToolSearchCall{toolUseID: toolUseID, callID: callID})
+		block = AnthropicContentBlock{
+			Type:  AnthropicContentBlockTypeServerToolUse,
+			ID:    toolUseID,
+			Name:  schemas.Ptr(string(AnthropicToolNameToolSearchBM25)),
+			Input: input,
+		}
+	default:
+		if item.IsClientToolSearchItem() || len(state.pendingHostedToolSearches) == 0 {
+			return nil
+		}
+		// Same pairing as the non-streaming path: the oldest waiting call, unless the
+		// output names its own call_id.
+		pick := 0
+		if callID != nil {
+			for i, pending := range state.pendingHostedToolSearches {
+				if pending.callID != nil && *pending.callID == *callID {
+					pick = i
+					break
+				}
+			}
+		}
+		toolUseID := state.pendingHostedToolSearches[pick].toolUseID
+		state.pendingHostedToolSearches = slices.Delete(state.pendingHostedToolSearches, pick, pick+1)
+		var refs []AnthropicContentBlock
+		for _, name := range item.ToolSearchOutputToolNames() {
+			refs = append(refs, AnthropicContentBlock{Type: AnthropicContentBlockTypeToolReference, ToolName: schemas.Ptr(name)})
+		}
+		block = anthropicToolSearchResultBlock(toolUseID, refs)
+	}
+
+	idx := state.allocBlockIndex(reverseStreamItemKey(bifrostResp))
+	events := []*AnthropicStreamEvent{{Type: AnthropicStreamEventTypeContentBlockStart, Index: idx, ContentBlock: &block}}
+	if partial != nil {
+		events = append(events, &AnthropicStreamEvent{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: idx,
+			Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: partial},
+		})
+	}
+	return append(events, &AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: idx})
+}
+
+// anthropicToolSearchResultBlock builds a tool_search_tool_result in Anthropic's
+// documented shape: the references sit in a tool_search_tool_search_result content
+// object, not on the block itself.
+func anthropicToolSearchResultBlock(toolUseID *string, refs []AnthropicContentBlock) AnthropicContentBlock {
+	return AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeToolSearchToolResult,
+		ToolUseID: toolUseID,
+		Content: &AnthropicContent{ContentObj: &AnthropicContentBlock{
+			Type:           AnthropicContentBlockTypeToolSearchToolSearchResult,
+			ToolReferences: refs,
+		}},
+	}
 }
 
 // isAnthropicCodeExecutionToolName reports whether name is one of the code
@@ -8954,6 +9309,12 @@ func isAnthropicToolSearchToolName(name string) bool {
 	default:
 		return false
 	}
+}
+
+// isAnthropicToolSearchReplay reports whether a verbatim tool_search_call is a Claude
+// server search echoed back through /v1/responses; OpenAI search items carry no name.
+func isAnthropicToolSearchReplay(m *schemas.ResponsesMessage) bool {
+	return m.ResponsesToolMessage != nil && m.Name != nil && isAnthropicToolSearchToolName(*m.Name)
 }
 
 func isAnthropicCodeExecutionToolName(name string) bool {

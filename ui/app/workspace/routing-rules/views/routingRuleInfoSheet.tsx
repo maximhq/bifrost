@@ -13,6 +13,7 @@ import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/l
 import { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { formatTargetsTTFT, normalizeFallback } from "@/lib/utils/routingRules";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -43,16 +44,20 @@ function formatRuleValue(value: any): string {
 
 // Resolves a rule's scope_id to a display name. Each scope fetches only the one
 // entity it needs — the rule points at a single id, so pulling the full list to
-// find one name is wasted payload.
+// find one name is wasted payload. A caller without View on the scope's entity
+// skips the lookup and gets no name.
 function useScopeName(scope: string, scopeId?: string): string | undefined {
+	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const { data: teamData } = useGetTeamQuery(scopeId as string, {
-		skip: scope !== "team" || !scopeId,
+		skip: scope !== "team" || !scopeId || !hasTeamsAccess,
 	});
 	const { data: customerData } = useGetCustomerQuery(scopeId as string, {
-		skip: scope !== "customer" || !scopeId,
+		skip: scope !== "customer" || !scopeId || !hasCustomersAccess,
 	});
 	const { data: vkData } = useGetVirtualKeyQuery(scopeId as string, {
-		skip: scope !== "virtual_key" || !scopeId,
+		skip: scope !== "virtual_key" || !scopeId || !hasVirtualKeysAccess,
 	});
 
 	return useMemo(() => {

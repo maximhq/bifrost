@@ -3,11 +3,15 @@ package vertex
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,9 +19,270 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/oauth2"
 )
+
+type vertexEndpointTestLogger struct{}
+
+func (vertexEndpointTestLogger) Debug(string, ...any)                   {}
+func (vertexEndpointTestLogger) Info(string, ...any)                    {}
+func (vertexEndpointTestLogger) Warn(string, ...any)                    {}
+func (vertexEndpointTestLogger) Error(string, ...any)                   {}
+func (vertexEndpointTestLogger) Fatal(string, ...any)                   {}
+func (vertexEndpointTestLogger) SetLevel(schemas.LogLevel)              {}
+func (vertexEndpointTestLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (vertexEndpointTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+func vertexOpenAIEndpointTestProvider(t testing.TB, handler http.Handler) (*VertexProvider, schemas.Key) {
+	t.Helper()
+	upstream := httptest.NewTLSServer(handler)
+	t.Cleanup(upstream.Close)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, vertexEndpointTestLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+		t.Cleanup(client.CloseIdleConnections)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("must-not-use-api-key"), VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID: *schemas.NewSecretVar("project-123"), Region: *schemas.NewSecretVar("us-west1"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	return provider, key
+}
+
+func TestVertexEndpointChat(t *testing.T) {
+	for _, method := range []string{"raw_predict", "chat_completions"} {
+		t.Run(method, func(t *testing.T) {
+			type sent struct{ path, auth, body string }
+			received := make(chan sent, 1)
+			provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				data, _ := io.ReadAll(r.Body)
+				received <- sent{r.URL.RequestURI(), r.Header.Get("Authorization"), string(data)}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"chatcmpl-custom","object":"chat.completion","model":"1234567890","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+			}))
+			var aliases schemas.KeyAliases
+			if err := json.Unmarshal([]byte(`{"vllm":{"model_id":"1234567890","vertex_endpoint":{"endpoint_id":"2222222222","format":"openai_chat","method":"`+method+`"}}}`), &aliases); err != nil {
+				t.Fatal(err)
+			}
+			alias := aliases["vllm"]
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "vllm", Config: &alias})
+			response, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex, Model: alias.ModelID,
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("chat completion: %v", bifrostErr)
+			}
+			call := <-received
+			wantPath := "/v1/projects/project-123/locations/us-west1/endpoints/2222222222:rawPredict"
+			if method == "chat_completions" {
+				wantPath = "/v1beta1/projects/project-123/locations/us-west1/endpoints/2222222222/chat/completions"
+			}
+			if call.path != wantPath || call.auth != "Bearer test-token" {
+				t.Fatalf("upstream = %s (%s), want %s with OAuth", call.path, call.auth, wantPath)
+			}
+			if gjson.Get(call.body, "model").String() != alias.ModelID || !gjson.Get(call.body, "messages").IsArray() || gjson.Get(call.body, "contents").Exists() {
+				t.Fatalf("expected OpenAI request with served model preserved, got %s", call.body)
+			}
+			if response == nil || len(response.Choices) != 1 || response.Choices[0].Message.Content.ContentStr == nil || *response.Choices[0].Message.Content.ContentStr != "hello" {
+				t.Fatalf("expected OpenAI chat response, got %+v", response)
+			}
+		})
+	}
+}
+
+func BenchmarkVertexChatCompletionCommonCase(b *testing.B) {
+	provider, key := vertexOpenAIEndpointTestProvider(b, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}`)
+	}))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "gemini-2.5-flash", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := provider.ChatCompletion(ctx, key, request); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestVertexEndpointResponsesAndStreaming(t *testing.T) {
+	for _, method := range []schemas.VertexEndpointMethod{schemas.VertexEndpointRawPredict, schemas.VertexEndpointChatCompletions} {
+		for _, route := range []string{"chat-stream", "responses", "responses-stream"} {
+			for _, model := range []string{"gemma-custom", "claude-custom", "mistral-custom"} {
+				t.Run(string(method)+"/"+route+"/"+model, func(t *testing.T) {
+					type sent struct{ path, body, auth string }
+					received := make(chan sent, 1)
+					provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						data, _ := io.ReadAll(r.Body)
+						received <- sent{r.URL.RequestURI(), string(data), r.Header.Get("Authorization")}
+						if strings.HasSuffix(route, "stream") {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-custom\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"custom\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":null}]}\n\n")
+							_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-custom\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"custom\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+							_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-custom\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"custom\",\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\ndata: [DONE]\n\n")
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, `{"id":"chatcmpl-custom","object":"chat.completion","model":"custom","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+						}
+					}))
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					alias := &schemas.AliasConfig{ModelID: model, ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic), VertexAliasCfg: &schemas.VertexAliasCfg{
+						VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222222222", Format: schemas.VertexEndpointOpenAIChat, Method: method},
+					}}
+					ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "vllm", Config: alias})
+					chat := &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+					responses := &schemas.BifrostResponsesRequest{Provider: schemas.Vertex, Model: model, Input: []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}}}
+					noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						return result, err
+					}
+					if route == "responses" {
+						response, err := provider.Responses(ctx, key, responses)
+						if err != nil || response == nil || len(response.Output) == 0 || response.Usage == nil {
+							t.Fatalf("Responses conversion failed: response=%+v error=%v", response, err)
+						}
+					} else {
+						var stream chan *schemas.BifrostStreamChunk
+						var err *schemas.BifrostError
+						if route == "responses-stream" {
+							stream, err = provider.ResponsesStream(ctx, noHooks, nil, key, responses)
+						} else {
+							stream, err = provider.ChatCompletionStream(ctx, noHooks, nil, key, chat)
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						timer := time.NewTimer(5 * time.Second)
+						defer timer.Stop()
+						var text strings.Builder
+						var hasUsage bool
+					loop:
+						for {
+							select {
+							case chunk, ok := <-stream:
+								if !ok {
+									break loop
+								}
+								if chunk.BifrostError != nil {
+									t.Fatal(chunk.BifrostError)
+								}
+								if route == "responses-stream" {
+									if chunk.BifrostResponsesStreamResponse == nil {
+										t.Fatalf("expected Responses event: %+v", chunk)
+									}
+									encoded, _ := json.Marshal(chunk.BifrostResponsesStreamResponse)
+									if gjson.GetBytes(encoded, "type").String() == "response.output_text.delta" {
+										text.WriteString(gjson.GetBytes(encoded, "delta").String())
+									}
+									if gjson.GetBytes(encoded, "response.usage.total_tokens").Int() == 3 {
+										hasUsage = true
+									}
+								} else if chunk.BifrostChatResponse != nil {
+									for _, choice := range chunk.BifrostChatResponse.Choices {
+										if choice.Delta != nil && choice.Delta.Content != nil {
+											text.WriteString(*choice.Delta.Content)
+										}
+									}
+									if chunk.BifrostChatResponse.Usage != nil && chunk.BifrostChatResponse.Usage.TotalTokens == 3 {
+										hasUsage = true
+									}
+								}
+							case <-timer.C:
+								t.Fatal("stream did not finish")
+							}
+						}
+						if text.String() != "hello" || !hasUsage {
+							t.Fatalf("stream text=%q usage=%v", text.String(), hasUsage)
+						}
+					}
+					call := <-received
+					wantSuffix := ":rawPredict"
+					if strings.HasSuffix(route, "stream") {
+						wantSuffix = ":streamRawPredict"
+					}
+					if method == schemas.VertexEndpointChatCompletions {
+						wantSuffix = "/chat/completions"
+					}
+					if !strings.HasSuffix(call.path, "endpoints/2222222222"+wantSuffix) || call.auth != "Bearer test-token" {
+						t.Fatalf("wrong upstream call: %+v", call)
+					}
+					if gjson.Get(call.body, "model").String() != model || !gjson.Get(call.body, "messages").IsArray() || gjson.Get(call.body, "anthropic_version").Exists() {
+						t.Fatalf("wrong wire format: %s", call.body)
+					}
+					if strings.HasSuffix(route, "stream") && !gjson.Get(call.body, "stream").Bool() {
+						t.Fatalf("missing stream=true: %s", call.body)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestVertexEndpointURL(t *testing.T) {
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("key-project"), Region: *schemas.NewSecretVar("us-central1")}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{
+		ProjectID: schemas.NewSecretVar("alias-project"), Region: schemas.NewSecretVar("us-west1"),
+	}})
+	url, err := openAIEndpointURL(ctx, key, &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}, true)
+	if err != nil || url != "https://us-west1-aiplatform.googleapis.com/v1/projects/alias-project/locations/us-west1/endpoints/2222:streamRawPredict" {
+		t.Fatalf("url=%s error=%v", url, err)
+	}
+	for _, region := range []string{"", "global", "us", "eu", "evil.example/"} {
+		key.VertexKeyConfig.Region = *schemas.NewSecretVar(region)
+		if _, err := openAIEndpointURL(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}, false); err == nil {
+			t.Errorf("accepted region %q", region)
+		}
+	}
+}
+
+func TestVertexEndpointErrorEvictsCredentials(t *testing.T) {
+	provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"code":403,"message":"permission denied","status":"PERMISSION_DENIED"}}`)
+	}))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}})
+	_, err := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{Provider: schemas.Vertex, Model: "custom", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != 403 || err.Error.Message != "permission denied" {
+		t.Fatalf("wrong error: %v", err)
+	}
+	if _, ok := provider.tokenSources.Load(getClientKey(vertexCredentialIdentity(key))); ok {
+		t.Fatal("credentials were not evicted")
+	}
+}
+
+func BenchmarkVertexEndpointSelection(b *testing.B) {
+	for _, configured := range []bool{false, true} {
+		name := "standard"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if configured {
+			name = "custom"
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}})
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = schemas.GetVertexEndpoint(ctx)
+			}
+		})
+	}
+}
 
 func TestGetVertexAPIHost(t *testing.T) {
 	t.Parallel()
@@ -1192,5 +1457,412 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 		if want := []string{tc.want, tc.want}; !reflect.DeepEqual(got, want) {
 			t.Errorf("APIVersion %q %s: upstream paths %v, want %v (unary and stream)", tc.apiVersion, tc.path, got, want)
 		}
+	}
+}
+
+func TestPassthroughWireFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.ModelProvider
+	}{
+		{"/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", schemas.Anthropic},
+		{"/projects/p/locations/us-east5/publishers/Anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", schemas.Anthropic},
+		{"/projects/p/locations/us-central1/publishers/mistralai/models/mistral-large:rawPredict", schemas.Mistral},
+		{"/projects/p/locations/us-central1/endpoints/openapi/chat/completions", schemas.OpenAI},
+		{"/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent", schemas.Gemini},
+		{"/models/gemini-2.5-flash:streamGenerateContent", schemas.Gemini},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := PassthroughWireFormat(tt.path); got != tt.want {
+				t.Fatalf("PassthroughWireFormat(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// Session routing sends prompt_cache_key as session_id only from a Vertex key that opts in, only on
+// Gemini generateContent calls, and never over a session ID the caller passes through itself.
+func TestVertexSessionRoutingSendsPromptCacheKey(t *testing.T) {
+	const geminiResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	const anthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	type sent struct{ path, body string }
+	var mu sync.Mutex
+	var requests []sent
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		requests = append(requests, sent{r.URL.Path, string(body)})
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + geminiResponse + "\n\n"))
+		case strings.HasSuffix(r.URL.Path, ":countTokens"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"totalTokens":3}`))
+		case strings.Contains(r.URL.Path, "/publishers/anthropic/"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(anthropicResponse))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(geminiResponse))
+		}
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	keyWith := func(sessionRouting bool) schemas.Key {
+		key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID:         *schemas.NewSecretVar("proj"),
+			Region:            *schemas.NewSecretVar("global"),
+			AuthCredentials:   *schemas.NewSecretVar("test-credentials"),
+			UseSessionRouting: sessionRouting,
+		}}
+		provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+		return key
+	}
+	on, off := keyWith(true), keyWith(false)
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	drain := func(stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+		if bifrostErr != nil {
+			return bifrostErr
+		}
+		for {
+			select {
+			case _, ok := <-stream:
+				if !ok {
+					return nil
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not finish")
+			}
+		}
+	}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	chat := func(model string, params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params:   params,
+		}
+	}
+	responses := func(model string, params *schemas.ResponsesParameters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+			Params:   params,
+		}
+	}
+	genai := func(body string) *schemas.BifrostResponsesRequest {
+		var in gemini.GeminiGenerationRequest
+		if err := in.UnmarshalJSON([]byte(body)); err != nil {
+			t.Fatalf("genai body: %v", err)
+		}
+		return in.ToBifrostResponsesRequest(newCtx())
+	}
+	chatKey := &schemas.ChatParameters{PromptCacheKey: new("prefix-1")}
+	responsesKey := &schemas.ResponsesParameters{PromptCacheKey: new("prefix-1")}
+	anthropicIngress := (&anthropic.AnthropicMessageRequest{
+		Model:     "vertex/gemini-3.8-flash",
+		MaxTokens: 16,
+		Messages:  []anthropic.AnthropicMessage{{Role: "user", Content: anthropic.AnthropicContent{ContentStr: new("hi")}}},
+		Metadata:  &anthropic.AnthropicMetaData{UserID: new("user-1")},
+	}).ToBifrostResponsesRequest(newCtx())
+	passthroughCtx := newCtx()
+	passthroughCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	for _, tc := range []struct {
+		name          string
+		call          func() *schemas.BifrostError
+		wantPath      string
+		wantSessionID string // raw JSON of session_id; "" means absent
+	}{
+		{"/v1/chat/completions", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), on, chat("gemini-3.8-flash", chatKey))
+			return e
+		}, ":generateContent", `"prefix-1"`},
+		{"/v1/chat/completions stream", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, on, chat("gemini-3.8-flash", chatKey)))
+		}, ":streamGenerateContent", `"prefix-1"`},
+		{"/v1/responses", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, responses("gemini-3.8-flash", responsesKey))
+			return e
+		}, ":generateContent", `"prefix-1"`},
+		{"/v1/responses stream", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, on, responses("gemini-3.8-flash", responsesKey)))
+		}, ":streamGenerateContent", `"prefix-1"`},
+		{"/anthropic metadata.user_id", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, anthropicIngress)
+			return e
+		}, ":generateContent", `"user-1"`},
+		{"/genai session_id", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, genai(`{"model":"vertex/gemini-3.8-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}],"session_id":"prefix-g"}`))
+			return e
+		}, ":generateContent", `"prefix-g"`},
+		{"/genai numeric session_id is sent as a string", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, genai(`{"model":"vertex/gemini-3.8-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}],"session_id":12345}`))
+			return e
+		}, ":generateContent", `"12345"`},
+		{"key without session routing", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), off, chat("gemini-3.8-flash", chatKey))
+			return e
+		}, ":generateContent", ""},
+		{"empty prompt_cache_key", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), on, chat("gemini-3.8-flash", &schemas.ChatParameters{PromptCacheKey: new("")}))
+			return e
+		}, ":generateContent", ""},
+		{"count tokens rejects session_id, so it never gets one", func() *schemas.BifrostError {
+			_, e := provider.CountTokens(newCtx(), on, responses("gemini-3.8-flash", responsesKey))
+			return e
+		}, ":countTokens", ""},
+		{"Claude on Vertex", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, responses("claude-sonnet-4-6", responsesKey))
+			return e
+		}, ":rawPredict", ""},
+		{"caller session_id passed through wins", func() *schemas.BifrostError {
+			params := &schemas.ChatParameters{PromptCacheKey: new("prefix-1"), ExtraParams: map[string]interface{}{"session_id": "caller"}}
+			_, e := provider.ChatCompletion(passthroughCtx, on, chat("gemini-3.8-flash", params))
+			return e
+		}, ":generateContent", `"caller"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			requests = nil
+			mu.Unlock()
+			if bifrostErr := tc.call(); bifrostErr != nil {
+				t.Fatalf("call failed: %s", bifrostErr.GetErrorString())
+			}
+			mu.Lock()
+			got := requests
+			mu.Unlock()
+			if len(got) != 1 || !strings.HasSuffix(got[0].path, tc.wantPath) {
+				t.Fatalf("upstream requests = %+v, want one to *%s", got, tc.wantPath)
+			}
+			if raw := gjson.Get(got[0].body, "session_id").Raw; raw != tc.wantSessionID {
+				t.Fatalf("session_id = %s, want %s; body %s", raw, tc.wantSessionID, got[0].body)
+			}
+			if gjson.Get(got[0].body, "sessionId").Exists() {
+				t.Fatalf("camelCase sessionId sent; body %s", got[0].body)
+			}
+		})
+	}
+}
+
+func BenchmarkApplyVertexSessionRouting(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	promptCacheKey := new("prefix-1")
+	for _, bc := range []struct {
+		name string
+		key  schemas.Key
+	}{
+		{"no vertex config", schemas.Key{}},
+		{"off", schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{}}},
+		{"on", schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{UseSessionRouting: true}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			var req gemini.GeminiGenerationRequest
+			b.ReportAllocs()
+			for b.Loop() {
+				req.SessionID = nil
+				applyVertexSessionRouting(ctx, bc.key, "gemini-3.8-flash", promptCacheKey, &req)
+			}
+		})
+	}
+}
+
+// Vertex reads the anthropic-beta header when it validates a beta-gated request field:
+// thinking.display "updates" still 400s ("Input should be 'summarized', 'omitted'") with the beta
+// only in the anthropic_beta body array. The non-stream chat path sends the header next to the
+// body field, as the Responses and streaming paths already do.
+func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
+	const anthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	var mu sync.Mutex
+	var betaHeader, body string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		betaHeader, body = r.Header.Get("anthropic-beta"), string(raw)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(anthropicResponse))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+
+	for _, tc := range []struct {
+		name    string
+		display string
+		want    string
+	}{
+		{"updates sends the beta", "updates", anthropic.AnthropicThinkingDisplayUpdatesBetaHeader},
+		{"summarized needs no beta", "summarized", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex,
+				Model:    "claude-opus-5-5",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("high"), Display: new(tc.display)}},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if _, bifrostErr := provider.ChatCompletion(ctx, key, req); bifrostErr != nil {
+				t.Fatalf("ChatCompletion: %s", bifrostErr.GetErrorString())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if betaHeader != tc.want {
+				t.Errorf("anthropic-beta header = %q, want %q (body: %s)", betaHeader, tc.want, body)
+			}
+			if bodyBeta := gjson.Get(body, "anthropic_beta.0").String(); bodyBeta != tc.want {
+				t.Errorf("anthropic_beta body field = %q, want %q", bodyBeta, tc.want)
+			}
+		})
+	}
+}
+
+// vertexModelGarden serves ids as the google publisher's catalog and answers 404 for the
+// other publishers, the way a region without their models does. It counts every request.
+func vertexModelGarden(hits *atomic.Int32, ids ...string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/v1beta1/publishers/google/models" {
+			http.NotFound(w, r)
+			return
+		}
+		models := make([]map[string]string, 0, len(ids))
+		for _, id := range ids {
+			models = append(models, map[string]string{"name": "publishers/google/models/" + id, "versionId": "default"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"publisherModels": models})
+	})
+}
+
+// listedVertexModels lists key's models and maps each listed id to its alias, "" when it has none.
+func listedVertexModels(t *testing.T, provider *VertexProvider, key schemas.Key) map[string]string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Vertex})
+	if bifrostErr != nil {
+		t.Fatalf("listModelsByKey: %s", bifrostErr.GetErrorString())
+	}
+	got := make(map[string]string, len(resp.Data))
+	for _, m := range resp.Data {
+		if _, dup := got[m.ID]; dup {
+			t.Fatalf("%s is listed twice", m.ID)
+		}
+		alias := ""
+		if m.Alias != nil {
+			alias = *m.Alias
+		}
+		got[m.ID] = alias
+	}
+	return got
+}
+
+// A key that can mint an OAuth token lists the Model Garden catalog through its allowlist and
+// adds its deployments, so "*" and regex: entries reach catalog models. It used to list only its
+// configuration whenever it had a deployment or an allowlist other than "*".
+func TestVertexListModelsOAuthKeyListsModelGarden(t *testing.T) {
+	catalog := []string{"gemini-2.5-flash", "gemini-3.1-flash-image", "text-embedding-005"}
+	for _, tc := range []struct {
+		name        string
+		models      schemas.WhiteList
+		deployments schemas.KeyAliases
+		want        map[string]string
+	}{
+		{
+			name:   "regex allowlist",
+			models: schemas.WhiteList{"regex:^gemini-.*$"},
+			want:   map[string]string{"vertex/gemini-2.5-flash": "", "vertex/gemini-3.1-flash-image": ""},
+		},
+		{
+			name:        "all models with a deployment",
+			models:      schemas.WhiteList{"*"},
+			deployments: schemas.KeyAliases{"gemini-3.1-flash-image-lite": {ModelID: "gemini-3.1-flash-image-lite"}},
+			want: map[string]string{
+				"vertex/gemini-2.5-flash":            "",
+				"vertex/gemini-3.1-flash-image":      "",
+				"vertex/text-embedding-005":          "",
+				"vertex/gemini-3.1-flash-image-lite": "gemini-3.1-flash-image-lite",
+			},
+		},
+		{
+			name:        "regex allowlist with custom endpoint deployments",
+			models:      schemas.WhiteList{"regex:^gemini-.*$"},
+			deployments: schemas.KeyAliases{"gemini-tuned": {ModelID: "1234567890"}, "tuned": {ModelID: "9876543210"}},
+			want: map[string]string{
+				"vertex/gemini-2.5-flash":       "",
+				"vertex/gemini-3.1-flash-image": "",
+				"vertex/gemini-tuned":           "1234567890",
+			},
+		},
+		{
+			name:   "exact allowlist",
+			models: schemas.WhiteList{"gemini-2.5-flash", "gemini-preview-only"},
+			want:   map[string]string{"vertex/gemini-2.5-flash": "", "vertex/gemini-preview-only": ""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, catalog...))
+			key.Models = tc.models
+			key.Aliases = tc.deployments
+			if got := listedVertexModels(t, provider, key); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("listed %v, want %v", got, tc.want)
+			}
+			if hits.Load() == 0 {
+				t.Error("Model Garden was never called")
+			}
+		})
+	}
+}
+
+// Model Garden refuses API keys, so an API-key-only key keeps listing its configuration: the
+// deployments its allowlist covers and its exact entries, without calling Model Garden.
+func TestVertexListModelsAPIKeyOnlyKeyListsConfiguration(t *testing.T) {
+	var hits atomic.Int32
+	provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, "gemini-2.5-flash"))
+	key.VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar("")
+	key.Models = schemas.WhiteList{"regex:^gemini-.*$", "gemini-exact"}
+	key.Aliases = schemas.KeyAliases{"gemini-tuned": {ModelID: "1234567890"}, "tuned": {ModelID: "9876543210"}}
+	want := map[string]string{"vertex/gemini-tuned": "1234567890", "vertex/gemini-exact": ""}
+	if got := listedVertexModels(t, provider, key); !reflect.DeepEqual(got, want) {
+		t.Errorf("listed %v, want %v", got, want)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("an API-key-only key called Model Garden %d times", n)
 	}
 }

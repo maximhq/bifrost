@@ -4,6 +4,11 @@ description: "v2.3.0 changelog - 2026-10-13"
 ---
 
 <Update label="Bifrost Enterprise" description="v2.3.0">
+
+<Warning>
+  For large deployments, schedule upgrades during low-traffic windows (e.g. weekends). Database migrations run on startup and can cause lock contention on PostgreSQL while they complete. Improved migration handling is rolling out at the application level, starting with v2.3.0.
+</Warning>
+
 <Warning>
 **Pass-through routes and file objects now work differently with virtual keys.** Read this changelog in full before you upgrade. Every one of these changes strengthens Bifrost's security posture. If you have questions, reach out to us.
 </Warning>
@@ -144,7 +149,7 @@ These entries change a default, a status code, a response shape or a Go SDK type
 - **Access Profiles for Teams, Business Units and Customers** - move config.json limits of governed entities and their keys onto the access profile.
 - **Global Proxy in config.json and for All Outbound Traffic** - set `enable_for_inference: false` to keep inference direct, and list direct hosts in `proxy_config.no_proxy`.
 - **Audit Logs: Omit IP Addresses** - make SIEM rules accept both audit `typeURI` values.
-- **Attribution Context Keys Deprecated** - read attribution in custom plugins from `ctx.Grant()`.
+- **Attribution Context Keys Deprecated** - read attribution in custom plugins from `ctx.Grant()`, nil-checking every accessor. Do not swap a user, team, customer or business unit key for its Grant accessor one-for-one: a request made with a virtual key assigned to a user carries that user only on `BifrostContextKeyUserID`, so fall back to the key where the Grant has no answer.
 - **MCP Client Target Validation at Connect Time** - register private MCP servers as an authenticated admin or in config.json, and use `http`, `sse` or `stdio` as `connection_type`.
 - **MCP OAuth Server Hardening** - list remote OAuth callback URIs in `client.oauth2_server_config.allowed_redirect_uris` before upgrading.
 - **Virtual Key Rotation Revokes MCP OAuth Grants** - re-authorize MCP clients after rotating their virtual key.
@@ -303,7 +308,7 @@ These entries change a default, a status code, a response shape or a Go SDK type
 - [#8004](https://github.com/maximhq/bifrost/issues/8004) - [MCP Library] Add: FXMacroData
 - [#8153](https://github.com/maximhq/bifrost/issues/8153) - [Bug]: Routing Tree silently truncates routing rules at 100
 - [#8171](https://github.com/maximhq/bifrost/issues/8171) - [Bug]: Routing Tree CEL parser splits and rewrites operators inside quoted string literals
-- [#8195](https://github.com/maximhq/bifrost/issues/8195) - [Bug]: Anthropic `tool_result.is_error` no longer reaches OpenAI Responses upstreams - the `status: "incomplete"` set by the Anthropic converter is cleared in `ToOpenAIResponsesRequest` (#7835)
+- [#8195](https://github.com/maximhq/bifrost/issues/8195) - [Bug]: Anthropic `tool_result.is_error` no longer reaches OpenAI Responses upstreams - the `status: "incomplete"` set by the Anthropic converter is cleared in `ToOpenAIResponsesRequest`
 - [#8196](https://github.com/maximhq/bifrost/issues/8196) - [Bug]: /v1/responses rejects multi-part assistant messages - output_text is not mapped to text in ToChatMessages
 - [#8205](https://github.com/maximhq/bifrost/issues/8205) - [Bug]: ClickHouse log list returns full input histories
 - [#8207](https://github.com/maximhq/bifrost/issues/8207) - [Bug]: Anthropic tool_addition / tool_removal blocks lose their `tool` object in the Responses conversion
@@ -561,22 +566,12 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.17 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-<<<<<<< HEAD
 	github.com/maximhq/bifrost/plugins/compat v0.4.0 // indirect
 	github.com/maximhq/bifrost/plugins/maxim v1.7.10 // indirect
 	github.com/maximhq/bifrost/plugins/mocker v1.6.10 // indirect
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.10 // indirect
 	github.com/maximhq/bifrost/plugins/otel v1.6.0 // indirect
 	github.com/maximhq/bifrost/plugins/prompts v1.1.10 // indirect
-=======
-	github.com/maximhq/bifrost/plugins/compat v0.3.6 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.7.9 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.9 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.9 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.5.9 // indirect
-	github.com/maximhq/bifrost/plugins/prompts v1.1.9 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.8.5 // indirect
->>>>>>> main
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

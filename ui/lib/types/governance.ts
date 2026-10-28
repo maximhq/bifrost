@@ -105,6 +105,7 @@ export interface VirtualKey {
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
 	agent_grants?: VirtualKeyAgentGrant[];
+	relay_grants?: { relay_name: string }[];
 	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
 	virtual_mcp_ids?: number[];
 	team_id?: string;
@@ -122,6 +123,9 @@ export interface VirtualKey {
 	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
 	// this key's traffic, false forces it on for the log store.
 	disable_content_logging?: boolean | null;
+	// Custom key/value attribution (cost center, owner, ...). Snapshotted onto each log row, so logs
+	// can be filtered by it. Absent when the key has none.
+	metadata?: Record<string, string>;
 	created_at: string;
 	updated_at: string;
 	// The third owner a key can have, alongside a team and a customer. Business units are an
@@ -246,6 +250,7 @@ export interface CreateVirtualKeyRequest {
 	provider_configs?: VirtualKeyProviderConfigRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string;
 	customer_id?: string;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
@@ -257,6 +262,7 @@ export interface CreateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
+	metadata?: Record<string, string>; // Custom key/value attribution; omit for none
 	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 }
 
@@ -266,6 +272,7 @@ export interface UpdateVirtualKeyRequest {
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string | null;
 	customer_id?: string | null;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
@@ -278,6 +285,7 @@ export interface UpdateVirtualKeyRequest {
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
+	metadata?: Record<string, string>; // Replaces the metadata as a whole: {} clears it, omit to leave unchanged
 	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
 }
 
@@ -377,6 +385,8 @@ export interface GetVirtualKeysParams {
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
+	/** Exact-match metadata filters, sent as metadata_<key>=<value> and AND-ed server-side. */
+	metadata?: Record<string, string>;
 }
 
 // Response types
@@ -652,6 +662,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1024p?: number;
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
+	output_cost_per_video_token?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

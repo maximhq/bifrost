@@ -1,8 +1,9 @@
-import { getMCPLogPresentation, getMCPArgumentPreview } from "@/lib/utils/mcpLogPresentation";
+import { getMCPLogPresentation, getMCPArgumentPreview, getMCPReadKind } from "@/lib/utils/mcpLogPresentation";
 import { AttributionCell } from "@/components/logAttributionCell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
+import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { mapAppToClientApp, mapUserAgentToApp, Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ColumnDef, Row } from "@tanstack/react-table";
@@ -73,18 +74,23 @@ export const createMCPColumns = (
 			const toolName = row.getValue("tool_name") as string;
 			const presentation = getMCPLogPresentation(row.original);
 			const preview = getMCPArgumentPreview(row.original);
+			const readKind = getMCPReadKind(row.original);
 			return (
-				<div className="min-w-0 space-y-1 py-1">
-					<span className="block truncate font-mono text-sm">{toolName}</span>
+				<div className="flex min-w-0 flex-col leading-tight">
+					<div className="flex min-w-0 items-center gap-1.5">
+						{readKind && (
+							<Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]" data-testid="mcp-log-read-kind">
+								{readKind}
+							</Badge>
+						)}
+						<span className="truncate font-mono text-xs">{toolName}</span>
+					</div>
 					{preview && (
-						<span className="text-muted-foreground block truncate text-xs" title={preview}>
+						<span className="text-muted-foreground truncate text-[10.5px]" title={preview}>
 							{preview}
 						</span>
 					)}
-					<span
-						title={presentation.description}
-						className={`block text-xs ${presentation.approved ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"}`}
-					>
+					<span title={presentation.description} className="text-muted-foreground truncate text-[10.5px]">
 						{presentation.label}
 					</span>
 				</div>
@@ -142,15 +148,15 @@ export const createMCPColumns = (
 			const presentation = getMCPLogPresentation(row.original);
 			const latency = presentation.policy ? presentation.inspectionDuration : (row.original.latency ?? presentation.observedDuration);
 			return (
-				<div className="pl-4 text-sm" title={presentation.description}>
-					<span className="font-mono">
+				<div className="flex min-w-0 flex-col pl-4 leading-tight" title={presentation.description}>
+					<TruncatedLabel className="font-mono text-xs tabular-nums">
 						{latency != null
 							? `${latency.toLocaleString()}ms`
 							: presentation.inspectionDuration != null
 								? `${presentation.inspectionDuration}ms`
 								: "Not recorded"}
-					</span>
-					<span className="text-muted-foreground block text-xs">{presentation.durationLabel}</span>
+					</TruncatedLabel>
+					<TruncatedLabel className="text-muted-foreground text-[10.5px]">{presentation.durationLabel}</TruncatedLabel>
 				</div>
 			);
 		},

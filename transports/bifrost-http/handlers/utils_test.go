@@ -12,6 +12,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -355,5 +356,142 @@ func TestSendBifrostError_NoTracerIsSafe(t *testing.T) {
 	SendBifrostError(ctx, &schemas.BifrostError{StatusCode: schemas.Ptr(500)})
 	if ctx.Response.StatusCode() != 500 {
 		t.Errorf("status = %d, want 500", ctx.Response.StatusCode())
+	}
+}
+
+// TestSendJSON_ExtraFieldsPlacement pins client.extra_fields_placement on the native send path:
+// body mode keeps extra_fields, headers mode drops it from the body and writes it as headers.
+func TestSendJSON_ExtraFieldsPlacement(t *testing.T) {
+	resp := &schemas.BifrostChatResponse{
+		ID:          "chatcmpl-1",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Latency: 12},
+	}
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendJSON(bodyCtx, resp)
+	if !strings.Contains(string(bodyCtx.Response.Body()), `"extra_fields"`) {
+		t.Fatalf("body mode must keep extra_fields, got %s", bodyCtx.Response.Body())
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	lib.ApplyBifrostResponseHeaders(headersCtx, nil, resp.ExtraFields)
+	SendJSON(headersCtx, resp)
+	body := string(headersCtx.Response.Body())
+	if strings.Contains(body, `"extra_fields"`) {
+		t.Fatalf("headers mode must drop extra_fields from the body, got %s", body)
+	}
+	if !strings.Contains(body, `"id":"chatcmpl-1"`) {
+		t.Fatalf("headers mode must keep the rest of the body, got %s", body)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostLatency)); got != "12" {
+		t.Fatalf("latency header got %q, want 12", got)
+	}
+}
+
+// TestSendBifrostError_ExtraFieldsPlacement pins the same contract on native error responses.
+func TestSendBifrostError_ExtraFieldsPlacement(t *testing.T) {
+	newErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  new(fasthttp.StatusTooManyRequests),
+			Error:       &schemas.ErrorField{Message: "slow down"},
+			ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenAI, RetryAfter: 2000},
+		}
+	}
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendBifrostError(bodyCtx, newErr())
+	if !strings.Contains(string(bodyCtx.Response.Body()), `"extra_fields"`) {
+		t.Fatalf("body mode must keep extra_fields, got %s", bodyCtx.Response.Body())
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	SendBifrostError(headersCtx, newErr())
+	body := string(headersCtx.Response.Body())
+	if strings.Contains(body, `"extra_fields"`) {
+		t.Fatalf("headers mode must drop extra_fields from the error body, got %s", body)
+	}
+	if !strings.Contains(body, `"slow down"`) {
+		t.Fatalf("headers mode must keep the error message, got %s", body)
+	}
+	if got := headersCtx.Response.StatusCode(); got != fasthttp.StatusTooManyRequests {
+		t.Fatalf("status got %d, want 429", got)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostRetryAfterMs)); got != "2000" {
+		t.Fatalf("retry-after header got %q, want 2000", got)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostProvider)); got != "openai" {
+		t.Fatalf("provider header got %q, want openai", got)
+	}
+}
+
+// TestResolvePeriod pins sliding and calendar period windows. Calendar periods
+// start at local midnight in the requested timezone; sliding ones ignore it.
+func TestResolvePeriod(t *testing.T) {
+	thursday := time.Date(2026, 10, 15, 15, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		period   string
+		timezone string
+		now      time.Time
+		want     time.Time
+	}{
+		{"sliding 1h", "1h", "", thursday, thursday.Add(-time.Hour)},
+		{"sliding 24h ignores timezone", "24h", "Asia/Kolkata", thursday, thursday.Add(-24 * time.Hour)},
+		{"sliding 30d", "30d", "", thursday, thursday.AddDate(0, 0, -30)},
+		{"today in UTC", "today", "UTC", thursday, time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)},
+		{"today defaults to UTC", "today", "", thursday, time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)},
+		{"today in an unknown timezone falls back to UTC", "today", "Mars/Olympus", thursday, time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)},
+		{"today in New York", "today", "America/New_York", thursday, time.Date(2026, 10, 15, 4, 0, 0, 0, time.UTC)},
+		{"today in Kolkata", "today", "Asia/Kolkata", thursday, time.Date(2026, 10, 14, 18, 30, 0, 0, time.UTC)},
+		{"today in Kolkata by its legacy name, which browsers still report", "today", "Asia/Calcutta", thursday, time.Date(2026, 10, 14, 18, 30, 0, 0, time.UTC)},
+		{"this week starts Monday", "this_week", "UTC", thursday, time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)},
+		{"this week in New York", "this_week", "America/New_York", thursday, time.Date(2026, 10, 12, 4, 0, 0, 0, time.UTC)},
+		{"this week on a Sunday is the previous Monday", "this_week", "UTC", time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC), time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)},
+		{"this month in UTC", "this_month", "UTC", thursday, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
+		{"this month in Kolkata", "this_month", "Asia/Kolkata", thursday, time.Date(2026, 9, 30, 18, 30, 0, 0, time.UTC)},
+		{"Kolkata has already rolled into the next month", "this_month", "Asia/Kolkata", time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC), time.Date(2026, 10, 31, 18, 30, 0, 0, time.UTC)},
+		// Some zones start DST at midnight, so the day has no 00:00 and begins at 01:00.
+		// time.Date normalizes such a midnight back to 23:00 on the previous day, which
+		// would pull an hour of yesterday into "today".
+		{"today in Havana when DST skips midnight", "today", "America/Havana", time.Date(2019, 3, 10, 12, 0, 0, 0, time.UTC), time.Date(2019, 3, 10, 5, 0, 0, 0, time.UTC)},
+		{"today in Santiago when DST skips midnight", "today", "America/Santiago", time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC), time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC)},
+		{"today in Santiago on an ordinary day", "today", "America/Santiago", time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)},
+		// Amman ended DST at 01:00 on 2021-10-29, so 00:00 happened twice. time.Date picks
+		// the second one, which would drop the first hour of the day.
+		{"today in Amman when DST end repeats midnight", "today", "Asia/Amman", time.Date(2021, 10, 29, 12, 0, 0, 0, time.UTC), time.Date(2021, 10, 28, 21, 0, 0, 0, time.UTC)},
+		{"today in Amman on an ordinary day", "today", "Asia/Amman", time.Date(2021, 10, 30, 12, 0, 0, 0, time.UTC), time.Date(2021, 10, 29, 22, 0, 0, 0, time.UTC)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end := resolvePeriodAt(tc.period, tc.timezone, tc.now)
+			if start == nil || end == nil {
+				t.Fatalf("expected a window for %q, got nil", tc.period)
+			}
+			if !start.Equal(tc.want) {
+				t.Fatalf("start = %s, want %s", start.UTC(), tc.want)
+			}
+			if !end.Equal(tc.now) {
+				t.Fatalf("end = %s, want %s", end.UTC(), tc.now)
+			}
+		})
+	}
+
+	t.Run("unknown period", func(t *testing.T) {
+		if start, end := resolvePeriodAt("2d", "UTC", thursday); start != nil || end != nil {
+			t.Fatalf("expected nil window for unknown period, got %v %v", start, end)
+		}
+	})
+}
+
+// TestPeriodLocationRejectsLocal verifies "Local" does not resolve to the server's
+// own timezone, so a calendar period never depends on where the server runs.
+func TestPeriodLocationRejectsLocal(t *testing.T) {
+	if got := periodLocation("Local"); got != time.UTC {
+		t.Fatalf("periodLocation(\"Local\") = %v, want UTC", got)
+	}
+	if got := periodLocation("Asia/Kolkata"); got.String() != "Asia/Kolkata" {
+		t.Fatalf("periodLocation(\"Asia/Kolkata\") = %v, want Asia/Kolkata", got)
 	}
 }

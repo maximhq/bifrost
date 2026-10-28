@@ -18,6 +18,8 @@ export class ConfigSettingsPage extends BasePage {
   readonly dropExcessRequestsSwitch: Locator
   readonly disableDBPingsSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
+  readonly extraFieldsPlacementSelect: Locator
+  readonly extraFieldsPlacementDroppedNote: Locator
 
   // Logging Settings
   readonly enableLoggingSwitch: Locator
@@ -30,6 +32,8 @@ export class ConfigSettingsPage extends BasePage {
   readonly rateLimitingSection: Locator
   readonly enforceAuthOnInferenceSwitch: Locator
   readonly enforceVKObjectOwnershipSwitch: Locator
+  readonly skipAccessProfileUserVirtualKeyCreationSwitch: Locator
+  readonly skipAccessProfileUserVirtualKeyDeletionSwitch: Locator
   readonly requiredHeadersTextarea: Locator
   readonly vkRotationCooldownInput: Locator
   readonly dashboardAuthSwitch: Locator
@@ -62,6 +66,8 @@ export class ConfigSettingsPage extends BasePage {
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
+    this.extraFieldsPlacementSelect = page.getByTestId('client-settings-extra-fields-placement-select')
+    this.extraFieldsPlacementDroppedNote = page.getByTestId('client-settings-extra-fields-placement-dropped-note')
 
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
@@ -76,6 +82,8 @@ export class ConfigSettingsPage extends BasePage {
     this.rateLimitingSection = page.locator('text=Rate Limiting').locator('..')
     this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
     this.enforceVKObjectOwnershipSwitch = page.getByTestId('security-enforce-vk-object-ownership-switch')
+    this.skipAccessProfileUserVirtualKeyCreationSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-creation-switch')
+    this.skipAccessProfileUserVirtualKeyDeletionSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-deletion-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
     this.dashboardAuthSwitch = page.locator('#auth-enabled')
@@ -104,6 +112,14 @@ export class ConfigSettingsPage extends BasePage {
   async goto(path: string): Promise<void> {
     await this.page.goto(`/workspace/config/${path}`)
     await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Pick a value in the Extra Fields Placement select
+   */
+  async selectExtraFieldsPlacement(value: 'body' | 'headers'): Promise<void> {
+    await this.extraFieldsPlacementSelect.click()
+    await this.page.getByTestId(`client-settings-extra-fields-placement-option-${value}`).click()
   }
 
   async saveSettings(): Promise<void> {

@@ -12,6 +12,57 @@ test.describe("LLM Logs", () => {
   });
 
   test.describe("Logs Display", () => {
+    for (const scenario of [
+      { name: "stored desktop", app: "Antigravity Desktop", userAgent: "antigravity/2.23.0", label: "Antigravity Desktop" },
+      { name: "stored cli", app: "Antigravity CLI", userAgent: "antigravity-cli/1.0", label: "Antigravity CLI" },
+      { name: "raw-only desktop", app: undefined, userAgent: "Antigravity/2.23.0", label: "Antigravity Desktop" },
+      { name: "edge app key", app: "antigravity-desktop", userAgent: "antigravity/2.23.0", label: "Antigravity Desktop" },
+    ]) {
+      test(`should display synthetic Antigravity ${scenario.name} attribution`, async ({ page, logsPage }) => {
+        const timestamp = new Date().toISOString();
+        await page.route((url) => url.pathname === "/api/logs", async (route) => {
+          if (route.request().method() !== "GET") return route.continue();
+          await route.fulfill({ json: {
+            logs: [{
+              id: `synthetic-antigravity-${Date.now()}`,
+              object: "chat.completion",
+              timestamp,
+              created_at: timestamp,
+              provider: "openai",
+              model: "synthetic-model",
+              number_of_retries: 0,
+              fallback_index: 0,
+              status: "success",
+              stream: false,
+              latency: 120,
+              cost: 0,
+              app: scenario.app,
+              user_agent: scenario.userAgent,
+              input_history: [],
+              responses_input_history: [],
+            }],
+            pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+            stats: {
+              total_requests: 1,
+              success_rate: 100,
+              user_facing_success_rate: 100,
+              user_facing_total_requests: 1,
+              average_latency: 120,
+              total_tokens: 0,
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_cost: 0,
+            },
+            has_logs: true,
+          } });
+        });
+        await logsPage.goto();
+        const table = page.getByTestId("logs-table");
+        await expect(table.getByText(scenario.label, { exact: true })).toBeVisible();
+        await expect(table.getByRole("img", { name: scenario.label, exact: true })).toHaveAttribute("src", "/images/harness/antigravity.svg");
+      });
+    }
+
     test("should display logs table", async ({ logsPage }) => {
       // Table should be visible after goto (which waits for load)
       const tableExists = await logsPage.logsTable
@@ -427,6 +478,41 @@ test.describe("LLM Logs", () => {
   });
 
   test.describe("Advanced Filtering", () => {
+    // The topics dimension is Warp's own list, so it is mocked here: what the
+    // browser has to show is that a topic the server offered can be picked by
+    // name, lands in the URL by id, and narrows the request for the rows.
+    test("should filter by a Warp topic and keep it in the URL", async ({ logsPage }) => {
+      await logsPage.page.route("**/api/logs/filterdata**", async (route) => {
+        const dimensions = new URL(route.request().url()).searchParams.get("dimensions");
+        if (dimensions !== "topics") return route.continue();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            topics: [
+              { id: "topic-refunds", name: "Refund requests" },
+              { id: "topic-passwords", name: "Password resets" },
+            ],
+          }),
+        });
+      });
+      const logRequests: string[] = [];
+      logsPage.page.on("request", (request) => {
+        if (request.url().includes("/api/logs?")) logRequests.push(request.url());
+      });
+
+      await logsPage.filterByTopic("topic-refunds");
+
+      await expect
+        .poll(() => logsPage.page.url(), { timeout: 8000, intervals: [300, 500, 500] })
+        .toContain("topic_ids=topic-refunds");
+      await expect.poll(() => logRequests.some((url) => url.includes("topic_ids=topic-refunds")), { timeout: 8000 }).toBe(true);
+
+      // The chosen topic shows by name, and the sidebar counts it as a filter.
+      await expect(logsPage.page.getByTestId("topics-filter-checkbox-topic-refunds")).toBeChecked();
+      await expect(logsPage.page.getByText("Refund requests")).toBeVisible();
+    });
+
     test("should combine multiple filters", async ({ logsPage }) => {
       // Apply multiple filters if they're visible
       const searchVisible = await logsPage.searchInput
@@ -637,6 +723,137 @@ test.describe("LLM Logs", () => {
     });
   });
 
+  test.describe("Fallback Chain", () => {
+    // A request whose primary hit a rate limit, whose first fallback failed
+    // with a server error, and whose second fallback succeeded. The rows are
+    // mocked so the test does not depend on traffic having produced a chain.
+    const now = Date.now();
+    const attempt = (
+      id: string,
+      offsetMs: number,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      id,
+      object: "chat.completion",
+      timestamp: new Date(now - offsetMs).toISOString(),
+      created_at: new Date(now - offsetMs).toISOString(),
+      model: "chain-model",
+      number_of_retries: 0,
+      stream: false,
+      latency: 120,
+      cost: 0.0001,
+      input_history: [],
+      responses_input_history: [],
+      ...extra,
+    });
+    const primary = attempt("chain-primary", 3_000, {
+      provider: "openai",
+      fallback_index: 0,
+      status: "error",
+      child_count: 2,
+      error_details: {
+        status_code: 429,
+        error: { type: "rate_limit", message: "primary rate limited" },
+      },
+    });
+    const firstFallback = attempt("chain-fallback-1", 2_000, {
+      provider: "anthropic",
+      parent_request_id: primary.id,
+      fallback_index: 1,
+      status: "error",
+      error_details: {
+        status_code: 500,
+        error: { type: "server_error", message: "fallback overloaded" },
+      },
+    });
+    const finalFallback = attempt("chain-fallback-2", 1_000, {
+      provider: "gemini",
+      parent_request_id: primary.id,
+      fallback_index: 2,
+      status: "success",
+    });
+    const rows = [primary, firstFallback, finalFallback];
+
+    test.beforeEach(async ({ page }) => {
+      await page.route(
+        (url) => url.pathname.startsWith("/api/logs"),
+        async (route) => {
+          if (route.request().method() !== "GET") return route.continue();
+          const url = new URL(route.request().url());
+          const byId = rows.find(
+            (candidate) => url.pathname === `/api/logs/${candidate.id}`,
+          );
+          if (byId) return route.fulfill({ json: byId });
+          if (url.pathname !== "/api/logs") return route.continue();
+          const logs =
+            url.searchParams.get("parent_request_id") === primary.id
+              ? [firstFallback, finalFallback]
+              : [primary];
+          await route.fulfill({
+            json: {
+              logs,
+              pagination: {
+                limit: 50,
+                offset: 0,
+                sort_by: "timestamp",
+                order: "desc",
+              },
+              stats: {
+                total_requests: logs.length,
+                success_rate: 0,
+                user_facing_success_rate: 0,
+                user_facing_total_requests: logs.length,
+                average_latency: 120,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          });
+        },
+      );
+    });
+
+    test("should show the whole chain and move between attempts", async ({
+      logsPage,
+      page,
+    }) => {
+      await logsPage.goto();
+      await logsPage.tableRows.filter({ hasText: "chain-model" }).first().click();
+      await expect(logsPage.logDetailSheet).toBeVisible({ timeout: 5000 });
+
+      // Opened from the failed primary, the banner still reports what the
+      // caller got, which the last attempt decides.
+      const banner = page.getByTestId("logdetails-fallback-banner");
+      await expect(banner).toContainText("Request succeeded");
+      await expect(banner).toContainText("Attempt 1 of 3");
+      await expect(page.getByTestId("logdetails-fallback-chip-1")).toContainText("429");
+      await expect(page.getByTestId("logdetails-fallback-chip-2")).toContainText("500");
+
+      await page.getByTestId("logdetails-fallback-open-final").click();
+      await expect(banner).toContainText("Attempt 3 of 3");
+      await expect(page.getByTestId("logdetails-fallback-open-final")).toHaveCount(0);
+
+      // The Routing tab lists one row per attempt; a row opens that attempt,
+      // by click and by keyboard.
+      await page.getByRole("tab", { name: /Routing/ }).click();
+      const timeline = page.getByTestId("logdetails-fallback-timeline");
+      await expect(timeline).toContainText("3 attempts");
+      await expect(page.getByTestId("logdetails-fallback-row-3")).toContainText("Viewing");
+
+      await page.getByTestId("logdetails-fallback-row-2").click();
+      await expect(banner).toContainText("Attempt 2 of 3");
+      await expect(page.getByTestId("logdetails-fallback-row-2")).toContainText("Viewing");
+
+      await page.getByTestId("logdetails-fallback-row-1").focus();
+      await page.keyboard.press("Space");
+      await expect(banner).toContainText("Attempt 1 of 3");
+      await expect(page).toHaveURL(new RegExp(`selected_log=${primary.id}`));
+    });
+  });
+
   test.describe('Decision Logs', () => {
     // Decision logs keep the state as the user message and the answers as the
     // assistant message; the questions live in params, as an array in request
@@ -784,6 +1001,150 @@ test.describe("LLM Logs", () => {
       await openRow(logsPage, 'chat-not-decision')
 
       await expect(page.getByTestId('log-decision-questions')).toHaveCount(0)
+    })
+  })
+
+  test.describe('Passthrough Logs', () => {
+    // A passthrough row whose bodies the gateway parsed renders as a conversation, with the raw
+    // bodies on the Original Payload tab; a row that did not parse keeps the raw request/response boxes.
+    // Rows are mocked so the test does not depend on a live passthrough call.
+    const now = Date.now()
+    const requestBody = JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'What is passthrough parsing?' }],
+      tools: [{ type: 'function', function: { name: 'lookup_docs', parameters: { type: 'object' } } }],
+    })
+    const responseBody = JSON.stringify({
+      id: 'chatcmpl-1',
+      object: 'chat.completion',
+      choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'It decodes raw bodies.' } }],
+    })
+    const passthroughRow = (id: string, model: string, offsetMs: number) => ({
+      id,
+      object: 'passthrough',
+      timestamp: new Date(now - offsetMs).toISOString(),
+      created_at: new Date(now - offsetMs).toISOString(),
+      provider: 'openai',
+      model,
+      number_of_retries: 0,
+      fallback_index: 0,
+      status: 'success',
+      stream: false,
+      latency: 300,
+      cost: 0.0001,
+      params: { method: 'POST', path: '/v1/chat/completions', raw_query: '', status_code: 200, model },
+      input_history: [],
+      responses_input_history: [],
+      passthrough_request_body: requestBody,
+      passthrough_response_body: responseBody,
+    })
+    // Stored under the type inferred from its route and tagged as passthrough.
+    const parsedRow = {
+      ...passthroughRow('pt-parsed', 'passthrough-parsed-model', 10_000),
+      object: 'chat_completion',
+      is_passthrough: true,
+      params: {
+        method: 'POST',
+        path: '/v1/chat/completions',
+        raw_query: '',
+        status_code: 200,
+        model: 'passthrough-parsed-model',
+        parsed_type: 'chat_completion',
+        model_params: {
+          temperature: 0.3,
+          tools: [{ type: 'function', function: { name: 'lookup_docs', parameters: { type: 'object' } } }],
+        },
+      },
+      input_history: [{ role: 'user', content: 'What is passthrough parsing?' }],
+      output_message: { role: 'assistant', content: 'It decodes raw bodies.' },
+      stop_reason: 'stop',
+    }
+    // A route with no typed equivalent stays passthrough.
+    const rawRow = { ...passthroughRow('pt-raw', 'passthrough-raw-model', 5_000), is_passthrough: true }
+
+    test.beforeEach(async ({ page }) => {
+      const rows = [rawRow, parsedRow]
+      await page.route(
+        (url) => url.pathname.startsWith('/api/logs'),
+        async (route) => {
+          if (route.request().method() !== 'GET') return route.continue()
+          const { pathname } = new URL(route.request().url())
+          const byId = rows.find((candidate) => pathname === `/api/logs/${candidate.id}`)
+          if (byId) return route.fulfill({ json: byId })
+          if (pathname !== '/api/logs') return route.continue()
+          await route.fulfill({
+            json: {
+              logs: rows,
+              pagination: { limit: 50, offset: 0, sort_by: 'timestamp', order: 'desc' },
+              stats: {
+                total_requests: rows.length,
+                success_rate: 100,
+                user_facing_success_rate: 100,
+                user_facing_total_requests: rows.length,
+                average_latency: 300,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          })
+        },
+      )
+    })
+
+    const openRow = async (logsPage: { tableRows: Locator; logDetailSheet: Locator }, model: string) => {
+      await logsPage.tableRows.filter({ hasText: model }).first().click()
+      await expect(logsPage.logDetailSheet).toBeVisible({ timeout: 5000 })
+    }
+
+    test('should render a parsed passthrough row as a conversation', async ({ logsPage, page }) => {
+      await logsPage.goto()
+      // The table shows the inferred type with a Passthrough tag.
+      const tableRow = logsPage.tableRows.filter({ hasText: 'passthrough-parsed-model' }).first()
+      await expect(tableRow.getByTestId('logs-table-passthrough-tag')).toBeVisible()
+      await expect(tableRow).toContainText(/chat/i)
+      await openRow(logsPage, 'passthrough-parsed-model')
+      await expect(page.getByTestId('logdetails-passthrough-tag')).toBeVisible()
+
+      const sheet = logsPage.logDetailSheet
+      await expect(sheet.getByText('What is passthrough parsing?')).toBeVisible()
+      await expect(sheet.getByText('It decodes raw bodies.')).toBeVisible()
+      // Passthrough details stay, and say how the bodies were read (inside the collapsed details block).
+      await expect(sheet.getByText('/v1/chat/completions').first()).toBeAttached()
+      await expect(sheet.getByText('Parsed As')).toBeAttached()
+      // Scalar model parameters parsed from the request body are listed in the details block.
+      await sheet.getByText('More details', { exact: true }).click()
+      await expect(sheet.getByText(/^temperature$/i)).toBeVisible()
+      await expect(sheet.getByText('0.3', { exact: true })).toBeVisible()
+      // The raw bodies are not on the Messages tab of a parsed row...
+      await expect(page.getByTestId('logdetails-passthrough-request-body')).toHaveCount(0)
+      // ...declared tools get their tab...
+      await expect(sheet.getByRole('tab', { name: /Tools/ })).toBeVisible()
+      // ...and the bodies, byte for byte, live on the Original Payload tab.
+      await expect(sheet.getByRole('tab', { name: 'Raw JSON' })).toHaveCount(0)
+      await sheet.getByRole('tab', { name: 'Original Payload' }).click()
+      await expect(page.getByTestId('logdetails-passthrough-request-body')).toBeVisible()
+      await expect(page.getByTestId('logdetails-passthrough-response-body')).toBeVisible()
+      await expect(page.getByTestId('logdetails-passthrough-request-body')).toContainText('lookup_docs')
+    })
+
+    test('should keep the raw body view for a passthrough row that did not parse', async ({ logsPage, page }) => {
+      await logsPage.goto()
+      // Its badge already says Passthrough, so there is no extra tag.
+      const tableRow = logsPage.tableRows.filter({ hasText: 'passthrough-raw-model' }).first()
+      await expect(tableRow.getByTestId('logs-table-passthrough-tag')).toHaveCount(0)
+      await openRow(logsPage, 'passthrough-raw-model')
+      await expect(page.getByTestId('logdetails-passthrough-tag')).toHaveCount(0)
+
+      const sheet = logsPage.logDetailSheet
+      await expect(page.getByTestId('logdetails-passthrough-request-body')).toBeVisible()
+      await expect(page.getByTestId('logdetails-passthrough-response-body')).toBeVisible()
+      await expect(sheet.getByText('Parsed As')).toHaveCount(0)
+      await expect(sheet.getByRole('tab', { name: 'Original Payload' })).toHaveCount(0)
+      await expect(sheet.getByRole('tab', { name: 'Raw JSON' })).toHaveCount(0)
+      await expect(sheet.getByRole('tab', { name: /Tools/ })).toHaveCount(0)
     })
   })
 

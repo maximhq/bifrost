@@ -548,7 +548,7 @@ func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext
 				return bifrost.executeInjectedCall(ctx, set, call)
 			})
 			next := *turn
-			next.Params = relaxForcedResponsesChoice(turn.Params)
+			next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set).Params)
 			next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(items)+len(results))
 			next.Input = append(next.Input, turn.Input...)
 			next.Input = append(next.Input, items...)

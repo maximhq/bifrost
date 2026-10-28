@@ -657,6 +657,32 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	assert.Equal(t, 33, resp.Usage.TotalTokens)
 }
 
+// Each turn's advisor passes are billed from the merged usage, so the loop keeps every turn's iterations.
+func TestRunInjectedResponsesLoop_KeepsAdvisorIterations(t *testing.T) {
+	set := testInjectedSet(t)
+	advisorPass := func(input int) []schemas.ResponsesResponseUsage {
+		return []schemas.ResponsesResponseUsage{{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: input, OutputTokens: 1}}
+	}
+	scripted := []*schemas.BifrostResponsesResponse{
+		{Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)}},
+		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)}},
+	}
+	dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		resp := scripted[0]
+		scripted = scripted[1:]
+		return resp, nil
+	}
+
+	resp, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, dispatch, searchResult)
+
+	require.Nil(t, err)
+	require.Len(t, resp.Usage.Iterations, 2, "both turns' advisor passes must reach pricing")
+	assert.Equal(t, 100, resp.Usage.Iterations[0].InputTokens)
+	assert.Equal(t, 200, resp.Usage.Iterations[1].InputTokens)
+}
+
 // A client that forces web search gets the choice remapped to the injected tool. Kept on
 // every turn, it would force another search after each result until maxDepth, so the
 // loop relaxes a forced choice to auto once an injected call has run.
@@ -900,4 +926,113 @@ func TestRestoreAnthropicPassthroughAfterInjectedTools(t *testing.T) {
 	again.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	restoreAnthropicPassthroughAfterInjectedTools(again)
 	assert.Equal(t, false, again.Value(schemas.BifrostContextKeyUseRawRequestBody), "nothing to restore when injected tools never switched it off")
+}
+
+func deferredToolsResponsesRequest(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
+	tool := func(name string, deferred bool) schemas.ResponsesTool {
+		t := schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(name), Description: schemas.Ptr(name + " tool"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}
+		if deferred {
+			t.DeferLoading = schemas.Ptr(true)
+		}
+		return t
+	}
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: provider,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in Tokyo?")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool("lookup_city", false), tool("get_weather", true)}},
+		},
+	}
+}
+
+// The gateway tool search joins an attempt only when it defers tools on a provider
+// with no tool search of its own, and rides alongside any configured MCP tools.
+func TestWithGatewayToolSearch(t *testing.T) {
+	gemini := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	set := withGatewayToolSearch(nil, gemini, schemas.Gemini, "gemini-3.8-flash")
+	require.NotNil(t, set)
+	require.NotNil(t, set.search)
+	assert.True(t, set.isInjected("bifrost_tool_search"))
+	assert.Equal(t, 3, set.maxDepth)
+
+	assert.Nil(t, withGatewayToolSearch(nil, deferredToolsResponsesRequest(schemas.OpenAI, "gpt-6-sol"), schemas.OpenAI, "gpt-6-sol"),
+		"gpt-6-sol searches natively")
+	assert.Nil(t, withGatewayToolSearch(nil, deferredToolsResponsesRequest(schemas.Anthropic, "claude-sonnet-4-6"), schemas.Anthropic, "claude-sonnet-4-6"),
+		"Claude searches natively")
+
+	stream := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	stream.RequestType = schemas.ResponsesStreamRequest
+	assert.NotNil(t, withGatewayToolSearch(nil, stream, schemas.Gemini, "gemini-3.8-flash"), "streaming attempts search too")
+	chat := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	chat.RequestType = schemas.ChatCompletionRequest
+	assert.Nil(t, withGatewayToolSearch(nil, chat, schemas.Gemini, "gemini-3.8-flash"), "chat requests carry no deferred tools")
+
+	eager := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	eager.ResponsesRequest.Params.Tools[1].DeferLoading = nil
+	assert.Nil(t, withGatewayToolSearch(nil, eager, schemas.Gemini, "gemini-3.8-flash"), "nothing deferred")
+
+	mcp := &injectedToolSet{tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "web_search"}}}, maxDepth: 7}
+	combined := withGatewayToolSearch(mcp, gemini, schemas.Gemini, "gemini-3.8-flash")
+	assert.Same(t, mcp, combined)
+	assert.Len(t, combined.tools, 2)
+	assert.Equal(t, 7, combined.maxDepth, "the configured agent depth is kept")
+}
+
+// The loop loads what the search found into the next turn, and the caller sees one
+// response without the search call.
+func TestRunInjectedResponsesLoop_GatewayToolSearchLoadsTools(t *testing.T) {
+	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	set := withGatewayToolSearch(nil, req, schemas.Gemini, "gemini-3.8-flash")
+	require.NotNil(t, set)
+
+	call := func(callID, name, args string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID), Name: schemas.Ptr(name), Arguments: schemas.Ptr(args)},
+		}
+	}
+	var turns []*schemas.BifrostResponsesRequest
+	resp, bifrostErr := runInjectedResponsesLoop(req.ResponsesRequest, set, func(turn *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		turns = append(turns, turn)
+		if len(turns) == 1 {
+			return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{call("call_s1", "bifrost_tool_search", `{"query":"weather"}`)}}, nil
+		}
+		return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{call("call_w1", "get_weather", `{"city":"Tokyo"}`)}}, nil
+	}, func(c schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		return set.search.Execute(c)
+	})
+	require.Nil(t, bifrostErr)
+	require.Len(t, turns, 2)
+	toolNames := func(r *schemas.BifrostResponsesRequest) []string {
+		var names []string
+		for _, tool := range r.Params.Tools {
+			names = append(names, *tool.Name)
+		}
+		return names
+	}
+	assert.Equal(t, []string{"lookup_city", "bifrost_tool_search"}, toolNames(turns[0]))
+	assert.Equal(t, []string{"lookup_city", "get_weather", "bifrost_tool_search"}, toolNames(turns[1]))
+	require.Len(t, resp.Output, 1)
+	assert.Equal(t, "get_weather", *resp.Output[0].Name)
+	assert.True(t, *req.ResponsesRequest.Params.Tools[1].DeferLoading, "the caller's request is untouched")
+}
+
+// The per-attempt check every Responses request pays when no tool is deferred.
+func BenchmarkWithGatewayToolSearch_NoDeferredTools(b *testing.B) {
+	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	req.ResponsesRequest.Params.Tools[1].DeferLoading = nil
+	b.ReportAllocs()
+	for b.Loop() {
+		if withGatewayToolSearch(nil, req, schemas.Gemini, "gemini-3.8-flash") != nil {
+			b.Fatal("unexpected tool search")
+		}
+	}
 }

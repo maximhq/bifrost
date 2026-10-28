@@ -53,7 +53,7 @@ LogEntry:
       type: array
       items:
         type: string
-      description: Array of routing engines used for this request (routing-rule, governance, or loadbalancing)
+      description: Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise.
     tool_call_names:
       type: array
       items:
@@ -119,6 +119,12 @@ LogEntry:
           additionalProperties:
             type: string
       description: Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`.
+    guardrail_debug:
+      $ref: '../../schemas/inference/common.yaml#/BifrostGuardrailMetadata'
+      description: Guardrail judge calls and matches for the request, including output-monitor results (action, enforced false), which land after the response completes. Present only on log detail responses.
+    plugin_logs:
+      type: string
+      description: JSON object of plugin log entries grouped by plugin name. Output-monitor guardrail lines are prefixed `[output-monitor]`. Present only on log detail responses.
     created_at:
       type: string
       format: date-time
@@ -188,6 +194,16 @@ LogEntry:
     virtual_key:
       type: object
       additionalProperties: true
+    is_passthrough:
+      type: boolean
+      description: >-
+        The request came through a passthrough route (/openai_passthrough, /anthropic_passthrough,
+        /genai_passthrough, ...). Its object is the request type the route was inferred as
+        (chat_completion, responses, embedding, ...), with the streaming variant for a streamed
+        call (chat_completion_stream, responses_stream, text_completion_stream, ...), or
+        passthrough / passthrough_stream when the route has no typed equivalent. Filtering
+        objects=passthrough matches every passthrough row; objects=passthrough_stream matches the
+        streamed ones.
     passthrough_request_body:
       type: string
       description: Raw passthrough request body (for passthrough integration routes)
@@ -463,6 +479,14 @@ SearchFilters:
       description: >-
         Governance projects to narrow to. A request is scoped to at most one
         project, so this filter selects rows rather than intersecting sets.
+    topic_ids:
+      type: array
+      items:
+        type: string
+      description: >-
+        Warp topics to narrow to, by the ids Warp's list_topics reports: the
+        requests filed under any of them. A topic merged into one of these
+        counts as it.
     providers:
       type: array
       items:
@@ -495,7 +519,7 @@ SearchFilters:
       type: array
       items:
         type: string
-      description: Filter by routing engine (routing-rule, governance, or loadbalancing)
+      description: Filter by routing engine (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
     start_time:
       type: string
       format: date-time
@@ -663,7 +687,7 @@ FilterDataResponse:
       type: array
       items:
         type: string
-      description: Available routing engine types (routing-rule, governance, loadbalancing)
+      description: Available routing engine types (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
     tool_call_names:
       type: array
       items:
@@ -676,6 +700,14 @@ FilterDataResponse:
       description: >-
         Governance projects that appear in the logs, for the `projects`
         dimension. Only projects whose rows carry a name are listed.
+    topics:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Warp topics with a request the caller may see in the last 30 days,
+        largest first, for the `topics` dimension. Empty when Warp has no
+        topics, and narrowed by `q` against the topic's name.
 
 DeleteLogsRequest:
   type: object
@@ -702,10 +734,18 @@ RecalculateCostFilters:
       properties:
         period:
           type: string
-          enum: [1h, 6h, 24h, 7d, 30d]
+          enum: [1h, 6h, 24h, 7d, 30d, today, this_week, this_month]
           description: >-
-            Relative time window resolved when the job is created. When recognized, it takes
-            precedence over start_time and end_time.
+            Time window resolved when the job is created; it takes precedence over start_time
+            and end_time. Sliding periods (1h to 30d) end now. Calendar periods start at
+            midnight of the current day, week (Monday) or month in `timezone`. An unrecognized
+            value is rejected with 400.
+        timezone:
+          type: string
+          example: America/New_York
+          description: >-
+            IANA timezone that calendar periods are measured in. Empty or unknown values
+            fall back to UTC. Ignored for sliding periods.
 
 RecalculateCostResponse:
   type: object

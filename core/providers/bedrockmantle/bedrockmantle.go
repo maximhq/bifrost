@@ -148,9 +148,9 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		merged := make(map[string]string, len(extraHeaders)+len(sigHeaders))
+		merged := make(map[string]schemas.SecretVar, len(extraHeaders)+len(sigHeaders))
 		maps.Copy(merged, extraHeaders)
-		maps.Copy(merged, sigHeaders)
+		maps.Copy(merged, schemas.NewSecretVarMap(sigHeaders))
 		extraHeaders = merged
 	}
 

@@ -1079,6 +1079,20 @@ func TestPatchPricing_VideoResolutionBandRates(t *testing.T) {
 	assert.Equal(t, 0.30, *patched.OutputCostPerVideoPerSecond)
 }
 
+func TestPatchPricing_VideoTokenRate(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:                   "dreamina-seedance-2-0-260128",
+		Provider:                "byteplus",
+		Mode:                    "video_generation",
+		OutputCostPerVideoToken: bifrost.Ptr(0.000007),
+	}
+
+	patched := patchPricing(base, Options{OutputCostPerVideoToken: bifrost.Ptr(0.0000077)})
+
+	require.NotNil(t, patched.OutputCostPerVideoToken)
+	assert.Equal(t, 0.0000077, *patched.OutputCostPerVideoToken)
+}
+
 // TestPatchPricing_TimeOfDayFields covers the two peak/off-peak fields. The
 // multiplier rides the *float64 loop; PeakHours is patched separately because
 // it is a struct pointer, so both paths need pinning.

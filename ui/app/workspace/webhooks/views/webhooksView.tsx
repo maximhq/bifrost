@@ -1,5 +1,6 @@
 import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -26,6 +27,7 @@ import {
 	useUpdateWebhookEndpointMutation,
 } from "@/lib/store";
 import { WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
+import { showLoadError } from "@/lib/utils/loadError";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
@@ -198,7 +200,7 @@ export default function WebhooksView() {
 	// a hand-edited "?offset=-25" never 400s the query and blocks recovery.
 	const offset = Math.max(0, Math.floor(urlState.offset / PAGE_SIZE) * PAGE_SIZE);
 
-	const { data, isLoading, isFetching, isError, error, refetch } = useGetWebhookEndpointsQuery(
+	const { data, isLoading, isFetching, error, refetch } = useGetWebhookEndpointsQuery(
 		{
 			search: debouncedSearch.trim() || undefined,
 			events: selectedEvents.length ? selectedEvents : undefined,
@@ -330,16 +332,8 @@ export default function WebhooksView() {
 	// invites creating an endpoint, so a hidden fetch error could prompt a
 	// duplicate. Only fatal when there is no data to fall back on; a transient
 	// poll failure over cached rows keeps rendering the list.
-	if (isError && !data) {
-		return (
-			<div className="flex flex-col items-center justify-center gap-3 py-16 text-center" data-testid="webhooks-load-error">
-				<p className="text-sm font-medium">Failed to load webhook endpoints.</p>
-				<p className="text-muted-foreground max-w-md text-sm">{getErrorMessage(error)}</p>
-				<Button variant="outline" size="sm" onClick={() => void refetch()}>
-					Retry
-				</Button>
-			</div>
-		);
+	if (showLoadError(error, data)) {
+		return <LoadErrorView entity="webhook endpoints" error={error} onRetry={() => void refetch()} testId="webhooks-load-error" />;
 	}
 
 	return (

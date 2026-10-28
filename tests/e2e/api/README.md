@@ -142,7 +142,7 @@ Run the cases in a third terminal:
 
 ```bash
 newman run tests/e2e/api/collections/provider-harness.json \
-  --folder "230. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
+  --folder "288. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
   --env-var baseUrl=http://127.0.0.1:8792 \
   --env-var anthropicRequestSurfaceFixture=1
 ```
@@ -205,6 +205,21 @@ HTTP handler directly, with no port bound, so an unknown or malformed request
 target is answered 404 rather than thrown on — a throw there rejects the async
 listener's promise, answers nothing, and takes the fixture down mid-folder.
 
+## Extra-content-only stream deltas
+
+Folder 266 pins that OpenAI-compatible chat streams forward chunks whose delta carries only
+`extra_content`. The fixture model `upstream-extra-content` streams `hello`, one
+`extra_content`-only delta before `finish_reason: "stop"`, and one after it. On the native and
+OpenAI SDK chat routes, both payloads must arrive in order and the stream must still end with
+`finish_reason` and `[DONE]`. These cases make no live provider calls and are skipped unless
+`providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
 
 ## Provider 5xx failover and 429 retry-hint propagation
 
@@ -650,6 +665,34 @@ key-endpoint case targets the `azure` provider (part of the shared
 
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
+
+### Extra fields placement tests
+
+`collections/bifrost-v1-extra-fields-placement.postman_collection.json` pins
+`client.extra_fields_placement`, streaming and non-streaming. Body mode (the
+default) keeps `extra_fields` in JSON bodies and SSE chunks and adds no new
+headers. Headers mode removes `extra_fields` from every body, chunk and error
+body and carries the routed identity and scalar fields as `x-bifrost-*` headers
+on `/v1/chat/completions`, `/v1/responses` and `/openai/v1/chat/completions`,
+each unary and streaming, plus a provider 4xx. Streams carry only what is known
+before the first chunk, so the stream checks assert the identity headers and not
+`x-bifrost-latency-ms`. A request with an `Origin` checks that
+`Access-Control-Expose-Headers` lists the `x-bifrost-*` headers. The routing
+identity headers that existed before this setting (`x-bifrost-provider`, original
+and resolved model, request type, `x-bifrost-fallback-index` and every
+`x-bifrost-routing-info-*`) are pinned against regression: in body mode each must
+equal its `extra_fields` value, and the same unary, streaming and fallback
+requests must return the same values in headers mode. Setup snapshots
+`client_config` and Teardown restores it.
+
+It makes about ten small live completions against the configured provider
+(`openai` by default). `runners/run-newman-api-tests.sh` runs it after the
+request guard tests; set `BIFROST_E2E_SKIP_EXTRA_FIELDS_PLACEMENT=1` to skip it.
+Standalone, against a gateway with dashboard auth disabled:
+
+```bash
+BIFROST_BASE_URL=http://localhost:8080 ./runners/individual/run-newman-extra-fields-placement-tests.sh
+```
 
 ### Integration Endpoint Tests
 

@@ -18,7 +18,6 @@ type TableAgentRegistration struct {
 	// Name is the primary key and the identifier used in gateway URLs and grants.
 	Name         string `gorm:"primaryKey;type:varchar(255)"`
 	AgentCardURL string `gorm:"type:text;not null"`
-	Tenant       string `gorm:"type:varchar(255)"`
 	// Enabled false retains the row while removing the agent from the runtime.
 	Enabled bool `gorm:"not null;default:true"`
 	// AllowByDefault grants access without any explicit grant row.
@@ -26,7 +25,8 @@ type TableAgentRegistration struct {
 	ForwardAcceptedCredential              bool                  `gorm:"column:forward_accepted_credential;not null;default:false"`
 	ForwardAcceptedCredentialOverridesAuth bool                  `gorm:"column:forward_accepted_credential_overrides_auth;not null;default:false"`
 	DiscoveryAuth                          *schemas.UpstreamAuth `gorm:"serializer:json;type:text"`
-	ExtensionURIs                          []string              `gorm:"serializer:json;type:text"`
+	CredentialOrigins                      []string              `gorm:"serializer:json;type:text"`
+	RequirePublicTarget                    bool                  `gorm:"not null;default:false"`
 	RuntimeAuth                            *schemas.UpstreamAuth `gorm:"serializer:json;type:text"`
 	// EncryptionStatus records whether the persisted secrets are ciphertext, so
 	// rows written before encryption was enabled remain readable.

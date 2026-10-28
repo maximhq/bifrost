@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -42,6 +43,7 @@ import {
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { actionDisabledReason, formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { virtualKeyMetadataKeyError } from "@/lib/utils/virtualKeyMetadata";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -63,6 +65,7 @@ import {
 	ScrollText,
 	Search,
 	ShieldCheck,
+	Tag,
 	Trash2,
 	UserRound,
 	Users,
@@ -86,7 +89,7 @@ const formatResetDuration = (duration: string) => resetDurationLabels[duration] 
 type ExportScope = "current_page" | "all";
 
 function virtualKeysToCSV(vks: VirtualKey[]): string {
-	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
+	const headers = ["Name", "Status", "Assigned To", "Assigned User Email", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
 	const rows = vks.map((vk) => {
 		const isExhausted =
 			vk.budgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
@@ -102,7 +105,7 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
-		return [vk.name, status, assignedTo, budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at];
+		return [vk.name, status, assignedTo, vk.assigned_user?.email ?? "", budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at];
 	});
 	return [headers, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
 }
@@ -160,6 +163,88 @@ function FilterClearButton({
 	);
 }
 
+// MetadataFilter narrows the list to keys whose metadata has one key set to exactly one value. The
+// key is checked against the server's rule before it is applied, since the API refuses a bad key.
+function MetadataFilter({
+	metadataKey,
+	metadataValue,
+	onChange,
+}: {
+	metadataKey: string;
+	metadataValue: string;
+	onChange: (key: string, value: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [draftKey, setDraftKey] = useState(metadataKey);
+	const [draftValue, setDraftValue] = useState(metadataValue);
+	const keyError = draftKey ? virtualKeyMetadataKeyError(draftKey) : undefined;
+	const active = !!metadataKey;
+	const apply = () => {
+		if (!draftKey || keyError) return;
+		onChange(draftKey, draftValue);
+		setOpen(false);
+	};
+	return (
+		<Popover
+			open={open}
+			onOpenChange={(next) => {
+				if (next) {
+					setDraftKey(metadataKey);
+					setDraftValue(metadataValue);
+				}
+				setOpen(next);
+			}}
+		>
+			<PopoverTrigger asChild>
+				<Button
+					type="button"
+					variant="outline"
+					className="h-9 max-w-[250px] gap-2 px-3"
+					aria-label={active ? `Metadata filter ${metadataKey}=${metadataValue}` : "Filter by metadata"}
+					data-testid="vk-metadata-filter-trigger"
+				>
+					<Tag className="size-4 shrink-0" />
+					<span className="truncate text-sm font-normal">{active ? `${metadataKey}=${metadataValue}` : "Metadata"}</span>
+				</Button>
+			</PopoverTrigger>
+			<PopoverContent className="w-72 space-y-3" align="start">
+				<form
+					className="space-y-3"
+					onSubmit={(e) => {
+						e.preventDefault();
+						apply();
+					}}
+				>
+					<div className="space-y-1.5">
+						<Label htmlFor="vk-metadata-filter-key">Key</Label>
+						<Input
+							id="vk-metadata-filter-key"
+							placeholder="e.g., cost_center"
+							value={draftKey}
+							onChange={(e) => setDraftKey(e.target.value)}
+							data-testid="vk-metadata-filter-key-input"
+						/>
+						{keyError && <p className="text-destructive text-xs">{keyError}</p>}
+					</div>
+					<div className="space-y-1.5">
+						<Label htmlFor="vk-metadata-filter-value">Value</Label>
+						<Input
+							id="vk-metadata-filter-value"
+							placeholder="Exact value"
+							value={draftValue}
+							onChange={(e) => setDraftValue(e.target.value)}
+							data-testid="vk-metadata-filter-value-input"
+						/>
+					</div>
+					<Button type="submit" size="sm" className="w-full" disabled={!draftKey || !!keyError} data-testid="vk-metadata-filter-apply-btn">
+						Apply
+					</Button>
+				</form>
+			</PopoverContent>
+		</Popover>
+	);
+}
+
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
 	// A resolved row (assigned_user present, user or null) is read straight off the row:
 	// the list endpoint resolves the whole page at once, so the hook skips its request and
@@ -189,10 +274,10 @@ function VKActiveSwitch({
 	hasUpdateAccess: boolean;
 	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
-	const { isManagedByProfile } = useVirtualKeyUsage(vk);
-	// Managed takes precedence: an access-profile-managed VK can't be toggled here even by a
-	// caller who does have update access.
-	const disabledReason = isManagedByProfile
+	const { isUserProfileManaged } = useVirtualKeyUsage(vk);
+	// A user's managed key can't be toggled here even by a caller who does have update access. A
+	// key its owner's access profile governs is still the owner's key, toggled like any other.
+	const disabledReason = isUserProfileManaged
 		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
 		: !hasUpdateAccess
 			? "You don't have permission to update virtual keys."
@@ -240,7 +325,9 @@ function VKActionsMenu({
 	onDelete: (vkId: string) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
-	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	// Only a user's managed key is locked against delete; a key its owner's profile governs is the
+	// owner's key, deleted like any other.
+	const { isUserProfileManaged } = useVirtualKeyUsage(vk);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	return (
@@ -282,7 +369,7 @@ function VKActionsMenu({
 							hasDeleteAccess,
 							"delete",
 							"virtual keys",
-							isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined,
+							isUserProfileManaged ? "This virtual key is managed by an access profile and can't be deleted here." : undefined,
 						)}
 						variant="destructive"
 						className="cursor-pointer"
@@ -337,6 +424,9 @@ interface VirtualKeysTableProps {
 	onTeamFilterChange: (value: string) => void;
 	userFilter: string;
 	onUserFilterChange: (value: string) => void;
+	metadataFilterKey: string;
+	metadataFilterValue: string;
+	onMetadataFilterChange: (key: string, value: string) => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -359,6 +449,9 @@ export default function VirtualKeysTable({
 	onTeamFilterChange,
 	userFilter,
 	onUserFilterChange,
+	metadataFilterKey,
+	metadataFilterValue,
+	onMetadataFilterChange,
 	offset,
 	limit,
 	onOffsetChange,
@@ -368,6 +461,8 @@ export default function VirtualKeysTable({
 	selectedVkId,
 	onSelectedVkChange,
 }: VirtualKeysTableProps) {
+	// The metadata filter as the list endpoint takes it; one key/value pair in this UI.
+	const metadataFilterParam = metadataFilterKey ? { [metadataFilterKey]: metadataFilterValue } : undefined;
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
 	// Keys without their own delete_after_expire follow this client-wide setting.
@@ -546,6 +641,7 @@ export default function VirtualKeysTable({
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
 					user_id: userFilter || undefined,
+					metadata: metadataFilterParam,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -570,6 +666,7 @@ export default function VirtualKeysTable({
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
 					user_id: userFilter || undefined,
+					metadata: metadataFilterParam,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -606,15 +703,15 @@ export default function VirtualKeysTable({
 
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
-	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter;
+	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter || metadataFilterKey;
 
 	// Registered by the downstream build at module load; undefined in builds
 	// without a user directory, which hides the user filter entirely.
 	const UserPicker = getUserPicker();
-	// Server-side search matches the key name, its team and its customer, plus the
-	// assigned user where there is a user directory to match against. Same signal as
+	// Server-side search matches the key name, its team, its customer and its metadata, plus
+	// the assigned user where there is a user directory to match against. Same signal as
 	// the user filter below, so the placeholder never promises what OSS cannot do.
-	const searchHint = UserPicker ? "name, user, team, or customer" : "name, team, or customer";
+	const searchHint = UserPicker ? "name, user, team, customer, or metadata" : "name, team, customer, or metadata";
 
 	const toggleSort = (column: string) => {
 		if (sortBy === column) {
@@ -649,6 +746,7 @@ export default function VirtualKeysTable({
 				customer_id: customerFilter || undefined,
 				team_id: teamFilter || undefined,
 				user_id: userFilter || undefined,
+				metadata: metadataFilterParam,
 				sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 				order: (order as "asc" | "desc") || undefined,
 				export: true,
@@ -772,6 +870,7 @@ export default function VirtualKeysTable({
 									customerFilter && "customer filter",
 									teamFilter && "team filter",
 									userFilter && "user filter",
+									metadataFilterKey && "metadata filter",
 								]
 									.filter(Boolean)
 									.join(", ")}
@@ -901,6 +1000,16 @@ export default function VirtualKeysTable({
 							/>
 						</div>
 					)}
+
+					<div className="flex shrink-0 items-center gap-1" data-testid="vk-metadata-filter">
+						<MetadataFilter metadataKey={metadataFilterKey} metadataValue={metadataFilterValue} onChange={onMetadataFilterChange} />
+						<FilterClearButton
+							show={!!metadataFilterKey}
+							label="Clear metadata filter"
+							onClear={() => onMetadataFilterChange("", "")}
+							data-testid="vk-metadata-filter-clear-btn"
+						/>
+					</div>
 
 					<div className="ml-auto flex shrink-0 items-center gap-2">
 						{selectedCount > 0 && (

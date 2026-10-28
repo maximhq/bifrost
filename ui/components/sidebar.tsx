@@ -12,6 +12,7 @@ import {
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
 	CircuitBoard,
+	Database,
 	Construction,
 	DatabaseZap,
 	Flag,
@@ -39,6 +40,7 @@ import {
 	Search,
 	SearchCheck,
 	Settings,
+	Server,
 	Settings2Icon,
 	ShieldCheck,
 	Shuffle,
@@ -53,6 +55,7 @@ import {
 	Wallet,
 	WalletCards,
 	Webhook,
+	Waypoints,
 } from "lucide-react";
 
 import { WarpIcon } from "@/components/ui/icons";
@@ -166,7 +169,13 @@ const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
 
 const slug = (s: string) => s.toLowerCase().replace(/\s+/g, "-");
 
-const TimeFilterPages = new Set(["/workspace/dashboard", "/workspace/logs", "/workspace/mcp-logs", "/workspace/agent-logs"]);
+const TimeFilterPages = new Set([
+	"/workspace/dashboard",
+	"/workspace/logs",
+	"/workspace/mcp-logs",
+	"/workspace/agent-logs",
+	"/workspace/relay-logs",
+]);
 
 const preserveTimeFilters = (baseHref: string, subItemUrl: string, pathname: string, search: string): string => {
 	if (TimeFilterPages.has(subItemUrl) && TimeFilterPages.has(pathname)) {
@@ -263,7 +272,7 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+	const buttonClassName = `group/nav-item relative h-7 cursor-pointer rounded-sm border px-2 transition-all duration-200 ${
 		isHighlighted
 			? "bg-sidebar-accent text-accent-foreground border-primary/20"
 			: isActive || isAnySubItemActive
@@ -275,10 +284,10 @@ const SidebarItemView = ({
 
 	const innerContent = (
 		<div className="flex w-full min-w-0 items-center justify-between">
-			<div className="flex w-full min-w-0 items-center gap-2">
-				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+			<div className="flex w-full min-w-0 items-center gap-2.5">
+				<item.icon className={`h-3.5 w-3.5 shrink-0 ${isActive || isAnySubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />
 				<span
-					className={`min-w-0 truncate text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
+					className={`min-w-0 truncate text-[13px] group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
 				>
 					{item.title}
 				</span>
@@ -385,7 +394,7 @@ const SidebarItemView = ({
 						onMouseLeave={closeFlyout}
 						data-testid={`sidebar-flyout-content-${item.testId ?? slug(item.title)}`}
 					>
-						<div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{item.title}</div>
+						<div className="text-muted-foreground px-2 py-1.5 text-xs font-normal">{item.title}</div>
 						{item.subItems?.map((subItem) => {
 							const baseHref = getSidebarItemHref(subItem);
 							const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
@@ -393,15 +402,9 @@ const SidebarItemView = ({
 							const SubItemIcon = subItem.icon;
 							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
-								<div className="flex min-w-0 items-center gap-2">
-									{SubItemIcon && (
-										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-									)}
-									<span
-										className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-600 dark:text-zinc-400"}`}
-									>
-										{subItem.title}
-									</span>
+								<div className="flex min-w-0 items-center gap-2.5">
+									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />}
+									<span className={`min-w-0 truncate text-[13px] ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 									{subItem.tag && (
 										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 											{subItem.tag}
@@ -429,7 +432,7 @@ const SidebarItemView = ({
 											to={href}
 											preload="intent"
 											data-testid={`sidebar-subitem-link-${subSlug}`}
-											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent"}`}
+											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent text-primary" : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-600 dark:text-zinc-400"}`}
 										>
 											{inner}
 										</Link>
@@ -461,11 +464,9 @@ const SidebarItemView = ({
 										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-600 dark:text-zinc-400"
 						}`;
 						const subInner = (
-							<div className="flex w-full min-w-0 items-center gap-2">
-								{SubItemIcon && (
-									<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-								)}
-								<span className={`min-w-0 truncate text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+							<div className="flex w-full min-w-0 items-center gap-2.5">
+								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />}
+								<span className={`min-w-0 truncate text-[13px] ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 								{subItem.tag && (
 									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 										{subItem.tag}
@@ -599,6 +600,8 @@ export default function AppSidebar() {
 	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
 	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
+	const hasRelaysAccess = useRbac(RbacResource.Relays, RbacOperation.View);
+	const hasRelayLogsAccess = useRbac(RbacResource.RelayLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
@@ -689,7 +692,13 @@ export default function AppSidebar() {
 				icon: Telescope,
 				description: "Request logs & monitoring",
 				hasAccess:
-					hasLogsAccess || hasDashboardAccess || hasMCPLogsAccess || hasAgentLogsAccess || hasObservabilityAccess || hasSettingsAccess,
+					hasLogsAccess ||
+					hasDashboardAccess ||
+					hasMCPLogsAccess ||
+					hasAgentLogsAccess ||
+					hasRelayLogsAccess ||
+					hasObservabilityAccess ||
+					hasSettingsAccess,
 				subItems: [
 					{
 						title: "Dashboard",
@@ -718,6 +727,13 @@ export default function AppSidebar() {
 						icon: Bot,
 						description: "Agent request logs",
 						hasAccess: hasAgentLogsAccess,
+					},
+					{
+						title: "Relay Logs",
+						url: "/workspace/relay-logs",
+						icon: Waypoints,
+						description: "Relay calls and their cost",
+						hasAccess: hasRelayLogsAccess,
 					},
 					{
 						title: "Connectors",
@@ -859,7 +875,6 @@ export default function AppSidebar() {
 				icon: Bot,
 				description: "Register and manage A2A agents",
 				hasAccess: hasAgentGatewayAccess,
-				new: true,
 				subItems: [
 					{
 						title: "Agent Catalog",
@@ -883,6 +898,13 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 				],
+			},
+			{
+				title: "Relays",
+				url: "/workspace/relays",
+				icon: Waypoints,
+				description: "Relay non-LLM APIs with per-route pricing",
+				hasAccess: hasRelaysAccess,
 			},
 			{
 				title: "Plugins",
@@ -1030,6 +1052,13 @@ export default function AppSidebar() {
 						description: "Guardrail providers configuration",
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
+					{
+						title: "Incidents",
+						url: "/workspace/guardrails/incidents",
+						icon: TriangleAlert,
+						description: "Requests blocked or flagged by guardrails",
+						hasAccess: hasGuardrailsConfigAccess && hasLogsAccess,
+					},
 				],
 			},
 			{
@@ -1070,11 +1099,42 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "Cluster Config",
+				title: "Cluster",
 				url: "/workspace/cluster",
 				icon: Network,
-				description: "Manage Bifrost cluster",
+				description: "Monitor the Bifrost cluster",
 				hasAccess: hasClusterConfigAccess,
+				subItems: [
+					{
+						title: "Nodes",
+						url: "/workspace/cluster/overview",
+						icon: Server,
+						description: "Node health, CPU, memory and request rate",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Storage",
+						url: "/workspace/cluster/storage",
+						icon: Database,
+						description: "Config and logs store databases, pools and slow queries",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Incidents",
+						url: "/workspace/cluster/incidents",
+						icon: TriangleAlert,
+						description: "Memory, message delivery and database incidents",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Settings",
+						url: "/workspace/cluster/settings",
+						icon: Settings,
+						description: "Monitoring, sample retention and memory threshold",
+						// The settings API sits under the Settings resource; saving also needs Settings update.
+						hasAccess: hasClusterConfigAccess && hasSettingsAccess,
+					},
+				],
 			},
 			{
 				title: "Adaptive Routing",
@@ -1116,11 +1176,27 @@ export default function AppSidebar() {
 							hasAccess: hasPromptRepositoryAccess,
 						},
 						{
-							title: "Skills Repository",
+							title: "Skills",
 							url: "/workspace/skills-repo",
 							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
+							description: "Manage skills and marketplace settings",
+							hasAccess: hasSkillsRepositoryAccess || hasSettingsAccess,
+							subItems: [
+								{
+									title: "Skills Repository",
+									url: "/workspace/skills-repo",
+									icon: BookOpenText,
+									description: "Skills repository",
+									hasAccess: hasSkillsRepositoryAccess,
+								},
+								{
+									title: "Skills Settings",
+									url: "/workspace/config/skills",
+									icon: Settings,
+									description: "Skills marketplace configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							],
 						},
 					]
 				: []),
@@ -1231,6 +1307,8 @@ export default function AppSidebar() {
 			hasAgentLogsAccess,
 			hasVirtualMCPsAccess,
 			hasMCPLogsAccess,
+			hasRelaysAccess,
+			hasRelayLogsAccess,
 			hasPluginsAccess,
 			hasUsersAccess,
 			hasUserProvisioningAccess,
@@ -1454,7 +1532,7 @@ export default function AppSidebar() {
 		});
 	};
 
-	const configExceptions = ["/workspace/config/logging"];
+	const configExceptions = ["/workspace/config/logging", "/workspace/config/skills"];
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;

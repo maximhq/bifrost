@@ -248,6 +248,42 @@ func TestIsPerplexityDeciderModel(t *testing.T) {
 	}
 }
 
+func TestIsMicrosoftDecisionModel(t *testing.T) {
+	for _, model := range []string{"Microsoft-Decision-1", "microsoft-decision-1", "Microsoft-Decision-2"} {
+		assert.True(t, IsMicrosoftDecisionModel(model), model)
+	}
+	for _, model := range []string{"Decision-1", "azure/Microsoft-Decision-1", "gpt-6-luna", "decision", ""} {
+		assert.False(t, IsMicrosoftDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksDecisionModel(t *testing.T) {
+	for _, model := range []string{"ai_decide", "AI_DECIDE", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0"} {
+		assert.True(t, IsDatabricksDecisionModel(model), model)
+	}
+	for _, model := range []string{"databricks/ai_decide", "ai-decide", "ai_decide_v2", "ai_classify", "databricks-claude-sonnet-4", ""} {
+		assert.False(t, IsDatabricksDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksSystemOneModel(t *testing.T) {
+	for _, model := range []string{
+		"system.ai.openjev-qwen35-4b", "System.AI.OpenJev-Qwen35-4B",
+		"system.ai.typesafeai-jev-1-14-0", "system.ai.typesafeai-jev-1-15-0",
+	} {
+		assert.True(t, IsDatabricksSystemOneModel(model), model)
+	}
+	// Serving endpoint names and bare names are not Unity Catalog model services, the only
+	// names the systemone endpoint takes.
+	for _, model := range []string{
+		"databricks-openjev-qwen35-4b", "databricks-typesafeai-jev-1-14-0", "openjev-qwen35-4b",
+		"main.default.openjev-qwen35-4b", "system.ai.claude-sonnet-4-5",
+		"ai_decide", "databricks-claude-sonnet-4", "jev-1.13", "typesafe/jev-latest", "",
+	} {
+		assert.False(t, IsDatabricksSystemOneModel(model), model)
+	}
+}
+
 func TestIsOllamaDecisionModel(t *testing.T) {
 	for _, model := range []string{"nimble", "nimble:latest", "nimble-2", "tev1:0.8b", "tev1-mini", "clef", "clef-flash", "clef-omni", "Clef-Flash:9b", "laya", "laya-multilingual"} {
 		assert.True(t, IsOllamaDecisionModel(model), model)
