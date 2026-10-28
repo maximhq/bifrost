@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -197,7 +198,7 @@ func (s *fakeBatchStore) FailProviderJob(ctx context.Context, id, runnerID strin
 	return s.markTerminal(id, cstables.ProviderJobAccountingStatusError, "")
 }
 
-func newTestStore(t *testing.T) logstore.LogStore {
+func newTestStore(t testing.TB) logstore.LogStore {
 	t.Helper()
 
 	store, err := logstore.NewLogStore(context.Background(), &logstore.Config{
@@ -5247,4 +5248,333 @@ func TestA2ARawCaptureContentPolicy(t *testing.T) {
 			require.Equal(t, "cmVzcG9uc2U=", *entry.RawResponse)
 		}
 	}
+}
+
+// Media an MCP tool returned is logged as a placeholder, never as its base64: for a Chat result whose
+// text is not JSON, and for a Responses result, which keeps images and files for the model.
+func TestPostMCPHookLogsToolMediaAsPlaceholders(t *testing.T) {
+	const payload = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+	text, imageURL := "3 points", "data:image/png;base64,"+payload
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.MCPRequestType
+		resp        *schemas.BifrostMCPResponse
+	}{
+		{"chat", schemas.MCPRequestTypeChatToolCall, &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: &text},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+			}},
+		}}},
+		{"responses", schemas.MCPRequestTypeResponsesToolCall, &schemas.BifrostMCPResponse{ResponsesMessage: &schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call-chart"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text},
+					{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL}},
+				}},
+			},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			logID := "mcp-media-" + tc.name
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+			ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+			toolName := "docs-chart"
+			if _, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+				RequestType: tc.requestType,
+				ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+				},
+			}); err != nil {
+				t.Fatalf("PreMCPHook() error = %v", err)
+			}
+			tc.resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: tc.requestType, ClientName: "docs", ToolName: "chart"}
+			if _, _, err := plugin.PostMCPHook(ctx, tc.resp, nil); err != nil {
+				t.Fatalf("PostMCPHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+			logEntry, err := store.FindMCPToolLog(context.Background(), logID)
+			if err != nil {
+				t.Fatalf("FindMCPToolLog() error = %v", err)
+			}
+			logged, err := json.Marshal(logEntry.ResultParsed)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			if strings.Contains(string(logged), payload) {
+				t.Fatalf("the logged result carries the image's base64: %s", logged)
+			}
+			if !strings.Contains(string(logged), "returned by the tool, not shown") || !strings.Contains(string(logged), text) {
+				t.Fatalf("the logged result must keep the text and name the image: %s", logged)
+			}
+		})
+	}
+}
+
+// Prompt and resource reads are logged like tool calls: the prompt name or URI, the server, the
+// method, arguments and result (blobs become placeholders, see schemas.ResourceContentsForLog).
+func TestMCPHooksLogPromptAndResourceReads(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	read := func(logID string, req *schemas.BifrostMCPRequest, resp *schemas.BifrostMCPResponse) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+		_, _, err := plugin.PreMCPHook(ctx, req)
+		require.NoError(t, err)
+		resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: req.ClientName, Latency: 7}
+		_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+		require.NoError(t, err)
+	}
+
+	promptResp := &schemas.BifrostMCPResponse{BifrostMCPGetPromptResponse: &schemas.BifrostMCPGetPromptResponse{}}
+	require.NoError(t, json.Unmarshal([]byte(`{"description":"Review: +1","messages":[]}`), &promptResp.BifrostMCPGetPromptResponse.Prompt))
+	read("mcp-prompt-read", &schemas.BifrostMCPRequest{
+		RequestType:                schemas.MCPRequestTypeGetPrompt,
+		ClientName:                 "docs",
+		BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "docs-review", Arguments: map[string]string{"diff": "+1"}},
+	}, promptResp)
+
+	resourceResp := &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{}}
+	require.NoError(t, json.Unmarshal([]byte(`{"contents":[]}`), &resourceResp.BifrostMCPReadResourceResponse.Resource))
+	read("mcp-resource-read", &schemas.BifrostMCPRequest{
+		RequestType:                   schemas.MCPRequestTypeReadResource,
+		ClientName:                    "docs",
+		BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///chart.png"},
+	}, resourceResp)
+	require.NoError(t, plugin.Cleanup())
+
+	prompt, err := store.FindMCPToolLog(context.Background(), "mcp-prompt-read")
+	require.NoError(t, err)
+	require.NotNil(t, prompt.Method)
+	require.Equal(t, "prompts/get", *prompt.Method)
+	require.Equal(t, "review", prompt.ToolName)
+	require.Equal(t, "docs", prompt.ServerLabel)
+	require.Equal(t, "success", prompt.Status)
+	require.Contains(t, fmt.Sprint(prompt.ArgumentsParsed), "diff")
+	require.Contains(t, fmt.Sprint(prompt.ResultParsed), "Review: +1")
+
+	resource, err := store.FindMCPToolLog(context.Background(), "mcp-resource-read")
+	require.NoError(t, err)
+	require.NotNil(t, resource.Method)
+	require.Equal(t, "resources/read", *resource.Method)
+	require.Equal(t, "file:///chart.png", resource.ToolName)
+	require.Equal(t, "docs", resource.ServerLabel)
+	require.Equal(t, "success", resource.Status)
+}
+
+// A read keeps its full log row when its target does not fit the tool_name column, or when a prompt
+// shares a name with a codemode tool: the column takes the target clipped to its width, the arguments
+// keep a resource's full URI, and the codemode skip applies to tool calls only.
+func TestMCPHooksLogReadsWithLongOrCodemodeNames(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	read := func(logID string, req *schemas.BifrostMCPRequest, resp *schemas.BifrostMCPResponse) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+		_, _, err := plugin.PreMCPHook(ctx, req)
+		require.NoError(t, err)
+		resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: req.ClientName}
+		_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+		require.NoError(t, err)
+	}
+
+	longURI := "repo://docs/" + strings.Repeat("a", 240) + "é" + strings.Repeat("b", 150)
+	read("mcp-long-uri", &schemas.BifrostMCPRequest{
+		RequestType:                   schemas.MCPRequestTypeReadResource,
+		ClientName:                    "docs",
+		BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: longURI},
+	}, &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{}})
+	read("mcp-codemode-named-prompt", &schemas.BifrostMCPRequest{
+		RequestType:                schemas.MCPRequestTypeGetPrompt,
+		ClientName:                 "docs",
+		BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "docs-executeToolCode", Arguments: map[string]string{"diff": "+1"}},
+	}, &schemas.BifrostMCPResponse{BifrostMCPGetPromptResponse: &schemas.BifrostMCPGetPromptResponse{}})
+	require.NoError(t, plugin.Cleanup())
+
+	resource, err := store.FindMCPToolLog(context.Background(), "mcp-long-uri")
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(resource.ToolName), 255, "tool_name is varchar(255)")
+	require.True(t, utf8.ValidString(resource.ToolName))
+	require.True(t, strings.HasPrefix(longURI, resource.ToolName))
+	require.Contains(t, fmt.Sprint(resource.ArgumentsParsed), longURI, "the full URI is kept in the arguments")
+
+	prompt, err := store.FindMCPToolLog(context.Background(), "mcp-codemode-named-prompt")
+	require.NoError(t, err)
+	require.NotNil(t, prompt.Method)
+	require.Equal(t, "prompts/get", *prompt.Method)
+	require.Equal(t, "executeToolCode", prompt.ToolName)
+	require.Equal(t, "docs", prompt.ServerLabel)
+	require.Contains(t, fmt.Sprint(prompt.ArgumentsParsed), "diff")
+}
+
+// On PostgreSQL, where tool_name is a real varchar(255), a resource read with a longer URI still
+// leaves its log row.
+func TestMCPHooksLogLongResourceURIOnPostgres(t *testing.T) {
+	cfg := testPostgresConnConfig()
+	openTestPostgres(t, cfg)
+	store := newTestPostgresStore(t, cfg)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	logID := fmt.Sprintf("mcp-long-uri-pg-%d", time.Now().UnixNano())
+	longURI := "repo://docs/" + strings.Repeat("a", 400)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+	req := &schemas.BifrostMCPRequest{
+		RequestType:                   schemas.MCPRequestTypeReadResource,
+		ClientName:                    "docs",
+		BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: longURI},
+	}
+	_, _, err = plugin.PreMCPHook(ctx, req)
+	require.NoError(t, err)
+	resp := &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{}}
+	resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: req.ClientName}
+	_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	logged, err := store.FindMCPToolLog(context.Background(), logID)
+	require.NoError(t, err, "the read's log row must be stored")
+	require.Equal(t, longURI[:255], logged.ToolName)
+	require.Contains(t, fmt.Sprint(logged.ArgumentsParsed), longURI)
+}
+
+// BenchmarkMCPHooks measures logging one MCP call end to end through PreMCPHook and PostMCPHook: a
+// tool call, the baseline, beside the prompt and resource reads this plugin now logs too.
+func BenchmarkMCPHooks(b *testing.B) {
+	store := newTestStore(b)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = plugin.Cleanup() })
+	tool := "docs-search"
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostMCPRequest
+		resp *schemas.BifrostMCPResponse
+	}{
+		{"tool-call", &schemas.BifrostMCPRequest{
+			RequestType:                  schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: `{"q":"x"}`}},
+		}, &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"ok":true}`)}}}},
+		{"prompt-get", &schemas.BifrostMCPRequest{
+			RequestType:                schemas.MCPRequestTypeGetPrompt,
+			ClientName:                 "docs",
+			BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "docs-review", Arguments: map[string]string{"diff": "+1"}},
+		}, &schemas.BifrostMCPResponse{BifrostMCPGetPromptResponse: &schemas.BifrostMCPGetPromptResponse{}}},
+		{"resource-read", &schemas.BifrostMCPRequest{
+			RequestType:                   schemas.MCPRequestTypeReadResource,
+			ClientName:                    "docs",
+			BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"},
+		}, &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{}}},
+	} {
+		tc.resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: tc.req.RequestType, ClientName: "docs", ToolName: "search"}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-bench")
+				ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-bench-"+tc.name)
+				if _, _, err := plugin.PreMCPHook(ctx, tc.req); err != nil {
+					b.Fatal(err)
+				}
+				if _, _, err := plugin.PostMCPHook(ctx, tc.resp, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// A resource URI's credentials (user info, query, fragment) never reach tool_name, which is kept
+// whatever the content policy; with content logging off, they are nowhere in the row.
+// A read core moved to another server after the pre-hooks (the first owner was not reachable) is
+// logged under the server that answered, which the response names.
+func TestMCPHooksLogReadUnderTheServerThatAnswered(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-moved-read")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-moved-read")
+	req := &schemas.BifrostMCPRequest{
+		RequestType:                   schemas.MCPRequestTypeReadResource,
+		ClientName:                    "a",
+		BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "file:///handbook.md"},
+	}
+	_, _, err = plugin.PreMCPHook(ctx, req)
+	require.NoError(t, err)
+	resp := &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{}}
+	resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: "b"}
+	_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindMCPToolLog(context.Background(), "mcp-moved-read")
+	require.NoError(t, err)
+	require.Equal(t, "b", row.ServerLabel)
+}
+
+func TestMCPHooksLogResourceURIWithoutCredentials(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	read := func(logID, uri string, contentOff bool) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+		if contentOff {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		}
+		req := &schemas.BifrostMCPRequest{
+			RequestType:                   schemas.MCPRequestTypeReadResource,
+			ClientName:                    "docs",
+			BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: uri},
+		}
+		_, _, err := plugin.PreMCPHook(ctx, req)
+		require.NoError(t, err)
+		resp := &schemas.BifrostMCPResponse{BifrostMCPReadResourceResponse: &schemas.BifrostMCPReadResourceResponse{}}
+		resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: req.RequestType, ClientName: req.ClientName}
+		_, _, err = plugin.PostMCPHook(ctx, resp, nil)
+		require.NoError(t, err)
+	}
+	read("mcp-uri-creds", "https://alice:secret@docs.example.com/a.md?token=abc#frag", true)
+	read("mcp-uri-file", "file:///handbook.md", false)
+	read("mcp-uri-comma", "file:///reports/a,b.csv", false)
+	require.NoError(t, plugin.Cleanup())
+
+	withSecret, err := store.FindMCPToolLog(context.Background(), "mcp-uri-creds")
+	require.NoError(t, err)
+	require.Equal(t, "https://docs.example.com/a.md", withSecret.ToolName)
+	row, err := json.Marshal(withSecret)
+	require.NoError(t, err)
+	require.NotContains(t, string(row), "secret")
+	require.NotContains(t, string(row), "abc")
+
+	file, err := store.FindMCPToolLog(context.Background(), "mcp-uri-file")
+	require.NoError(t, err)
+	require.Equal(t, "file:///handbook.md", file.ToolName)
+
+	// The log filters split tool names on commas, so a URI's commas are logged percent-encoded.
+	comma, err := store.FindMCPToolLog(context.Background(), "mcp-uri-comma")
+	require.NoError(t, err)
+	require.Equal(t, "file:///reports/a%2Cb.csv", comma.ToolName)
 }

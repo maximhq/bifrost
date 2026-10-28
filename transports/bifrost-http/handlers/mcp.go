@@ -18,6 +18,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
@@ -53,14 +54,14 @@ type MCPManager interface {
 	EnableMCPClient(ctx context.Context, id string) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary access
 	// token and discovers available tools. The connection is closed after verification.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error)
 	// VerifyHeadersConnection verifies an MCP server using a caller-supplied set
 	// of header values (admin sample or user-submitted) and discovers available
 	// tools. The connection is closed after verification. Mirrors
 	// VerifyPerUserOAuthConnection's role for MCPAuthTypePerUserHeaders.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error)
-	// SetClientTools updates the tool map for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error)
+	// SetClientDiscovery installs discovery on an existing client.
+	SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery)
 	// RequiresPerCallConnection reports whether config resolves to a
 	// per-call connection (true) or a persistent shared one (false), taking
 	// auth type, connection type, and needs_session_stickiness into account
@@ -155,7 +156,8 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 // oauth_configs.mcp_client_config_json — row-lifecycle management is the
 // caller's concern.
 func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuthConfigRequest, serverURL string, requirePublicTarget bool) (*schemas.OAuth2FlowInitiation, error) {
-	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	redirectURI := base + oauthCallbackPath
 	return h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
 		ClientID:        oauthCfg.ClientID,
 		ClientSecret:    oauthCfg.ClientSecret,
@@ -167,7 +169,9 @@ func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuth
 		ServerURL:       serverURL,
 		Resource:        oauthCfg.Resource,
 
-		RequirePublicTarget: requirePublicTarget,
+		RequirePublicTarget:       requirePublicTarget,
+		ClientMetadataURL:         base + oauthClientMetadataPath,
+		UseClientMetadataDocument: oauthCfg.UseClientMetadataDocument,
 	})
 }
 
@@ -400,8 +404,8 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 // or was abandoned, the linked oauth_configs row may still exist with a
 // non-authorized status. We always create a fresh row on every click —
 // once oauth_config_id is repointed the previous row is unreferenced and
-// inert (its status can never become authorized), it is just not cleaned
-// up automatically.
+// inert (its status can never become authorized), and the OAuth sweep
+// worker removes it (DeleteAbandonedOauthConfigs).
 func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
@@ -440,7 +444,7 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 	oauthCfg := pendingOAuthConfigToRequest(clientConfig.PendingOAuthConfig)
 	flowInitiation, err := h.runOAuthBootstrap(ctx, oauthCfg, clientConfig.ConnectionString.GetValue(), clientConfig.RequirePublicTarget)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+		SendError(ctx, oauthBootstrapErrorStatus(err), fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 		return
 	}
 
@@ -611,11 +615,12 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, clientConfig, canonUserHeaders)
+	discovery, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, clientConfig, canonUserHeaders)
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
 	}
+	tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
 
 	// Re-load the row before activating and persisting: discovery above
 	// holds an upstream network round-trip, and pushing the pre-discovery
@@ -656,6 +661,8 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	}
 	clientConfig.DiscoveredTools = tools
 	clientConfig.DiscoveredToolNameMapping = toolNameMapping
+	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+	clientConfig.DiscoveredInstructions = discovery.Instructions
 
 	// Activate the runtime client BEFORE persisting so a partial failure
 	// can always be retried through this endpoint. The replay guard above
@@ -690,12 +697,15 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -706,7 +716,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	}
 	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
 		// NOTE: Partial success; the runtime client is activated (Healthy)
-		// but — since SetClientTools runs below, after this succeeds — has
+		// but — since SetClientDiscovery runs below, after this succeeds — has
 		// no tools live either, so runtime and DB agree (both empty) rather
 		// than drifting. The replay guard reads DiscoveredTools from the
 		// DB, so retrying this endpoint re-runs verification cleanly; a
@@ -720,11 +730,12 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Set discovered tools on the client after persistence succeeds — not
-	// before. SetClientTools may propagate this update to other observers
+	// before. SetClientDiscovery may propagate this update to other observers
 	// of the DB row (deployment-specific), so it must run strictly after
 	// the write above lands — otherwise a propagated update could be read
 	// back before the row it depends on was actually written.
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
+	h.persistMCPDiscovery(ctx, clientConfig.ID, discovery)
+	h.mcpManager.SetClientDiscovery(clientConfig.ID, discovery)
 
 	// Retain the admin's sample header values as the auth_mode='admin'
 	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
@@ -835,11 +846,12 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, adminResponse.AccessToken)
+	discovery, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, adminResponse.AccessToken)
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
 	}
+	tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
 
 	// Same reload-activate-persist ordering as verify-headers, for the same
 	// reasons: the reload narrows the concurrent-edit window opened by the
@@ -853,6 +865,8 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	}
 	clientConfig.DiscoveredTools = tools
 	clientConfig.DiscoveredToolNameMapping = toolNameMapping
+	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+	clientConfig.DiscoveredInstructions = discovery.Instructions
 
 	if err := h.updateMCPClientWithRetry(bifrostCtx, clientConfig.ID, clientConfig); err != nil {
 		logger.Error(fmt.Sprintf("Failed to update MCP client after exchange verification for client %s: %v", clientConfig.ID, err))
@@ -875,12 +889,15 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -891,7 +908,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	}
 	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
 		// NOTE: Partial success; the runtime client is activated (Healthy)
-		// but — since SetClientTools runs below, after this succeeds — has
+		// but — since SetClientDiscovery runs below, after this succeeds — has
 		// no tools live either, so runtime and DB agree (both empty) rather
 		// than drifting. The replay guard reads DiscoveredTools from the
 		// DB, so retrying this endpoint re-runs verification cleanly; a
@@ -905,11 +922,12 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Set discovered tools on the client after persistence succeeds — not
-	// before. SetClientTools may propagate this update to other observers
+	// before. SetClientDiscovery may propagate this update to other observers
 	// of the DB row (deployment-specific), so it must run strictly after
 	// the write above lands — otherwise a propagated update could be read
 	// back before the row it depends on was actually written.
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
+	h.persistMCPDiscovery(ctx, clientConfig.ID, discovery)
+	h.mcpManager.SetClientDiscovery(clientConfig.ID, discovery)
 
 	// Retain the admin credential for the periodic tool syncer and the
 	// refresh worker. Deliberately last, mirroring verify-headers: on a
@@ -937,12 +955,23 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 // shape into the request shape consumed by runOAuthBootstrap /
 // InitiateOAuthFlow. Credentials are *SecretVar on both sides, so env./vault.
 // reference metadata passes through intact.
+// oauthBootstrapErrorStatus is the status for a failed OAuth bootstrap: 400 for a request the caller
+// must change, 500 otherwise.
+func oauthBootstrapErrorStatus(err error) int {
+	if errors.Is(err, oauth2.ErrClientMetadataDocumentWithClientID) || errors.Is(err, oauth2.ErrClientMetadataDocumentUnavailable) {
+		return fasthttp.StatusBadRequest
+	}
+	return fasthttp.StatusInternalServerError
+}
+
 func pendingOAuthConfigToRequest(cfg *schemas.OAuth2Config) *OAuthConfigRequest {
 	req := &OAuthConfigRequest{
 		AuthorizeURL: cfg.AuthorizeURL,
 		TokenURL:     cfg.TokenURL,
 		Scopes:       cfg.Scopes,
 		Resource:     cfg.Resource,
+
+		UseClientMetadataDocument: cfg.UseClientMetadataDocument,
 	}
 	if cfg.ClientID.IsSet() {
 		req.ClientID = cfg.ClientID
@@ -959,9 +988,16 @@ func pendingOAuthConfigToRequest(cfg *schemas.OAuth2Config) *OAuthConfigRequest 
 // MCPClientResponse represents the response structure for MCP clients
 type MCPClientResponse struct {
 	Config    *schemas.MCPClientConfig   `json:"config"`
-	Tools     []schemas.ChatToolFunction `json:"tools"`
+	Tools     []schemas.MCPClientTool    `json:"tools"`
 	State     schemas.MCPConnectionState `json:"state"`
 	VKConfigs []MCPVKConfigResponse      `json:"vk_configs"`
+
+	// Resources, ResourceTemplates and Prompts are what the server offers besides tools, as last
+	// discovered (prompt names prefixed like tools). Empty when it offers none.
+	Resources         []mcpgo.Resource         `json:"resources"`
+	ResourceTemplates []mcpgo.ResourceTemplate `json:"resource_templates"`
+	Prompts           []mcpgo.Prompt           `json:"prompts"`
+
 	// LastFailure is the instance serving this request's own record of what
 	// its connection handling last failed with: the step, the error, when it
 	// last happened and when the current run began (see
@@ -984,6 +1020,23 @@ type MCPClientResponse struct {
 	// auth type has no such credential (none, headers) or when none has been
 	// issued yet (a client still pending its one-time authorization).
 	Credential *MCPClientCredentialResponse `json:"credential,omitempty"`
+}
+
+// setResourcesAndPrompts copies client's lists, empty rather than null when the server offers none.
+func (r *MCPClientResponse) setResourcesAndPrompts(client *schemas.MCPClient) {
+	r.Resources, r.ResourceTemplates, r.Prompts = []mcpgo.Resource{}, []mcpgo.ResourceTemplate{}, []mcpgo.Prompt{}
+	if client == nil {
+		return
+	}
+	if client.Resources != nil {
+		r.Resources = client.Resources
+	}
+	if client.ResourceTemplates != nil {
+		r.ResourceTemplates = client.ResourceTemplates
+	}
+	if client.Prompts != nil {
+		r.Prompts = client.Prompts
+	}
 }
 
 // MCPClientCredentialResponse describes the credential a client holds on its
@@ -1708,12 +1761,15 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			OauthConfigID:          dbClient.OauthConfigID,
 			ToolsToExecute:         dbClient.ToolsToExecute,
 			ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+			PromptsToExpose:        dbClient.PromptsToExpose,
+			ResourcesToExpose:      dbClient.ResourcesToExpose,
 			Headers:                dbClient.Headers,
 			AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
 			RequirePublicTarget:    dbClient.RequirePublicTarget,
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			MaxProtocolVersion:     dbClient.MaxProtocolVersion,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:            dbClient.ToolPricing,
 			AllowByDefault:         dbClient.AllowByDefault,
@@ -1753,7 +1809,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		sharedToken := sharedTokenByClientID[dbClient.ClientID]
 		credential := mcpClientCredentialResponse(clientConfig.AuthType, adminToken, adminCred, sharedToken)
 		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
-			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
+			sortedTools := make([]schemas.MCPClientTool, len(connectedClient.Tools))
 			copy(sortedTools, connectedClient.Tools)
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
@@ -1773,6 +1829,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 				VKConfigs:   vkConfigs,
 				Credential:  credential,
 			}
+			resp.setResourcesAndPrompts(&connectedClient)
 			if aggregator, ok := h.mcpManager.(MCPClusterStateAggregator); ok {
 				local := schemas.MCPInstanceState{State: resolvedState, LastFailure: resp.LastFailure}
 				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, local); nodeStates != nil {
@@ -1782,13 +1839,15 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			}
 			clients = append(clients, resp)
 		} else {
-			clients = append(clients, MCPClientResponse{
+			resp := MCPClientResponse{
 				Config:     redactedConfig,
-				Tools:      []schemas.ChatToolFunction{},
+				Tools:      []schemas.MCPClientTool{},
 				State:      schemas.MCPConnectionStateError,
 				VKConfigs:  vkConfigs,
 				Credential: credential,
-			})
+			}
+			resp.setResourcesAndPrompts(nil)
+			clients = append(clients, resp)
 		}
 	}
 
@@ -1914,6 +1973,8 @@ type OAuthConfigRequest struct {
 	RegistrationURL string             `json:"registration_url"`
 	Scopes          []string           `json:"scopes"`
 	Resource        string             `json:"resource"`
+
+	UseClientMetadataDocument bool `json:"use_client_metadata_document,omitempty"` // Register with Bifrost's Client ID Metadata Document
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
@@ -1973,6 +2034,7 @@ type MCPClientUpdateRequest struct {
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
 	ToolSyncInterval       *int                            `json:"tool_sync_interval,omitempty"`
+	MaxProtocolVersion     *string                         `json:"max_protocol_version,omitempty"` // "" = use the global setting
 	ToolExecutionTimeout   *int                            `json:"tool_execution_timeout,omitempty"`
 	MaxInstructionsLength  *int                            `json:"max_instructions_length,omitempty"`
 	Headers                map[string]schemas.SecretVar    `json:"headers,omitempty"`
@@ -1980,6 +2042,8 @@ type MCPClientUpdateRequest struct {
 	ToolPricing            map[string]float64              `json:"tool_pricing,omitempty"`
 	ToolsToExecute         *schemas.WhiteList              `json:"tools_to_execute,omitempty"`
 	ToolsToAutoExecute     *schemas.WhiteList              `json:"tools_to_auto_execute,omitempty"`
+	PromptsToExpose        *schemas.WhiteList              `json:"prompts_to_expose,omitempty"`
+	ResourcesToExpose      *schemas.WhiteList              `json:"resources_to_expose,omitempty"`
 	PerUserHeaderKeys      *[]string                       `json:"per_user_header_keys,omitempty"`
 	TokenExchange          *schemas.MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
 	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
@@ -2254,6 +2318,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
+	if err := validateExposeLists(req.PromptsToExpose, req.ResourcesToExpose); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
@@ -2341,6 +2409,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must not be negative")
 		return
 	}
+	if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", req.MaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	if req.ToolSyncInterval < 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, errToolSyncIntervalNegative)
 		return
@@ -2417,6 +2489,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2427,6 +2500,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			PerUserHeaderKeys:      canonHeaderKeys,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
@@ -2438,13 +2513,15 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// persist so the DB row includes them from the start — same
 		// convention as the per-user OAuth branch below. Pass the canon
 		// form so the verify path sees the same keys the schema declares.
-		tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, schemasConfig, canonUserHeaders)
+		discovery, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, schemasConfig, canonUserHeaders)
 		if verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 			return
 		}
+		tools, toolNameMapping, serverInstructions := discovery.Tools, discovery.ToolNameMapping, discovery.Instructions
 		schemasConfig.DiscoveredTools = tools
 		schemasConfig.DiscoveredToolNameMapping = toolNameMapping
+		schemasConfig.DiscoveredResources, schemasConfig.DiscoveredResourceTemplates, schemasConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 		schemasConfig.DiscoveredInstructions = serverInstructions
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
@@ -2543,6 +2620,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2554,6 +2632,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			TokenExchange:          req.TokenExchange,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
@@ -2585,13 +2665,15 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		default:
 			adminResponse = response
-			tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
+			discovery, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
 			if verifyErr != nil {
 				SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 				return
 			}
+			tools, toolNameMapping, serverInstructions := discovery.Tools, discovery.ToolNameMapping, discovery.Instructions
 			schemasConfig.DiscoveredTools = tools
 			schemasConfig.DiscoveredToolNameMapping = toolNameMapping
+			schemasConfig.DiscoveredResources, schemasConfig.DiscoveredResourceTemplates, schemasConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
 			schemasConfig.DiscoveredInstructions = serverInstructions
 		}
 
@@ -2657,23 +2739,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
-
-		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        req.OauthConfig.ClientID,
-			ClientSecret:    req.OauthConfig.ClientSecret,
-			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
-			TokenURL:        req.OauthConfig.TokenURL,
-			RegistrationURL: req.OauthConfig.RegistrationURL,
-			RedirectURI:     redirectURI,
-			Scopes:          req.OauthConfig.Scopes,
-			ServerURL:       req.ConnectionString.GetValue(),
-			Resource:        req.OauthConfig.Resource,
-
-			RequirePublicTarget: req.RequirePublicTarget,
-		})
+		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget)
 		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+			SendError(ctx, oauthBootstrapErrorStatus(err), fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return
 		}
 
@@ -2694,6 +2762,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2705,6 +2774,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			OauthConfigID:          &flowInitiation.OauthConfigID,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
@@ -2764,7 +2835,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// obtained via RFC 7591 dynamic registration when absent.
 		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget)
 		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+			SendError(ctx, oauthBootstrapErrorStatus(err), fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return
 		}
 
@@ -2782,6 +2853,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        req.IsPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2793,6 +2865,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			OauthConfigID:          &flowInitiation.OauthConfigID,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			ToolPricing:            req.ToolPricing,
@@ -2846,6 +2920,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		TLSConfig:              req.TLSConfig,
 		ToolsToExecute:         req.ToolsToExecute,
 		ToolsToAutoExecute:     req.ToolsToAutoExecute,
+		PromptsToExpose:        req.PromptsToExpose,
+		ResourcesToExpose:      req.ResourcesToExpose,
 		Headers:                req.Headers,
 		AllowedExtraHeaders:    req.AllowedExtraHeaders,
 		AuthType:               schemas.MCPAuthType(req.AuthType),
@@ -2853,6 +2929,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		IsPingAvailable:        req.IsPingAvailable,
 		NeedsSessionStickiness: req.NeedsSessionStickiness,
 		ToolSyncInterval:       toolSyncInterval,
+		MaxProtocolVersion:     req.MaxProtocolVersion,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		ToolPricing:            req.ToolPricing,
@@ -3028,6 +3105,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 		tlsConfig = &tlsCopy
 	}
+	resolvedMaxProtocolVersion := existingConfig.MaxProtocolVersion
+	if req.MaxProtocolVersion != nil {
+		if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", *req.MaxProtocolVersion); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		resolvedMaxProtocolVersion = *req.MaxProtocolVersion
+	}
 	// ToolSyncInterval: keep the existing duration when not provided, otherwise
 	// take the request value (minutes, matching the create paths). Both the DB
 	// column and the rdb load path use seconds, so we convert at the DB-write
@@ -3083,6 +3168,17 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if err := validateToolsToAutoExecute(resolvedToolsToAutoExecute, resolvedToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
+		return
+	}
+	resolvedPromptsToExpose, resolvedResourcesToExpose := existingConfig.PromptsToExpose, existingConfig.ResourcesToExpose
+	if req.PromptsToExpose != nil {
+		resolvedPromptsToExpose = *req.PromptsToExpose
+	}
+	if req.ResourcesToExpose != nil {
+		resolvedResourcesToExpose = *req.ResourcesToExpose
+	}
+	if err := validateExposeLists(resolvedPromptsToExpose, resolvedResourcesToExpose); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	if err := mcp.ValidateMCPClientName(name); err != nil {
@@ -3341,6 +3437,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "client_secret must be resent explicitly when authorize_url or token_url changes")
 			return
 		}
+		resolvedOauthFields.KeepBinding(existingOauthConfig)
 		if !resolvedOauthFields.DiffersFrom(existingOauthConfig) {
 			// Every field resolved to what's already stored — either the
 			// caller left everything unset, or resent the same real values
@@ -3370,6 +3467,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		verifyConfig := *existingConfig
 		verifyConfig.Headers = headers
 		verifyConfig.TLSConfig = tlsConfig
+		verifyConfig.MaxProtocolVersion = resolvedMaxProtocolVersion
 		// Only Authorization goes in this map. VerifyHeadersConnection layers
 		// StaticConfigHeaders(verifyConfig) in itself, which already carries
 		// every other header on the config; Authorization is the one entry
@@ -3387,7 +3485,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
-		_, _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
+		_, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
 		cancel()
 		if verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new headers were rejected by the MCP server, so nothing was changed: %v", verifyErr))
@@ -3434,12 +3532,15 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		StdioConfig:            existingConfig.StdioConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		PromptsToExpose:        resolvedPromptsToExpose,
+		ResourcesToExpose:      resolvedResourcesToExpose,
 		Headers:                headers,
 		AllowedExtraHeaders:    allowedExtraHeaders,
 		IsPingAvailable:        isPingAvailable,
 		NeedsSessionStickiness: needsSessionStickiness,
 		ToolPricing:            toolPricing,
 		ToolSyncInterval:       int(resolvedToolSyncInterval / time.Second),
+		MaxProtocolVersion:     resolvedMaxProtocolVersion,
 		ToolExecutionTimeout:   int(resolvedToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		AuthType:               string(existingConfig.AuthType),
@@ -3498,6 +3599,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		TLSConfig:              tlsConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		PromptsToExpose:        resolvedPromptsToExpose,
+		ResourcesToExpose:      resolvedResourcesToExpose,
 		Headers:                headers,
 		AllowedExtraHeaders:    allowedExtraHeaders,
 		AuthType:               existingConfig.AuthType,
@@ -3505,6 +3608,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		IsPingAvailable:        isPingAvailable,
 		NeedsSessionStickiness: needsSessionStickiness,
 		ToolSyncInterval:       toolSyncInterval,
+		MaxProtocolVersion:     resolvedMaxProtocolVersion,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		ToolPricing:            toolPricing,
@@ -3909,6 +4013,17 @@ func getIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return idStr, nil
 }
 
+// validateExposeLists checks the prompts and resources allow-lists; nil (expose all) is valid.
+func validateExposeLists(prompts, resources schemas.WhiteList) error {
+	if err := prompts.Validate(); err != nil {
+		return fmt.Errorf("invalid prompts_to_expose: %v", err)
+	}
+	if err := resources.Validate(); err != nil {
+		return fmt.Errorf("invalid resources_to_expose: %v", err)
+	}
+	return nil
+}
+
 func validateToolsToExecute(toolsToExecute schemas.WhiteList) error {
 	if err := toolsToExecute.Validate(); err != nil {
 		return fmt.Errorf("invalid tools_to_execute: %w", err)
@@ -3982,6 +4097,17 @@ func mergeMCPHeaders(incoming, rawExisting, redactedExisting map[string]schemas.
 		merged[key] = incomingValue
 	}
 	return merged
+}
+
+// persistMCPDiscovery stores a verified discovery's resources, prompts and instructions; the full
+// config update leaves those columns alone.
+func (h *MCPHandler) persistMCPDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) {
+	if h.store.ConfigStore == nil || discovery == nil {
+		return
+	}
+	if err := h.store.ConfigStore.UpdateMCPClientDiscovery(ctx, clientID, discovery); err != nil {
+		logger.Warn(fmt.Sprintf("failed to persist discovered resources and prompts for MCP client %s: %v", clientID, err))
+	}
 }
 
 // updateMCPClientWithRetry calls mcpManager.UpdateMCPClient with a short retry loop
@@ -4075,7 +4201,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		return
 	}
 
-	tools, toolNameMapping, serverInstructions, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, accessToken)
+	discovery, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, accessToken)
 	if err != nil {
 		// The fresh credential is unusable; revoke it so it isn't left
 		// behind as a dangling shared row. The existing admin row and the
@@ -4086,6 +4212,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
 		return
 	}
+	tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
 
 	// Re-load the row before persisting: verification above holds an
 	// upstream network round-trip, and pushing the pre-verification snapshot
@@ -4113,6 +4240,8 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 
 	clientConfig.DiscoveredTools = tools
 	clientConfig.DiscoveredToolNameMapping = toolNameMapping
+	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+	clientConfig.DiscoveredInstructions = discovery.Instructions
 
 	// Persist the refreshed tool set via UpdateMCPClientConfig. The store
 	// unconditionally writes every editable column from the given struct, so
@@ -4130,12 +4259,15 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -4171,7 +4303,8 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 			clientConfig.ID, err,
 		))
 	}
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
+	h.persistMCPDiscovery(ctx, clientConfig.ID, discovery)
+	h.mcpManager.SetClientDiscovery(clientConfig.ID, discovery)
 
 	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
 		"auth_type":       clientConfig.AuthType,
@@ -4369,7 +4502,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
 
 		// Verify connection and discover tools using admin's temp token
-		tools, toolNameMapping, serverInstructions, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
+		discovery, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
 		if err != nil {
 			// Nothing worth retaining on a failed verification: revoke the
 			// admin's temp token immediately so it isn't left behind (it
@@ -4381,10 +4514,13 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
 			return
 		}
+		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
 
 		// Attach discovered tools before persisting so the DB row includes them from the start.
 		mcpClientConfig.DiscoveredTools = tools
 		mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
+		mcpClientConfig.DiscoveredResources, mcpClientConfig.DiscoveredResourceTemplates, mcpClientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+		mcpClientConfig.DiscoveredInstructions = discovery.Instructions
 
 		if isUpdateFlow {
 			oldDBConfig := *existingDBConfig
@@ -4400,12 +4536,15 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				OauthConfigID:             mcpClientConfig.OauthConfigID,
 				ToolsToExecute:            mcpClientConfig.ToolsToExecute,
 				ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
+				PromptsToExpose:           mcpClientConfig.PromptsToExpose,
+				ResourcesToExpose:         mcpClientConfig.ResourcesToExpose,
 				Headers:                   mcpClientConfig.Headers,
 				AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
 				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
 				NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+				MaxProtocolVersion:        mcpClientConfig.MaxProtocolVersion,
 				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 				MaxInstructionsLength:     mcpClientConfig.MaxInstructionsLength,
 				AllowByDefault:            mcpClientConfig.AllowByDefault,
@@ -4462,7 +4601,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Set discovered tools on the client
-		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping, serverInstructions)
+		h.persistMCPDiscovery(ctx, mcpClientConfig.ID, discovery)
+		h.mcpManager.SetClientDiscovery(mcpClientConfig.ID, discovery)
 
 		// Retain the admin's bootstrap-verification token instead of
 		// discarding it via RevokeToken: promote the row CompleteOAuthFlow
@@ -4532,12 +4672,15 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			OauthConfigID:             mcpClientConfig.OauthConfigID,
 			ToolsToExecute:            mcpClientConfig.ToolsToExecute,
 			ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
+			PromptsToExpose:           mcpClientConfig.PromptsToExpose,
+			ResourcesToExpose:         mcpClientConfig.ResourcesToExpose,
 			Headers:                   mcpClientConfig.Headers,
 			AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
 			IsPingAvailable:           mcpClientConfig.IsPingAvailable,
 			NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 			ToolPricing:               mcpClientConfig.ToolPricing,
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+			MaxProtocolVersion:        mcpClientConfig.MaxProtocolVersion,
 			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 			MaxInstructionsLength:     mcpClientConfig.MaxInstructionsLength,
 			TLSConfig:                 mcpClientConfig.TLSConfig,

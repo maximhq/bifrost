@@ -4200,6 +4200,7 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 		costCopy := *usage.Cost
 		usageCopy.Cost = &costCopy
 	}
+	usageCopy.Iterations = slices.Clone(usage.Iterations)
 	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 
@@ -5090,12 +5091,13 @@ const jsonSchemaFormatKey = "format"
 type ToolSchemaPolicy struct {
 	NormalizeNULEscape bool     // rewrite `\0` to `\x00` in patterns
 	StripLookaround    bool     // remove lookaround assertions from patterns
+	DropPattern        bool     // remove the pattern keyword outright
 	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
 }
 
 // IsZero reports whether the policy leaves every schema untouched.
 func (p ToolSchemaPolicy) IsZero() bool {
-	return !p.NormalizeNULEscape && !p.StripLookaround && p.StringFormats == nil
+	return !p.NormalizeNULEscape && !p.StripLookaround && !p.DropPattern && p.StringFormats == nil
 }
 
 // rewritePattern applies the policy's regex rewrites, returning pattern unchanged
@@ -5147,6 +5149,9 @@ func normalizeSchemaEntry(key string, value, typ any, p ToolSchemaPolicy, names 
 		switch key {
 		case jsonSchemaPatternKey:
 			if pattern, ok := value.(string); ok {
+				if p.DropPattern {
+					return value, false, true
+				}
 				if rewritten := p.rewritePattern(pattern); rewritten != pattern {
 					return rewritten, true, false
 				}
@@ -5285,7 +5290,9 @@ func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaP
 	}
 
 	if params.Pattern != nil {
-		if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
+		if p.DropPattern {
+			edit().Pattern = nil
+		} else if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
 			edit().Pattern = &rewritten
 		}
 	}
@@ -5588,7 +5595,8 @@ type DecisionImageURLBody struct {
 // reaches the model as JSON text, so a message object next to an image skews the answer
 // (gpt-6-luna on OpenRouter reads a red image as 0.03 red that way, and as 1.0 with plain
 // strings). Each message contributes its text and images in their original order; roles are
-// dropped, since the format has no place for them.
+// dropped, since the format has no place for them. A tool call or output has no place in it
+// either, so it is sent as its JSON text, which keeps the call an output answers.
 //
 // It returns the input without images, which the Typesafe converter validates as usual
 // (rejecting any other part type), and the state to send. state is nil when the input
@@ -5604,8 +5612,15 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 	for _, message := range input.Messages {
 		if message.Content.Parts == nil {
 			messages = append(messages, message)
-			if message.Content.Text != nil {
+			switch {
+			case message.Content.Text != nil:
 				items = append(items, *message.Content.Text)
+			case message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage:
+				item, err := schemas.Marshal(message)
+				if err != nil {
+					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input item could not be encoded as text: %v", err)
+				}
+				items = append(items, string(item))
 			}
 			continue
 		}
@@ -5621,9 +5636,17 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 					ImageURL: DecisionImageURLBody{URL: *part.ImageURL, Detail: part.Detail},
 				})
 				continue
-			case schemas.DecisionInputPartTypeText:
+			case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeOutputText:
 				if part.Text != nil {
 					items = append(items, *part.Text)
+				}
+			case schemas.DecisionInputPartTypeRefusal:
+				if part.Refusal != nil {
+					items = append(items, *part.Refusal)
+				}
+			case schemas.DecisionInputPartTypeJSON:
+				if part.Data.Structured != nil {
+					items = append(items, renderStructuredText(part.Data.Structured))
 				}
 			}
 			parts = append(parts, part)

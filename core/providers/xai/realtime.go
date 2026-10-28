@@ -22,7 +22,7 @@ var _ schemas.RealtimeUsageExtractor = (*XAIProvider)(nil)
 func (provider *XAIProvider) SupportsRealtimeAPI() bool { return true }
 
 // RealtimeWebSocketURL retains the configured origin and explicit model without inventing a transcription-only intent.
-func (provider *XAIProvider) RealtimeWebSocketURL(_ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
+func (provider *XAIProvider) RealtimeWebSocketURL(_ *schemas.BifrostContext, _ schemas.Key, model, intent string) (string, *schemas.BifrostError) {
 	if strings.TrimSpace(model) == "" || intent != "" {
 		return "", xaiRealtimeError(400, "xai realtime requires a model and does not support a transcription-only intent", nil)
 	}

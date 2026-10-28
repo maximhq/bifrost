@@ -1711,8 +1711,7 @@ type BedrockSonicAudioConfig struct {
 
 // BedrockSonicToolConfig lists the tools the model may call.
 type BedrockSonicToolConfig struct {
-	Tools      []BedrockSonicTool `json:"tools"`
-	ToolChoice *BedrockToolChoice `json:"toolChoice,omitempty"`
+	Tools []BedrockSonicTool `json:"tools"`
 }
 
 // BedrockSonicTool is one Nova Sonic tool definition.

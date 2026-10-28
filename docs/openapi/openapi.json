@@ -43383,7 +43383,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a key for a provider",
-        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
+        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,\nsagemaker_key_config.endpoints.runtime, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -43561,7 +43561,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a key for a provider",
-        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
+        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,\nsagemaker_key_config.endpoints.runtime, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -44190,6 +44190,118 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/newest": {
+      "get": {
+        "operationId": "listNewestModels",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "List newest models per provider",
+        "description": "Returns each requested provider's newest models, ordered by the creation\ntime the provider last reported in its model list. Times come from the\ncached model catalog; providers are not polled. Times are compared only\nwithin one provider. Models without a time come last, and deprecated\nmodels are left out. A virtual key on the request scopes the listing the\nsame way it scopes `GET /api/models`.\n",
+        "tags": [
+          "Providers"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "required": true,
+            "description": "Comma-separated providers, in the order they are returned",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Models per provider",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 3
+            }
+          },
+          {
+            "name": "keys",
+            "in": "query",
+            "description": "Comma-separated provider key IDs to filter models accessible by those keys",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "models"
+                  ],
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "provider",
+                          "created"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "created": {
+                            "type": "integer",
+                            "format": "int64",
+                            "description": "Provider-reported creation time in Unix seconds, or 0 when none"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -45531,6 +45643,17 @@
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
+                          },
                           "tool_execution_timeout": {
                             "type": "integer",
                             "minimum": 0,
@@ -45599,6 +45722,22 @@
                               "type": "string"
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                          },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
                           },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
@@ -45821,6 +45960,17 @@
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
+                          },
                           "tool_execution_timeout": {
                             "type": "integer",
                             "minimum": 0,
@@ -45889,6 +46039,22 @@
                               "type": "string"
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                          },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
                           },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
@@ -46111,6 +46277,17 @@
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
+                          },
                           "tool_execution_timeout": {
                             "type": "integer",
                             "minimum": 0,
@@ -46179,6 +46356,22 @@
                               "type": "string"
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                          },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
                           },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
@@ -46421,6 +46614,17 @@
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
+                          },
                           "tool_execution_timeout": {
                             "type": "integer",
                             "minimum": 0,
@@ -46489,6 +46693,22 @@
                               "type": "string"
                             },
                             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                          },
+                          "prompts_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+                          },
+                          "resources_to_expose": {
+                            "type": "array",
+                            "nullable": true,
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
                           },
                           "allow_on_all_virtual_keys": {
                             "type": "boolean",
@@ -46753,6 +46973,17 @@
                     "minimum": 0,
                     "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config.\n"
                   },
+                  "max_protocol_version": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "auto",
+                      "2026-07-28",
+                      "2025-11-25",
+                      "2025-06-18"
+                    ],
+                    "description": "Newest MCP protocol version Bifrost offers this server. \"\" follows the\nglobal mcp_max_protocol_version client config; \"auto\" uses the newest\nversion Bifrost supports. Omitted keeps the current value. A change\nreconnects the server at the new version.\n"
+                  },
                   "tool_execution_timeout": {
                     "type": "integer",
                     "minimum": 0,
@@ -46794,6 +47025,22 @@
                       "type": "string"
                     },
                     "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
+                  },
+                  "prompts_to_expose": {
+                    "type": "array",
+                    "nullable": true,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted or null keeps the current list; [\"*\"] => all prompts; [] => none.\n"
+                  },
+                  "resources_to_expose": {
+                    "type": "array",
+                    "nullable": true,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted or null keeps the current list; [\"*\"] => all; [] => none.\n"
                   },
                   "tool_pricing": {
                     "type": "object",
@@ -112646,6 +112893,7 @@
           "azure",
           "bedrock",
           "bedrock_mantle",
+          "sagemaker",
           "cerebras",
           "cohere",
           "deepseek",
@@ -126574,6 +126822,17 @@
                 "minimum": 0,
                 "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
+              "mcp_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -127103,6 +127362,17 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
+              },
+              "mcp_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -128995,6 +129265,279 @@
               }
             }
           },
+          "sagemaker_key_config": {
+            "type": "object",
+            "description": "AWS SageMaker real-time endpoint key configuration. A pre-minted token in Key.value takes precedence and is sent as is; otherwise Bifrost mints the SageMaker bearer token from these AWS credentials (leave access_key and secret_key empty to use the default AWS credential chain). Passthrough signs requests with AWS credentials and rejects keys that set Key.value.",
+            "properties": {
+              "access_key": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "secret_key": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_token": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "region": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "role_arn": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "external_id": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_name": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "endpoints": {
+                "type": "object",
+                "description": "Runtime host override (VPC endpoint, FIPS or dual-stack host)",
+                "properties": {
+                  "runtime": {
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                      },
+                      {
+                        "type": "object",
+                        "description": "Resolved form, as returned by GET responses",
+                        "properties": {
+                          "value": {
+                            "type": "string",
+                            "description": "Resolved value (redacted in GET responses for secret fields)"
+                          },
+                          "ref": {
+                            "type": "string",
+                            "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "plain_text",
+                              "env",
+                              "vault"
+                            ],
+                            "description": "Source type of the value"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "region"
+            ],
+            "additionalProperties": false
+          },
           "vllm_key_config": {
             "type": "object",
             "description": "VLLM-specific key configuration",
@@ -129743,7 +130286,8 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "Tool function definition",
+              "description": "A tool an MCP client lists, with what its MCP server declares about it",
+              "additionalProperties": false,
               "properties": {
                 "name": {
                   "type": "string"
@@ -129757,6 +130301,258 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Display name the server gives the tool."
+                },
+                "icons": {
+                  "type": "array",
+                  "description": "Icons the server gives the tool.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "src"
+                    ],
+                    "properties": {
+                      "src": {
+                        "type": "string"
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "sizes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "theme": {
+                        "type": "string",
+                        "enum": [
+                          "light",
+                          "dark"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "output_schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "JSON Schema of the structured result the tool returns, when the server declares one."
+                },
+                "annotations": {
+                  "type": "object",
+                  "description": "Behavior hints the server gives the tool.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "readOnlyHint": {
+                      "type": "boolean"
+                    },
+                    "destructiveHint": {
+                      "type": "boolean"
+                    },
+                    "idempotentHint": {
+                      "type": "boolean"
+                    },
+                    "openWorldHint": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "resources": {
+            "type": "array",
+            "description": "Resources the server lists, as last discovered; empty when it offers none.\nURIs are the server's own.\n",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "uri",
+                "name"
+              ],
+              "properties": {
+                "uri": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Size in bytes, when the server reports it"
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "audience": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "assistant"
+                        ]
+                      }
+                    },
+                    "priority": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "lastModified": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPIcon"
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "resource_templates": {
+            "type": "array",
+            "description": "Resource templates the server lists, as last discovered; empty when it offers none.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "uriTemplate",
+                "name"
+              ],
+              "properties": {
+                "uriTemplate": {
+                  "type": "string",
+                  "description": "RFC 6570 URI template"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "audience": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "assistant"
+                        ]
+                      }
+                    },
+                    "priority": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "lastModified": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPIcon"
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "prompts": {
+            "type": "array",
+            "description": "Prompts the server lists, as last discovered; empty when it offers none.\nNames are prefixed with the client name, like tools.\n",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPIcon"
+                  }
+                },
+                "_meta": {
+                  "type": "object",
+                  "additionalProperties": true
                 }
               }
             }
@@ -129921,6 +130717,22 @@
             },
             "description": "List of tools that can be auto-executed without user approval.\nMust be a subset of tools_to_execute.\n[\"*\"] => all executable tools can be auto-executed\n[] => no tools are auto-executed\n[\"tool1\", \"tool2\"] => only specified tools can be auto-executed\n"
           },
+          "prompts_to_expose": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all prompts; [] => none.\n"
+          },
+          "resources_to_expose": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Resource URIs and URI templates served through Bifrost's MCP gateway.\nOmitted, null or [\"*\"] => all; [] => none.\n"
+          },
           "tool_pricing": {
             "type": "object",
             "additionalProperties": {
@@ -130012,6 +130824,17 @@
             "readOnly": true,
             "default": false,
             "description": "Server-set. True when the client was registered over the management API\nwith no admin credential check (dashboard auth unconfigured). Every\nconnection to the MCP server (initial, reconnect, per-call) must then\nresolve to a public address. Ignored in create/update request bodies\nand never cleared once set.\n"
+          },
+          "max_protocol_version": {
+            "type": "string",
+            "enum": [
+              "",
+              "auto",
+              "2026-07-28",
+              "2025-11-25",
+              "2025-06-18"
+            ],
+            "description": "Newest MCP protocol version Bifrost offers this server. \"\" follows the\nglobal mcp_max_protocol_version client config; \"auto\" uses the newest\nversion Bifrost supports.\n"
           }
         }
       },
@@ -130319,6 +131142,36 @@
             "type": "string",
             "format": "date-time",
             "description": "The first failed attempt of the current unhealthy run."
+          }
+        }
+      },
+      "MCPIcon": {
+        "type": "object",
+        "description": "An icon the server offers for a resource, template or prompt.",
+        "required": [
+          "src"
+        ],
+        "properties": {
+          "src": {
+            "type": "string",
+            "description": "HTTP(S) or data URI"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "sizes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sizes such as \"48x48\", or \"any\""
+          },
+          "theme": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark"
+            ]
           }
         }
       },

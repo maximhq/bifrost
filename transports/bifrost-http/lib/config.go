@@ -1766,6 +1766,10 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		sanitizeMCPExternalOAuthURLs(configData.Client)
 		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
+		// Declared under mcp, not client: the client section replacing the row must not lift it.
+		if config.ClientConfig.MCPMaxProtocolVersion == "" {
+			config.ClientConfig.MCPMaxProtocolVersion = clientConfig.MCPMaxProtocolVersion
+		}
 		applyClientConfigDefaults(config.ClientConfig)
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 		if err = persistReconciledClientConfig(ctx, config); err != nil {
@@ -2082,6 +2086,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
 					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					SageMakerKeyConfig:     dbKey.SageMakerKeyConfig,
 					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
 					Aliases:                dbKey.Aliases,
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
@@ -2174,6 +2179,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
 					BedrockMantleKeyConfig: dbKey.BedrockMantleKeyConfig,
+					SageMakerKeyConfig:     dbKey.SageMakerKeyConfig,
 					ReplicateKeyConfig:     dbKey.ReplicateKeyConfig,
 					Aliases:                dbKey.Aliases,
 					VLLMKeyConfig:          dbKey.VLLMKeyConfig,
@@ -2473,6 +2479,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
 		fileClient.DiscoveredInstructions = existing.DiscoveredInstructions
 	}
+	if fileClient.DiscoveredResources == nil && fileClient.DiscoveredResourceTemplates == nil && fileClient.DiscoveredPrompts == nil {
+		fileClient.DiscoveredResources = existing.DiscoveredResources
+		fileClient.DiscoveredResourceTemplates = existing.DiscoveredResourceTemplates
+		fileClient.DiscoveredPrompts = existing.DiscoveredPrompts
+	}
 
 	// Not immutable, and an explicit file declaration (true or false) is
 	// honored same as the update API — but an undeclared (nil) file value
@@ -2481,6 +2492,19 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	// because a reconciliation pass fired for some unrelated field.
 	if fileClient.NeedsSessionStickiness == nil {
 		fileClient.NeedsSessionStickiness = existing.NeedsSessionStickiness
+	}
+
+	// A cap set in the UI or API stays until it is cleared there; an omitted file value does not clear it.
+	if fileClient.MaxProtocolVersion == "" {
+		fileClient.MaxProtocolVersion = existing.MaxProtocolVersion
+	}
+	// An omitted allow-list exposes everything, so it keeps the stored one rather than widening it;
+	// the file opens it up with ["*"].
+	if fileClient.PromptsToExpose == nil {
+		fileClient.PromptsToExpose = existing.PromptsToExpose
+	}
+	if fileClient.ResourcesToExpose == nil {
+		fileClient.ResourcesToExpose = existing.ResourcesToExpose
 	}
 
 	// A stored require_public_target records that the client was registered
@@ -2580,6 +2604,7 @@ func rotateMCPOauthConfigFromFile(ctx context.Context, store configstore.ConfigS
 	if fileBlock.Scopes != nil {
 		fields.Scopes = fileBlock.Scopes
 	}
+	fields.KeepBinding(authorizedOauth)
 	rotated, err := store.RotateMCPOAuthConfig(ctx, authorizedOauth, fields)
 	if err != nil {
 		logger.Warn("failed to rotate OAuth config for MCP client %q from config file: %v", clientName, err)
@@ -2746,9 +2771,15 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.DiscoveredTools = clientConfig.DiscoveredTools
 	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
 	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
+	row.DiscoveredResources = clientConfig.DiscoveredResources
+	row.DiscoveredResourceTemplates = clientConfig.DiscoveredResourceTemplates
+	row.DiscoveredPrompts = clientConfig.DiscoveredPrompts
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
 	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
 	row.RequirePublicTarget = clientConfig.RequirePublicTarget
+	row.MaxProtocolVersion = clientConfig.MaxProtocolVersion
+	row.PromptsToExpose = clientConfig.PromptsToExpose
+	row.ResourcesToExpose = clientConfig.ResourcesToExpose
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -2872,6 +2903,15 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 	mcpCfg.ToolManagerConfig.CodeModeLimits = config.ClientConfig.MCPCodeModeLimits
 	mcpCfg.ToolManagerConfig.OAuthPrivateAllowlist = config.ClientConfig.MCPOAuthPrivateAllowlist
 
+	persist := func() {
+		if config.ConfigStore != nil {
+			if err := config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+				logger.Warn("failed to update client config with MCP global settings: %v", err)
+			}
+		}
+	}
+	protocolVersionChanged := applyMCPMaxProtocolVersion(config.ClientConfig, mcpCfg)
+
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and
 	// is reconciled here. The stored setting is kept in whole minutes.
@@ -2903,9 +2943,12 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		if config.ClientConfig.MCPToolSyncInterval > 0 {
 			mcpCfg.ToolSyncInterval = time.Duration(config.ClientConfig.MCPToolSyncInterval) * time.Minute
 		}
+		if protocolVersionChanged {
+			persist()
+		}
 		return
 	}
-	changed := false
+	changed := protocolVersionChanged
 	switch {
 	case mcpCfg.ToolSyncInterval == 0:
 		if fileIsSourceOfTruth {
@@ -2930,11 +2973,27 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 		}
 	}
 
-	if changed && config.ConfigStore != nil {
-		if err := config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-			logger.Warn("failed to update client config with MCP global settings: %v", err)
+	if changed {
+		persist()
+	}
+}
+
+// applyMCPMaxProtocolVersion reconciles mcp.max_protocol_version into the stored client config and
+// hands the result to core. An absent value keeps the stored one even when the file is the source
+// of truth, so an upgrade never lifts the cap the migration set. Reports whether the stored value
+// changed.
+func applyMCPMaxProtocolVersion(cc *configstore.ClientConfig, mcpCfg *schemas.MCPConfig) bool {
+	changed := false
+	if v := mcpCfg.MaxProtocolVersion; v != "" {
+		if err := schemas.ValidateMCPMaxProtocolVersion("mcp.max_protocol_version", v); err != nil {
+			logger.Warn("ignoring %v", err)
+		} else if v != cc.MCPMaxProtocolVersion {
+			cc.MCPMaxProtocolVersion = v
+			changed = true
 		}
 	}
+	mcpCfg.MaxProtocolVersion = cc.MCPMaxProtocolVersion
+	return changed
 }
 
 func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreTables.TableMCPClient, error) {
@@ -2952,6 +3011,15 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 			"tool_sync_interval must be a whole number of seconds, got %q",
 			clientConfig.ToolSyncInterval.String(),
 		)
+	}
+	if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", clientConfig.MaxProtocolVersion); err != nil {
+		return configstoreTables.TableMCPClient{}, err
+	}
+	if err := clientConfig.PromptsToExpose.Validate(); clientConfig.PromptsToExpose != nil && err != nil {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf("invalid prompts_to_expose: %w", err)
+	}
+	if err := clientConfig.ResourcesToExpose.Validate(); clientConfig.ResourcesToExpose != nil && err != nil {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf("invalid resources_to_expose: %w", err)
 	}
 	if clientConfig.ToolExecutionTimeout < 0 {
 		return configstoreTables.TableMCPClient{}, fmt.Errorf(
@@ -2975,12 +3043,15 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		RequirePublicTarget:       clientConfig.RequirePublicTarget,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -2993,6 +3064,10 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
 		OpenAPIConfig:             clientConfig.OpenAPIConfig,
 		ConfigHash:                clientConfig.ConfigHash,
+
+		DiscoveredResources:         clientConfig.DiscoveredResources,
+		DiscoveredResourceTemplates: clientConfig.DiscoveredResourceTemplates,
+		DiscoveredPrompts:           clientConfig.DiscoveredPrompts,
 	}, nil
 }
 
@@ -9046,6 +9121,19 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
 				configStoreKey.BedrockMantleKeyConfig = &cfg
 			}
+			if key.SageMakerKeyConfig != nil {
+				cfg := *key.SageMakerKeyConfig // safe copy
+				cfg.AccessKey = *cfg.AccessKey.Redacted()
+				cfg.SecretKey = *cfg.SecretKey.Redacted()
+				cfg.SessionToken = cfg.SessionToken.Redacted()
+				// The region is a public identifier, not a credential — surface it in plaintext.
+				cfg.Region = cfg.Region.RedactedIfSecret()
+				cfg.RoleARN = cfg.RoleARN.Redacted()
+				cfg.ExternalID = cfg.ExternalID.Redacted()
+				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
+				cfg.Endpoints = cfg.Endpoints.Redacted()
+				configStoreKey.SageMakerKeyConfig = &cfg
+			}
 			if key.VertexKeyConfig != nil {
 				cfg := *key.VertexKeyConfig // safe copy
 				cfg.ProjectID = *cfg.ProjectID.Redacted()
@@ -9264,11 +9352,14 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = updatedConfig.ToolsToExecute
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
+	c.MCPConfig.ClientConfigs[configIndex].PromptsToExpose = updatedConfig.PromptsToExpose
+	c.MCPConfig.ClientConfigs[configIndex].ResourcesToExpose = updatedConfig.ResourcesToExpose
 	c.MCPConfig.ClientConfigs[configIndex].AllowedExtraHeaders = updatedConfig.AllowedExtraHeaders
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].NeedsSessionStickiness = updatedConfig.NeedsSessionStickiness
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
+	c.MCPConfig.ClientConfigs[configIndex].MaxProtocolVersion = updatedConfig.MaxProtocolVersion
 	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
 	c.MCPConfig.ClientConfigs[configIndex].MaxInstructionsLength = updatedConfig.MaxInstructionsLength
 	c.MCPConfig.ClientConfigs[configIndex].TLSConfig = updatedConfig.TLSConfig

@@ -1276,7 +1276,8 @@
                   "GET /api/models",
                   "GET /api/models/details",
                   "GET /api/models/parameters",
-                  "GET /api/models/base"
+                  "GET /api/models/base",
+                  "GET /api/models/newest"
                 ]
               },
               {

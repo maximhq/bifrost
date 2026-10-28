@@ -2,10 +2,13 @@ package azure
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -53,10 +56,10 @@ func TestRealtimeWebSocketURL(t *testing.T) {
 		Endpoint: *schemas.NewSecretVar("https://example.openai.azure.com/"),
 	}}
 
-	if got, err := provider.RealtimeWebSocketURL(key, "deployment name", ""); err != nil || got != "wss://example.openai.azure.com/openai/v1/realtime?model=deployment+name" {
+	if got, err := provider.RealtimeWebSocketURL(nil, key, "deployment name", ""); err != nil || got != "wss://example.openai.azure.com/openai/v1/realtime?model=deployment+name" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
-	if got, err := provider.RealtimeWebSocketURL(key, "deployment name", "transcription"); err != nil || got != "wss://example.openai.azure.com/openai/v1/realtime?intent=transcription" {
+	if got, err := provider.RealtimeWebSocketURL(nil, key, "deployment name", "transcription"); err != nil || got != "wss://example.openai.azure.com/openai/v1/realtime?intent=transcription" {
 		t.Fatalf("RealtimeWebSocketURL() = %q, %v", got, err)
 	}
 }
@@ -74,7 +77,7 @@ func TestRealtimeRejectsKeyWithoutAzureConfig(t *testing.T) {
 	}
 	for name, key := range keys {
 		t.Run(name, func(t *testing.T) {
-			got, bifrostErr := provider.RealtimeWebSocketURL(key, "gpt-realtime", "")
+			got, bifrostErr := provider.RealtimeWebSocketURL(nil, key, "gpt-realtime", "")
 			if bifrostErr == nil || got != "" {
 				t.Fatalf("RealtimeWebSocketURL() = %q, %v, want an error and no URL", got, bifrostErr)
 			}
@@ -208,6 +211,186 @@ func TestRealtimeUpstreamErrorsCarryRetryHint(t *testing.T) {
 		}
 		if bifrostErr.ExtraFields.RetryAfter != 2500 {
 			t.Errorf("%s: RetryAfter = %d, want 2500", name, bifrostErr.ExtraFields.RetryAfter)
+		}
+	}
+}
+
+// azureVoiceLiveSessionUpdated is a session.updated event captured from Azure Voice Live
+// (api-version 2026-04-10, gpt-realtime) after a session.update with an Azure HD voice.
+const azureVoiceLiveSessionUpdated = `{"event_id":"event_46nM7FiJWfznxdvRfm9n0c","type":"session.updated","session":{"id":"sess_EcRcjUDsfvDkHAAj3UTNU","model":"gpt-realtime","modalities":["audio","text"],"instructions":"Answer in one short sentence.","voice":{"name":"en-US-Ava:DragonHDLatestNeural","type":"azure-standard","temperature":0.8,"custom_lexicon_url":null,"custom_text_normalization_url":null,"prefer_locales":null,"locale":null,"style":null,"pitch":null,"rate":null,"volume":null},"input_audio_format":"pcm16","output_audio_format":"pcm16","input_audio_transcription":null,"input_audio_noise_reduction":{"type":"azure_deep_noise_suppression"},"turn_detection":{"type":"azure_semantic_vad","threshold":0.5,"prefix_padding_ms":420,"silence_duration_ms":500,"create_response":true,"interrupt_response":true,"idle_timeout_ms":null,"profile":"classic","neg_threshold":null,"speech_duration_ms":null,"window_size":null,"distinct_ci_phones":null,"require_vowel":null,"require_vowel_assistant_speaking":null,"remove_filler_words":false,"languages":null,"auto_truncate":false,"appended_text_after_truncation":null},"tools":[],"tool_choice":"auto","max_response_output_tokens":"inf","expires_at":1792834957,"object":"realtime.session","input_audio_sampling_rate":24000,"animation":{"model_name":"default","outputs":["viseme_id"],"emotion_detection_interval_ms":null},"input_audio_echo_cancellation":null,"avatar":null,"output_audio_timestamp_types":["word"],"truncation_strategy":null,"include":null,"greeting":null,"handoff":null}}`
+
+// TestAzureVoiceLiveSessionUpdatedKeepsSession pins that a Voice Live session, whose voice is
+// always an object, still yields the session ID and voice the gateway logs.
+func TestAzureVoiceLiveSessionUpdatedKeepsSession(t *testing.T) {
+	t.Parallel()
+	event, err := (&AzureProvider{}).ToBifrostRealtimeEvent([]byte(azureVoiceLiveSessionUpdated))
+	if err != nil {
+		t.Fatalf("ToBifrostRealtimeEvent: %v", err)
+	}
+	if event.Session == nil || event.Session.ID != "sess_EcRcjUDsfvDkHAAj3UTNU" {
+		t.Fatalf("session = %+v, want the Voice Live session ID", event.Session)
+	}
+	voice := event.Session.Voice
+	if voice.GetName() != "en-US-Ava:DragonHDLatestNeural" || voice.VoiceObject == nil || voice.VoiceObject.Type != "azure-standard" {
+		t.Fatalf("voice = %+v", voice)
+	}
+	for _, field := range []string{"input_audio_noise_reduction", "animation", "output_audio_timestamp_types"} {
+		if _, ok := event.Session.ExtraParams[field]; !ok {
+			t.Errorf("session extra params lack %q", field)
+		}
+	}
+}
+
+func newVoiceLiveAliasContext(alias *schemas.AliasConfig) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "gpt-realtime-vl", Config: alias})
+	return ctx
+}
+
+// TestAzureVoiceLiveWebSocketURL pins the upstream URL: use_voice_live_endpoints on the key or the
+// alias sends the session to /voice-live/realtime, the alias wins in both directions, the alias
+// api_version replaces the default, and the alias endpoint picks the Voice Live resource.
+func TestAzureVoiceLiveWebSocketURL(t *testing.T) {
+	t.Parallel()
+	provider := &AzureProvider{}
+	keyOn := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://example.openai.azure.com/"), UseVoiceLiveEndpoints: true}}
+	keyOff := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://example.openai.azure.com/")}}
+	const voiceLive = "wss://example.openai.azure.com/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime"
+	const openAI = "wss://example.openai.azure.com/openai/v1/realtime?model=gpt-realtime"
+	cases := []struct {
+		name string
+		ctx  *schemas.BifrostContext
+		key  schemas.Key
+		want string
+	}{
+		{"key on", nil, keyOn, voiceLive},
+		{"key off", nil, keyOff, openAI},
+		{"alias on over key off", newVoiceLiveAliasContext(&schemas.AliasConfig{ModelID: "gpt-realtime", AzureAliasCfg: &schemas.AzureAliasCfg{UseVoiceLiveEndpoints: new(true)}}), keyOff, voiceLive},
+		{"alias off over key on", newVoiceLiveAliasContext(&schemas.AliasConfig{ModelID: "gpt-realtime", AzureAliasCfg: &schemas.AzureAliasCfg{UseVoiceLiveEndpoints: new(false)}}), keyOn, openAI},
+		{"alias api_version", newVoiceLiveAliasContext(&schemas.AliasConfig{ModelID: "gpt-realtime", AzureAliasCfg: &schemas.AzureAliasCfg{UseVoiceLiveEndpoints: new(true), APIVersion: new("2025-10-01")}}), keyOff,
+			"wss://example.openai.azure.com/voice-live/realtime?api-version=2025-10-01&model=gpt-realtime"},
+		{"alias endpoint", newVoiceLiveAliasContext(&schemas.AliasConfig{ModelID: "gpt-realtime", AzureAliasCfg: &schemas.AzureAliasCfg{UseVoiceLiveEndpoints: new(true), Endpoint: schemas.NewSecretVar("https://voice.services.ai.azure.com/")}}), keyOff,
+			"wss://voice.services.ai.azure.com/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime"},
+		{"alias endpoint without voice live", newVoiceLiveAliasContext(&schemas.AliasConfig{ModelID: "gpt-realtime", AzureAliasCfg: &schemas.AzureAliasCfg{Endpoint: schemas.NewSecretVar("https://voice.services.ai.azure.com/")}}), keyOff, openAI},
+	}
+	for _, tc := range cases {
+		if got, err := provider.RealtimeWebSocketURL(tc.ctx, tc.key, "gpt-realtime", ""); err != nil || got != tc.want {
+			t.Errorf("%s: RealtimeWebSocketURL() = %q, %v, want %q", tc.name, got, err, tc.want)
+		}
+	}
+	if got, err := provider.RealtimeWebSocketURL(nil, keyOn, "gpt-realtime", "transcription"); err == nil || got != "" || err.StatusCode == nil || *err.StatusCode != fasthttp.StatusBadRequest {
+		t.Errorf("intent on Voice Live: RealtimeWebSocketURL() = %q, %v, want a 400", got, err)
+	}
+}
+
+// TestAzureVoiceLiveRejectsWebRTCAndClientSecrets pins the 400 on the routes Voice Live does not
+// serve the OpenAI way, before any upstream call.
+func TestAzureVoiceLiveRejectsWebRTCAndClientSecrets(t *testing.T) {
+	t.Parallel()
+	provider := &AzureProvider{}
+	key := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://example.openai.azure.com")}}
+	ctx := newVoiceLiveAliasContext(&schemas.AliasConfig{ModelID: "gpt-realtime", AzureAliasCfg: &schemas.AzureAliasCfg{UseVoiceLiveEndpoints: new(true)}})
+	const want = "azure voice live is served over the realtime websocket only"
+
+	answer, sdpErr := provider.ExchangeRealtimeWebRTCSDP(ctx, key, "gpt-realtime", "v=0", nil)
+	if answer != "" || sdpErr == nil || sdpErr.StatusCode == nil || *sdpErr.StatusCode != fasthttp.StatusBadRequest || sdpErr.Error.Message != want {
+		t.Fatalf("ExchangeRealtimeWebRTCSDP() = %q, %+v, want a 400", answer, sdpErr)
+	}
+	resp, secretErr := provider.CreateRealtimeClientSecret(ctx, key, []byte(`{"session":{"type":"realtime","model":"gpt-realtime"}}`))
+	if resp != nil || secretErr == nil || secretErr.StatusCode == nil || *secretErr.StatusCode != fasthttp.StatusBadRequest || secretErr.Error.Message != want {
+		t.Fatalf("CreateRealtimeClientSecret() = %+v, %+v, want a 400", resp, secretErr)
+	}
+}
+
+// TestAzureVoiceLiveEventsRoundTrip pins that Voice Live-only events parse without tearing the
+// session down and that a client session.update keeps its Azure voice and session fields on the way
+// upstream.
+func TestAzureVoiceLiveEventsRoundTrip(t *testing.T) {
+	t.Parallel()
+	provider := &AzureProvider{}
+	// Captured from Azure Voice Live with output_audio_timestamp_types ["word"] and viseme output.
+	for _, raw := range []string{
+		`{"event_id":"event_4olHXDdnb1qWpza6oVxN9G","type":"response.animation_viseme.delta","response_id":"resp_EcRcjmACOQveeLpYElB3A","item_id":"item_EcRcjuWbUv9D3806OKCUq","output_index":0,"content_index":0,"audio_offset_ms":0,"viseme_id":2}`,
+		`{"event_id":"event_589Q87mBJD5lsN7twr1lkg","type":"response.audio_timestamp.delta","response_id":"resp_EcRcjmACOQveeLpYElB3A","item_id":"item_EcRcjuWbUv9D3806OKCUq","output_index":0,"content_index":0,"audio_offset_ms":70,"audio_duration_ms":320,"text":"Hello","timestamp_type":"word"}`,
+	} {
+		event, err := provider.ToBifrostRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ToBifrostRealtimeEvent(%s): %v", raw, err)
+		}
+		if string(event.RawData) != raw || !provider.ShouldForwardRealtimeEvent(event) {
+			t.Errorf("event %s is not forwarded unchanged", event.Type)
+		}
+	}
+
+	clientEvents := map[string][]string{
+		`{"type":"session.update","session":{"voice":{"name":"en-US-Ava:DragonHDLatestNeural","type":"azure-standard","temperature":0.8},"input_audio_noise_reduction":{"type":"azure_deep_noise_suppression"},"turn_detection":{"type":"azure_semantic_vad"}}}`: {
+			`"voice":{"name":"en-US-Ava:DragonHDLatestNeural","temperature":0.8,"type":"azure-standard"}`,
+			`"input_audio_noise_reduction":{"type":"azure_deep_noise_suppression"}`,
+			`"turn_detection":{"type":"azure_semantic_vad"}`,
+		},
+		`{"type":"session.avatar.connect","client_sdp":"v=0"}`: {`"client_sdp":"v=0"`},
+	}
+	for raw, wants := range clientEvents {
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ParseRealtimeEvent(%s): %v", raw, err)
+		}
+		out, err := provider.ToProviderRealtimeEvent(event)
+		if err != nil {
+			t.Fatalf("ToProviderRealtimeEvent(%s): %v", raw, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(out), want) {
+				t.Errorf("upstream event %s lacks %s", out, want)
+			}
+		}
+	}
+}
+
+// TestAzureVoiceLiveAvatarPassThrough pins the avatar flow verified live through the gateway: the
+// avatar config goes upstream intact, and the avatar server events, WebSocket video chunks included,
+// come back unchanged without entering the turn's output text.
+func TestAzureVoiceLiveAvatarPassThrough(t *testing.T) {
+	t.Parallel()
+	provider := &AzureProvider{}
+	avatar := `{"type":"photo-avatar","model":"vasa-1","character":"anika","customized":false,"output_protocol":"websocket","scene":{"zoom":1,"position_x":0,"amplitude":0.6},"video":{"codec":"h264","bitrate":2000000,"resolution":{"width":1280,"height":720},"background":{"color":"#00FF00FF"}},"ice_servers":[{"urls":["turn:relay.example.com:3478"],"username":"u","credential":"c"}]}`
+	update, err := schemas.ParseRealtimeEvent([]byte(`{"type":"session.update","session":{"modalities":["text","audio"],"voice":{"name":"en-US-AvaMultilingualNeural","type":"azure-standard"},"avatar":` + avatar + `}}`))
+	if err != nil {
+		t.Fatalf("ParseRealtimeEvent: %v", err)
+	}
+	out, err := provider.ToProviderRealtimeEvent(update)
+	if err != nil {
+		t.Fatalf("ToProviderRealtimeEvent: %v", err)
+	}
+	var upstream struct {
+		Session struct {
+			Avatar any `json:"avatar"`
+		} `json:"session"`
+	}
+	var want any
+	if err := json.Unmarshal(out, &upstream); err != nil || json.Unmarshal([]byte(avatar), &want) != nil {
+		t.Fatalf("unmarshal upstream %s: %v", out, err)
+	}
+	if !reflect.DeepEqual(upstream.Session.Avatar, want) {
+		t.Errorf("upstream avatar = %v, want %v", upstream.Session.Avatar, want)
+	}
+
+	// Captured through the gateway; the SDP answer and the fMP4 chunk are shortened.
+	for _, raw := range []string{
+		`{"event_id":"event_5iGogkA5XVNmhOo6A208Pc","type":"session.avatar.connecting","server_sdp":"eyJ0eXBlIjogImFuc3dlciJ9"}`,
+		`{"event_id":"event_3yejyN75W2alI2jsIbie2J","type":"session.avatar.switch_to_speaking","turn_id":"item_EcloMkjHMaghNX9NNoMnB"}`,
+		`{"event_id":"event_4GoEcMSVnijN9bPnUtDsg9","type":"session.avatar.switch_to_idle","turn_id":""}`,
+		`{"event_id":"event_6Z05skHFAxvvdmEhdfHwRy","type":"response.video.delta","output_index":0,"codec":"h264","delta":"AAAAHGZ0eXBpc281AAACAGlz"}`,
+	} {
+		event, err := provider.ToBifrostRealtimeEvent([]byte(raw))
+		if err != nil {
+			t.Fatalf("ToBifrostRealtimeEvent(%s): %v", raw, err)
+		}
+		if string(event.RawData) != raw || !provider.ShouldForwardRealtimeEvent(event) {
+			t.Errorf("event %s is not forwarded unchanged", event.Type)
+		}
+		if event.Delta != nil || provider.ShouldAccumulateRealtimeOutput(event.Type) {
+			t.Errorf("event %s feeds the turn output text", event.Type)
 		}
 	}
 }

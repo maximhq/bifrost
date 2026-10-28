@@ -655,6 +655,9 @@
         "bedrock_mantle": {
           "$ref": "#/$defs/provider_with_bedrock_mantle_config"
         },
+        "sagemaker": {
+          "$ref": "#/$defs/provider_with_sagemaker_config"
+        },
         "cohere": {
           "$ref": "#/$defs/provider"
         },
@@ -2337,6 +2340,10 @@
         "tool_manager_config": {
           "$ref": "#/$defs/mcp_tool_manager_config"
         },
+        "max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Newest MCP protocol version Bifrost offers to upstream MCP servers. 'auto' uses the newest version Bifrost supports. MCP servers can override it with their own max_protocol_version. Omitted keeps the stored value: deployments upgraded with existing MCP servers start at '2025-06-18', the version they used before."
+        },
         "tool_sync_interval": {
           "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
           "oneOf": [
@@ -3529,13 +3536,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS/Azure Blob while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "azure"
               ],
               "description": "Object storage backend type"
             },
@@ -3569,13 +3577,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+              "description": "Bucket name, or Azure Blob container name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -3593,7 +3598,7 @@
                 "json",
                 "parquet"
               ],
-              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 only. Default: json",
+              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 and azure. Default: json",
               "default": "json"
             },
             "compression": {
@@ -3656,7 +3661,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -3904,9 +3909,12 @@
             "additionalProperties": false
           },
           "else": {
+            "if": { "properties": { "type": { "const": "azure" } } },
+            "then": { "$ref": "#/$defs/azure_object_storage" },
+            "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -4029,6 +4037,7 @@
               "compression": true
             },
             "additionalProperties": false
+            }
           }
         },
         "object_storage_exclude_request_types": {
@@ -5410,6 +5419,69 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "azure_storage_secret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference.",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "azure_object_storage": {
+      "type": "object",
+      "description": "Azure Blob Storage. Supply a connection string, or a Blob service endpoint to use DefaultAzureCredential (including workload identity). Authentication is independent of inference-provider credentials.",
+      "properties": {
+        "type": { "const": "azure" },
+        "bucket": { "$ref": "#/$defs/azure_storage_secret" },
+        "prefix": true,
+        "compress": true,
+        "format": true,
+        "compression": true,
+        "endpoint": {
+          "$ref": "#/$defs/azure_storage_secret",
+          "description": "Azure Blob service URL for DefaultAzureCredential authentication. Mutually exclusive with connection_string. Supports env var and structured secret references."
+        },
+        "connection_string": {
+          "$ref": "#/$defs/azure_storage_secret",
+          "description": "Azure Storage connection string. Mutually exclusive with endpoint. Supports env var and structured secret references."
+        }
+      },
+      "required": ["type", "bucket"],
+      "oneOf": [
+        { "required": ["endpoint"], "not": { "required": ["connection_string"] } },
+        { "required": ["connection_string"], "not": { "required": ["endpoint"] } }
+      ],
+      "additionalProperties": false
+    },
+    "mcp_max_protocol_version": {
+      "type": "string",
+      "enum": ["auto", "2026-07-28", "2025-11-25", "2025-06-18"],
+      "description": "An MCP protocol version cap: 'auto' (newest supported) or a revision."
+    },
     "warp_config": {
       "type": "object",
       "description": "Warp settings (the dashboard's Settings > Warp page): the models Warp runs on, its behaviour and limits, log search, and topics. Takes the same body as PUT /api/warp/config and goes through the same validation and vector namespace provisioning. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additional_models is replaced whole. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage Warp from the dashboard. The warp feature flag (feature_flags.flags.warp) is separate.",
@@ -7271,6 +7343,14 @@
                     "type": "string",
                     "description": "Per-alias Azure endpoint override (can use env. prefix)."
                   },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_speech_endpoints: send this alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_voice_live_endpoints: send this alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI."
+                  },
                   "project_id": {
                     "type": "string",
                     "description": "Per-alias project override shared across providers: Vertex uses it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project via the OpenAI-Project / anthropic-workspace-id header (can use env. prefix)."
@@ -7536,6 +7616,68 @@
         }
       ]
     },
+    "sagemaker_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sagemaker_key_config": {
+              "type": "object",
+              "description": "AWS credentials and routing for SageMaker real-time endpoints. Leave access_key and secret_key empty to use the default AWS credential chain. Bifrost mints the SageMaker bearer token from these credentials; a key value is sent verbatim as a pre-minted sagemaker-api-key-... token instead.",
+              "properties": {
+                "access_key": {
+                  "type": "string",
+                  "description": "AWS access key used to mint bearer tokens (can use env. prefix)"
+                },
+                "secret_key": {
+                  "type": "string",
+                  "description": "AWS secret key (can use env. prefix)"
+                },
+                "session_token": {
+                  "type": "string",
+                  "description": "AWS session token for temporary credentials (can use env. prefix)"
+                },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region of the endpoints. A model id may override it with a region prefix: sagemaker/us-west-2/my-endpoint"
+                },
+                "role_arn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                },
+                "external_id": {
+                  "type": "string",
+                  "description": "External ID for AssumeRole (can use env. prefix)"
+                },
+                "session_name": {
+                  "type": "string",
+                  "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Runtime host override, e.g. an interface VPC endpoint, FIPS or dual-stack host. Region is still required: it sets the token's credential scope.",
+                  "properties": {
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the SageMaker runtime (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "region"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
     "vllm_key": {
       "allOf": [
         {
@@ -7779,6 +7921,16 @@
                 "api_version": {
                   "type": "string",
                   "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
+                },
+                "use_speech_endpoints": {
+                  "type": "boolean",
+                  "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+                  "default": false
+                },
+                "use_voice_live_endpoints": {
+                  "type": "boolean",
+                  "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+                  "default": false
                 }
               },
               "required": [
@@ -8074,6 +8226,57 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/bedrock_mantle_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_sagemaker_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sagemaker_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
@@ -9093,6 +9296,11 @@
             "resource": {
               "type": "string",
               "description": "OAuth resource indicator, RFC 8707 (optional: discovered from the MCP server's protected resource metadata when omitted)"
+            },
+            "use_client_metadata_document": {
+              "type": "boolean",
+              "default": false,
+              "description": "Register with Bifrost's Client ID Metadata Document even if the authorization server does not advertise support (for example when discovery fails and the endpoints are entered by hand). Requires Bifrost on a public HTTPS address; cannot be combined with client_id. When off, the document is still used automatically wherever the server advertises support."
             }
           },
           "additionalProperties": false
@@ -9153,6 +9361,24 @@
             "type": "string"
           },
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
+        },
+        "prompts_to_expose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway. Omit or ['*'] for all, [] for none."
+        },
+        "resources_to_expose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource URIs and URI templates served through Bifrost's MCP gateway. Omit or ['*'] for all, [] for none."
+        },
+        "max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Per-client cap on the MCP protocol version Bifrost offers this server. Omit to use the global mcp.max_protocol_version; 'auto' uses the newest version Bifrost supports."
         },
         "tool_sync_interval": {
           "description": "Per-client override for tool sync interval as a Go duration string in whole seconds (e.g. '10m', '90s'; '0s' or omitted = use global). Legacy integer nanoseconds are also accepted and must be a whole number of seconds.",
@@ -12499,13 +12725,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for archiving audit events to S3/GCS. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
+          "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "azure"
               ],
               "description": "Object storage backend type"
             },
@@ -12539,13 +12766,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+              "description": "Bucket name, or Azure Blob container name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -12572,7 +12796,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -12818,9 +13042,17 @@
             "additionalProperties": false
           },
           "else": {
+            "if": { "properties": { "type": { "const": "azure" } } },
+            "then": {
+              "allOf": [
+                { "$ref": "#/$defs/azure_object_storage" },
+                { "properties": { "format": false, "compression": false } }
+              ]
+            },
+            "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -12936,6 +13168,7 @@
               "compress": true
             },
             "additionalProperties": false
+            }
           }
         }
       },

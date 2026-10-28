@@ -1781,9 +1781,6 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 // All Vertex AI embedding models use the same response format regardless of the model type.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
 func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	if schemas.GetVertexEndpoint(ctx) != nil {
-		return nil, unsupportedVertexEndpointOperation(schemas.EmbeddingRequest)
-	}
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -1982,9 +1979,6 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 
 // Rerank performs a rerank request using Vertex Discovery Engine ranking API.
 func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	if schemas.GetVertexEndpoint(ctx) != nil {
-		return nil, unsupportedVertexEndpointOperation(schemas.RerankRequest)
-	}
 	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")
@@ -2148,9 +2142,6 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 }
 
 func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	if schemas.GetVertexEndpoint(ctx) != nil {
-		return nil, unsupportedVertexEndpointOperation(schemas.ImageGenerationRequest)
-	}
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image generation is only supported for Gemini and Imagen models, got: %s", request.Model))
@@ -2371,9 +2362,6 @@ func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 // ImageEdit edits images for the given input text(s) using Vertex AI.
 // Returns a BifrostResponse containing the images and any error that occurred.
 func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	if schemas.GetVertexEndpoint(ctx) != nil {
-		return nil, unsupportedVertexEndpointOperation(schemas.ImageEditRequest)
-	}
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image edit is only supported for Gemini and Imagen models, got: %s", request.Model))
@@ -2587,9 +2575,6 @@ func (provider *VertexProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 // Only Gemini models support video generation in Vertex AI.
 // Uses the predictLongRunning endpoint for async video generation.
 func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	if schemas.GetVertexEndpoint(ctx) != nil {
-		return nil, unsupportedVertexEndpointOperation(schemas.VideoGenerationRequest)
-	}
 	providerName := provider.GetProviderKey()
 
 	// Only Gemini models support video generation in Vertex
@@ -4428,9 +4413,6 @@ func stripVertexCountTokensUnsupportedFields(jsonBody []byte) []byte {
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
 // Supports Gemini models with both text and image content.
 func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-	if schemas.GetVertexEndpoint(ctx) != nil {
-		return nil, unsupportedVertexEndpointOperation(schemas.CountTokensRequest)
-	}
 	var (
 		jsonBody   []byte
 		bifrostErr *schemas.BifrostError

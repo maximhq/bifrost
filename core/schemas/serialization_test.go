@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1382,6 +1383,24 @@ func TestChatTool_ServerToolNameRoundTrip(t *testing.T) {
 // {type:"bash_20250124", name:"bash"} tool reached Bedrock with no name. This
 // asserts all server-tool fields survive the copy and that the copy is independent
 // of the original (mutating the copy must not affect the source).
+// The copy keeps an MCP tool's title, icons and output schema, and shares none of their memory.
+func TestDeepCopyChatTool_PreservesMCPMetadata(t *testing.T) {
+	original := ChatTool{
+		Type:     ChatToolTypeFunction,
+		Function: &ChatToolFunction{Name: "chart"},
+		MCP:      &MCPToolMetadata{Title: "Chart", Icons: []mcp.Icon{{Src: "https://example.com/c.png"}}, OutputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	copied := DeepCopyChatTool(original)
+	if copied.MCP == nil || copied.MCP.Title != "Chart" || len(copied.MCP.Icons) != 1 || string(copied.MCP.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("metadata lost in copy: %+v", copied.MCP)
+	}
+	copied.MCP.Icons[0].Src = "changed"
+	copied.MCP.OutputSchema[0] = '['
+	if original.MCP.Icons[0].Src != "https://example.com/c.png" || original.MCP.OutputSchema[0] != '{' {
+		t.Fatal("copy shares memory with the original")
+	}
+}
+
 func TestDeepCopyChatTool_PreservesServerToolFields(t *testing.T) {
 	original := ChatTool{
 		Type:                "computer_20251124",

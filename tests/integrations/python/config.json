@@ -498,7 +498,15 @@
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
           "aliases": {
-            "Microsoft-Decision-1": "Decision-1"
+            "Microsoft-Decision-1": "Decision-1",
+            "speech-neural": { "model_id": "neural", "use_speech_endpoints": true },
+            "speech-mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
+            "speech-fast-transcription": { "model_id": "fast-transcription", "use_speech_endpoints": true },
+            "neural": { "model_id": "neural", "use_speech_endpoints": true },
+            "DragonHDLatestNeural": { "model_id": "DragonHDLatestNeural", "use_speech_endpoints": true },
+            "fast-transcription": { "model_id": "fast-transcription", "use_speech_endpoints": true },
+            "short-audio": { "model_id": "short-audio", "use_speech_endpoints": true },
+            "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
           },
           "azure_key_config": {
             "endpoint": "env.AZURE_ENDPOINT",

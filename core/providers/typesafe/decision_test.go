@@ -1874,6 +1874,56 @@ func TestToTypesafeDecisionRequestRejectsNonTextInput(t *testing.T) {
 	}
 }
 
+// TestToTypesafeDecisionRequestConversation pins how a conversation reaches a
+// Typesafe-family state: function and custom tool calls and their outputs keep
+// the fields that tie an output to its call, and an assistant's output text,
+// refusal, and phase and a JSON part are read as text. An image in a tool
+// output is rejected like one in a message, since the state would carry its
+// encoding as text. The payload is synthetic.
+func TestToTypesafeDecisionRequestConversation(t *testing.T) {
+	const conversation = `[
+		{"role":"user","content":[{"type":"input_text","text":"Refund my duplicate charge."},{"type":"input_json","data":{"charges":[49,49]}}]},
+		{"type":"function_call","call_id":"call_1","name":"lookup_order","arguments":"{\"id\":\"A-1\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"two charges of 49"},
+		{"type":"custom_tool_call","call_id":"call_2","name":"note","input":"refund one"},
+		{"type":"custom_tool_call_output","call_id":"call_2","output":[{"type":"input_text","text":"noted"}]},
+		{"role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Refunded one."},{"type":"refusal","refusal":"Not both."}]}
+	]`
+	req := &schemas.BifrostDecisionRequest{
+		Model:     "jev-1.13.0",
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("resolved"), Instructions: schemas.NewDecisionText("Resolved?")}},
+	}
+	if err := sonic.Unmarshal([]byte(conversation), &req.Input); err != nil {
+		t.Fatal(err)
+	}
+	native, err := ToTypesafeDecisionRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+	state, err := json.Marshal(native.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want interface{}
+	if err := json.Unmarshal(state, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(conversation), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("state =\n%s\nwant the conversation as sent", state)
+	}
+
+	withImage := &schemas.BifrostDecisionRequest{Model: "jev-1.13.0", Questions: req.Questions}
+	if err := sonic.Unmarshal([]byte(`[{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`), &withImage.Input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ToTypesafeDecisionRequest(withImage); err == nil || !strings.Contains(err.Error(), `"input_image"`) {
+		t.Errorf("expected an input_image rejection for an image in a tool output, got %v", err)
+	}
+}
+
 // TestToTypesafeNativeDecisionResponseOtherProviderAnswers pins how the
 // /v1/systemone route renders answers only another provider produces: a
 // boolean choice as its option, and a refusal as its type with no value. The
@@ -1979,7 +2029,7 @@ func TestTypesafeAssetsRoundTrip(t *testing.T) {
 			t.Errorf("part %d = %+v, want asset %q", i+1, part, want)
 		}
 	}
-	if string(parts[2].Data) != "\xff\xd8\xff\xe0PALM" || parts[2].ImageURL != nil {
+	if string(parts[2].Data.File) != "\xff\xd8\xff\xe0PALM" || parts[2].ImageURL != nil {
 		t.Errorf("asset part = %+v, want the decoded bytes", parts[2])
 	}
 
@@ -2043,7 +2093,7 @@ func TestTypesafeAssetsStateShapes(t *testing.T) {
 func TestTypesafeAssetsFromInputParts(t *testing.T) {
 	const jpeg, png, gif = "\xff\xd8\xff\xe0CAM", "\x89PNG\r\n\x1a\nCAM", "GIF89aCAM"
 	asset := func(id, data string) schemas.DecisionInputPart {
-		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr(id), Data: []byte(data)}
+		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr(id), Data: schemas.DecisionData{File: []byte(data)}}
 	}
 	text := func(s string) schemas.DecisionInputPart {
 		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(s)}

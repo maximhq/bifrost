@@ -103,56 +103,6 @@ func TestVertexEndpointChat(t *testing.T) {
 	}
 }
 
-func TestVertexEndpointRejectsNonChatOperations(t *testing.T) {
-	provider := &VertexProvider{}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{
-		ModelID: "1234567890", VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222222222", Format: schemas.VertexEndpointOpenAIChat}},
-	}})
-	key := schemas.Key{}
-	operations := map[string]func() *schemas.BifrostError{
-		"embedding": func() *schemas.BifrostError {
-			_, err := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{})
-			return err
-		},
-		"count tokens": func() *schemas.BifrostError {
-			_, err := provider.CountTokens(ctx, key, &schemas.BifrostResponsesRequest{})
-			return err
-		},
-		"rerank": func() *schemas.BifrostError {
-			_, err := provider.Rerank(ctx, key, &schemas.BifrostRerankRequest{})
-			return err
-		},
-		"image generation": func() *schemas.BifrostError {
-			_, err := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Model: "1234567890"})
-			return err
-		},
-		"image edit": func() *schemas.BifrostError {
-			_, err := provider.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{Model: "1234567890"})
-			return err
-		},
-		"video generation": func() *schemas.BifrostError {
-			_, err := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Model: "1234567890"})
-			return err
-		},
-	}
-	wantType := map[string]schemas.RequestType{
-		"embedding": schemas.EmbeddingRequest, "count tokens": schemas.CountTokensRequest, "rerank": schemas.RerankRequest,
-		"image generation": schemas.ImageGenerationRequest, "image edit": schemas.ImageEditRequest, "video generation": schemas.VideoGenerationRequest,
-	}
-	for name, operation := range operations {
-		t.Run(name, func(t *testing.T) {
-			err := operation()
-			if err == nil || !strings.Contains(err.Error.Message, "vertex_endpoint format openai_chat supports chat completions") {
-				t.Fatalf("expected an explicit unsupported custom endpoint error, got %v", err)
-			}
-			if err.Error.Code == nil || *err.Error.Code != "unsupported_operation" || err.ExtraFields.Provider != schemas.Vertex || err.ExtraFields.RequestType != wantType[name] {
-				t.Fatalf("expected the standard unsupported_operation error for %s on vertex, got code=%v provider=%q type=%q", wantType[name], err.Error.Code, err.ExtraFields.Provider, err.ExtraFields.RequestType)
-			}
-		})
-	}
-}
-
 func BenchmarkVertexChatCompletionCommonCase(b *testing.B) {
 	provider, key := vertexOpenAIEndpointTestProvider(b, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)

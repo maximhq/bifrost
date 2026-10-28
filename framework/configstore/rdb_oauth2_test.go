@@ -648,6 +648,26 @@ func TestListOAuth2Sessions_JoinsAndExcludesRevoked(t *testing.T) {
 	assert.ErrorIs(t, s.RevokeOAuth2Session(ctx, "rt-dead"), ErrNotFound)
 }
 
+// A Client ID Metadata Document client has no oauth2_clients row: its grant lists, and is found by, the
+// name it was consented under.
+func TestListOAuth2Sessions_MetadataDocumentClientName(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	tok := makeRefreshToken("rt-cimd", "f-cimd", "https://app.example.com/oauth/client.json", "h-cimd")
+	tok.ClientDisplayName = "Example App"
+	require.NoError(t, s.DB().Create(tok).Error)
+
+	rows, _, err := s.ListOAuth2Sessions(ctx, OAuth2SessionsQueryParams{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "Example App", rows[0].ClientName)
+
+	rows, total, err := s.ListOAuth2Sessions(ctx, OAuth2SessionsQueryParams{Search: "example app"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total, "search finds the grant by its consented name")
+	require.Len(t, rows, 1)
+}
+
 // TestListOAuth2Sessions_FilterAndPaginate pins the DB-side filtering +
 // pagination: ordering (created_at DESC), limit/offset paging, the total count
 // (independent of the page slice), the bf_mode filter, and case-insensitive

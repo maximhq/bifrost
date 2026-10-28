@@ -2168,14 +2168,14 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 			var responseData json.RawMessage
 			var contentStr string
 
-			if message.Content != nil {
+			if content := schemas.FlattenToolResultMedia(message.Content, nil); content != nil {
 				// Extract content string from ContentStr or ContentBlocks
-				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-					contentStr = *message.Content.ContentStr
-				} else if message.Content.ContentBlocks != nil {
+				if content.ContentStr != nil && *content.ContentStr != "" {
+					contentStr = *content.ContentStr
+				} else if content.ContentBlocks != nil {
 					// Fallback: try to extract text from content blocks
 					var textParts []string
-					for _, block := range message.Content.ContentBlocks {
+					for _, block := range content.ContentBlocks {
 						if block.Text != nil && *block.Text != "" {
 							textParts = append(textParts, *block.Text)
 						}
@@ -2753,7 +2753,24 @@ func NormalizeModelName(model string) string {
 	if len(model) >= len("google/") && strings.EqualFold(model[:len("google/")], "google/") {
 		strippedModel := model[len("google/"):]
 		if schemas.IsGeminiModel(strippedModel) || schemas.IsVeoModel(strippedModel) || schemas.IsImagenModel(strippedModel) || schemas.IsGemmaModel(strippedModel) {
-			return strippedModel
+			model = strippedModel
+		}
+	}
+	if dotIdx := strings.IndexByte(model, '.'); dotIdx > 0 && dotIdx < len(model)-1 {
+		prefix := model[:dotIdx]
+		rest := model[dotIdx+1:]
+		isRegionalPrefix := len(prefix) == 2 || strings.EqualFold(prefix, "global")
+		if isRegionalPrefix {
+			for i := 0; i < len(prefix); i++ {
+				c := prefix[i]
+				if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+					isRegionalPrefix = false
+					break
+				}
+			}
+		}
+		if isRegionalPrefix && (schemas.IsGeminiModel(rest) || schemas.IsVeoModel(rest) || schemas.IsImagenModel(rest) || schemas.IsGemmaModel(rest)) {
+			return rest
 		}
 	}
 	return model

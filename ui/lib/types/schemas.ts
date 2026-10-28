@@ -1,4 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -118,6 +119,8 @@ export const azureKeyConfigSchema = z
 		client_secret: secretVarSchema.optional(),
 		tenant_id: secretVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
+		use_speech_endpoints: z.boolean().optional(),
+		use_voice_live_endpoints: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.endpoint), {
 		message: "Endpoint is required",
@@ -312,6 +315,41 @@ export const bedrockMantleKeyConfigSchema = z
 			const hasAccessKey = isSecretVarSet(data.access_key);
 			const hasSecretKey = isSecretVarSet(data.secret_key);
 			// IAM-role path: both keys empty is valid, but a lone session token cannot sign SigV4.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
+// SageMaker key config schema: AWS credentials Bifrost mints the endpoint bearer token from,
+// or a pre-minted token in the key value (api_key auth).
+export const sageMakerKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		endpoints: z.object({ runtime: secretVarSchema.optional() }).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// Default-chain path: both keys empty is valid, but a lone session token cannot mint a token.
 			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
 			return hasAccessKey && hasSecretKey;
 		},
@@ -655,6 +693,8 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
 	// Vertex overrides
@@ -714,6 +754,7 @@ export const modelProviderKeySchema = z
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
+		sagemaker_key_config: sageMakerKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -763,6 +804,14 @@ export const modelProviderKeySchema = z
 			// a top-level API key when the user explicitly chose the api_key auth method.
 			if (data.bedrock_mantle_key_config) {
 				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
+			// SageMaker mints a bearer token from AWS credentials; a key value (a pre-minted
+			// token) is only required when the user chose the api_key auth method.
+			if (data.sagemaker_key_config) {
+				if (data.sagemaker_key_config._auth_type === "api_key") {
 					return isSecretVarSet(data.value);
 				}
 				return true;
@@ -1823,8 +1872,11 @@ export const mcpClientUpdateSchema = z
 				},
 				{ message: "Duplicate tool names are not allowed" },
 			),
+		prompts_to_expose: z.array(z.string()).optional(), // ["*"] = all, [] = none
+		resources_to_expose: z.array(z.string()).optional(), // ["*"] = all, [] = none
 		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
+		max_protocol_version: z.union([z.literal(""), z.enum(MCP_MAX_PROTOCOL_VERSIONS)]).optional(), // "" = use global
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z
@@ -1856,6 +1908,7 @@ export const mcpClientUpdateSchema = z
 					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
 				scopes: z.array(z.string()).optional(),
 				resource: z.string().optional(),
+				use_client_metadata_document: z.boolean().optional(),
 			})
 			.optional(),
 		token_exchange: z
