@@ -36,6 +36,7 @@ export class ConfigSettingsPage extends BasePage {
   readonly skipAccessProfileUserVirtualKeyDeletionSwitch: Locator
   readonly requiredHeadersTextarea: Locator
   readonly vkRotationCooldownInput: Locator
+  readonly defaultRequestTimeoutInput: Locator
   readonly dashboardAuthSwitch: Locator
   readonly currentPasswordInput: Locator
   readonly currentPasswordError: Locator
@@ -86,6 +87,7 @@ export class ConfigSettingsPage extends BasePage {
     this.skipAccessProfileUserVirtualKeyDeletionSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-deletion-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
+    this.defaultRequestTimeoutInput = page.getByTestId('client-settings-default-request-timeout-input')
     this.dashboardAuthSwitch = page.locator('#auth-enabled')
     this.currentPasswordInput = page.getByTestId('security-current-password-input')
     this.currentPasswordError = page.getByTestId('security-current-password-error')
@@ -209,6 +211,21 @@ export class ConfigSettingsPage extends BasePage {
    */
   async getVkRotationCooldown(): Promise<string> {
     return await this.vkRotationCooldownInput.inputValue()
+  }
+
+  /**
+   * Set the default request timeout. An empty string clears it, so requests
+   * without an x-bf-request-timeout header get no deadline.
+   */
+  async setDefaultRequestTimeout(value: string): Promise<void> {
+    await this.defaultRequestTimeoutInput.clear()
+    if (value !== '') {
+      await this.defaultRequestTimeoutInput.fill(value)
+    }
+  }
+
+  async getDefaultRequestTimeout(): Promise<string> {
+    return await this.defaultRequestTimeoutInput.inputValue()
   }
 
   /**

@@ -259,3 +259,71 @@ test.describe('Client Settings', () => {
     }
   })
 })
+
+test.describe('Default Request Timeout', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  // A text input, which the generic settings capture and restore does not cover,
+  // so each test restores the original value itself.
+  let originalTimeout: string
+
+  test.beforeEach(async ({ configSettingsPage }) => {
+    await configSettingsPage.goto('client-settings')
+    await configSettingsPage.dismissOnboardingWidget()
+    originalTimeout = await configSettingsPage.getDefaultRequestTimeout()
+  })
+
+  test.afterEach(async ({ configSettingsPage }) => {
+    await configSettingsPage.goto('client-settings')
+    await configSettingsPage.dismissOnboardingWidget()
+    if ((await configSettingsPage.getDefaultRequestTimeout()) !== originalTimeout) {
+      await configSettingsPage.setDefaultRequestTimeout(originalTimeout)
+      if (await configSettingsPage.hasPendingChanges()) {
+        await configSettingsPage.saveSettings()
+      }
+    }
+  })
+
+  test('should persist a duration across a reload', async ({ configSettingsPage, page }) => {
+    await configSettingsPage.setDefaultRequestTimeout('45s')
+    await configSettingsPage.saveSettings()
+
+    const saved = await page.request.get('/api/config?from_db=true')
+    expect(saved.status(), await saved.text()).toBe(200)
+    expect((await saved.json()).client_config.default_request_timeout).toBe(45_000_000_000)
+
+    // The API returns nanoseconds; the UI must format them back into the typed duration.
+    await configSettingsPage.goto('client-settings')
+    await expect(configSettingsPage.defaultRequestTimeoutInput).toHaveValue('45s')
+  })
+
+  test('should reject an invalid duration without saving it', async ({ configSettingsPage }) => {
+    await configSettingsPage.setDefaultRequestTimeout('not-a-duration')
+    await configSettingsPage.saveBtn.click()
+    await configSettingsPage.waitForErrorToast()
+
+    await configSettingsPage.goto('client-settings')
+    await expect(configSettingsPage.defaultRequestTimeoutInput).not.toHaveValue('not-a-duration')
+  })
+
+  test('should reject a value over 30 minutes', async ({ configSettingsPage }) => {
+    await configSettingsPage.setDefaultRequestTimeout('31m')
+    await configSettingsPage.saveBtn.click()
+    await configSettingsPage.waitForErrorToast()
+
+    await configSettingsPage.goto('client-settings')
+    await expect(configSettingsPage.defaultRequestTimeoutInput).not.toHaveValue('31m')
+  })
+
+  test('should clear the default when emptied', async ({ configSettingsPage }) => {
+    await configSettingsPage.setDefaultRequestTimeout('30s')
+    await configSettingsPage.saveSettings()
+    await configSettingsPage.goto('client-settings')
+    await expect(configSettingsPage.defaultRequestTimeoutInput).toHaveValue('30s')
+
+    await configSettingsPage.setDefaultRequestTimeout('')
+    await configSettingsPage.saveSettings()
+    await configSettingsPage.goto('client-settings')
+    await expect(configSettingsPage.defaultRequestTimeoutInput).toHaveValue('')
+  })
+})

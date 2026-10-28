@@ -15,7 +15,7 @@ import { getErrorMessage, useGetCoreConfigQuery, useIsAuthEnabledQuery, useUpdat
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { authProofOfControlSchema, SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { formatCooldown } from "@/lib/utils/duration";
+import { formatCooldown, isDurationInputValid } from "@/lib/utils/duration";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
@@ -24,9 +24,6 @@ import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-
-// Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
-const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
@@ -278,7 +275,7 @@ export default function SecurityView() {
 				return;
 			}
 			const cooldownInput = localValues.vk_rotation_cooldown.trim();
-			if (cooldownInput !== "" && cooldownInput !== "0" && !COOLDOWN_PATTERN.test(cooldownInput)) {
+			if (!isDurationInputValid(cooldownInput)) {
 				toast.error('Rotation cooldown must be a duration like "30s", "5m", or "1h30m" (leave empty to disable).');
 				return;
 			}

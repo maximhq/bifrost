@@ -888,6 +888,9 @@ export interface CoreConfig {
 	// still authenticates. API returns int64 nanoseconds; writes accept a Go
 	// duration string like "5m". 0 = old value stops working immediately.
 	vk_rotation_cooldown?: number | string;
+	// Total deadline for requests that send no x-bf-request-timeout header. API returns
+	// int64 nanoseconds; writes accept a Go duration string like "30s". 0 = no default.
+	default_request_timeout?: number | string;
 	disable_db_pings_in_health: boolean;
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
@@ -954,6 +957,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
 	vk_rotation_cooldown: 0,
+	default_request_timeout: 0,
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,

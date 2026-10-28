@@ -1,5 +1,26 @@
 import { describe, test, expect } from "vitest";
-import { formatCooldown } from "./duration";
+import { formatCooldown, isDurationInputValid } from "./duration";
+
+describe("isDurationInputValid", () => {
+	test("empty and zero mean unset and are valid", () => {
+		expect(isDurationInputValid("")).toBe(true);
+		expect(isDurationInputValid("  ")).toBe(true);
+		expect(isDurationInputValid("0")).toBe(true);
+	});
+
+	test("Go duration strings are valid", () => {
+		expect(isDurationInputValid("30s")).toBe(true);
+		expect(isDurationInputValid(" 5m ")).toBe(true);
+		expect(isDurationInputValid("1h30m")).toBe(true);
+		expect(isDurationInputValid("1.5s")).toBe(true);
+	});
+
+	test("bare numbers and junk are rejected", () => {
+		expect(isDurationInputValid("30")).toBe(false);
+		expect(isDurationInputValid("-5m")).toBe(false);
+		expect(isDurationInputValid("five minutes")).toBe(false);
+	});
+});
 
 describe("formatCooldown", () => {
 	test("empty and zero values render empty", () => {

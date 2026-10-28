@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { formatCooldown, isDurationInputValid } from "@/lib/utils/duration";
 import LargePayloadSettingsFragment from "@enterprise/components/large-payload/largePayloadSettingsFragment";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } from "@enterprise/lib/store/apis/largePayloadApi";
@@ -74,6 +75,9 @@ export default function ClientSettingsView() {
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading: isSavingCoreConfig }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
+	// Raw text of the default request timeout field; "" and "0" both mean no default.
+	const [defaultRequestTimeoutInput, setDefaultRequestTimeoutInput] = useState("");
+	const normalizedDefaultRequestTimeout = defaultRequestTimeoutInput.trim() === "0" ? "" : defaultRequestTimeoutInput.trim();
 
 	// Large payload config state
 	const { data: serverLargePayloadConfig, isLoading: isLargePayloadConfigLoading } = useGetLargePayloadConfigQuery();
@@ -95,6 +99,7 @@ export default function ClientSettingsView() {
 				...config,
 				header_filter_config: config.header_filter_config || DefaultGlobalHeaderFilterConfig,
 			});
+			setDefaultRequestTimeoutInput(formatCooldown(config.default_request_timeout));
 		}
 	}, [config]);
 
@@ -111,10 +116,11 @@ export default function ClientSettingsView() {
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
+			normalizedDefaultRequestTimeout !== formatCooldown(config.default_request_timeout) ||
 			(localConfig.extra_fields_placement ?? "body") !== (config.extra_fields_placement ?? "body") ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
-	}, [config, localConfig]);
+	}, [config, localConfig, normalizedDefaultRequestTimeout]);
 
 	const hasLargePayloadChanges = useMemo(() => {
 		const baseline = serverLargePayloadConfig ?? DefaultLargePayloadConfig;
@@ -145,6 +151,11 @@ export default function ClientSettingsView() {
 	const handleSave = useCallback(async () => {
 		// Defense in depth - don't save if security headers are present
 		if (hasSecurityHeaderError) {
+			return;
+		}
+
+		if (!isDurationInputValid(defaultRequestTimeoutInput)) {
+			toast.error('Default request timeout must be a duration like "30s", "5m", or "1m30s" (leave empty for no default).');
 			return;
 		}
 
@@ -183,6 +194,7 @@ export default function ClientSettingsView() {
 			// Clean up empty strings from header filter config
 			const cleanedConfig = {
 				...localConfig,
+				default_request_timeout: normalizedDefaultRequestTimeout === "" ? 0 : normalizedDefaultRequestTimeout,
 				header_filter_config: {
 					allowlist: (localConfig.header_filter_config?.allowlist || []).filter((h) => h && h.trim().length > 0),
 					denylist: (localConfig.header_filter_config?.denylist || []).filter((h) => h && h.trim().length > 0),
@@ -216,6 +228,8 @@ export default function ClientSettingsView() {
 		}
 	}, [
 		bifrostConfig,
+		defaultRequestTimeoutInput,
+		normalizedDefaultRequestTimeout,
 		hasSecurityHeaderError,
 		hasCoreConfigChanges,
 		hasLargePayloadChanges,
@@ -421,6 +435,29 @@ export default function ClientSettingsView() {
 						onChange={(e) => handleConfigChange("async_job_result_ttl", parseInt(e.target.value) || 0)}
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="client-settings-async-job-result-ttl-input"
+					/>
+				</div>
+
+				{/* Default Request Timeout */}
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+					<div className="space-y-0.5">
+						<label htmlFor="default-request-timeout" className="text-sm font-medium">
+							Default Request Timeout
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Total time a request may take, across every fallback, when it doesn&apos;t send an <b>x-bf-request-timeout</b> header. When it
+							runs out the request fails with 504. Use a duration like <b>30s</b> or <b>5m</b>. Leave empty (or 0) for no default. Maximum
+							30 minutes.
+						</p>
+					</div>
+					<Input
+						id="default-request-timeout"
+						className="w-32 shrink-0"
+						placeholder="30s"
+						value={defaultRequestTimeoutInput}
+						onChange={(e) => setDefaultRequestTimeoutInput(e.target.value)}
+						disabled={!hasSettingsUpdateAccess}
+						data-testid="client-settings-default-request-timeout-input"
 					/>
 				</div>
 			</div>

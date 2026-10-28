@@ -8,6 +8,15 @@ const NS_PER_UNIT: Array<[suffix: string, ns: number]> = [
 	["ns", 1],
 ];
 
+// A Go duration string as time.ParseDuration accepts it, e.g. "30s", "5m", "1h30m".
+export const GO_DURATION_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
+
+// Whether a duration setting's text input is saveable: empty or "0" (unset), or a Go duration string.
+export const isDurationInputValid = (value: string): boolean => {
+	const v = value.trim();
+	return v === "" || v === "0" || GO_DURATION_PATTERN.test(v);
+};
+
 // The API returns duration settings (e.g. vk_rotation_cooldown) as int64
 // nanoseconds and accepts Go duration strings on write; render nanoseconds as
 // the largest exact unit so sub-second values (e.g. 500ms) are preserved
