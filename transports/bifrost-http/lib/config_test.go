@@ -26238,9 +26238,11 @@ func relayGrantsInStore(t *testing.T, store configstore.ConfigStore) map[string]
 }
 
 // TestRelayGrantsFromConfigFile drives virtual-key relay_grants and the relays section through
-// repeated full loads, as a Helm upgrade restarts the pods with a new config.json: the key hash
-// picks up a changed grant list, an omitted list keeps API-made grants, [] clears them, and with
-// config.json as the source of truth a relay dropped from the file is pruned with its grants.
+// repeated full loads, as a Helm upgrade restarts the pods with a new config.json. A key whose file
+// entry is unchanged keeps grants made through the API (its hash matches, so nothing is written).
+// A key synced from the file takes its declaration as a whole: a changed list replaces the stored
+// grants, and an entry that lists none (relay_grants omitted or []) is left with none, both when a
+// change to the entry moves its hash and on every load with config.json as the source of truth.
 func TestRelayGrantsFromConfigFile(t *testing.T) {
 	initTestLogger()
 	dir := t.TempDir()
@@ -26248,39 +26250,48 @@ func TestRelayGrantsFromConfigFile(t *testing.T) {
 		{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}},
 		{"name": "exa", "base_url": "https://api.exa.ai", "auth": {"type": "none"}}
 	],`
-	vk := func(id, grants string) string {
+	vk := func(id, description, grants string) string {
 		out := `{"id": "` + id + `", "name": "` + id + `", "value": "sk-bf-` + id + `"`
+		if description != "" {
+			out += `, "description": "` + description + `"`
+		}
 		if grants != "" {
 			out += `, "relay_grants": ` + grants
 		}
 		return out + `}`
 	}
-
-	got := loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[{"relay_name": "tavily"}]`)+`, `+vk("vk-plain", "")+`]`)
-	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a new key's declared grants are stored")
-
-	// A grant made through the API on a key whose file entry omits relay_grants.
-	{
+	grantThroughAPI := func(vkID string, names ...string) {
 		ctx := context.Background()
 		config, err := LoadConfig(ctx, dir)
 		require.NoError(t, err)
-		require.NoError(t, config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, "vk-plain", []string{"exa"}))
+		require.NoError(t, config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, vkID, names))
 		config.Close(ctx)
 	}
-	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[{"relay_name": "tavily"}]`)+`, `+vk("vk-plain", "")+`]`)
-	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}, "vk-plain": {"exa"}}, got, "an unchanged file keeps API-made grants on a key that omits relay_grants")
+	search := vk("vk-search", "", `[{"relay_name": "tavily"}]`)
 
-	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[{"relay_name": "tavily"}, {"relay_name": "exa"}]`)+`, `+vk("vk-plain", "")+`]`)
+	got := loadRelayGrantsConfig(t, dir, "", relays, `[`+search+`, `+vk("vk-plain", "", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a new key's declared grants are stored")
+
+	grantThroughAPI("vk-plain", "exa")
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+search+`, `+vk("vk-plain", "", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}, "vk-plain": {"exa"}}, got, "an unchanged entry is not synced, so the API grant stays")
+
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", "", `[{"relay_name": "tavily"}, {"relay_name": "exa"}]`)+`, `+vk("vk-plain", "", "")+`]`)
 	assert.Equal(t, []string{"exa", "tavily"}, got["vk-search"], "a changed grant list changes the key hash and is applied")
+	assert.Equal(t, []string{"exa"}, got["vk-plain"], "a key whose entry did not change is left alone")
 
-	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", `[]`)+`, `+vk("vk-plain", "")+`]`)
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", "", `[]`)+`, `+vk("vk-plain", "edited", "")+`]`)
 	assert.NotContains(t, got, "vk-search", "an explicit [] clears the key's grants")
-	assert.Equal(t, []string{"exa"}, got["vk-plain"])
+	assert.NotContains(t, got, "vk-plain", "an entry synced for another change takes its declaration whole: no relay_grants, no grants")
+
+	grantThroughAPI("vk-plain", "exa")
+	got = loadRelayGrantsConfig(t, dir, "config.json", relays, `[`+search+`, `+vk("vk-plain", "edited", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "with config.json as the source of truth every declared key is synced, so the API grant is cleared")
 
 	// config.json as the source of truth, declaring only tavily: exa is pruned, and its grant goes with it.
 	got = loadRelayGrantsConfig(t, dir, "config.json", `"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}}],`,
-		`[`+vk("vk-search", `[{"relay_name": "tavily"}]`)+`, `+vk("vk-plain", "")+`]`)
-	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a relay left out of the source-of-truth file is pruned with its grants")
+		`[`+vk("vk-search", "", `[{"relay_name": "tavily"}, {"relay_name": "exa"}]`)+`, `+vk("vk-plain", "edited", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a relay left out of the source-of-truth file is pruned, and a grant naming it is skipped")
 }
 
 // A new key whose relay_grants names a relay that is not configured (a typo, or a relay skipped as

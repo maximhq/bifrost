@@ -67,9 +67,11 @@ An omitted `relay_grants` leaves the grants unchanged and `[]` clears them.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `relay_grants` | array | omitted | Relays this key may call, one `{ "relay_name": "..." }` each. Omitted keeps the grants made in the dashboard or API; a declared list, `[]` included, replaces them when the key syncs from the file. Not applied when an access profile governs the key's team, customer or user (Enterprise): that profile's `relay_grants` decide the key's relays. |
+| `relay_grants` | array | omitted | Relays this key may call, one `{ "relay_name": "..." }` each. When the key syncs from the file this is its whole list: omitted or `[]` leaves it with none. In split mode an unchanged entry is not synced, so grants made in the dashboard stay until the entry is next edited. Not applied when an access profile governs the key's team, customer or user (Enterprise): that profile's `relay_grants` decide the key's relays. |
 
 Relays declared in `config.json` are loaded before governance, so a virtual key in the same file may grant them. A name that matches no relay is skipped with a warning. The key is reconciled again only when its entry changes (or on every start with `config.json` as the source of truth), so after fixing the relay, the grant is applied the next time the key's entry is synced.
+
+Like the rest of the key, `relay_grants` is synced from the file when the key's entry changes, and on every start when `config.json` is the source of truth. The declared list is then the key's whole list, and omitting it leaves the key with no grants, so grants made in the dashboard are replaced. In split mode an unchanged entry is not synced, so dashboard grants on it stay until the entry is next edited.
 
 </Tab>
 <Tab title="Helm">
@@ -93,7 +95,7 @@ envFrom:
 
 `RESEARCH_VK` must hold a strong random value that starts with `sk-bf-` (for example `sk-bf-$(openssl rand -hex 24)`); a value without that prefix is replaced by a generated key and requests sending the Secret's value are refused.
 
-Leaving `relay_grants` out keeps grants made in the dashboard. When the key syncs from the file (its entry changed, or on every start with `config.json` as the source of truth), a declared list, `[]` included, replaces them. Projects (`bifrost.governance.projects[].relay_grants`) and access profiles (`bifrost.accessProfiles[].relay_grants`) take the same list, but there the declared list is the whole list whenever the entry syncs: leaving it out means no grants. A project or access profile naming a relay that does not exist is skipped with a warning.
+Projects (`bifrost.governance.projects[].relay_grants`) and access profiles (`bifrost.accessProfiles[].relay_grants`) take the same list, with the same sync behaviour as `config.json`. One difference: a virtual key skips only the grant that names an unknown relay, while a project or access profile naming one is skipped as a whole, with a warning.
 
 A key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, so its own `relay_grants` are not applied. Grant the relay on the access profile instead.
 

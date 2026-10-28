@@ -1168,8 +1168,8 @@ bifrost:
       #   mcp_configs:
       #     - mcp_client_id: 1
       #       tools_to_execute: ["tool1", "tool2"]
-      #   # Relays this key may call (names from bifrost.relays). Omit to keep grants made in the
-      #   # dashboard; a declared list ([] included) replaces them when the key syncs from this file.
+      #   # Relays this key may call (names from bifrost.relays). When the key syncs from this file the
+      #   # list replaces the stored one, so grants made in the dashboard need to be listed here too.
       #   relay_grants:
       #     - relay_name: "tavily"
     modelConfigs: []

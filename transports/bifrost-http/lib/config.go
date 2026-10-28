@@ -5536,9 +5536,10 @@ func updateGovernanceConfigInStore(
 			if err := config.ConfigStore.UpdateVirtualKey(ctx, &virtualKey, tx); err != nil {
 				return fmt.Errorf("failed to update virtual key %s: %w", virtualKey.ID, err)
 			}
-			// UpdateVirtualKey writes scalar columns only. Grants the file declares replace the stored
-			// ones; a key that omits the field keeps the grants made through the API.
-			if virtualKey.RelayGrants != nil && !governed.skipKeyLimits(virtualKey.ID) {
+			// UpdateVirtualKey writes scalar columns only. A key synced from the file takes the file's
+			// declaration as a whole, as its provider and MCP configs do: the grants it lists replace the
+			// stored ones, and a key that lists none is left with none.
+			if !governed.skipKeyLimits(virtualKey.ID) {
 				names := []string{}
 				if len(virtualKey.RelayGrants) > 0 {
 					stored, err := relayNamesForGrants()

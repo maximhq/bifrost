@@ -857,8 +857,8 @@ expect_render_failure "scim: schema rejects a URL in tokenExchangeHosts" "tokenE
   --set 'bifrost.scim.config.tokenExchangeHosts[0]=https://auth.example.com'
 
 # Relays render as top-level relays exactly as declared, and relay_grants reach virtual keys,
-# projects and access profiles. A key's relay_grants: [] replaces its grants with none when it syncs,
-# while an omitted field keeps the ones made through the API, so the two must render differently.
+# projects and access profiles, as declared: an explicit relay_grants: [] stays in the rendered key
+# (the key hash records it) and an omitted one stays omitted.
 cat > "$VALUES_DIR/relay-values.yaml" << 'VALS'
 bifrost:
   relays:

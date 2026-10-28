@@ -2601,7 +2601,7 @@
                   },
                   "relay_grants": {
                     "type": "array",
-                    "description": "Relays this key may call, one by one. Omit to keep grants made through the API; a declared list ([] included) replaces them when the key syncs from config.json. Renders into relay_grants.",
+                    "description": "Relays this key may call, one by one. When the key is synced from config.json this is its whole list: omitted or [] leaves it with none. Renders into relay_grants.",
                     "items": {
                       "$ref": "#/$defs/virtual_key_relay_grant"
                     }
