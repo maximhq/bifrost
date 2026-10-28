@@ -90,6 +90,7 @@ func (m *MCPManager) executeToolWithHooks(
 		deadline = schemas.NoDeadline
 	}
 	ctx = schemas.NewBifrostContext(ctx, deadline)
+	defer ctx.Cancel()
 
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
