@@ -39,10 +39,24 @@ type ModelMatcher func(provider, model string, allowed []string) bool
 // There is one scoping slot, not a list. A request is scoped by at most one thing at a time, and
 // composing under one mode is what keeps every answer here decidable.
 type Access struct {
-	bases   []schemas.Permit
-	scoping schemas.Permit
-	mode    CompositionMode
-	matcher ModelMatcher
+	bases        []schemas.Permit
+	scoping      schemas.Permit
+	mode         CompositionMode
+	matcher      ModelMatcher
+	aliasTargets AliasTargets // optional; what a requested name can become through key aliases
+}
+
+// AliasTargets calls visit with each model that key aliases map model to on provider. It is how an
+// access learns what a requested name can become once key selection has resolved it, so a blacklist
+// on that model is not side-stepped by naming it through an alias.
+type AliasTargets func(provider, model string, visit func(target string))
+
+// WithAliasTargets sets the alias-target source and returns the access. A nil access is left alone.
+func (a *Access) WithAliasTargets(f AliasTargets) *Access {
+	if a != nil {
+		a.aliasTargets = f
+	}
+	return a
 }
 
 // NewAccess folds the permits the caller holds together with the permit scoping this request,
@@ -706,7 +720,7 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 		}
 		found = true
 		if a.permitsModel(pp, model) {
-			return true
+			return a.aliasTargetsNotBlacklisted(p, provider, model)
 		}
 	}
 	// A provider the permit lists keeps its own model rules even under allow-all; only a provider it
@@ -715,6 +729,22 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 		return true
 	}
 	return false
+}
+
+// aliasTargetsNotBlacklisted reports that no model model can become through a key alias is blacklisted
+// by the permit. It does nothing, and costs one scan of the permit's provider permits, unless the
+// permit blacklists something for provider and an alias source is set.
+func (a *Access) aliasTargetsNotBlacklisted(p schemas.Permit, provider, model string) bool {
+	if a.aliasTargets == nil || !blacklistsAnything(p, provider) {
+		return true
+	}
+	ok := true
+	a.aliasTargets(provider, model, func(target string) {
+		if ok && blacklistsModel(p, provider, target) {
+			ok = false
+		}
+	})
+	return ok
 }
 
 // permitsModel applies one provider permit's allowed-models rule, through the matcher when there is

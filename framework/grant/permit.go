@@ -277,6 +277,19 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 	return false
 }
 
+// blacklistsAnything reports whether any of the permit's provider permits for provider blocks any model.
+func blacklistsAnything(p schemas.Permit, provider string) bool {
+	if isNilPermit(p) {
+		return false
+	}
+	for _, pp := range p.ProviderPermits() {
+		if pp.Provider == provider && len(pp.BlacklistedModels) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func allowsAgent(p schemas.Permit, agentName string) bool {
 	return !isNilPermit(p) && slices.Contains(p.AgentPermits(), agentName)
 }

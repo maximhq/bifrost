@@ -1053,7 +1053,7 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher()).WithAliasTargets(p.aliasTargets)
 	g.SetAccess(access)
 	return access, nil
 }
@@ -1075,6 +1075,19 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 		}
 		return p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
 	}
+}
+
+// aliasTargets is how an access learns which models a requested name can become through the
+// provider's key aliases, resolved only at key selection.
+func (p *GovernancePlugin) aliasTargets(provider, model string, visit func(target string)) {
+	if p.inMemoryStore == nil {
+		return
+	}
+	cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
+	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) {
+		return
+	}
+	modelcatalog.KeyAliasTargets(model, cfg.Keys, visit)
 }
 
 // resolveLimits settles the limits an attempt answers to, now that the provider and model it will
@@ -2007,7 +2020,7 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher()).WithAliasTargets(p.aliasTargets)
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)

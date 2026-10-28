@@ -1555,6 +1555,65 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 	}
 }
 
+// A blacklist wins over a key alias (#6620 review): a virtual key that allows claude-* and blocks
+// claude-opus-4-6 refuses a request that names the blocked model through an alias, through the whole
+// hook chain, while an alias of a model it does not block is still admitted. A virtual key with no
+// blacklist pays nothing extra: it reads the provider no more often than the same request did
+// before the alias targets were consulted.
+func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
+	const plainVKValue = "sk-bf-plain-alias-vk"
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+			"best-model": {ModelID: "claude-opus-4-6"},
+			"good-model": {ModelID: "claude-sonnet-4-6"},
+		}}}},
+	}}}
+	blocking := buildProviderConfig("anthropic", []string{"regex:^claude-.*"})
+	blocking.BlacklistedModels = schemas.BlackList{"claude-opus-4-6"}
+	vk := buildVirtualKeyWithProviders("vk-blocking", mcpTestVKValue, "blocking-vk", []configstoreTables.TableVirtualKeyProviderConfig{blocking})
+	plain := buildVirtualKeyWithProviders("vk-plain", plainVKValue, "plain-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"regex:^claude-.*"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk, *plain},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	run := func(vkValue, model string) (blocked bool, lookups int) {
+		ctx := presentCtx(vkValue)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: model}}
+		before := store.single
+		require.NoError(t, plugin.PreRequestHook(ctx, req))
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		return shortCircuit != nil, store.single - before
+	}
+	for _, tc := range []struct {
+		model   string
+		blocked bool
+	}{
+		{"best-model", true},         // an alias of the blacklisted model
+		{"claude-opus-4-6", true},    // the blacklisted model itself
+		{"good-model", false},        // an alias of a model the key does not block
+		{"claude-sonnet-4-6", false}, // an ordinary allowed model
+	} {
+		blocked, _ := run(mcpTestVKValue, tc.model)
+		assert.Equal(t, tc.blocked, blocked, tc.model)
+	}
+
+	// The key without a blacklist admits the alias of opus, and reads the provider for its model
+	// check no more often than a request that names no alias at all.
+	blocked, aliasLookups := run(plainVKValue, "best-model")
+	assert.False(t, blocked)
+	_, literalLookups := run(plainVKValue, "claude-opus-4-6")
+	t.Logf("provider lookups, no blacklist: alias request %d, literal request %d", aliasLookups, literalLookups)
+	assert.Equal(t, literalLookups, aliasLookups)
+}
+
 // Inline batch items reach the provider exactly as written: key selection resolves the request's
 // own model, never an item's. An item is therefore held to its literal name, so an alias of an
 // allowed model that is also a real upstream model cannot slip through as the allowed one.
