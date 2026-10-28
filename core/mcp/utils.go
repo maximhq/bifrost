@@ -859,6 +859,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
 	var skipped []schemas.SkippedMCPTool
+	invalid := make(map[string]struct{})
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
@@ -866,6 +867,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
 		if err := validateNormalizedToolName(validationName); err != nil {
 			// The same invalid tools come back on every sync: warn the first time only.
+			invalid[mcpTool.Name] = struct{}{}
 			if _, seen := warned.LoadOrStore(clientName+"\x00"+mcpTool.Name, struct{}{}); seen {
 				logger.Debug("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
 			} else {
@@ -894,12 +896,32 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
+	// Keep only the invalid tools this sync returned, so names that come and go cannot
+	// grow the record without limit.
+	pruneSkippedToolWarnings(warned, clientName, invalid)
+
 	return &listToolsResult{
 		tools:           tools,
 		toolNameMapping: toolNameMapping,
 		rawCount:        len(toolsResponse.Tools),
 		skipped:         skipped,
 	}, nil
+}
+
+// pruneSkippedToolWarnings deletes the invalid-tool warning records of clientName whose tool
+// name is not in keep. A nil keep deletes all of them.
+func pruneSkippedToolWarnings(warned *sync.Map, clientName string, keep map[string]struct{}) {
+	prefix := clientName + "\x00"
+	warned.Range(func(key, _ any) bool {
+		k, ok := key.(string)
+		if !ok || !strings.HasPrefix(k, prefix) {
+			return true
+		}
+		if _, kept := keep[strings.TrimPrefix(k, prefix)]; !kept {
+			warned.Delete(key)
+		}
+		return true
+	})
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.

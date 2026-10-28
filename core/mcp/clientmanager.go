@@ -2226,6 +2226,11 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			renegotiate = client.Conn != nil && !wasDisabled && needsRenegotiation(client.Conn.ProtocolVersion(), oldMax, newMax)
 		}
 
+		// Warnings are recorded under the client name: drop the old name's on a rename.
+		if oldName := client.ExecutionConfig.Name; oldName != updatedConfig.Name {
+			m.forgetSkippedToolWarnings(oldName)
+		}
+
 		// Atomically replace the config pointer
 		client.ExecutionConfig = newConfig
 		clientName = updatedConfig.Name
@@ -4123,14 +4128,8 @@ func unmatchedToolSelections(selected schemas.WhiteList, toolMap map[string]sche
 	return unmatched
 }
 
-// forgetSkippedToolWarnings drops the invalid-tool warning record of a removed client, so a
-// client added later under the same name warns about its invalid tools again.
+// forgetSkippedToolWarnings drops the invalid-tool warning record of a removed or renamed
+// client, so a client added later under the same name warns about its invalid tools again.
 func (m *MCPManager) forgetSkippedToolWarnings(clientName string) {
-	prefix := clientName + "\x00"
-	m.skippedToolWarned.Range(func(key, _ any) bool {
-		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
-			m.skippedToolWarned.Delete(key)
-		}
-		return true
-	})
+	pruneSkippedToolWarnings(&m.skippedToolWarned, clientName, nil)
 }
