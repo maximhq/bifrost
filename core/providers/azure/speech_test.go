@@ -567,6 +567,81 @@ func TestAzureSpeechSynthesisWire(t *testing.T) {
 	})
 }
 
+// TestAzureSpeechBillsTheSynthesizedVoice pins that a voice whose suffix differs from the requested
+// model is priced as that suffix: Azure synthesizes, and bills, the voice it is sent.
+func TestAzureSpeechBillsTheSynthesizedVoice(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		model  string
+		voice  string
+		input  string
+		served string
+	}{
+		{name: "HD voice under neural", model: "neural", voice: "en-US-Ava:DragonHDLatestNeural", input: "Hi", served: "DragonHDLatestNeural"},
+		{name: "voice suffix wins over another suffix model", model: "DragonHDLatestNeural", voice: "en-US-Harper:MAI-Voice-2.1-Flash", input: "Hi", served: "MAI-Voice-2.1-Flash"},
+		{name: "HD voice in SSML under neural", model: "neural", input: `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="en-US-Andrew:DragonHDLatestNeural">Hi</voice></speak>`, served: "DragonHDLatestNeural"},
+		{name: "standard voice under neural", model: "neural", voice: "en-US-AvaNeural", input: "Hi"},
+		{name: "voice takes the model suffix", model: "MAI-Voice-2.1-Flash", voice: "en-US-Harper", input: "Hi"},
+	}
+	for _, tt := range tests {
+		request := &schemas.BifrostSpeechRequest{
+			Provider: schemas.Azure,
+			Model:    tt.model,
+			Input:    &schemas.SpeechInput{Input: tt.input},
+			Params:   &schemas.SpeechParameters{},
+		}
+		if tt.voice != "" {
+			request.Params.VoiceConfig = &schemas.SpeechVoiceInput{Voice: new(tt.voice)}
+		}
+		assertServed := func(t *testing.T, got *string) {
+			t.Helper()
+			switch {
+			case tt.served == "" && got != nil:
+				t.Errorf("served model = %q, want none", *got)
+			case tt.served != "" && (got == nil || *got != tt.served):
+				t.Errorf("served model = %v, want %q", got, tt.served)
+			}
+		}
+		t.Run(tt.name+"/Speech", func(t *testing.T) {
+			t.Parallel()
+			upstream := newAzureSpeechUpstream(t)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			resp, bifrostErr := newAzureSpeechTestProvider(t).Speech(ctx, newAzureSpeechTestKey(upstream.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("Speech: %+v", bifrostErr.Error)
+			}
+			assertServed(t, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+		})
+		t.Run(tt.name+"/SpeechStream", func(t *testing.T) {
+			t.Parallel()
+			upstream := newAzureSpeechUpstream(t)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			postHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return resp, err
+			}
+			stream, bifrostErr := newAzureSpeechTestProvider(t).SpeechStream(ctx, postHook, nil, newAzureSpeechTestKey(upstream.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("SpeechStream: %+v", bifrostErr.Error)
+			}
+			var done *schemas.BifrostSpeechStreamResponse
+			for chunk := range stream {
+				if chunk.BifrostError != nil {
+					t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+				}
+				if r := chunk.BifrostSpeechStreamResponse; r != nil && r.Type == schemas.SpeechStreamResponseTypeDone {
+					done = r
+				}
+			}
+			if done == nil {
+				t.Fatal("no done event")
+			}
+			assertServed(t, done.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+		})
+	}
+}
+
 func TestAzureSpeechTranscriptionWire(t *testing.T) {
 	t.Parallel()
 	upstream := newAzureSpeechUpstream(t)
@@ -868,6 +943,7 @@ func BenchmarkToAzureSpeechSSML(b *testing.B) {
 	for b.Loop() {
 		ssml, _ := ToAzureSpeechSSML("MAI-Voice-2.1-Flash", request)
 		_ = azureSpeechBillableChars(ssml)
+		_ = azureSpeechServedModel("MAI-Voice-2.1-Flash", *request.Params.VoiceConfig.Voice)
 	}
 }
 
