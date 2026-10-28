@@ -1670,3 +1670,83 @@ func TestAddMCPClient_PerUserHeadersCreatesWhenTheCredentialCannotBeKept(t *test
 	_, err = h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", mgr.added[0].ID)
 	assert.Error(t, err, "no admin credential was kept")
 }
+
+// TestAddMCPClient_MissingConnectionTargetIs400 pins that a client created without
+// the target its connection type needs is a caller error: 400 with the reason, and
+// nothing is stored or handed to the runtime. It was a 500 after a create and a
+// rollback.
+func TestAddMCPClient_MissingConnectionTargetIs400(t *testing.T) {
+	for _, tc := range []struct {
+		body, name, want string
+	}{
+		{body: `{"name":"no_url","connection_type":"http","auth_type":"none"}`, name: "no_url", want: "connection_string is required for http connection type"},
+		{body: `{"name":"no_command","connection_type":"stdio","auth_type":"none"}`, name: "no_command", want: "stdio_config is required for stdio connection type"},
+		{body: `{"name":"empty_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":""}}`, name: "empty_command", want: "stdio_config.command is required for stdio connection type"},
+		{body: `{"name":"blank_command","connection_type":"stdio","auth_type":"none","stdio_config":{"command":"  "}}`, name: "blank_command", want: "stdio_config.command is required for stdio connection type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, mgr := newOpenAPITestHandler(t)
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, tc.body, "", false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+			_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), tc.name)
+			assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+		})
+	}
+}
+
+// TestUpdateMCPClient_RenameToATakenNameIs409 pins that renaming a client to
+// another client's name answers 409, like creating one with that name, and
+// applies nothing. It was a 500.
+func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	for _, name := range []string{"petstore", "petstore_b"} {
+		createBody, _ := json.Marshal(map[string]any{
+			"name": name, "connection_type": "openapi", "auth_type": "none",
+			"tools_to_execute": []string{"listPets"},
+			"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+		})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+	}
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	second := mgr.added[1]
+
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore"}`, second.ID, false)
+	require.Equal(t, fasthttp.StatusConflict, status, respBody)
+	assert.Contains(t, respBody, "An MCP client with this name already exists")
+	assert.Empty(t, mgr.updated, "the runtime client is not touched")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
+}
+
+// reconnectRecordingMCPManager records reconnect calls and answers them as the
+// server does for an id it has no config for.
+type reconnectRecordingMCPManager struct {
+	MCPManager
+	reconnected []string
+}
+
+// ReconnectMCPClient records the id and reports it unknown.
+func (m *reconnectRecordingMCPManager) ReconnectMCPClient(_ context.Context, id string) error {
+	m.reconnected = append(m.reconnected, id)
+	return fmt.Errorf("MCP client '%s' not found", id)
+}
+
+// TestReconnectMCPClient_UnknownIDIsNotFound pins that reconnecting an id no
+// client has answers 404, like refreshing its tools, without reaching the
+// runtime. It was a 500.
+func TestReconnectMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &reconnectRecordingMCPManager{}
+	h := &MCPHandler{
+		store:      &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
+		mcpManager: mgr,
+	}
+	status, respBody := doMCPRequest(t, h.reconnectMCPClient, fasthttp.MethodPost, "", "no-such-client", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "mcp client not found")
+	assert.Empty(t, mgr.reconnected)
+}

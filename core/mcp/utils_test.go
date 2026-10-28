@@ -569,6 +569,19 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 	}
 }
 
+// TestValidateMCPClientConfig_STDIONeedsACommand: a STDIO client with an empty or blank command is
+// refused. mcp-go starts no process for one and leaves its stdout nil, and its reader goroutine then
+// panics on it, which took the whole process down.
+func TestValidateMCPClientConfig_STDIONeedsACommand(t *testing.T) {
+	for _, command := range []string{"", "   "} {
+		cfg := &schemas.MCPClientConfig{
+			ID: "stdio", Name: "stdio_client", ConnectionType: schemas.MCPConnectionTypeSTDIO,
+			StdioConfig: &schemas.MCPStdioConfig{Command: command},
+		}
+		require.ErrorContains(t, validateMCPClientConfig(cfg), "command is required", "command %q", command)
+	}
+}
+
 // TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
 // Bifrost's client at the upstream authorization server, at config load too,
 // and no exchange client of its own: it always exchanges as the SSO app, so the

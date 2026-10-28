@@ -1653,6 +1653,23 @@ func (p *headerRewritingPipeline) RunMCPPostConnectionHooks(_ *schemas.BifrostCo
 	return resp, bifrostErr
 }
 
+// TestCreateSTDIOConnection_RefusesAnEmptyCommandFromAHook: a connection hook may replace the
+// STDIO command, and an empty one is refused like an empty configured command. mcp-go starts no
+// process for it and leaves stdout nil, and its reader goroutine then panics on it.
+func TestCreateSTDIOConnection_RefusesAnEmptyCommandFromAHook(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "stdio-hooked", Name: "stdio_hooked", ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig: &schemas.MCPStdioConfig{Command: "echo"},
+	}
+	for _, command := range []string{"", "   "} {
+		conn, _, err := m.createSTDIOConnection(context.Background(), config, &schemas.BifrostMCPConnectRequest{StdioCommand: &command})
+		require.Error(t, err, "command %q", command)
+		assert.Contains(t, err.Error(), "stdio command is required")
+		assert.Nil(t, conn)
+	}
+}
+
 // TestConnect_OpenAPI_PluginAdjustedHeadersReachUpstream: as for HTTP and SSE,
 // the static headers a PreMCPConnectionHook leaves on the connect request are
 // what the upstream receives. A header the plugin adds is sent, one it drops is
