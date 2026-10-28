@@ -1309,3 +1309,69 @@ func TestOutboundTokenCallIsNotRetried(t *testing.T) {
 	}
 	assert.Equal(t, 1, tokenCalls, "a token-bearing call must be sent once")
 }
+
+// perMessageTokenHookPlugin sets a token derived from the call's own message argument.
+type perMessageTokenHookPlugin struct {
+	schemas.MCPPluginNoOpHooks
+}
+
+func (p *perMessageTokenHookPlugin) GetName() string { return "perMessageTokenHookPlugin" }
+func (p *perMessageTokenHookPlugin) Cleanup() error  { return nil }
+
+func (p *perMessageTokenHookPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	var args struct {
+		Message string `json:"message"`
+	}
+	if req.ChatAssistantMessageToolCall != nil {
+		_ = json.Unmarshal([]byte(req.ChatAssistantMessageToolCall.Function.Arguments), &args)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, "tok-"+args.Message)
+	return req, nil, nil
+}
+
+// TestOutboundTokenSharedContextParallelCallsAreIsolated proves parallel calls on the instance's
+// shared context (nil ctx) each send the token their own hook set.
+func TestOutboundTokenSharedContextParallelCallsAreIsolated(t *testing.T) {
+	t.Parallel()
+
+	ts, _ := buildAuthEchoServer(t)
+	manager := setupMCPManager(t)
+	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
+		Account:    &testAccount{},
+		MCPPlugins: []schemas.MCPPlugin{&perMessageTokenHookPlugin{}},
+		Logger:     core.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	bf.SetMCPManager(manager)
+	removeClientsOnCleanup(t, manager)
+
+	clientName := "outbound_shared_ctx"
+	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID:                     clientName + "-id",
+		Name:                   clientName,
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		AuthType:               schemas.MCPAuthTypeHeaders,
+		Headers:                map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar(outboundStaticAuth)},
+		ToolsToExecute:         []string{"*"},
+		NeedsSessionStickiness: schemas.Ptr(true),
+	}))
+
+	const calls = 24
+	outs := make([]string, calls)
+	errs := make([]*schemas.BifrostError, calls)
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			outs[idx], errs[idx] = callOutboundEcho(bf, nil, clientName, fmt.Sprintf("m%d", idx))
+		}(i)
+	}
+	wg.Wait()
+	for i := range calls {
+		require.Nil(t, errs[i])
+		msg := fmt.Sprintf("m%d", i)
+		assert.Equal(t, msg+"|Bearer tok-"+msg, outs[i])
+	}
+}

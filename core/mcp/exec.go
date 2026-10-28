@@ -83,13 +83,13 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
-	// A hook's write to the outbound token key applies to this call only.
-	prevToken, _ := ctx.Value(schemas.BifrostContextKeyMCPOutboundToken).(string)
-	defer func() {
-		if cur, _ := ctx.Value(schemas.BifrostContextKeyMCPOutboundToken).(string); cur != prevToken {
-			ctx.SetValue(schemas.BifrostContextKeyMCPOutboundToken, prevToken)
-		}
-	}()
+	// Hooks write to a context of this call's own: a nil ctx means the instance-wide one, and
+	// parallel calls sharing it must not see each other's outbound token.
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = schemas.NoDeadline
+	}
+	ctx = schemas.NewBifrostContext(ctx, deadline)
 
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Resolve and acquire after PreMCPHook so policy plugins can reject denied
