@@ -358,9 +358,19 @@ Input: messages,
 
 Bound the total duration of a single request or stream, end to end. Arms once per call, including every configured fallback attempt -- a request that falls back to N other providers is still bound by the same declared deadline, not N times it. The same holds for MCP agent mode: tool execution and every later model turn share the one deadline. Applies to both streaming and non-streaming requests.
 
-Independent of any per-chunk stream-idle timeout: setting one does not imply or stretch the other. A caller who wants both a total budget and a tighter idle tolerance sets both headers. A caller who only sets `x-bf-request-timeout` keeps the server's configured stream idle timeout. A caller who only sets `x-bf-stream-idle-timeout` has no total deadline, because an unset `x-bf-request-timeout` arms no timer.
+Independent of any per-chunk stream-idle timeout: setting one does not imply or stretch the other. A caller who wants both a total budget and a tighter idle tolerance sets both headers. A caller who only sets `x-bf-request-timeout` keeps the server's configured stream idle timeout. A caller who only sets `x-bf-stream-idle-timeout` has no total deadline unless the gateway sets `client.default_request_timeout`, because an unset `x-bf-request-timeout` arms no timer otherwise.
 
 Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds). Header values are clamped to 30 minutes. Go SDK callers that set `BifrostContextKeyRequestTimeout` directly are not clamped.
+
+**Gateway-wide default.** Set `client.default_request_timeout` (config.json, Helm `bifrost.client.defaultRequestTimeout`, or **Config → Client Settings → Default Request Timeout** in the UI) to give every gateway request this deadline without each caller sending the header. A valid `x-bf-request-timeout` header replaces the default for that request, shorter or longer (still capped at 30 minutes); a missing, `0`, or unparseable header leaves the default in place. `0` or unset means no default, which is the behavior before this setting existed. The default has the same 30-minute maximum as the header, and it applies to the HTTP gateway only: Go SDK callers set `BifrostContextKeyRequestTimeout` themselves.
+
+```json
+{
+  "client": {
+    "default_request_timeout": "30s"
+  }
+}
+```
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -403,7 +413,7 @@ When the deadline fires, Bifrost sets the internal `BifrostContextKeyRequestTime
 
 Override the per-chunk idle timeout for a single request's stream: if no data arrives within this window, Bifrost closes the connection. Lets one caller widen (or tighten) the idle tolerance without changing the provider's own `stream_idle_timeout_in_seconds` config, which applies to every caller of that provider.
 
-Independent of the total request/stream deadline (`x-bf-request-timeout`): setting one does not imply or stretch the other. A caller who wants both a total budget and a looser idle tolerance sets both headers. A caller who sets only `x-bf-stream-idle-timeout` has no total deadline, because an unset `x-bf-request-timeout` arms no timer. A caller who sets only `x-bf-request-timeout` keeps the server's configured stream idle timeout.
+Independent of the total request/stream deadline (`x-bf-request-timeout`): setting one does not imply or stretch the other. A caller who wants both a total budget and a looser idle tolerance sets both headers. A caller who sets only `x-bf-stream-idle-timeout` has no total deadline unless the gateway sets `client.default_request_timeout`. A caller who sets only `x-bf-request-timeout` keeps the server's configured stream idle timeout.
 
 Accepts duration strings (`"30s"`, `"9m"`, `"1h"`) or plain numbers (treated as seconds). Clamped to 30 minutes.
 

@@ -926,6 +926,13 @@
               "description": "Cooldown after a virtual key rotation: grace period during which the previous key value still authenticates. Accepts a Go duration string (e.g. \"5m\", \"1h\"); integer values are nanoseconds, so prefer strings. 0 or an empty string disables the grace period. Maximum 30 days. Maps to client.vk_rotation_cooldown.",
               "default": 0
             },
+            "defaultRequestTimeout": {
+              "type": ["string", "integer"],
+              "minimum": 0,
+              "maximum": 1800000000000,
+              "description": "Default total deadline for a request or stream that does not send an x-bf-request-timeout header, across every fallback attempt. Accepts a Go duration string (e.g. \"30s\", \"5m\"); integer values are nanoseconds, so prefer strings. 0 or an empty string means no default. Maximum 30 minutes. Maps to client.default_request_timeout.",
+              "default": 0
+            },
             "mcpExternalClientUrl": {
               "type": "string",
               "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers. Maps to client.mcp_external_client_url."

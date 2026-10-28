@@ -54,6 +54,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - **Amazon SageMaker** - `bifrost.providers.sagemaker` routes requests to SageMaker real-time endpoints. Set `sagemaker_key_config.region`; leave out `access_key` and `secret_key` to use the default AWS credentials (for example IRSA). Models are endpoint names.
 - **Azure Speech and Voice Live** - In `azure_key_config`, `use_speech_endpoints: true` sends speech and transcription to Azure AI Speech, and `use_voice_live_endpoints: true` sends realtime sessions to Azure Voice Live. An alias can override either.
 - **Passthrough allow list** - `bifrost.providers.<name>.passthrough.allowed_routes` limits which HTTP passthrough routes reach a provider, by `path` (`*` and `/**` globs) and optional `methods`. An empty list forwards nothing.
+- **Default request timeout** - `bifrost.client.defaultRequestTimeout` (for example `"30s"`, default `0` = none, max `30m`) sets a total deadline for every request that does not send an `x-bf-request-timeout` header, across all fallback attempts. Maps to `client.default_request_timeout`.
 
 **Dashboard**
 

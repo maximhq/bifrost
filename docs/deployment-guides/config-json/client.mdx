@@ -271,6 +271,14 @@ The max MCP protocol version is set under `mcp`, not `client`: use `mcp.max_prot
 
 ---
 
+## Default Request Timeout
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_request_timeout` | string or integer | `0` | Total deadline for a request or stream that sends no `x-bf-request-timeout` header, across every fallback attempt and MCP agent turn. Go duration string (`"30s"`, `"5m"`); integers are nanoseconds. `0` = no default. Maximum `30m`. A valid header replaces it per request. See [Request Timeout](/providers/request-options#request-timeout). |
+
+---
+
 ## Prometheus Labels
 
 Add custom labels to every Prometheus metric emitted by Bifrost:

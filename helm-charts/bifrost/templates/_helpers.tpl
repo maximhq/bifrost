@@ -495,6 +495,9 @@ false
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "defaultRequestTimeout" }}
+{{- $_ := set $client "default_request_timeout" .Values.bifrost.client.defaultRequestTimeout }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "mcpDisableAutoToolInject" }}
 {{- $_ := set $client "mcp_disable_auto_tool_inject" .Values.bifrost.client.mcpDisableAutoToolInject }}
 {{- end }}

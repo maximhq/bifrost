@@ -53,6 +53,12 @@ ClientConfig:
       maximum: 2592000000000000
       default: 0
       description: Cooldown after virtual key rotation - grace period during which the previous key value still authenticates. Writes accept a Go duration string (e.g. "5m", "1h"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string disables the grace period, revoking the previous value immediately on the next rotation. Maximum 30 days.
+    default_request_timeout:
+      type: [string, integer]
+      minimum: 0
+      maximum: 1800000000000
+      default: 0
+      description: Default total deadline for a request or stream that does not send an x-bf-request-timeout header. One budget covers every fallback attempt and MCP agent turn; when it fires, the request fails with 504. A valid x-bf-request-timeout header replaces it for that request. Writes accept a Go duration string (e.g. "30s", "5m"); integer values and API responses are nanoseconds (Go duration encoding). 0 or an empty string means no default. Maximum 30 minutes.
     enforce_governance_header:
       type: boolean
       deprecated: true
