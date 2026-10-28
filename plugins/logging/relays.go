@@ -69,6 +69,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	if len(req.Body) > 0 {
 		entry.RequestBody = boundedBody(req.Body)
 	}
+	// A streamed reply has no body until core/relay buffers it as it forwards bytes; that buffering
+	// only pays its cost when the content policy would keep the body anyway, so the decision is
+	// resolved once here and handed to core/relay as a plain bool, mirroring how bifrost.go stamps
+	// BifrostContextKeyShouldStoreRawInLogs for the LLM path.
+	ctx.SetValue(schemas.BifrostContextKeyShouldCaptureRelayContent, p.resolveContentPolicy(ctx).storeContent)
 	p.pendingEndpointLogs.Store(requestID, entry)
 	return req, nil, nil
 }
