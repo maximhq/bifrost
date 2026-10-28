@@ -1492,7 +1492,12 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 // neither allowed nor an alias of an allowed model is still refused.
 func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}}}},
+		// k2 is restricted to other models, so key selection never picks it for these names and
+		// its missing alias must not veto the request.
+		schemas.OpenAI: {Keys: []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
+			{ID: "k2", Models: schemas.WhiteList{"embedding-*"}},
+		}},
 	}}}
 	vk := buildVirtualKeyWithProviders("vk-alias", mcpTestVKValue, "alias-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"gpt-4o"}),

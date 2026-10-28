@@ -366,6 +366,12 @@ func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, 
 		if keys[i].Enabled != nil && !*keys[i].Enabled {
 			continue
 		}
+		// Key selection drops a key whose models or blacklisted_models list excludes the requested
+		// name (both are written in alias names), so that key can never serve it and its missing
+		// alias must not veto the request. Mirrors the list checks of core's keySupportsModel.
+		if !keys[i].Models.IsAllowed(model) || keys[i].BlacklistedModels.IsBlocked(model) {
+			continue
+		}
 		// Same resolution as schemas.KeyAliases.ResolveConfig (exact name, then case-insensitive),
 		// without the pointer it returns, which would allocate on this per-request path. When names
 		// differing only in case map to different models, every one must be allowed.

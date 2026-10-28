@@ -69,11 +69,17 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 	mc.initCaches()
 	provider := schemas.Bedrock
 	const canonical = "us.anthropic.claude-sonnet-4-6"
+	// Real keys carry a models list; an empty one allows nothing, so core never selects such a key.
+	anyModel := schemas.WhiteList{"*"}
 	withAliases := func(aliases ...schemas.KeyAliases) *configstore.ProviderConfig {
 		cfg := &configstore.ProviderConfig{}
 		for _, a := range aliases {
-			cfg.Keys = append(cfg.Keys, schemas.Key{Aliases: a})
+			cfg.Keys = append(cfg.Keys, schemas.Key{Aliases: a, Models: anyModel})
 		}
+		return cfg
+	}
+	withExtraKey := func(cfg *configstore.ProviderConfig, extra schemas.Key) *configstore.ProviderConfig {
+		cfg.Keys = append(cfg.Keys, extra)
 		return cfg
 	}
 	withDisabled := func(cfg *configstore.ProviderConfig, extra schemas.Key) *configstore.ProviderConfig {
@@ -107,6 +113,12 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 		{"the canonical id itself is still allowed", canonical, withAliases(sonnet), schemas.WhiteList{canonical}, true},
 		{"an alias in the list is still matched by name", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{"claude-sonnet"}, true},
 		{"the canonical id is not opened by an alias-only allowlist", canonical, withAliases(sonnet), schemas.WhiteList{"claude-sonnet"}, false},
+		// Key selection drops a key whose models or blacklisted_models list excludes the requested
+		// name, so such a key can never serve it and its missing alias must not veto the request.
+		{"a key restricted to other models cannot serve the name, so it does not veto", "claude-sonnet", withExtraKey(withAliases(sonnet), schemas.Key{Models: schemas.WhiteList{"titan-*"}}), schemas.WhiteList{canonical}, true},
+		{"a key that blacklists the name cannot serve it, so it does not veto", "claude-sonnet", withExtraKey(withAliases(sonnet), schemas.Key{Models: anyModel, BlacklistedModels: schemas.BlackList{"claude-sonnet"}}), schemas.WhiteList{canonical}, true},
+		{"a key that lists the name without the alias could be selected, so it still vetoes", "claude-sonnet", withExtraKey(withAliases(sonnet), schemas.Key{Models: schemas.WhiteList{"claude-sonnet"}}), schemas.WhiteList{canonical}, false},
+		{"when key selection would drop every key nothing is admitted", "claude-sonnet", withExtraKey(&configstore.ProviderConfig{}, schemas.Key{Aliases: sonnet, Models: schemas.WhiteList{"titan-*"}}), schemas.WhiteList{canonical}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,14 +147,21 @@ func BenchmarkIsModelAllowedForProvider_ExplicitList(b *testing.B) {
 		for a := 0; a < 20; a++ {
 			aliases[fmt.Sprintf("alias-%d", a)] = schemas.AliasConfig{ModelID: fmt.Sprintf("us.vendor.model-%d", a)}
 		}
-		cfg.Keys = append(cfg.Keys, schemas.Key{Aliases: aliases})
+		cfg.Keys = append(cfg.Keys, schemas.Key{Aliases: aliases, Models: schemas.WhiteList{"*"}})
 	}
 	allowed := schemas.WhiteList{"us.vendor.model-19", "us.vendor.other"}
-	for _, tc := range []struct{ name, model string }{
-		{"direct", "us.vendor.other"},
-		{"alias", "alias-19"},
-		{"blocked", "not-a-model"},
+	for _, tc := range []struct {
+		name, model string
+		want        bool
+	}{
+		{"direct", "us.vendor.other", true},
+		{"alias", "alias-19", true},
+		{"blocked", "not-a-model", false},
 	} {
+		// Fail instead of timing a path that returns early with the wrong verdict.
+		if got := mc.IsModelAllowedForProvider(schemas.Bedrock, tc.model, cfg, allowed); got != tc.want {
+			b.Fatalf("%s: IsModelAllowedForProvider(%q) = %v, want %v", tc.name, tc.model, got, tc.want)
+		}
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
