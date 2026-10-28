@@ -294954,6 +294954,208 @@
           ]
         }
       ]
+    },
+    {
+      "name": "286. Prometheus overhead latency histogram is emitted for HTTP requests (overhead latency metric) [SERIAL]",
+      "description": "The telemetry plugin observes bifrost_overhead_latency_microseconds in HTTPTransportPostHook, but the labels and the upstream-latency counter it needs were set by PostLLMHook on the handler's BifrostContext, a separate context from the transport middleware's. Values never flow back from handler to transport context, so the transport hook always found no labels and returned, and the SDK fallback in PostLLMHook is skipped for HTTP requests. The histogram was never emitted over HTTP, while bifrost_overhead_component_microseconds (keyed by trace ID) worked. Each case scrapes /metrics, sends one request, and polls /metrics until _count grows on the request's own series (provider openai, model gpt-4o-mini, method chat_completion or chat_completion_stream). No request header can make a series unique to one request, so the folder is [SERIAL]: it runs alone against the gateway and no concurrent request can move the count. Red before the fix: the count never moves. The Go-level pin is TestOverheadLatencyRecordedAcrossTransportAndHandlerContexts.",
+      "item": [
+        {
+          "name": "286.1 /v1/chat/completions openai/gpt-4o-mini request grows bifrost_overhead_latency_microseconds on /metrics (overhead latency metric)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function overheadCount(text) {",
+                  "  var n = 0;",
+                  "  (text || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('bifrost_overhead_latency_microseconds_count{') !== 0) { return; }",
+                  "    if (l.indexOf('provider=\"openai\"') === -1 || l.indexOf('model=\"gpt-4o-mini\"') === -1 || l.indexOf('method=\"chat_completion\"') === -1) { return; }",
+                  "    var parts = l.trim().split(' ');",
+                  "    n += parseFloat(parts[parts.length - 1]);",
+                  "  });",
+                  "  return n;",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET' }, function (err, res) {",
+                  "  pm.variables.set('overheadBaseline286_1', (!err && res.code === 200) ? String(overheadCount(res.text())) : 'scrape-failed:' + (err ? String(err) : res.code));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function overheadCount(text) {",
+                  "  var n = 0;",
+                  "  (text || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('bifrost_overhead_latency_microseconds_count{') !== 0) { return; }",
+                  "    if (l.indexOf('provider=\"openai\"') === -1 || l.indexOf('model=\"gpt-4o-mini\"') === -1 || l.indexOf('method=\"chat_completion\"') === -1) { return; }",
+                  "    var parts = l.trim().split(' ');",
+                  "    n += parseFloat(parts[parts.length - 1]);",
+                  "  });",
+                  "  return n;",
+                  "}",
+                  "pm.test('overhead metric: request succeeded', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'choices missing: ' + pm.response.text().slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.choices[0].message, 'choices[0].message missing: ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "var baseline = pm.variables.get('overheadBaseline286_1');",
+                  "pm.test('overhead metric: /metrics baseline scrape succeeded', function () { pm.expect(String(baseline), 'GET /metrics before the request failed').to.not.match(/^scrape-failed/); });",
+                  "if (pm.response.code !== 200 || /^scrape-failed/.test(String(baseline))) { return; }",
+                  "var start = parseFloat(baseline);",
+                  "function poll(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET' }, function (err, res) {",
+                  "    var now = (!err && res.code === 200) ? overheadCount(res.text()) : -1;",
+                  "    if (now > start || attempt >= 9) {",
+                  "      pm.test('overhead metric: bifrost_overhead_latency_microseconds observed the request', function () {",
+                  "        pm.expect(err, 'GET /metrics failed').to.equal(null);",
+                  "        pm.expect(res.code, 'GET /metrics status: ' + (res && res.text().slice(0, 300))).to.eql(200);",
+                  "        pm.expect(now, 'bifrost_overhead_latency_microseconds_count{provider=openai,model=gpt-4o-mini,method=chat_completion} did not grow (before ' + start + ', after ' + now + '); the histogram is never observed for HTTP requests').to.be.above(start);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { poll(attempt + 1); }, 500);",
+                  "  });",
+                  "}",
+                  "poll(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "286.2 /v1/chat/completions openai/gpt-4o-mini stream request grows bifrost_overhead_latency_microseconds on /metrics (overhead latency metric)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function overheadCount(text) {",
+                  "  var n = 0;",
+                  "  (text || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('bifrost_overhead_latency_microseconds_count{') !== 0) { return; }",
+                  "    if (l.indexOf('provider=\"openai\"') === -1 || l.indexOf('model=\"gpt-4o-mini\"') === -1 || l.indexOf('method=\"chat_completion_stream\"') === -1) { return; }",
+                  "    var parts = l.trim().split(' ');",
+                  "    n += parseFloat(parts[parts.length - 1]);",
+                  "  });",
+                  "  return n;",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET' }, function (err, res) {",
+                  "  pm.variables.set('overheadBaseline286_2', (!err && res.code === 200) ? String(overheadCount(res.text())) : 'scrape-failed:' + (err ? String(err) : res.code));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function overheadCount(text) {",
+                  "  var n = 0;",
+                  "  (text || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('bifrost_overhead_latency_microseconds_count{') !== 0) { return; }",
+                  "    if (l.indexOf('provider=\"openai\"') === -1 || l.indexOf('model=\"gpt-4o-mini\"') === -1 || l.indexOf('method=\"chat_completion_stream\"') === -1) { return; }",
+                  "    var parts = l.trim().split(' ');",
+                  "    n += parseFloat(parts[parts.length - 1]);",
+                  "  });",
+                  "  return n;",
+                  "}",
+                  "pm.test('overhead metric stream: request succeeded', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, body.slice(0, 500)).to.eql(200);",
+                  "  pm.expect(/^data: \\{.*\"choices\"/m.test(body), 'no data chunk carrying choices: ' + body.slice(0, 500)).to.equal(true);",
+                  "  pm.expect(body.trim().slice(-12), 'stream did not end with data: [DONE]: ' + body.slice(-500)).to.eql('data: [DONE]');",
+                  "});",
+                  "var baseline = pm.variables.get('overheadBaseline286_2');",
+                  "pm.test('overhead metric stream: /metrics baseline scrape succeeded', function () { pm.expect(String(baseline), 'GET /metrics before the request failed').to.not.match(/^scrape-failed/); });",
+                  "if (pm.response.code !== 200 || /^scrape-failed/.test(String(baseline))) { return; }",
+                  "var start = parseFloat(baseline);",
+                  "function poll(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET' }, function (err, res) {",
+                  "    var now = (!err && res.code === 200) ? overheadCount(res.text()) : -1;",
+                  "    if (now > start || attempt >= 9) {",
+                  "      pm.test('overhead metric stream: bifrost_overhead_latency_microseconds observed the request', function () {",
+                  "        pm.expect(err, 'GET /metrics failed').to.equal(null);",
+                  "        pm.expect(res.code, 'GET /metrics status: ' + (res && res.text().slice(0, 300))).to.eql(200);",
+                  "        pm.expect(now, 'bifrost_overhead_latency_microseconds_count{provider=openai,model=gpt-4o-mini,method=chat_completion_stream} did not grow (before ' + start + ', after ' + now + '); the histogram is never observed for HTTP requests').to.be.above(start);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { poll(attempt + 1); }, 500);",
+                  "  });",
+                  "}",
+                  "poll(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
