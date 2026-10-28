@@ -5231,6 +5231,33 @@ func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T
 	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
 }
 
+func TestUpsertModelPricesBatch_VideoTokenColumnSurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	rate := 0.000007
+
+	row := tables.TableModelPricing{Model: "dreamina-seedance-2-0-260128", Provider: "byteplus", Mode: "video_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.OutputCostPerVideoToken = &rate
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "dreamina-seedance-2-0-260128" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.OutputCostPerVideoToken, "output_cost_per_video_token missing from pricingSyncUpdateColumns")
+	assert.Equal(t, rate, *found.OutputCostPerVideoToken)
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —
