@@ -109,6 +109,28 @@ func TestOllamaModelRetrieve(t *testing.T) {
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
 }
 
+// TestOllamaKeyURLFromReferenceIsTrimmed pins that a key URL resolved from an env.
+// reference is trimmed like network_config.base_url: the configstore migration moves a
+// provider's base_url reference onto a key, and the variable may hold whitespace.
+func TestOllamaKeyURLFromReferenceIsTrimmed(t *testing.T) {
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"llama3.2:3b","object":"model","created":1727740800,"owned_by":"library"}`))
+	}))
+	defer keyServer.Close()
+	t.Setenv("BIFROST_TEST_OLLAMA_KEY_URL", " "+keyServer.URL+"/\n")
+
+	provider, err := ollama.NewOllamaProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar("env.BIFROST_TEST_OLLAMA_KEY_URL")}}
+	response, bifrostErr := provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "llama3.2:3b"})
+	require.Nil(t, bifrostErr)
+	require.Equal(t, "ollama/llama3.2:3b", response.ID)
+}
+
 const ollamaDecisionResponseBody = `{"model":"nimble","answers":{"is_red":{"type":"noul","noul":0.91}},"usage":{"input_tokens":42,"output_tokens":0}}`
 
 func newOllamaDecisionRequest(input schemas.DecisionInput) *schemas.BifrostDecisionRequest {

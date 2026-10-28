@@ -178,6 +178,24 @@ func TestSGLDecision_PostsToSystemOne(t *testing.T) {
 	require.ElementsMatch(t, []string{"state", "model", "questions"}, sglKeysOf(top))
 }
 
+// A key URL resolved from an env. reference is trimmed like network_config.base_url:
+// the configstore migration moves a provider's base_url reference onto a key, and the
+// variable may hold whitespace.
+func TestSGLDecision_KeyURLFromReferenceIsTrimmed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, sglDecisionResponseBody)
+	}))
+	defer server.Close()
+	t.Setenv("BIFROST_TEST_SGL_KEY_URL", "\t"+server.URL+"/ ")
+
+	provider := newSGLDecisionProvider(t, "")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{SGLKeyConfig: &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("env.BIFROST_TEST_SGL_KEY_URL")}}
+	_, bifrostErr := provider.Decision(ctx, key, newSGLDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+	require.Nil(t, bifrostErr)
+}
+
 func sglKeysOf(m map[string]json.RawMessage) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {

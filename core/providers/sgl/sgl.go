@@ -76,8 +76,12 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 // getBaseURL resolves the base URL for a request from the per-key sgl_key_config.
 // Each SGL key must have its own URL configured and falls back to provider-level base_url if not configured.
 func (provider *SGLProvider) getBaseURL(key schemas.Key) string {
-	if key.SGLKeyConfig != nil && key.SGLKeyConfig.URL.GetValue() != "" {
-		return strings.TrimRight(key.SGLKeyConfig.URL.GetValue(), "/")
+	// Trimmed like network_config.base_url, whose reference a migrated key carries: the
+	// variable may hold surrounding whitespace.
+	if key.SGLKeyConfig != nil {
+		if keyURL := strings.TrimSpace(key.SGLKeyConfig.URL.GetValue()); keyURL != "" {
+			return strings.TrimRight(keyURL, "/")
+		}
 	}
 	if provider.networkConfig.BaseURL.GetValue() != "" {
 		return strings.TrimRight(provider.networkConfig.BaseURL.GetValue(), "/")

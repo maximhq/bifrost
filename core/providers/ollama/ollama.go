@@ -73,8 +73,12 @@ func (provider *OllamaProvider) GetProviderKey() schemas.ModelProvider {
 // getBaseURL resolves the base URL for a request from the per-key ollama_key_config.
 // Each Ollama key must have its own URL configured and falls back to provider-level base_url if not configured.
 func (provider *OllamaProvider) getBaseURL(key schemas.Key) string {
-	if key.OllamaKeyConfig != nil && key.OllamaKeyConfig.URL.GetValue() != "" {
-		return strings.TrimRight(key.OllamaKeyConfig.URL.GetValue(), "/")
+	// Trimmed like network_config.base_url, whose reference a migrated key carries: the
+	// variable may hold surrounding whitespace.
+	if key.OllamaKeyConfig != nil {
+		if keyURL := strings.TrimSpace(key.OllamaKeyConfig.URL.GetValue()); keyURL != "" {
+			return strings.TrimRight(keyURL, "/")
+		}
 	}
 	if provider.networkConfig.BaseURL.GetValue() != "" {
 		return strings.TrimRight(provider.networkConfig.BaseURL.GetValue(), "/")
