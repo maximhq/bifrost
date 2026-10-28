@@ -5873,6 +5873,33 @@ func TestRelayLogContentPolicy(t *testing.T) {
 	})
 }
 
+// A streamed relay reply has no body to log until core/relay buffers it as it forwards bytes, so
+// PreRelayHook stamps the resolved content policy onto the context as a plain bool
+// (BifrostContextKeyRelayContentLoggingEnabledByDefault) for core/relay to read before it opens
+// the stream, the same shape bifrost.go uses for BifrostContextKeyShouldStoreRawInLogs on the LLM path.
+func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
+	t.Run("on by default", func(t *testing.T) {
+		plugin := policyTestPlugin(nil, nil, false)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		ctx := policyCtx(false, nil)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-on")
+		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+		require.NoError(t, err)
+		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
+		require.True(t, capture)
+	})
+	t.Run("off when the plugin disables content logging", func(t *testing.T) {
+		plugin := policyTestPlugin(boolPtr(true), nil, false)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		ctx := policyCtx(false, nil)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-off")
+		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+		require.NoError(t, err)
+		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
+		require.False(t, capture)
+	})
+}
+
 // BenchmarkRelayLogHooks measures the logging cost of one relay call on the request path: the
 // pre-hook capture and the post-hook that completes and queues the row.
 func BenchmarkRelayLogHooks(b *testing.B) {
