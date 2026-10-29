@@ -534,6 +534,8 @@ func applyServedTierToEntry(entry *logstore.Log, result *schemas.BifrostResponse
 		case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
 			r := result.ResponsesStreamResponse.Response
 			serviceTier, speed, inferenceGeo = r.ServiceTier, r.Speed, r.InferenceGeo
+		case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+			serviceTier = result.PassthroughResponse.PassthroughUsage.ServiceTier
 		}
 	}
 	if usage != nil {
@@ -823,6 +825,7 @@ func applyRealtimeRawRequestBackfill(entry *logstore.Log, rawRequest any, conten
 	}
 	if inputHistory := extractRealtimeInputHistoryFromRawRequest(rawStr); len(inputHistory) > 0 {
 		entry.InputHistoryParsed = mergeRealtimeInputHistory(entry.InputHistoryParsed, inputHistory)
+		recordRealtimeInputItems(entry, rawStr)
 	}
 }
 

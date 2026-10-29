@@ -276,7 +276,8 @@ Click **Create Project**.
 6. **Providers.** Add a provider, then choose all models or an explicit allowlist, optionally a denylist, which keys may serve it, a weight, and any per-provider or per-model money.
 7. **MCP configurations.** Choose which tools the project may execute under **MCP servers**, and assign any **Virtual MCPs** it should reach.
 8. **Project budget** and **Rate limit.** Add one or more budget lines, each with an amount and a reset window, then optionally a **Maximum tokens** and **Maximum requests** limit. **Align to calendar cycle** moves every window on the project onto the calendar.
-9. **Accounting.** Choose **Both budgets**, **Project only** or **User only**, and a split of **No split** or **Equal**.
+9. **Content logging.** Leave **Inherit from virtual key**, or choose **Off for this project** or **On for this project** to override the caller's key. See [Content logging](#content-logging).
+10. **Accounting.** Choose **Both budgets**, **Project only** or **User only**, and a split of **No split** or **Equal**.
 
 <Frame>
   <img
@@ -408,7 +409,7 @@ All routes require the `Projects` resource, with the operation implied by the me
 
 ### Create a project
 
-`access_rule` is required. `membership_mode`, `accounting_mode` and `split_policy` default to `explicit`, `both` and `none`. Members are not accepted here; they are their own endpoint.
+`access_rule` is required. `membership_mode`, `accounting_mode` and `split_policy` default to `explicit`, `both` and `none`. `disable_content_logging` is unset by default, which inherits the caller's virtual key setting. Members are not accepted here; they are their own endpoint.
 
 ```bash
 curl -X POST "$BIFROST_URL/api/governance/projects" \
@@ -475,7 +476,7 @@ curl -X PUT "$BIFROST_URL/api/governance/projects/$PROJECT_ID/members/$MEMBER_ID
 
 ### Update a project
 
-Every field is optional and read-then-patch: a field you omit is left alone, while an explicit `null` clears it. Child lists are matched by id, so restate the ids you read to update them and leave out the ones you want removed. Adding `"reset_budget_usage": true` clears recorded spend on the budgets the edit restates, along with each member's slice of them.
+Every field is optional and read-then-patch: a field you omit is left alone, while an explicit `null` clears it. For `disable_content_logging`, `null` clears the project's decision back to inheriting the virtual key's. Child lists are matched by id, so restate the ids you read to update them and leave out the ones you want removed. Adding `"reset_budget_usage": true` clears recorded spend on the budgets the edit restates, along with each member's slice of them.
 
 ```bash
 curl -X PUT "$BIFROST_URL/api/governance/projects/$PROJECT_ID" \
@@ -511,6 +512,35 @@ Every request scoped to a project carries it through the whole observability sta
 **Traces and metrics.** Spans carry `bifrost.project.id` and `bifrost.project.name`. Prometheus and OpenTelemetry metrics carry `project_id` and `project_name` labels on both request and MCP metrics. Because a request is scoped to at most one project, these are always scalar; there is no plural form as there is for teams and customers.
 
 **Warehouse exports.** BigQuery carries `project_id` and `project_name` columns, and the Datadog and Splunk exporters carry them as tags and attributes.
+
+---
+
+## Content logging
+
+A project can decide whether the content of the requests scoped to it is stored, and its decision overrides the caller's virtual key. Set it with **Content logging** in the project's editor, `disable_content_logging` in the API, or `governance.projects[].disable_content_logging` in `config.json`.
+
+| Setting | The project's traffic |
+|---|---|
+| **Inherit from virtual key** (omitted or `null`) | Follows the caller's virtual key, or the gateway-wide `client.disable_content_logging` when the key has no setting or the caller has no key |
+| **Off for this project** (`true`) | Content is kept out of the log store and stripped from observability connector export, even when the caller's key turns content on |
+| **On for this project** (`false`) | Content is stored in the log store, even when the caller's key or the gateway setting turns it off. A key's connector stripping is lifted, and each connector follows its own setting |
+
+The decision applies to every request the project admits. The `x-bf-disable-content-logging` header still overrides it for a single request while per-request overrides are allowed. A request that names no project is unaffected.
+
+```bash
+curl -X PUT "$BIFROST_URL/api/governance/projects/$PROJECT_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "disable_content_logging": true }'
+
+# Clear the decision back to inherit
+curl -X PUT "$BIFROST_URL/api/governance/projects/$PROJECT_ID" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "disable_content_logging": null }'
+```
+
+See [Content Logging](/features/observability/content-logging) for how the gateway, virtual key, project, header and connector settings compose.
 
 ---
 

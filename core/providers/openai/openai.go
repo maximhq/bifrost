@@ -997,10 +997,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ChatParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return HandleOpenAIChatCompletionRequest(
@@ -1234,10 +1231,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, keyErr
 	}
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ChatParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	// Use shared streaming logic
@@ -1857,7 +1851,9 @@ func HandleOpenAIChatCompletionStreaming(
 						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
-						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
+						len(choice.ChatStreamResponseChoice.Delta.Images) > 0 ||
+						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0 ||
+						len(choice.ChatStreamResponseChoice.Delta.ExtraContent) > 0) {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						forwardedTerminalFinishReason = true
 					}
@@ -1985,10 +1981,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ResponsesParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	return HandleOpenAIResponsesRequest(
@@ -2182,10 +2175,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return nil, keyErr
 	}
 	if provider.disableStore {
-		if request.Params == nil {
-			request.Params = &schemas.ResponsesParameters{}
-		}
-		request.Params.Store = schemas.Ptr(false)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
 	}
 
 	// Use shared streaming logic
@@ -4381,7 +4371,7 @@ func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schema
 		provider.client,
 		provider.buildRequestURL(ctx, openAIDecisionsPath, schemas.DecisionRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

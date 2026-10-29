@@ -42,6 +42,7 @@ type fakeSession struct {
 	fake         *fakeOpenAI
 	id           string
 	transport    string
+	upstream     string // "openai", or "azure" for a session created under /openai/v1/live
 	marker       string
 	model        string
 	backend      string
@@ -208,16 +209,20 @@ func (f *fakeOpenAI) Stop() {
 	_ = f.srv.Shutdown(ctx)
 }
 
-// route dispatches the four live paths.
+// route dispatches the four live paths. Azure serves the same routes under /openai on the resource.
 func (f *fakeOpenAI) route(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/v1/live/sessions")
+	upstream, livePath := "openai", r.URL.Path
+	if rest, ok := strings.CutPrefix(livePath, "/openai"); ok && strings.HasPrefix(rest, "/v1/live/sessions") {
+		upstream, livePath = "azure", rest
+	}
+	path := strings.TrimPrefix(livePath, "/v1/live/sessions")
 	switch {
 	case path == "" && r.Method == http.MethodGet:
-		f.servePrimary(w, r)
+		f.servePrimary(w, r, upstream)
 	case path == "" && r.Method == http.MethodPost:
-		f.serveWebRTCCreate(w, r)
+		f.serveWebRTCCreate(w, r, upstream)
 	case strings.HasSuffix(path, "/attach") && r.Method == http.MethodGet:
-		f.serveAttach(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/attach"))
+		f.serveAttach(w, r, upstream, strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/attach"))
 	case strings.HasSuffix(path, "/content") && r.Method == http.MethodGet:
 		f.serveContent(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/content"))
 	case r.URL.Path == "/v1/responses" && r.Method == http.MethodPost:
@@ -233,8 +238,16 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "invalid_request_error", "code": code, "message": message}})
 }
 
+// upstreamAuth is the credential a connection presented: Azure's api-key header, else Authorization.
+func upstreamAuth(r *http.Request) string {
+	if key := r.Header.Get("api-key"); key != "" {
+		return "api-key " + key
+	}
+	return r.Header.Get("Authorization")
+}
+
 // newSession registers a session from a session object and hands it to the test waiting on its marker.
-func (f *fakeOpenAI) newSession(transport, auth string, session gjson.Result) *fakeSession {
+func (f *fakeOpenAI) newSession(transport, upstream, auth string, session gjson.Result) *fakeSession {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
@@ -242,6 +255,7 @@ func (f *fakeOpenAI) newSession(transport, auth string, session gjson.Result) *f
 		fake:         f,
 		id:           fmt.Sprintf("live_fake_%s_%d", f.run, f.nextID),
 		transport:    transport,
+		upstream:     upstream,
 		marker:       session.Get("instructions").Str,
 		model:        session.Get("model").Str,
 		backend:      session.Get("delegation.responses.model").Str,
@@ -301,12 +315,12 @@ func (f *fakeOpenAI) lookup(id string) *fakeSession {
 }
 
 // servePrimary is the WebSocket a session lives on: session.start first, then the conversation.
-func (f *fakeOpenAI) servePrimary(w http.ResponseWriter, r *http.Request) {
+func (f *fakeOpenAI) servePrimary(w http.ResponseWriter, r *http.Request, upstream string) {
 	if status := int(f.refuseStatus.Load()); status != 0 {
 		writeOpenAIError(w, status, "server_error", "the provider refused the session")
 		return
 	}
-	auth := r.Header.Get("Authorization")
+	auth := upstreamAuth(r)
 	conn, err := f.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -318,7 +332,14 @@ func (f *fakeOpenAI) servePrimary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	s := f.newSession("websocket", auth, gjson.GetBytes(first, "session"))
+	if strings.HasSuffix(gjson.GetBytes(first, "session.instructions").Str, startupErrorMarker) {
+		// A session the provider cannot start gets an error instead of session.started, then a hang-up.
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"unsupported_feature","message":"`+startupErrorMessage+`","param":"session.store"}}`))
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_ = conn.Close()
+		return
+	}
+	s := f.newSession("websocket", upstream, auth, gjson.GetBytes(first, "session"))
 	s.recordFrame(first)
 	c := &wsFakeConn{conn: conn}
 	s.addConn(c)
@@ -331,9 +352,10 @@ func (f *fakeOpenAI) servePrimary(w http.ResponseWriter, r *http.Request) {
 func (f *fakeOpenAI) SetRefuse(status int) { f.refuseStatus.Store(int32(status)) }
 
 // serveAttach is a sideband: only a WebRTC (or SIP) primary accepts one, as OpenAI does.
-func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id string) {
+func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, upstream, id string) {
 	s := f.lookup(id)
-	if s == nil || s.transport == "websocket" {
+	// A session is only reachable on the upstream that created it.
+	if s == nil || s.upstream != upstream || s.transport == "websocket" {
 		writeOpenAIError(w, http.StatusNotFound, "session_not_found", "no attachable session "+id)
 		return
 	}
@@ -341,7 +363,7 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 	if err != nil {
 		return
 	}
-	c := &wsFakeConn{conn: conn, auth: r.Header.Get("Authorization")}
+	c := &wsFakeConn{conn: conn, auth: upstreamAuth(r)}
 	s.addConn(c)
 	_ = c.send(s.startedFrame())
 	s.readLoop(conn, c)
@@ -349,8 +371,14 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 
 const invalidWebRTCAnswerMarker = " [invalid-webrtc-answer]"
 
+// A session.start whose instructions end with startupErrorMarker is refused with startupErrorMessage.
+const (
+	startupErrorMarker  = " [startup-error]"
+	startupErrorMessage = "Stored Live sessions are not available yet."
+)
+
 // serveWebRTCCreate answers Bifrost's SDP offer with a pion peer and waits for its data channel.
-func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
+func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request, upstream string) {
 	if status := int(f.refuseStatus.Load()); status != 0 {
 		writeOpenAIError(w, status, "server_error", "the provider refused the session")
 		return
@@ -366,12 +394,17 @@ func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "transport.sdp is required")
 		return
 	}
+	// Azure's session config is strict and has no client field, whatever its value.
+	if upstream == "azure" && gjson.GetBytes(body.Session, "client").Exists() {
+		writeOpenAIError(w, http.StatusBadRequest, "unknown_parameter", "Unknown parameter: 'session.client'.")
+		return
+	}
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	s := f.newSession("webrtc", r.Header.Get("Authorization"), gjson.ParseBytes(body.Session))
+	s := f.newSession("webrtc", upstream, upstreamAuth(r), gjson.ParseBytes(body.Session))
 	s.recordFrame([]byte(`{"type":"session.start","session":` + string(body.Session) + `}`))
 	// A provider can create a billable session before its answer fails relay setup.
 	if strings.HasSuffix(s.marker, invalidWebRTCAnswerMarker) {
@@ -533,6 +566,7 @@ func fakeRecording() []byte {
 func (s *fakeSession) ID() string         { return s.id }
 func (s *fakeSession) Auth() string       { return s.auth }
 func (s *fakeSession) Transport() string  { return s.transport }
+func (s *fakeSession) Upstream() string   { return s.upstream }
 func (s *fakeSession) StartModel() string { return s.model }
 func (s *fakeSession) StartBackend() string {
 	return s.backend

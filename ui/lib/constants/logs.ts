@@ -4,6 +4,7 @@ export const KnownProvidersNames = [
 	"azure",
 	"bedrock",
 	"bedrock_mantle",
+	"sagemaker",
 	"cerebras",
 	"cohere",
 	"deepseek",
@@ -30,6 +31,8 @@ export const KnownProvidersNames = [
 	"fireworks",
 	"sarvam",
 	"wafer",
+	"minimax",
+	"byteplus",
 	"databricks",
 	"cloudflare",
 	"github-copilot",
@@ -45,8 +48,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 // "Add Provider" picker and the first-party-integration nudge so users cannot configure
 // them from the UI. Everything else (types, schemas, icons, labels) still resolves, so a
 // provider configured via config.json continues to render correctly.
-// TODO: remove "github-copilot" once the integration has been tested and released.
-export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>(["github-copilot"]);
+export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>([]);
 
 // Known providers that users can add from the UI.
 export const VisibleProviderNames: readonly ProviderName[] = KnownProvidersNames.filter((name) => !HiddenProviders.has(name));
@@ -71,6 +73,8 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"vllm",
 	"databricks",
 	"cloudflare",
+	"byteplus",
+	"github-copilot",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -155,6 +159,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	azure: "Azure",
 	bedrock: "AWS Bedrock",
 	bedrock_mantle: "AWS Bedrock Mantle",
+	sagemaker: "AWS SageMaker",
 	cohere: "Cohere",
 	deepseek: "DeepSeek",
 	vertex: "Vertex AI",
@@ -180,6 +185,8 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
+	minimax: "MiniMax",
+	byteplus: "BytePlus",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",

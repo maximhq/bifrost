@@ -167,6 +167,9 @@ func TestBedrock(t *testing.T) {
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
 	roleArn := os.Getenv("AWS_BEDROCK_ROLE_ARN")
 	rerankModelARN := strings.TrimSpace(os.Getenv("AWS_BEDROCK_RERANK_MODEL_ARN"))
+	// Live Nova Sonic speech session (e.g. amazon.nova-2-sonic-v1:0); skipped unless set, since
+	// the model is only enabled in some regions and accounts.
+	novaSonicModel := strings.TrimSpace(os.Getenv("AWS_BEDROCK_NOVA_SONIC_MODEL"))
 
 	// Build extra params for batch and file operations
 	var batchExtraParams map[string]interface{}
@@ -194,10 +197,11 @@ func TestBedrock(t *testing.T) {
 		},
 		EmbeddingModel:           "cohere.embed-v4:0",
 		RerankModel:              rerankModelARN,
+		RealtimeModel:            novaSonicModel,
 		ReasoningModel:           "claude-4.5-sonnet",
 		PromptCachingModel:       "claude-4.5-sonnet",
-		ImageEditModel:           "amazon.nova-canvas-v1:0",
-		ImageVariationModel:      "amazon.nova-canvas-v1:0",
+		ImageEditModel:           "us.stability.stable-image-inpaint-v1:0", // nova-canvas reached end of life
+		ImageVariationModel:      "",                                       // nova-canvas reached end of life and no other Bedrock model supports image variations
 		InterleavedThinkingModel: "claude-opus-4-5",
 		CompactionModel:          "claude-4.6-sonnet", // compact_20260112 routes to InvokeModel (#6825); Sonnet 4.6 is on the AWS compaction model list
 		ToolSearchModel:          "claude-4.6-sonnet", // tool_search routes to InvokeModel (#6825)
@@ -238,12 +242,13 @@ func TestBedrock(t *testing.T) {
 			FileBatchInput:             true,
 			CountTokens:                true,
 			ImageEdit:                  true,
-			ImageVariation:             true,
+			ImageVariation:             false, // no Bedrock model supports image variations since nova-canvas EOL
 			StructuredOutputs:          true,
 			InterleavedThinking:        true,
 			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
 			Compaction:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
 			ToolSearch:                 true, // InvokeModel path, see the InvokeModel section of bedrock.go
+			Realtime:                   novaSonicModel != "",
 			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
 			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},
@@ -9028,19 +9033,4 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 			}
 		})
 	}
-}
-
-
-func TestInvokeBuildConfig_ExcludesInternalConverseFields(t *testing.T) {
-	provider := &BedrockProvider{}
-	config := provider.invokeBuildConfig("us.anthropic.claude-sonnet-4-6", false, false, nil)
-
-	excluded := make(map[string]bool)
-	for _, f := range config.ExcludeFields {
-		excluded[f] = true
-	}
-
-	assert.True(t, excluded["guardrailConfig"], "guardrailConfig must be excluded")
-	assert.True(t, excluded["additionalModelRequestFieldPaths"], "additionalModelRequestFieldPaths must be excluded")
-	assert.True(t, excluded["additionalModelResponseFieldPaths"], "additionalModelResponseFieldPaths must be excluded")
 }

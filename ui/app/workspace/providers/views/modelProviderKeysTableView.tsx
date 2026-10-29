@@ -305,6 +305,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															(key.vertex_key_config?.region?.type && key.vertex_key_config.region.type !== "plain_text") ||
 															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
 															(key.bedrock_mantle_key_config?.region?.type && key.bedrock_mantle_key_config.region.type !== "plain_text") ||
+															(key.sagemaker_key_config?.region?.type && key.sagemaker_key_config.region.type !== "plain_text") ||
 															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
 															(key.value?.type && key.value.type !== "plain_text");
 														const isEnvResolutionError =

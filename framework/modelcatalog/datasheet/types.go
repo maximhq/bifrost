@@ -229,6 +229,18 @@ type Options struct {
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+	// Azure Voice Live rates, used on Voice Live turns in place of the matching rates above when set. The
+	// speech rates price the audio Azure Speech handled.
+	InputCostPerTokenVoiceLive                     *float64 `json:"input_cost_per_token_voice_live,omitempty"`
+	OutputCostPerTokenVoiceLive                    *float64 `json:"output_cost_per_token_voice_live,omitempty"`
+	CacheReadInputTokenCostVoiceLive               *float64 `json:"cache_read_input_token_cost_voice_live,omitempty"`
+	InputCostPerAudioTokenVoiceLive                *float64 `json:"input_cost_per_audio_token_voice_live,omitempty"`
+	OutputCostPerAudioTokenVoiceLive               *float64 `json:"output_cost_per_audio_token_voice_live,omitempty"`
+	InputCostPerStandardSpeechAudioTokenVoiceLive  *float64 `json:"input_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerStandardSpeechAudioTokenVoiceLive *float64 `json:"output_cost_per_standard_speech_audio_token_voice_live,omitempty"`
+	InputCostPerCustomSpeechAudioTokenVoiceLive    *float64 `json:"input_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+	OutputCostPerCustomSpeechAudioTokenVoiceLive   *float64 `json:"output_cost_per_custom_speech_audio_token_voice_live,omitempty"`
+
 	// Resolution-banded video output rates, matched on the short edge of the response's
 	// size. Absent band falls back to OutputCostPerVideoPerSecond, then OutputCostPerSecond.
 	OutputCostPerVideoPerSecond480p  *float64 `json:"output_cost_per_video_per_second_480p,omitempty"`
@@ -236,6 +248,10 @@ type Options struct {
 	OutputCostPerVideoPerSecond1024p *float64 `json:"output_cost_per_video_per_second_1024p,omitempty"`
 	OutputCostPerVideoPerSecond1080p *float64 `json:"output_cost_per_video_per_second_1080p,omitempty"`
 	OutputCostPerVideoPerSecond4k    *float64 `json:"output_cost_per_video_per_second_4k,omitempty"`
+
+	// Per-token video output rate, for providers that meter video in tokens (BytePlus Seedance).
+	// Takes precedence over OutputCostPerToken for video output tokens.
+	OutputCostPerVideoToken *float64 `json:"output_cost_per_video_token,omitempty"`
 
 	// Costs - Other.
 	//
@@ -399,6 +415,8 @@ type serviceTier struct {
 	isFast      bool // true when usage.speed == "fast" (Anthropic fast mode)
 	// true when usage.inference_geo == "us" (Anthropic data residency 1.1x multiplier)
 	inferenceGeoUS bool
+	// true when ExtraFields.PricingSurface == voice_live; the turn uses the model's _voice_live rates
+	voiceLive bool
 }
 
 // costInput holds the extracted usage data from a BifrostResponse,
@@ -470,6 +488,8 @@ func normalizeProvider(p string) string {
 		return string(schemas.Runway)
 	case strings.Contains(p, "fireworks_ai"):
 		return string(schemas.Fireworks)
+	case strings.Contains(p, "github_copilot"):
+		return string(schemas.GithubCopilot)
 	default:
 		return p
 	}
@@ -603,6 +623,24 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 		if !slices.Contains(supported, name) {
 			supported = append(supported, name)
 		}
+	}
+
+	// A row with no model_parameters list (93 Bedrock rows in the 2026-10-20
+	// datasheet, e.g. apac.anthropic.claude-sonnet-4-6) declares no parameter
+	// surface at all, so the loop below contributes nothing and the allowlist
+	// shrinks to the capability flags. compat's should_drop_params then strips
+	// max_tokens/temperature/top_p and the provider silently substitutes its
+	// own defaults (bedrock fills MaxTokens from the model default). An
+	// undisclosed parameter list means "unknown", not "unsupported": keep the
+	// universally-supported sampling and token-limit params in the allowlist.
+	// An explicit empty list ([]) is a declared empty surface and gets no defaults.
+	if parsed.ModelParameters == nil {
+		addParam("temperature")
+		addParam("top_p")
+		addParam("stop")
+		addParam("max_tokens")
+		addParam("max_completion_tokens")
+		addParam("max_output_tokens")
 	}
 
 	for _, mp := range parsed.ModelParameters {
@@ -854,11 +892,22 @@ func convertEntryToTablePricing(modelKey string, entry Entry) configstoreTables.
 		OutputCostPerVideoPerSecond: entry.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         entry.OutputCostPerSecond,
 
+		InputCostPerTokenVoiceLive:                     entry.InputCostPerTokenVoiceLive,
+		OutputCostPerTokenVoiceLive:                    entry.OutputCostPerTokenVoiceLive,
+		CacheReadInputTokenCostVoiceLive:               entry.CacheReadInputTokenCostVoiceLive,
+		InputCostPerAudioTokenVoiceLive:                entry.InputCostPerAudioTokenVoiceLive,
+		OutputCostPerAudioTokenVoiceLive:               entry.OutputCostPerAudioTokenVoiceLive,
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  entry.InputCostPerStandardSpeechAudioTokenVoiceLive,
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: entry.OutputCostPerStandardSpeechAudioTokenVoiceLive,
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    entry.InputCostPerCustomSpeechAudioTokenVoiceLive,
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   entry.OutputCostPerCustomSpeechAudioTokenVoiceLive,
+
 		OutputCostPerVideoPerSecond480p:  entry.OutputCostPerVideoPerSecond480p,
 		OutputCostPerVideoPerSecond720p:  entry.OutputCostPerVideoPerSecond720p,
 		OutputCostPerVideoPerSecond1024p: entry.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: entry.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    entry.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          entry.OutputCostPerVideoToken,
 
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       entry.WebSearchCostPerRequest,
@@ -990,11 +1039,22 @@ func convertTablePricingToEntry(pricing *configstoreTables.TableModelPricing) *E
 		OutputCostPerVideoPerSecond: pricing.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:         pricing.OutputCostPerSecond,
 
+		InputCostPerTokenVoiceLive:                     pricing.InputCostPerTokenVoiceLive,
+		OutputCostPerTokenVoiceLive:                    pricing.OutputCostPerTokenVoiceLive,
+		CacheReadInputTokenCostVoiceLive:               pricing.CacheReadInputTokenCostVoiceLive,
+		InputCostPerAudioTokenVoiceLive:                pricing.InputCostPerAudioTokenVoiceLive,
+		OutputCostPerAudioTokenVoiceLive:               pricing.OutputCostPerAudioTokenVoiceLive,
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  pricing.InputCostPerStandardSpeechAudioTokenVoiceLive,
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: pricing.OutputCostPerStandardSpeechAudioTokenVoiceLive,
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    pricing.InputCostPerCustomSpeechAudioTokenVoiceLive,
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   pricing.OutputCostPerCustomSpeechAudioTokenVoiceLive,
+
 		OutputCostPerVideoPerSecond480p:  pricing.OutputCostPerVideoPerSecond480p,
 		OutputCostPerVideoPerSecond720p:  pricing.OutputCostPerVideoPerSecond720p,
 		OutputCostPerVideoPerSecond1024p: pricing.OutputCostPerVideoPerSecond1024p,
 		OutputCostPerVideoPerSecond1080p: pricing.OutputCostPerVideoPerSecond1080p,
 		OutputCostPerVideoPerSecond4k:    pricing.OutputCostPerVideoPerSecond4k,
+		OutputCostPerVideoToken:          pricing.OutputCostPerVideoToken,
 
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		WebSearchCostPerRequest:       pricing.WebSearchCostPerRequest,

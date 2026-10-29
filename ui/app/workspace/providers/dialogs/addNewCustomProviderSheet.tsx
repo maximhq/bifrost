@@ -82,6 +82,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				video_delete: true,
 				video_list: true,
 				video_remix: true,
+				passthrough: true,
+				passthrough_stream: true,
 				count_tokens: true,
 				list_models: true,
 				websocket_responses: true,

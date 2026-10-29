@@ -67,13 +67,13 @@ ProxyConfig:
       type: string
       enum: [none, http, socks5, environment]
     url:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     username:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     password:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
     ca_cert_pem:
-      type: string
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
 
 AzureKeyConfig:
   type: object
@@ -94,6 +94,14 @@ AzureKeyConfig:
       items:
         type: string
       description: List of scopes to use for authentication
+    use_speech_endpoints:
+      type: boolean
+      default: false
+      description: Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI. An alias can override it with its own use_speech_endpoints.
+    use_voice_live_endpoints:
+      type: boolean
+      default: false
+      description: Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it. An alias can override it with its own use_voice_live_endpoints.
 
 VertexKeyConfig:
   type: object
@@ -185,6 +193,35 @@ BedrockKeyConfig:
                 type: string
               is_default:
                 type: boolean
+
+SageMakerKeyConfig:
+  type: object
+  description: AWS SageMaker real-time endpoint key configuration. A pre-minted token in Key.value takes precedence and is sent as is; otherwise Bifrost mints the SageMaker bearer token from these AWS credentials (leave access_key and secret_key empty to use the default AWS credential chain). Passthrough signs requests with AWS credentials and rejects keys that set Key.value.
+  properties:
+    access_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    secret_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_token:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    region:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    role_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    external_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_name:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    endpoints:
+      type: object
+      description: Runtime host override (VPC endpoint, FIPS or dual-stack host)
+      properties:
+        runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+      additionalProperties: false
+  required:
+    - region
+  additionalProperties: false
 
 VllmKeyConfig:
   type: object
@@ -371,6 +408,8 @@ Key:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
+    sagemaker_key_config:
+      $ref: '#/SageMakerKeyConfig'
     vllm_key_config:
       $ref: '#/VllmKeyConfig'
     ollama_key_config:
@@ -423,7 +462,7 @@ AllowedRequests:
       type: boolean
     decisions:
       type: boolean
-      description: Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API
+      description: Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation
     speech:
       type: boolean
     speech_stream:

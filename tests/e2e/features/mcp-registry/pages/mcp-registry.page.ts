@@ -1,4 +1,4 @@
-import { Page, Locator, expect } from '@playwright/test'
+import { APIRequestContext, Page, Locator, expect } from '@playwright/test'
 import { BasePage } from '../../../core/pages/base.page'
 import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
@@ -37,6 +37,8 @@ export interface MCPClientConfig {
   headers?: Record<string, EnvVarLike | string>
   isCodeMode?: boolean
   isPingAvailable?: boolean
+  /** Max protocol version option: 'global', 'auto' or a version */
+  maxProtocolVersion?: string
   // STDIO specific
   command?: string
   args?: string
@@ -83,6 +85,7 @@ export class MCPRegistryPage extends BasePage {
   readonly envsInput: Locator
   // OAuth inputs
   readonly oauthClientIdInput: Locator
+  readonly oauthClientMetadataDocumentSwitch: Locator
   readonly oauthClientSecretInput: Locator
   readonly oauthAuthorizeUrlInput: Locator
   readonly oauthTokenUrlInput: Locator
@@ -128,6 +131,7 @@ export class MCPRegistryPage extends BasePage {
 
     // OAuth inputs
     this.oauthClientIdInput = this.sheet.locator('[data-testid="mcp-oauth-client-id"]').or(this.sheet.getByPlaceholder(/your-client-id/i))
+    this.oauthClientMetadataDocumentSwitch = this.sheet.getByTestId('mcp-oauth-use-client-metadata-document')
     this.oauthClientSecretInput = this.sheet.locator('[data-testid="mcp-oauth-client-secret"]').or(this.sheet.getByPlaceholder(/your-client-secret/i))
     this.oauthAuthorizeUrlInput = this.sheet.locator('[data-testid="mcp-oauth-authorize-url"]').or(this.sheet.getByPlaceholder(/oauth\/authorize/i))
     this.oauthTokenUrlInput = this.sheet.locator('[data-testid="mcp-oauth-token-url"]').or(this.sheet.getByPlaceholder(/oauth\/token/i))
@@ -279,12 +283,100 @@ export class MCPRegistryPage extends BasePage {
     throw new Error('OAuth authorizer action was not shown')
   }
 
+  /** The stored config of the named client over the API. */
+  async storedClientConfig(request: APIRequestContext, name: string): Promise<Record<string, unknown>> {
+    const res = await request.get(`/api/mcp/clients?search=${encodeURIComponent(name)}`)
+    expect(res.ok(), await res.text()).toBe(true)
+    const client = (await res.json()).clients.find((c: { config: { name: string } }) => c.config.name === name)
+    expect(client, `client ${name} is listed`).toBeTruthy()
+    return client.config
+  }
+
+  /** Replaces the named client's prompts/resources allow-lists over the API (omitted lists are kept). */
+  async setExposeLists(
+    request: APIRequestContext,
+    name: string,
+    lists: { prompts_to_expose?: string[]; resources_to_expose?: string[] },
+  ): Promise<void> {
+    const config = await this.storedClientConfig(request, name)
+    const res = await request.put(`/api/mcp/client/${config.client_id}`, { data: lists })
+    expect(res.ok(), await res.text()).toBe(true)
+  }
+
+  /**
+   * Sends one JSON-RPC request to Bifrost's MCP gateway, narrowed to the named client so other
+   * clients of the same fixture server do not answer for it. Returns the parsed JSON-RPC message.
+   */
+  async mcpGatewayCall(
+    request: APIRequestContext,
+    clientName: string,
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<{ result?: Record<string, any>; error?: { code: number; message: string } }> {
+    const res = await request.post('/mcp', {
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        'MCP-Protocol-Version': '2025-06-18',
+        'x-bf-mcp-include-clients': clientName,
+      },
+      data: params ? { jsonrpc: '2.0', id: 1, method, params } : { jsonrpc: '2.0', id: 1, method },
+    })
+    const text = await res.text()
+    expect(res.status(), text).toBe(200)
+    // The gateway answers as plain JSON or as an SSE 'data:' frame.
+    const frame = text.split('\n').map((line) => line.replace(/^data:\s*/, '').trim()).find((line) => line.startsWith('{'))
+    return JSON.parse(frame ?? text)
+  }
+
+  /** Opens the named client's Prompts & Resources tab. */
+  async openPromptsAndResources(name: string): Promise<void> {
+    await this.viewClientDetails(name)
+    await this.detailSheet.getByTestId('mcpclient-tab-resources').click()
+  }
+
+  /** The serve switch of one prompt (by the server's own name) or resource (by URI or URI template). */
+  exposeToggle(kind: 'prompts' | 'resources', key: string): Locator {
+    return this.detailSheet.getByTestId(`mcp-expose-${kind}-toggle-${key}`)
+  }
+
+  /** The "serve all" checkbox of a list. */
+  exposeAll(kind: 'prompts' | 'resources'): Locator {
+    return this.detailSheet.getByTestId(`mcp-expose-${kind}-all`)
+  }
+
+  /** The "All served" / "None served" / "N served" label of a list. */
+  exposeStatus(kind: 'prompts' | 'resources'): Locator {
+    return this.detailSheet.getByTestId(`mcp-expose-${kind}-status`)
+  }
+
+  /** Saves the open detail sheet and waits for it to close. */
+  async saveDetailSheet(): Promise<void> {
+    await this.detailSheet.getByRole('button', { name: /Save/i }).click()
+    await this.waitForSuccessToast()
+    await expect(this.detailSheet).not.toBeVisible({ timeout: 10000 })
+  }
+
+  /** The stored max_protocol_version of the named client over the API ("" = follows the global setting). */
+  async storedMaxProtocolVersion(request: APIRequestContext, name: string): Promise<string> {
+    return ((await this.storedClientConfig(request, name)).max_protocol_version as string | undefined) ?? ''
+  }
+
+  /** Picks a max protocol version option in the open add form or detail sheet. */
+  async selectMaxProtocolVersion(scope: Locator, value: string): Promise<void> {
+    await scope.getByTestId('mcp-client-max-protocol-version-select').click()
+    await this.page.getByTestId(`mcp-client-max-protocol-version-${value}`).click()
+  }
+
   /**
    * Fill the MCP client form with configuration (doesn't submit)
    */
   async fillClientForm(config: MCPClientConfig): Promise<void> {
     // Fill name
     await this.nameInput.fill(config.name)
+
+    if (config.maxProtocolVersion) {
+      await this.selectMaxProtocolVersion(this.sheet, config.maxProtocolVersion)
+    }
 
     // Select connection type if specified
     if (config.connectionType) {
@@ -415,18 +507,22 @@ export class MCPRegistryPage extends BasePage {
     await tab.click()
   }
 
-  /** Type a document into the Paste editor (Monaco), replacing its content */
-  async pasteOpenAPISpec(text: string): Promise<void> {
-    const editor = this.sheet.getByTestId('openapi-spec-paste-editor')
+  /** Set the Paste editor's (Monaco) document under `root`, replacing its content */
+  async pasteOpenAPISpec(text: string, root: Locator = this.sheet): Promise<void> {
+    const editor = root.getByTestId('openapi-spec-paste-editor')
     await expect(editor).toBeVisible({ timeout: 10000 })
-    const textarea = editor.locator('textarea.inputarea')
-    await textarea.waitFor({ state: 'attached', timeout: 10000 })
-    await editor.locator('.monaco-editor').first().click()
-    await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-    await this.page.keyboard.press('Backspace')
-    // insertText bypasses Monaco's auto-closing brackets/quotes, which would
-    // otherwise corrupt a typed JSON document.
-    await this.page.keyboard.insertText(text)
+    await editor.locator('textarea.inputarea').waitFor({ state: 'attached', timeout: 10000 })
+    // The replace panel keeps the editor read-only while it loads the stored document.
+    await expect(root.getByTestId('openapi-replace-spec-loading')).toHaveCount(0, { timeout: 10000 })
+    // Keystrokes and insertText go through Monaco's typing path, where auto-indent and
+    // auto-closing brackets rewrite a JSON document, so the model is set directly.
+    await editor.evaluate(async (el, value) => {
+      // Two frames let React register the editor's change listener, which runs in an effect after mount.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      const monaco = (window as any).monaco
+      const target = monaco.editor.getEditors().find((e: any) => el.contains(e.getContainerDomNode()))
+      target.setValue(value)
+    }, text)
   }
 
   async fillOpenAPISpecUrl(url: string): Promise<void> {
@@ -807,6 +903,10 @@ export class MCPRegistryPage extends BasePage {
       }
     }
 
+    if (updates.maxProtocolVersion) {
+      await this.selectMaxProtocolVersion(this.detailSheet, updates.maxProtocolVersion)
+    }
+
     // Save changes
     const saveBtn = this.detailSheet.getByRole('button', { name: /Save/i })
     await saveBtn.click()
@@ -976,6 +1076,8 @@ export class MCPRegistryPage extends BasePage {
    * Cancel client creation
    */
   async cancelCreation(): Promise<void> {
+    // A toast from the last action can sit over the Cancel button.
+    await this.dismissToasts()
     await this.cancelBtn.click()
     await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
   }

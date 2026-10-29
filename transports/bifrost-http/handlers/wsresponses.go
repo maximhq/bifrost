@@ -13,6 +13,7 @@ import (
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -175,6 +176,8 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 		switch schemas.WebSocketEventType(envelope.Type) {
 		case schemas.WSEventResponseCreate:
 			h.handleResponseCreate(session, auth, message)
+		case schemas.WSEventResponseInterrupt:
+			// Read only after its turn ends; OpenAI ignores it too, and an error here fails the client's next turn.
 		default:
 			writeWSError(session, 400, "invalid_request_error", "unsupported event type: "+envelope.Type)
 		}
@@ -231,6 +234,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 	if parentRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyParentRequestID).(string); parentRequestID == "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyParentRequestID, session.ID())
 	}
+	h.pinSessionKey(bifrostCtx, session, bifrostReq)
 
 	// Rewrite the raw event for upstream: strip provider/ prefix from model,
 	// apply store override. The original bytes contain the bifrost-format model
@@ -249,6 +253,40 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, auth *a
 
 	// Fall back to HTTP bridge
 	h.executeHTTPBridge(session, bifrostCtx, cancel, bifrostReq)
+}
+
+// pinSessionKey keeps a Responses WS turn on the key that served the session's last turn.
+// OpenAI binds a reasoning item's encrypted_content to the organization of the key that minted
+// it, and clients such as Codex replay those items on every turn, so a turn that rotates to a key
+// in another organization fails with invalid_encrypted_content. The pin is the explicit key id,
+// which both the native path and the HTTP bridge honor. A caller's own key pin wins, and a pinned
+// key that has left the pool is dropped so the turn selects a key as usual.
+func (h *WSResponsesHandler) pinSessionKey(ctx *schemas.BifrostContext, session *bfws.Session, req *schemas.BifrostResponsesRequest) {
+	keyID := session.ResponsesKey(req.Provider)
+	if keyID == "" {
+		return
+	}
+	if id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(id) != "" {
+		return
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); strings.TrimSpace(name) != "" {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
+	if _, err := h.client.SelectKeyForProviderRequestType(ctx, schemas.WebSocketResponsesRequest, req.Provider, req.Model); err != nil {
+		ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	}
+}
+
+// isServedResponsesTurn reports whether a terminal event means a key produced the turn's output.
+func isServedResponsesTurn(t schemas.ResponsesStreamResponseType) bool {
+	return t == schemas.ResponsesStreamResponseTypeCompleted || t == schemas.ResponsesStreamResponseTypeIncomplete
+}
+
+// isEncryptedReasoningRefusalEvent reports whether an upstream WS event is OpenAI's refusal of a
+// replayed reasoning item it cannot decrypt for this key's organization.
+func isEncryptedReasoningRefusalEvent(data []byte) bool {
+	return providerUtils.GetJSONField(data, "error.code").String() == "invalid_encrypted_content"
 }
 
 // tryNativeWSUpstream attempts to forward the event to a native WS upstream connection.
@@ -459,6 +497,14 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 			logger.Warn("failed to clear upstream WS read deadline for %s: %v", req.Provider, err)
 		}
 
+		// Nothing has reached the client yet, so a refused replay of encrypted reasoning goes to
+		// the HTTP bridge, whose retry loop strips encrypted_content and retries once.
+		if !forwardedAny && isEncryptedReasoningRefusalEvent(data) {
+			logger.Warn("upstream WS refused replayed encrypted reasoning for %s/%s, retrying through the HTTP bridge", req.Provider, req.Model)
+			closeUpstream()
+			return false
+		}
+
 		streamResp := parseUpstreamWSEvent(data, req.Provider, req.Model)
 		isTerminal := streamResp != nil && isTerminalStreamType(streamResp.Type)
 
@@ -507,6 +553,9 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 		if isTerminal {
 			session.MarkResponsesTurnCompleted()
 			h.trackResponseID(session, data)
+			if isServedResponsesTurn(streamResp.Type) {
+				session.SetResponsesKey(req.Provider, key.ID)
+			}
 			return true
 		}
 	}
@@ -968,6 +1017,10 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 				chunk.BifrostResponsesStreamResponse.Response.ID != nil &&
 				*chunk.BifrostResponsesStreamResponse.Response.ID != "" {
 				session.SetLastResponseID(*chunk.BifrostResponsesStreamResponse.Response.ID)
+			}
+			if keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); keyID != "" &&
+				isServedResponsesTurn(chunk.BifrostResponsesStreamResponse.Type) {
+				session.SetResponsesKey(req.Provider, keyID)
 			}
 		}
 	}

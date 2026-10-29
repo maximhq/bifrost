@@ -84,6 +84,15 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "21m00Tcm4TlvDq8ikWAM"
 		}
+	case schemas.MiniMax:
+		switch voiceType {
+		case "secondary":
+			return "English_Insightful_Speaker"
+		case "tertiary":
+			return "English_Persuasive_Man"
+		default:
+			return "English_Graceful_Lady"
+		}
 	default:
 		// Default to OpenAI voices for other providers
 		switch voiceType {

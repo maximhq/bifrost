@@ -72,7 +72,8 @@ func mustAPI(t *testing.T, method, path string, body any) gjson.Result {
 
 // virtualKeySpec is what a test needs of a key: which models it may use and what it may spend.
 type virtualKeySpec struct {
-	provider        string   // the one provider config's provider; openai when empty
+	provider        string   // the first provider config's provider; openai when empty
+	alsoProviders   []string // further providers the key allows, each with every key and model
 	keyNames        []string // the provider keys the virtual key may use; every key when empty
 	allowedModels   []string
 	budgetUSD       *float64
@@ -101,9 +102,13 @@ func createVirtualKey(t *testing.T, spec virtualKeySpec) virtualKey {
 	if len(spec.keyNames) > 0 {
 		keyIDs = providerKeyIDs(t, provider, spec.keyNames)
 	}
+	configs := []any{map[string]any{"provider": provider, "weight": 1.0, "allowed_models": allowed, "key_ids": keyIDs}}
+	for _, also := range spec.alsoProviders {
+		configs = append(configs, map[string]any{"provider": also, "weight": 1.0, "allowed_models": []string{"*"}, "key_ids": []string{"*"}})
+	}
 	body := map[string]any{
 		"name":             "live-e2e " + t.Name() + " " + fmt.Sprint(time.Now().UnixNano()),
-		"provider_configs": []any{map[string]any{"provider": provider, "weight": 1.0, "allowed_models": allowed, "key_ids": keyIDs}},
+		"provider_configs": configs,
 	}
 	if spec.budgetUSD != nil {
 		body["budgets"] = []any{map[string]any{"max_limit": *spec.budgetUSD, "reset_duration": "1h"}}
@@ -196,11 +201,13 @@ func installFakePricing() error {
 	if err := removeFakePricing(); err != nil {
 		return err
 	}
-	overrides := []map[string]any{
-		{"name": "live-e2e voice", "scope_kind": "global", "match_type": "exact", "pattern": voiceModel,
-			"request_types": []string{"live"}, "patch": map[string]any{"input_cost_per_second": fakeVoiceCostPerSecond}},
+	// Overrides match the wire model, so the azure deployments are priced by their own names.
+	overrides := []map[string]any{}
+	for _, model := range []string{voiceModel, azureVoiceDeployment} {
+		overrides = append(overrides, map[string]any{"name": "live-e2e voice " + model, "scope_kind": "global", "match_type": "exact", "pattern": model,
+			"request_types": []string{"live"}, "patch": map[string]any{"input_cost_per_second": fakeVoiceCostPerSecond}})
 	}
-	for _, model := range []string{backendModel, backendModel2} {
+	for _, model := range []string{backendModel, backendModel2, azureBackendDeployment} {
 		overrides = append(overrides, map[string]any{"name": "live-e2e backend " + model, "scope_kind": "global", "match_type": "exact", "pattern": model,
 			"request_types": []string{"responses"}, "patch": map[string]any{"input_cost_per_token": fakeInputCostPerToken, "output_cost_per_token": fakeOutputCostPerToken}})
 	}

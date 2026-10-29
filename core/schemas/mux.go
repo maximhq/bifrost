@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1134,6 +1135,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			CachedReadTokens:        cu.PromptTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       cu.PromptTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: cu.PromptTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.PromptTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -1145,9 +1149,13 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: cu.CompletionTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   cu.CompletionTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(cu.Iterations)
 
 	return usage
 }
@@ -1173,6 +1181,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			CachedReadTokens:        ru.InputTokensDetails.CachedReadTokens,
 			CachedWriteTokens:       ru.InputTokensDetails.CachedWriteTokens,
 			CachedWriteTokenDetails: ru.InputTokensDetails.CachedWriteTokenDetails,
+
+			StandardSpeechAudioTokens: ru.InputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.InputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -1185,9 +1196,13 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
+
+			StandardSpeechAudioTokens: ru.OutputTokensDetails.StandardSpeechAudioTokens,
+			CustomSpeechAudioTokens:   ru.OutputTokensDetails.CustomSpeechAudioTokens,
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.Iterations = slices.Clone(ru.Iterations) // advisor passes are priced from these, so they survive the round trip
 
 	return usage
 }
@@ -1292,7 +1307,12 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
 	for _, chatMsg := range cr.Input {
-		responsesMessages := chatMsg.ToResponsesMessages()
+		msg := &chatMsg
+		if chatMsg.Role == ChatMessageRoleTool {
+			// A function_call_output carries only the media every Responses provider reads.
+			msg = ToolResultForResponses(msg)
+		}
+		responsesMessages := msg.ToResponsesMessages()
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages

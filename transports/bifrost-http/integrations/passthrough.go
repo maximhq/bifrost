@@ -1,14 +1,13 @@
 package integrations
 
 import (
-	"errors"
-	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -20,11 +19,6 @@ type PassthroughRouter struct {
 	*GenericRouter
 }
 
-var genAIInferencePath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/publishers/[^/]+/)?(models|tunedModels)/[^/:]+:(generateContent|streamGenerateContent|countTokens|embedContent|batchEmbedContents|predict|rawPredict|streamRawPredict)$`)
-
-// genAIInteractionsPath admits only interaction creation; get/cancel/delete address stored interactions.
-var genAIInteractionsPath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/)?interactions$`)
-
 var apiVersionSegment = regexp.MustCompile(`^v\d+((alpha|beta)\d*)?$`)
 
 // passthroughQueryStreams reports a GET that asks for SSE in its query, such as resuming an interaction with ?stream=true.
@@ -34,53 +28,6 @@ func passthroughQueryStreams(method, rawQuery string) bool {
 	}
 	q, err := url.ParseQuery(rawQuery)
 	return err == nil && strings.EqualFold(q.Get("stream"), "true")
-}
-
-// passthroughInferenceRoute limits HTTP passthrough to inference operations.
-// A provider key grants more capabilities than an inference credential; raw
-// forwarding must not expose the provider's object or account management APIs.
-func passthroughInferenceRoute(cfg *PassthroughConfig, method, path string) bool {
-	if method != fasthttp.MethodPost || strings.ContainsAny(path, "%?#\\") {
-		return false
-	}
-	for _, segment := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return false
-		}
-	}
-	if cfg.UpstreamURL != "" {
-		return cfg.UpstreamURL == "https://chatgpt.com" && path == "/backend-api/codex/responses"
-	}
-	switch cfg.Provider {
-	case schemas.OpenAI:
-		return openAIInferencePath(strings.TrimPrefix(path, "/v1"))
-	case schemas.Anthropic:
-		return path == "/v1/messages" || path == "/v1/messages/count_tokens" || path == "/v1/complete"
-	case schemas.Azure:
-		if strings.HasPrefix(path, "/openai/v1/") {
-			return openAIInferencePath(strings.TrimPrefix(path, "/openai/v1"))
-		}
-		parts := strings.SplitN(path, "/", 5)
-		return len(parts) == 5 && parts[1] == "openai" && parts[2] == "deployments" && parts[3] != "" && openAIInferencePath("/"+parts[4])
-	case schemas.Gemini, schemas.Vertex:
-		return genAIInferencePath.MatchString(path) || genAIInteractionsPath.MatchString(path)
-	case schemas.Runware:
-		return path == "/v1"
-	case schemas.Bedrock:
-		return bedrock.IsPassthroughRoute(method, path)
-	default:
-		return false
-	}
-}
-
-func openAIInferencePath(path string) bool {
-	switch path {
-	case "/chat/completions", "/completions", "/responses", "/embeddings", "/moderations",
-		"/audio/speech", "/audio/transcriptions", "/audio/translations",
-		"/images/generations", "/images/edits", "/images/variations":
-		return true
-	}
-	return false
 }
 
 // stripPassthroughPrefix removes the first configured prefix that matches path at a segment
@@ -110,54 +57,10 @@ func stripPassthroughPrefix(path string, prefixes []string) (string, string, boo
 	return "", "", false
 }
 
-// validatePassthroughPath rejects passthrough remainders that could change how the upstream
-// URL is interpreted once concatenated onto a provider base URL. The path must be rooted by
-// exactly one "/", must not carry a userinfo separator in its first segment, and must not
-// contain a scheme separator, backslashes, dot-dot segments, or control characters anywhere.
-// The same rules are applied to the percent-decoded form so an encoded variant cannot slip
-// through. Later segments may contain "@" because Vertex model versions use it
-// ("models/claude-sonnet-4-5@20250929"); past the first segment it can no longer reach
-// the authority, and the provider-side host check covers the remaining cases.
+// validatePassthroughPath rejects a path a provider could misread; the rules are shared with the
+// relay data plane in lib.ValidatePassthroughPath.
 func validatePassthroughPath(p string) error {
-	if err := checkPassthroughPathRules(p); err != nil {
-		return err
-	}
-	decoded, err := url.PathUnescape(p)
-	if err != nil {
-		return fmt.Errorf("invalid passthrough path: %w", err)
-	}
-	if decoded != p {
-		return checkPassthroughPathRules(decoded)
-	}
-	return nil
-}
-
-func checkPassthroughPathRules(p string) error {
-	switch {
-	case !strings.HasPrefix(p, "/"):
-		return errors.New("invalid passthrough path: must start with /")
-	case strings.HasPrefix(p, "//"):
-		return errors.New("invalid passthrough path: must not start with //")
-	case strings.Contains(p, "\\"):
-		return errors.New("invalid passthrough path: must not contain backslashes")
-	case strings.Contains(p, "://"):
-		return errors.New("invalid passthrough path: must not contain a scheme")
-	}
-	for i := 0; i < len(p); i++ {
-		if p[i] < 0x20 || p[i] == 0x7f {
-			return errors.New("invalid passthrough path: must not contain control characters")
-		}
-	}
-	first, _, _ := strings.Cut(p[1:], "/")
-	if strings.Contains(first, "@") {
-		return errors.New("invalid passthrough path: first segment must not contain @")
-	}
-	for _, segment := range strings.Split(p, "/") {
-		if segment == ".." {
-			return errors.New("invalid passthrough path: must not contain .. segments")
-		}
-	}
-	return nil
+	return lib.ValidatePassthroughPath(p)
 }
 
 // NewPassthroughRouter creates a passthrough-only router for any prefix/provider combo.
@@ -248,6 +151,20 @@ func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		},
 		// InvokeAgent answers with an event stream; nothing in its path or body says so.
 		StreamingPath: bedrock.IsPassthroughStreamPath,
+	})
+}
+
+// NewSageMakerPassthroughRouter creates a passthrough router for /sagemaker_passthrough. It forwards only
+// InvokeEndpoint and InvokeEndpointWithResponseStream, for containers Bifrost has no native route for
+// (TEI, LMI's own format, custom images); the endpoint in the path is the model keys and virtual keys allow.
+func NewSageMakerPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.SageMaker,
+		StripPrefix: []string{
+			"/sagemaker_passthrough",
+		},
+		StreamingPath: sagemaker.IsPassthroughStreamPath,
+		PathModel:     sagemaker.PassthroughModel,
 	})
 }
 
