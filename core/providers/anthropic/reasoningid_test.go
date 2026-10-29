@@ -632,3 +632,26 @@ func TestOrderedConversionKeepsEmbeddedReasoningIDsPerRun(t *testing.T) {
 		t.Fatalf("different-id redacted block not kept as its own item: %+v", other)
 	}
 }
+
+// A non-streaming response is converted to Responses and back before the client sees it
+// on /anthropic/v1/messages. Claude's thinking blocks must come back where it wrote them,
+// or replaying the turn is rejected as a modified thinking block (issue #9156).
+func TestResponsesRoundTripKeepsInterleavedThinkingOrder(t *testing.T) {
+	ctx := &schemas.BifrostContext{}
+	resp := &AnthropicMessageResponse{
+		ID:      "msg_1",
+		Type:    "message",
+		Role:    "assistant",
+		Model:   "claude-opus-5-5",
+		Content: interleavedThinkingTurn(),
+	}
+
+	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
+	bifrostResp.Model = resp.Model
+	back := ToAnthropicResponsesResponse(ctx, bifrostResp)
+
+	got, want := blockLabels(back.Content), blockLabels(resp.Content)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("block order changed:\n got  %v\n want %v", got, want)
+	}
+}
