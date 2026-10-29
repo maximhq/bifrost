@@ -298484,11 +298484,11 @@
       ]
     },
     {
-      "name": "297. Bedrock Request Metadata Headers (PR #9189)",
+      "name": "297. Bedrock Request Metadata Headers (#9297 / PR #9189)",
       "description": "x-bf-bedrock-metadata-<key> request headers must reach the outgoing Bedrock Converse requestMetadata without x-bf-passthrough-extra-params, so routes that try another provider first never forward them there. Cases pin the neutral Chat Completions and Responses routes, the Anthropic messages route, and body precedence on the PydanticAI route, where an extra_params requestMetadata value beats the header for the same key.",
       "item": [
         {
-          "name": "bedrock/{{bedrockModel}} chat completions request metadata headers - PR #9189",
+          "name": "bedrock/{{bedrockModel}} chat completions request metadata headers - #9297",
           "event": [
             {
               "listen": "test",
@@ -298551,7 +298551,7 @@
           }
         },
         {
-          "name": "bedrock/{{bedrockModel}} responses request metadata headers - PR #9189",
+          "name": "bedrock/{{bedrockModel}} responses request metadata headers - #9297",
           "event": [
             {
               "listen": "test",
@@ -298613,7 +298613,7 @@
           }
         },
         {
-          "name": "bedrock/{{bedrockModel}} anthropic request metadata headers - PR #9189",
+          "name": "bedrock/{{bedrockModel}} anthropic request metadata headers - #9297",
           "event": [
             {
               "listen": "test",
@@ -298676,7 +298676,7 @@
           }
         },
         {
-          "name": "bedrock/{{bedrockModel}} pydanticai request metadata headers body value wins - PR #9189",
+          "name": "bedrock/{{bedrockModel}} pydanticai request metadata headers body value wins - #9297",
           "event": [
             {
               "listen": "test",
