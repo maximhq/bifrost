@@ -2281,6 +2281,31 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 	return nil
 }
 
+// ResolveMCPClientAuthType returns the auth type a new MCP client is stored and run
+// with, or why the client cannot be created. An omitted auth type is headers, the
+// store's column default, so a client connects the same way before and after a
+// restart. The per-user types open a new streamable HTTP connection for each call,
+// which neither an SSE server nor a STDIO subprocess can serve. The API create and
+// the config.json load both apply it, so a client one refuses the other refuses too.
+func ResolveMCPClientAuthType(authType schemas.MCPAuthType, connectionType schemas.MCPConnectionType) (schemas.MCPAuthType, error) {
+	switch authType {
+	case "":
+		return schemas.MCPAuthTypeHeaders, nil
+	case schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth:
+		return authType, nil
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		if connectionType == schemas.MCPConnectionTypeSSE || connectionType == schemas.MCPConnectionTypeSTDIO {
+			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http')", authType, connectionType)
+		}
+		return authType, nil
+	default:
+		return "", fmt.Errorf("Invalid auth_type %q: must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange", authType)
+	}
+}
+
+// loadMCPConfig loads the MCP client configs from the store and config.json and
+// reconciles the two. A config.json client that cannot be created is skipped, and a
+// stored client of the same name keeps its stored configuration.
 func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
@@ -2299,6 +2324,16 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			authType, err := ResolveMCPClientAuthType(c.AuthType, c.ConnectionType)
+			if err != nil {
+				logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
+				if configData.rejectedMCPClients == nil {
+					configData.rejectedMCPClients = map[string]bool{}
+				}
+				configData.rejectedMCPClients[c.Name] = true
+				continue
+			}
+			c.AuthType = authType
 			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
 				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)

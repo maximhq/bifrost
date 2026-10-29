@@ -69,7 +69,7 @@ const folder = (name, description, item) => ({ name, description, item });
 // ---------------------------------------------------------------- ADM
 const clientBody = (over) => ({ name: "adm_probe", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "none", ...over });
 
-const ADM05 = folder("ADM-05 Create rejects a bad body and connection_type",
+const ADM05 = folder("ADM-05 Create rejects a bad body, connection_type and auth_type",
   "Setup: dashboard auth on, admin credentials.", [
   request("ADM-05", "setup: record the client count", "GET", "/api/mcp/clients", {
     asserts: [A.status(200)],
@@ -81,6 +81,10 @@ const ADM05 = folder("ADM-05 Create rejects a bad body and connection_type",
       body: clientBody({ name: "adm05_client", connection_type: ct }),
       asserts: [A.status(400), A.msgContains("must be one of http, sse, stdio, openapi")],
     })),
+  request("ADM-05", "auth_type \"bogus\" is rejected", "POST", "/api/mcp/client", {
+    body: clientBody({ name: "adm05_client", auth_type: "bogus" }),
+    asserts: [A.status(400), A.msgEquals("Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange")],
+  }),
   request("ADM-05", "no client was added", "GET", "/api/mcp/clients", {
     asserts: [A.status(200), A.custom("total_count is unchanged", [
       "var before = Number(pm.collectionVariables.get('adm05_total'));",
@@ -2246,6 +2250,15 @@ const CONN17 = folder("CONN-17 SSE with header auth", `Setup: a fleet server ${T
   mockGet("CONN-17", "gamma", "the call ran under id1 on one session", [identityCalls("id1", 1), counterIs("sessions", 1)]),
   deleteClient("CONN-17", "conn17-c"),
   request("CONN-17", "teardown: remove gamma", "POST", "/control", { base: CHAOS, noAuth: true, body: { remove: "gamma" }, asserts: [A.status(200)] }),
+]);
+
+const CONN19 = folder("CONN-19 Per-user auth on SSE", "Setup: alpha (echo_tool, add_tool) requires x-key: good; a per_user_headers client on alpha's SSE endpoint, per_user_header_keys [\"x-key\"], sample x-key good.", [
+  ...alphaRequiresKey("CONN-19"),
+  createExpect("CONN-19", "create per_user_headers on sse", HEADERS_BASE("conn19-c", "conn19_c", { connection_type: "sse", connection_string: `${CHAOS}/s/alpha/sse`, per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" } }),
+    [A.status(400), A.msgEquals("auth_type \"per_user_headers\" is not supported for connection_type 'sse' (use connection_type 'http')")]),
+  request("CONN-19", "no client was kept", "GET", "/api/mcp/clients?server=conn19-c", { asserts: [A.status(200), A.custom("no client is returned", [
+    "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);",
+  ])] }),
 ]);
 
 const CONN18 = folder("CONN-18 SSE stream dropped", "Setup: alpha (echo_tool, add_tool); an SSE client on alpha, auth none, tool_execution_timeout 3s, tools_to_execute [\"*\"]; then POST /control/alpha/streams/drop.", [
@@ -7662,7 +7675,7 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),

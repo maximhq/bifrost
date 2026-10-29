@@ -1704,6 +1704,63 @@ func TestAddMCPClient_MissingConnectionTargetIs400(t *testing.T) {
 	}
 }
 
+// TestAddMCPClient_UnknownAuthTypeIs400 pins that an auth_type no credential
+// resolver handles is refused at create with the accepted values, and nothing is
+// stored or handed to the runtime.
+func TestAddMCPClient_UnknownAuthTypeIs400(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body := `{"name":"bogus_auth","connection_type":"http","connection_string":"http://127.0.0.1:9/mcp","auth_type":"bogus"}`
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, `Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange`)
+	assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+	_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "bogus_auth")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+}
+
+// TestAddMCPClient_OmittedAuthTypeRunsAsStored pins that a client created
+// without an auth_type reaches the runtime with the auth_type its stored row
+// carries, headers, so it connects the same way before and after a restart. The
+// runtime used to get an empty auth_type, which connects with a persistent
+// connection, while the reloaded row connects per call.
+func TestAddMCPClient_OmittedAuthTypeRunsAsStored(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body := `{"name":"no_auth_type","connection_type":"http","connection_string":"http://127.0.0.1:9/mcp","tools_to_execute":["*"]}`
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	stored, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "no_auth_type")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.MCPAuthTypeHeaders), stored.AuthType, "the stored row")
+	assert.Equal(t, stored.AuthType, string(mgr.added[0].AuthType), "the runtime config matches the stored row")
+}
+
+// TestAddMCPClient_PerUserAuthTypeNeedsHTTP pins that the per-user auth types,
+// which open a new streamable HTTP connection for each call, are refused at
+// create on SSE and STDIO, where that connection cannot be made, before anything
+// is stored or verified.
+func TestAddMCPClient_PerUserAuthTypeNeedsHTTP(t *testing.T) {
+	targets := map[string]string{
+		"sse":   `"connection_string":"http://127.0.0.1:9/sse"`,
+		"stdio": `"stdio_config":{"command":"true"}`,
+	}
+	for _, authType := range []string{"per_user_oauth", "per_user_headers", "token_exchange"} {
+		for connectionType, target := range targets {
+			t.Run(authType+"_"+connectionType, func(t *testing.T) {
+				h, mgr := newOpenAPITestHandler(t)
+				name := authType + "_" + connectionType
+				body := fmt.Sprintf(`{"name":%q,"connection_type":%q,%s,"auth_type":%q,"per_user_header_keys":["x-key"],"user_headers":{"x-key":"v"}}`, name, connectionType, target, authType)
+				status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+				require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+				assert.Contains(t, respBody, fmt.Sprintf(`auth_type \"%s\" is not supported for connection_type '%s' (use connection_type 'http')`, authType, connectionType))
+				assert.Empty(t, mgr.added, "the runtime is not asked to connect")
+				_, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), name)
+				assert.ErrorIs(t, err, configstore.ErrNotFound, "no row is stored")
+			})
+		}
+	}
+}
+
 // TestUpdateMCPClient_RenameToATakenNameIs409 pins that renaming a client to
 // another client's name answers 409, like creating one with that name, and
 // applies nothing. It was a 500.
