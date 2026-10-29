@@ -145,7 +145,7 @@ With Relay Any Path on, every path on the upstream is reachable with the relay's
 
 ## Import routes from OpenAPI
 
-**Import OpenAPI** in the route table turns an OpenAPI 3 or Swagger 2 document (pasted or uploaded, JSON or YAML) into routes. Every operation becomes a route; `{param}` segments become `*`; AWS-style `/#X-Amz-Target=Service.Op` keys become a route on the path with an `X-Amz-Target` matcher. The relay's auth type and base URL are not read from the document; configure them on the relay.
+**Import OpenAPI** in the route table turns an OpenAPI 3 or Swagger 2 document (pasted, uploaded or fetched from a URL, JSON or YAML) into routes. A URL is fetched by Bifrost, not the browser, with the same size cap and private-network guard as the [MCP OpenAPI servers](/mcp/openapi-servers); the document is read once and not stored. Every operation becomes a route; `{param}` segments become `*`; AWS-style `/#X-Amz-Target=Service.Op` keys become a route on the path with an `X-Amz-Target` matcher. The preview also suggests an auth type and base URL, read from the document's security schemes and servers (a relative server resolves against the URL the document was fetched from). The import changes only the routes, so review those suggestions and set them on the relay yourself.
 
 The import is shown for review first: the dialog says how many routes will replace the current list and names any route with a pricing override or job that would be removed. Nothing changes until you choose **Apply import**. Routes the document still lists keep their settings; new ones carry no pricing override, so they use the relay pricing and the method default for billing.
 

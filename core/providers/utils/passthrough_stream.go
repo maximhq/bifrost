@@ -26,6 +26,9 @@ type PassthroughStreamParams struct {
 	// appears in a framed event — for providers (Gemini/Vertex) that emit it before the HTTP
 	// body closes.
 	UseTerminalDetector bool
+	// EndsStream finalizes the stream early on a provider-specific end event, for clients that
+	// hang up on that event before the upstream body closes (Codex on response.completed).
+	EndsStream func(event []byte) bool
 	// SkipFraming forwards the bytes without scanning them for SSE frames, for binary or otherwise
 	// unframed streams (an AWS event stream) where there is no usage to observe and a "\n\n" byte
 	// pair means nothing.
@@ -101,7 +104,7 @@ func streamPassthrough(
 			} else if ctx.Err() == context.DeadlineExceeded {
 				HandleStreamTimeout(ctx, postHookRunner, ch, params.Logger, postHookSpanFinalizer, params.CancellationBody)
 			}
-			close(ch)
+			CloseStream(ctx, ch)
 		}()
 		defer release()
 		defer stopIdleTimeout()
@@ -121,6 +124,11 @@ func streamPassthrough(
 				if u := params.Observe(payload); u != nil {
 					usage = u
 				}
+			}
+			if params.EndsStream != nil && params.EndsStream(payload) {
+				// Upstream may keep the body open after the end event; release must abandon it, not drain it.
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+				return true
 			}
 			return params.UseTerminalDetector && isTerminalSSEPayload(payload)
 		}

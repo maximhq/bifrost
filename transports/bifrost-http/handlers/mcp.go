@@ -2583,6 +2583,13 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
+		// The identity-provider integration may refuse these settings;
+		// asking it now reports that to the editor at save rather than on
+		// the first tool call.
+		if err := h.store.OAuthProvider.ValidateTokenExchangeConfig(ctx, req.TokenExchange); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		// Token-exchange clients rely on requests that may carry both an
 		// identity token and a virtual key; the 'error' conflict behavior
 		// would reject exactly those requests, so the two settings are
@@ -3322,6 +3329,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
+		// Same check as at create.
+		if h.store.OAuthProvider != nil {
+			if err := h.store.OAuthProvider.ValidateTokenExchangeConfig(ctx, req.TokenExchange); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
+		}
 	}
 	// A real change to the token_exchange scoping block invalidates the
 	// retained admin bootstrap credential the same way rotating oauth_config
@@ -3430,10 +3444,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// secret to a caller-supplied endpoint the admin never explicitly
 		// paired it with — require the secret to be resent explicitly
 		// whenever either endpoint changes, rather than trusting the old
-		// pairing across an endpoint change.
+		// pairing across an endpoint change. A public client stores no secret,
+		// so it has nothing to resend.
 		endpointChanged := resolvedOauthFields.AuthorizeURL != existingOauthConfig.AuthorizeURL ||
 			resolvedOauthFields.TokenURL != existingOauthConfig.TokenURL
-		if endpointChanged && req.OauthConfig.ClientSecret.ShouldPreserveStored() {
+		if endpointChanged && existingOauthConfig.ClientSecret.IsSet() && req.OauthConfig.ClientSecret.ShouldPreserveStored() {
 			SendError(ctx, fasthttp.StatusBadRequest, "client_secret must be resent explicitly when authorize_url or token_url changes")
 			return
 		}

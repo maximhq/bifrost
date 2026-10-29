@@ -89,6 +89,16 @@ func HasOpenAIPassthroughUsage(event []byte) bool {
 		providerUtils.GetJSONField(event, "response.usage").Exists()
 }
 
+// EndsOpenAIPassthroughStream reports whether a passthrough SSE event ends a Responses API stream.
+// Chat Completions chunks carry no top-level type, so they never match.
+func EndsOpenAIPassthroughStream(event []byte) bool {
+	switch providerUtils.GetJSONField(event, "type").Str {
+	case "response.completed", "response.failed", "response.incomplete", "error":
+		return true
+	}
+	return false
+}
+
 // ---- video generation ----
 const openAIVideoDefaultSeconds = 4
 

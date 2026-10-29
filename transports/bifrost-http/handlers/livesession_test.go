@@ -887,7 +887,9 @@ func TestLiveControlProviderHonoursTheNamedProvider(t *testing.T) {
 	for _, tc := range []struct{ name, path, named, want, wantErr string }{
 		{"bare route defaults to openai", "/v1/live/sessions/live_1/attach", "", "openai", ""},
 		{"named custom provider on the bare route", "/v1/live/sessions/live_1/attach", "openai-custom", "openai-custom", ""},
-		{"integration prefix wins over the name", "/openai/v1/live/sessions/live_1/content", "openai-custom", "openai", ""},
+		{"named provider on the integration route", "/openai/v1/live/sessions/live_1/attach", "openai-custom", "openai-custom", ""},
+		{"integration route defaults to openai", "/openai/v1/live/sessions/live_1/content", "", "openai", ""},
+		{"unknown provider on the integration route", "/openai/v1/live/sessions/live_1/attach", "nope", "", "not configured"},
 		{"named provider without live support", "/v1/live/sessions/live_1/content", "anthropic", "", "does not support live sessions: anthropic"},
 		{"unknown provider", "/v1/live/sessions/live_1/content", "nope", "", "not configured"},
 	} {
@@ -913,6 +915,15 @@ func TestLiveControlProviderNameReadsQueryThenHeader(t *testing.T) {
 	assert.Equal(t, "openai-custom", liveControlProviderName(ctx))
 	ctx.Request.SetRequestURI("/v1/live/sessions/live_1/content?provider=openai")
 	assert.Equal(t, "openai", liveControlProviderName(ctx), "the query parameter wins over the header")
+}
+
+func TestLiveControlProviderNameFallsBackToTheAzureSDK(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/live/sessions/live_1/attach")
+	ctx.Request.Header.SetUserAgent("AzureOpenAI/Python 1.109.1")
+	assert.Equal(t, "azure", liveControlProviderName(ctx))
+	ctx.Request.Header.Set("x-model-provider", "openai")
+	assert.Equal(t, "openai", liveControlProviderName(ctx), "a named provider wins over the user agent")
 }
 
 // BenchmarkLiveSessionControlRoute measures resolving a control route on an existing live session

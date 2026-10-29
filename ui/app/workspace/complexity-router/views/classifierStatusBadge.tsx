@@ -1,7 +1,7 @@
 import { badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { SEMANTIC_STATUS_LABELS, SemanticStatusInfo } from "@/lib/types/complexityRouter";
+import { SEMANTIC_STATUS_LABELS, SemanticFallback, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import type { VariantProps } from "class-variance-authority";
@@ -63,6 +63,7 @@ function StateIcon({ state }: { state: ClassifierState }) {
 // something is off, so it lives one click away in the popover.
 export function ClassifierStatusBadge({
 	status,
+	semanticFallback,
 	isLoading,
 	isNotConfigured,
 	isNotSaved,
@@ -78,6 +79,8 @@ export function ClassifierStatusBadge({
 	onRetryWarmup,
 }: {
 	status: SemanticStatusInfo | undefined;
+	// The saved fallback, not the form's: it decides what serves while warmup fails.
+	semanticFallback: SemanticFallback;
 	isLoading: boolean;
 	isNotConfigured: boolean;
 	isNotSaved: boolean;
@@ -163,8 +166,12 @@ export function ClassifierStatusBadge({
 				)}
 
 				{state === "failed" && status && (
-					<p className={status.serving_previous ? "text-amber-700 dark:text-amber-400" : "text-destructive"}>
-						{semanticWarmupImpactMessage(status)}
+					<p
+						className={
+							status.serving_previous || semanticFallback !== "none" ? "text-amber-700 dark:text-amber-400" : "text-destructive"
+						}
+					>
+						{semanticWarmupImpactMessage(status, semanticFallback)}
 					</p>
 				)}
 

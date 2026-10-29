@@ -44703,6 +44703,76 @@
               }
             }
           ]
+        },
+        {
+          "name": "[EXPECT-400] deepseek/deepseek-v4-flash-anthropic rejects document content before egress (#6741)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarise the attached document in one sentence.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKJcOkw7zDtsOfCjIgMCBvYmoKPDwvTGVuZ3RoIDMgMCBSL0ZpbHRlci9GbGF0ZURlY29kZT4+\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// DeepSeek documents document blocks as unsupported on its Anthropic-compatible",
+                  "// endpoint, but accepts the request and silently drops them: the upstream returns",
+                  "// success, so no fallback can ever trigger and the caller gets a confident answer",
+                  "// computed without the document they supplied. Bifrost refuses before egress instead.",
+                  "// The collection-level [EXPECT-400] tag already asserts the status; these rows pin",
+                  "// that the refusal is typed (so a fallback can act on it) and that it is local.",
+                  "pm.test('the refusal is typed invalid_request_error so a fallback can act on it', function () {",
+                  "  var err = body.error || {};",
+                  "  pm.expect(err.type, 'error.type: ' + txt.slice(0, 400)).to.eql('invalid_request_error');",
+                  "  pm.expect(err.message, 'error.message: ' + txt.slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('the refusal names document content, not some unrelated validation error', function () {",
+                  "  var msg = ((body.error || {}).message) || '';",
+                  "  pm.expect(/document/i.test(msg), 'message does not mention document content: ' + txt.slice(0, 400)).to.be.true;",
+                  "});",
+                  "",
+                  "// The row asks for raw_request capture, so an upstream rejection would carry the",
+              "// attempted payload here. Its absence is therefore evidence of a local refusal",
+              "// rather than an artefact of capture being switched off.",
+              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
+                  "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -45086,7 +45156,7 @@
     },
     {
       "name": "27. Anthropic Fallback Credit Strip + Fallback Entry Fields",
-      "description": "Fallback credit (fallback-credit-2026-06-01; -2026-06-09 on the AWS surfaces) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding, the per-provider beta gating and the AWS beta-date rewrite are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
+      "description": "Fallback credit (fallback-credit-2026-06-01, forwarded with the client date on every surface) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding and the per-provider beta gating are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
       "item": [
         {
           "name": "anthropic/claude-opus-4-8 · count_tokens strips fallback_credit_token",
@@ -45241,6 +45311,69 @@
                   "// The CLI user-agent routes this through the raw-body path, where the entry is",
                   "// rewritten by the gjson/sjson strip rather than the typed marshaller - a separate",
                   "// code path with its own way to corrupt the array."
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 · /anthropic/v1/messages · InvokeModel · fallback-credit beta keeps the client date (x-bf-eh)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-anthropic-beta",
+                "value": "fallback-credit-2026-07-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"tools\":[{\"type\":\"tool_search_tool_regex_20251119\",\"name\":\"tool_search_tool_regex\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// tool_search + defer_loading routes Bedrock to InvokeModel, where betas ride in the body",
+                  "// anthropic_beta array that Bedrock validates. Bifrost used to rewrite any fallback-credit-*",
+                  "// to fallback-credit-2026-06-09 here, which Bedrock rejects with 400 Unexpected value(s).",
+                  "pm.test('bedrock InvokeModel fallback-credit: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200 (a 400 naming fallback-credit-2026-06-09 is the rewrite regression): ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock InvokeModel fallback-credit: anthropic_beta carries the client date unchanged', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var betas = (rr && rr.anthropic_beta) || [];",
+                  "  pm.expect(rr && rr.anthropic_version, 'request did not go to InvokeModel: ' + JSON.stringify(rr)).to.eql('bedrock-2023-05-31');",
+                  "  pm.expect(betas, 'client fallback-credit date not forwarded: ' + JSON.stringify(betas)).to.include('fallback-credit-2026-07-01');",
+                  "  pm.expect(betas, 'gateway rewrote the fallback-credit date: ' + JSON.stringify(betas)).to.not.include('fallback-credit-2026-06-09');",
+                  "});"
                 ]
               }
             }
@@ -256446,7 +256579,7 @@
     },
     {
       "name": "202. Live content route honours the named provider (live named provider)",
-      "description": "A recording download names only a session id, so on the bare route the caller may name the provider with ?provider= or x-model-provider, as the file, batch and video routes accept. Provider resolution runs before the session is looked up, so an unknown session id reaches it with nothing spent: a provider without live support or an unknown name is refused with 400, the query parameter wins over the header, and the /openai prefix wins over both. Sideband attach shares the resolver but is a WebSocket upgrade the harness cannot drive; tests/live covers it.",
+      "description": "A recording download names only a session id, so on the bare route the caller may name the provider with ?provider= or x-model-provider, as the file, batch and video routes accept. Provider resolution runs before the session is looked up, so an unknown session id reaches it with nothing spent: a provider without live support or an unknown name is refused with 400, the query parameter wins over the header, and the /openai integration route honours both, then the Azure OpenAI SDK user agent, before its OpenAI default, as the /openai file and batch routes do. Sideband attach shares the resolver but is a WebSocket upgrade the harness cannot drive; tests/live covers it.",
       "item": [
         {
           "name": "[EXPECT-400] /v1/live/sessions/{id}/content?provider=anthropic resolves the named provider before the session lookup - live named provider",
@@ -256572,15 +256705,15 @@
           }
         },
         {
-          "name": "[EXPECT-404] /openai/v1/live/sessions/{id}/content ignores x-model-provider: the integration prefix wins - live named provider",
+          "name": "[EXPECT-400] /openai/v1/live/sessions/{id}/content honours x-model-provider as the bare route does - live named provider",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status is 404: the request reached OpenAI, which has no such session', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });",
-                  "pm.test('The prefix, not the header, chose the provider', function () { pm.expect(pm.response.text()).to.not.include('anthropic'); });"
+                  "pm.test('Status is 400: the header named the provider on the integration route too', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The named provider, not the prefix, chose the provider', function () { pm.expect(pm.response.text()).to.include('does not support live sessions: anthropic'); });"
                 ]
               }
             }
@@ -256605,6 +256738,340 @@
                 "sessions",
                 "sess_harness_named_provider",
                 "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/live/sessions/{id}/content?provider=azure reaches Azure, which stores no recordings - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: Azure answered, not OpenAI', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('Azure refuses recordings as unsupported', function () { pm.expect(pm.response.text()).to.include('unsupported_operation'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/live/sessions/{id}/content from the Azure OpenAI SDK reaches Azure - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the Azure SDK user agent chose Azure', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('Azure refuses recordings as unsupported', function () { pm.expect(pm.response.text()).to.include('unsupported_operation'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "User-Agent",
+                "value": "AzureOpenAI/Python 1.109.1"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] /openai/v1/live/sessions/{id}/content without a named provider still reaches OpenAI - live named provider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404: the request reached OpenAI, which has no such session', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions/sess_harness_named_provider/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions",
+                "sess_harness_named_provider",
+                "content"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "286. Azure live WebRTC create keeps the frontend data-channel permissions (azure live client permissions)",
+      "description": "Azure's GPT Live session config is strict and has no client field: any session.client, even {} or null, is refused with 400 \"Unknown parameter: 'session.client'.\", so the OpenAI live console could not start a session on Azure. The gateway terminates the browser's data channel, so it drops session.client upstream for Azure and enforces allowed_client_events and allowed_server_events itself, answering a refused browser event with OpenAI's own event_not_allowed error. The 201 cases create a real Azure gpt-live-1 session whose browser leg never connects, so each bills Azure's 15 second WebRTC minimum. The malformed-list case is refused before any upstream call. The browser-side enforcement needs a connected data channel the harness cannot drive; tests/live TestAttach_AzureConsolePermissionsAreEnforcedByTheGateway and the handler unit tests cover it.",
+      "item": [
+        {
+          "name": "[EXPECT-201] azure/gpt-live-1 WebRTC create with the live console's session.client on /v1/live/sessions - azure live client permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201: Azure accepted a create carrying the frontend permissions', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });",
+                  "pm.test('The response carries the session id and the gateway SDP answer', function () {",
+                  "  var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('response is not JSON: ' + pm.response.text()); return; }",
+                  "  pm.expect(j.session && j.session.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.transport && j.transport.type, pm.response.text()).to.equal('webrtc');",
+                  "  pm.expect(String((j.transport && j.transport.sdp) || ''), pm.response.text()).to.match(/^v=0/);",
+                  "});",
+                  "pm.test('Azure never saw session.client', function () { pm.expect(pm.response.text()).not.to.include('Unknown parameter'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"azure/gpt-live-1\",\n    \"instructions\": \"azure live client permissions\",\n    \"delegation\": {\n      \"type\": \"client\"\n    },\n    \"client\": {\n      \"data_channel\": {\n        \"allowed_client_events\": [\n          \"session.close\"\n        ],\n        \"allowed_server_events\": [\n          {\n            \"type\": \"session.started\"\n          },\n          {\n            \"type\": \"session.closed\"\n          },\n          {\n            \"type\": \"error\"\n          }\n        ]\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-201] azure/gpt-live-1 WebRTC create with the live console's session.client on /openai/v1/live/sessions - azure live client permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201: Azure accepted a create carrying the frontend permissions', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });",
+                  "pm.test('The response carries the session id and the gateway SDP answer', function () {",
+                  "  var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('response is not JSON: ' + pm.response.text()); return; }",
+                  "  pm.expect(j.session && j.session.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.transport && j.transport.type, pm.response.text()).to.equal('webrtc');",
+                  "  pm.expect(String((j.transport && j.transport.sdp) || ''), pm.response.text()).to.match(/^v=0/);",
+                  "});",
+                  "pm.test('Azure never saw session.client', function () { pm.expect(pm.response.text()).not.to.include('Unknown parameter'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"azure/gpt-live-1\",\n    \"instructions\": \"azure live client permissions\",\n    \"delegation\": {\n      \"type\": \"client\"\n    },\n    \"client\": {\n      \"data_channel\": {\n        \"allowed_client_events\": [\n          \"session.close\"\n        ],\n        \"allowed_server_events\": [\n          {\n            \"type\": \"session.started\"\n          },\n          {\n            \"type\": \"session.closed\"\n          },\n          {\n            \"type\": \"error\"\n          }\n        ]\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] azure/gpt-live-1 WebRTC create with a malformed allowed_client_events is refused by the gateway - azure live client permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400: the gateway refuses a client list it cannot enforce', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('The refusal names the field, not an Azure unknown parameter', function () { pm.expect(pm.response.text()).to.include('session.client.data_channel.allowed_client_events must be'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"azure/gpt-live-1\",\n    \"instructions\": \"azure live client permissions\",\n    \"delegation\": {\n      \"type\": \"client\"\n    },\n    \"client\": {\n      \"data_channel\": {\n        \"allowed_client_events\": \"none\"\n      }\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "live",
+                "sessions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "287. Live session create sends a bare model from the Azure OpenAI SDK to Azure (live bare model)",
+      "description": "On /openai/v1/live/sessions a model without a provider prefix used to run on OpenAI even for the Azure OpenAI SDK user agent, while the session's attach and content routes send that user agent to Azure, so the attach could not find the session. A bare model now runs where those routes default to, as file and batch creates do: Azure for the Azure OpenAI SDK, else OpenAI on /openai. The case sends the Azure SDK user agent with a bare gpt-live-1 and pins that the session row names azure. It creates a real Azure gpt-live-1 session whose browser leg never connects, billing Azure's 15 second WebRTC minimum. The plain-client OpenAI default and the Azure-only virtual key refusal are covered by tests/live TestAdmission_OpenAIRouteResolvesBareModelsAsControlRoutesDo.",
+      "item": [
+        {
+          "name": "[EXPECT-201] gpt-live-1 WebRTC create on /openai/v1/live/sessions with the Azure OpenAI SDK user agent is created on Azure - live bare model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('azureLiveBareModelStart', new Date(Date.now() - 1000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl');",
+                  "var started = pm.variables.get('azureLiveBareModelStart');",
+                  "pm.test('Status is 201: the session was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });",
+                  "var j; try { j = pm.response.json(); } catch (e) { pm.expect.fail('response is not JSON: ' + pm.response.text()); return; }",
+                  "var id = j && j.session && j.session.id;",
+                  "pm.test('The response carries the session id', function () { pm.expect(id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "if (!id) return;",
+                  "// The session row is written when the session ends: its browser leg never connects, so the gateway closes it.",
+                  "function findRow(attempt) {",
+                  "  pm.sendRequest({url: base + '/api/logs?objects=live.session&limit=50&start_time=' + encodeURIComponent(started), method: 'GET'}, function (err, res) {",
+                  "    pm.test('Log lookup succeeds', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+                  "    if (err || res.code !== 200) return;",
+                  "    var rows = res.json().logs || [];",
+                  "    var pending = rows.length, found = null;",
+                  "    function done() {",
+                  "      if (found) {",
+                  "        pm.test('The bare model was created on Azure, where the session's attach and content routes send the Azure OpenAI SDK', function () { pm.expect(found.provider, JSON.stringify(found)).to.equal('azure'); });",
+                  "        return;",
+                  "      }",
+                  "      if (attempt < 30) { setTimeout(function () { findRow(attempt + 1); }, 2000); return; }",
+                  "      pm.test('The session row appeared within 60 seconds', function () { pm.expect.fail('no live.session row for ' + id); });",
+                  "    }",
+                  "    if (!pending) { done(); return; }",
+                  "    rows.forEach(function (summary) {",
+                  "      pm.sendRequest({url: base + '/api/logs/' + summary.id, method: 'GET'}, function (detailErr, detailRes) {",
+                  "        if (!detailErr && detailRes.code === 200) { var row = detailRes.json(); if (row.live_session && row.live_session.provider_session_id === id) found = row; }",
+                  "        if (--pending === 0) done();",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "findRow(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "AzureOpenAI/Python 1.109.1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {\n    \"model\": \"gpt-live-1\",\n    \"instructions\": \"live bare model\",\n    \"delegation\": {\n      \"type\": \"client\"\n    }\n  },\n  \"transport\": {\n    \"type\": \"webrtc\",\n    \"sdp\": \"v=0\\no=- 2520596364147198086 1791637009 IN IP4 0.0.0.0\\ns=-\\nt=0 0\\na=msid-semantic:WMS *\\na=fingerprint:sha-256 29:56:DD:98:22:7C:B2:1F:84:9E:BF:87:BF:52:4D:17:A3:AE:46:84:AA:B1:B8:E1:68:43:E9:9E:76:8F:9F:86\\na=extmap-allow-mixed\\na=group:BUNDLE 0 1\\nm=audio 9 UDP/TLS/RTP/SAVPF 111 9 0 8\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:0\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\na=rtcp-mux\\na=rtcp-rsize\\na=rtpmap:111 opus/48000/2\\na=fmtp:111 minptime=10;useinbandfec=1\\na=rtcp-fb:111 transport-cc\\na=rtpmap:9 G722/8000\\na=rtcp-fb:9 transport-cc\\na=rtpmap:0 PCMU/8000\\na=rtcp-fb:0 transport-cc\\na=rtpmap:8 PCMA/8000\\na=rtcp-fb:8 transport-cc\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\na=ssrc:2776728827 cname:billing-fixture\\na=ssrc:2776728827 msid:billing-fixture audio\\na=ssrc:2776728827 mslabel:billing-fixture\\na=ssrc:2776728827 label:audio\\na=msid:billing-fixture audio\\na=sendrecv\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\nc=IN IP4 0.0.0.0\\na=setup:actpass\\na=mid:1\\na=sendrecv\\na=sctp-port:5000\\na=max-message-size:1073741823\\na=ice-ufrag:dKorrjfohEgxSdxV\\na=ice-pwd:YOalnasbQiXgKmYLBWgUdSTcaHKUGsNO\\n\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/live/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "live",
+                "sessions"
               ]
             }
           }
@@ -285165,6 +285632,79 @@
           ]
         },
         {
+          "name": "266.12 azure/whisper native /v1/audio/transcriptions text is billed from Azure's Csp-Billing-Usage header (azure whisper)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A text reply carries no duration, so this call used to log $0. The gateway now takes the billed",
+                  "// seconds from Azure's Csp-Billing-Usage header (CognitiveServices.OpenAI.Whisper=<seconds>).",
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper text returns the transcript', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(body.trim(), 'empty transcript').to.not.be.empty;",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('Azure Whisper text: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer and starts as processing, so poll the logs API until it",
+                  "// settles. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status === 'success') {",
+                  "      pm.test('Azure Whisper text is billed from the billing header', function () {",
+                  "        pm.expect(j.cost || 0, 'log cost for a text reply: ' + JSON.stringify({ cost: j.cost, status: j.status, model: j.model })).to.be.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('Azure Whisper text: log row settled', function () { pm.expect.fail('log ' + reqId + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "270.11 azure /azure/cognitiveservices/v1 SSML text to speech with the virtual key in Ocp-Apim-Subscription-Key returns mp3 (azure speech)",
           "request": {
             "method": "POST",
@@ -285593,6 +286133,95 @@
                   "  pm.expect(pm.response.code, 'file list failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
                   "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'provider').to.equal('azure');",
                   "  pm.expect(pm.response.json().data, pm.response.text().slice(0, 300)).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.19 azure speech key lists Azure AI Speech models in /v1/models: voice suffixes from the voices list and the transcription models (azure speech)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=azure",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "azure"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The profile's Azure Speech Key sets use_speech_endpoints on the key and allows only speech names",
+                  "// through a regex: entry, which list-models never backfills. So a MAI-Voice-* entry can only come from",
+                  "// that key's {endpoint}/tts/cognitiveservices/voices/list, and llm-speech and MAI-Transcribe-2 only",
+                  "// from the speech models the azure provider adds for such a key; no alias on the shared key names them.",
+                  "pm.test('a speech key lists the Azure AI Speech models', function () {",
+                  "  pm.expect(pm.response.code, 'list models failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
+                  "  ['azure/neural', 'azure/fast-transcription', 'azure/llm-speech', 'azure/short-audio', 'azure/MAI-Transcribe-2'].forEach(function (id) {",
+                  "    pm.expect(ids, id + ' missing from the ' + ids.length + ' azure models').to.include(id);",
+                  "  });",
+                  "  var voiceSuffixes = ids.filter(function (id) { return id.indexOf('azure/MAI-Voice-') === 0; });",
+                  "  pm.expect(voiceSuffixes.length, 'no azure/MAI-Voice-* voice suffix in: ' + ids.join(', ').slice(0, 300)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "270.20 azure/neural native /v1/audio/speech with an HD voice is priced as the voice suffix (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/neural\",\n  \"input\": \"Harness Azure Speech probe.\",\n  \"voice\": \"en-US-Ava:DragonHDLatestNeural\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Azure synthesizes, and bills, the voice it is sent. A voice suffix that differs from the requested",
+                  "// model is reported as the served model, which pricing reads first, so this call is priced as the HD voice.",
+                  "pm.test('an HD voice under neural reports the voice suffix as the served model', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model header').to.equal('DragonHDLatestNeural');",
                   "});"
                 ]
               }
@@ -290719,6 +291348,92 @@
           }
         }
       ]
+    },
+    {
+      "name": "285. Proxy egress: upstream reach for providers with no other cheap row (proxy-egress)",
+      "description": "One upstream-reaching request for each provider that no existing harness row reaches cheaply. The proxy e2e flow (tests/e2e/api/runners/proxy/) selects these through proxy-smoke-manifest.json, so every provider's egress is proven through each proxy. Each row asserts a 200 carrying the provider's own catalog, which only the live upstream can return.",
+      "item": [
+        {
+          "name": "nebius models listed through /v1/models reach api.tokenfactory.nebius.com - proxy-egress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nebius ListModels reaches the upstream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var models = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('nebius/') === 0; });",
+                  "  pm.expect(models, 'no nebius/ model in the upstream catalog: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=nebius",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "nebius"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "elevenlabs models listed through /v1/models reach api.elevenlabs.io - proxy-egress",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('elevenlabs ListModels reaches the upstream', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  var models = data.filter(function (model) { return typeof model.id === 'string' && model.id.indexOf('elevenlabs/') === 0; });",
+                  "  pm.expect(models, 'no elevenlabs/ model in the upstream catalog: ' + body).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=elevenlabs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "elevenlabs"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
 ,
     {
@@ -295158,7 +295873,1990 @@
       ]
     },
     {
-      "name": "287. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
+      "name": "287. Image cost falls back to the per-image rate when tokens have no rate (image per-image pricing) [SERIAL]",
+      "description": "BytePlus Seedream reports output_tokens on every generated image, but its datasheet rows price per image only (output_cost_per_image, no per-token rate). Image cost took the token branch whenever tokens were reported, multiplied them by a missing rate and recorded no cost, so the per-image fallback was never reached. Token pricing now only applies when it yields a non-zero cost. Case 1 generates one image with a pinned request id; case 2 polls the log row for that id and asserts it carries a cost (pre-fix: no cost).",
+      "item": [
+        {
+          "name": "/v1/images/generations - generate one image for pricing - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var reqId = 'e2e-seedream-image-price-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('seedreamImagePriceRequestId', reqId);",
+                  "pm.collectionVariables.unset('seedreamImagePriceRetry');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('one image generated by byteplus', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect((body.data || []).length, 'no images: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "});",
+                  "pm.test('byteplus reported output tokens for the image', function () {",
+                  "  var usage = pm.response.json().usage;",
+                  "  pm.expect(usage && usage.output_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});",
+                  "pm.test('the produced size is reported for pixel-tier pricing', function () {",
+                  "  var size = pm.response.json().size;",
+                  "  pm.expect(size, 'size: ' + pm.response.text().slice(0, 500)).to.match(/^\\d+x\\d+$/);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{seedreamImagePriceRequestId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dola-seedream-5-0-pro-260628\",\n  \"prompt\": \"A blue circle on white\",\n  \"size\": \"2048x2048\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "logs - the image is recorded with its per-image cost - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var retry = Number(pm.collectionVariables.get('seedreamImagePriceRetry') || 0);",
+                  "if (retry > 0) {",
+                  "  // The async log writer flushes in 1s batches. Newman drains pending timers before it sends.",
+                  "  var until = Date.now() + 1000;",
+                  "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.collectionVariables.get('seedreamImagePriceRequestId');",
+                  "pm.test('logs query responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('seedreamImagePriceRetry'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "// The log row id is the request id, so an identity check turns a wrong row into no row.",
+                  "var row = null;",
+                  "logs.forEach(function (l) { if (l.id === reqId) { row = l; } });",
+                  "var retry = Number(pm.collectionVariables.get('seedreamImagePriceRetry') || 0);",
+                  "if ((!row || !(row.cost > 0)) && retry < 10) {",
+                  "  pm.collectionVariables.set('seedreamImagePriceRetry', retry + 1);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('seedreamImagePriceRetry');",
+                  "pm.test('the image generation was logged under its request id', function () {",
+                  "  pm.expect(row, 'no log row for ' + reqId + ': ' + pm.response.text()).to.not.equal(null);",
+                  "  pm.expect(row.object).to.eql('image_generation');",
+                  "});",
+                  "if (!row) { return; }",
+                  "pm.test('the reported output tokens were kept on the row', function () {",
+                  "  pm.expect(row.token_usage && row.token_usage.completion_tokens, 'token_usage: ' + JSON.stringify(row.token_usage)).to.be.above(0);",
+                  "});",
+                  "pm.test('the image was priced at the per-image rate despite reported tokens', function () {",
+                  "  pm.expect(row.cost, 'cost: ' + JSON.stringify([row.cost, row.token_usage])).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?request_id={{seedreamImagePriceRequestId}}&limit=1"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "288. Sonnet 5.5 caller request surface (sonnet-5-5-surface)",
+      "description": "Local fixture regression, no live provider. Point an isolated gateway's anthropic base_url at runners/anthropic-request-surface-fixture.mjs with max_retries=0 and set anthropicRequestSurfaceFixture=1 to enable these cases; see tests/e2e/api/README.md, \"Sonnet 5.5 caller request surface\". The fixture stands in for the Anthropic Messages API and inspects the request it receives, so these cases assert WHAT BIFROST FORWARDS. They are not evidence of what the live Claude API accepts, and they need no key, no quota and no subscription entitlement. Each request carries its case name in the user message; the fixture answers 200 only when the reasoning and sampling surface on the wire is the one the caller sent, and otherwise answers 400 naming every field that drifted. Four cases are red before the request-surface fix and green after: between_tools carrying a sibling thinking.display; enabled+budget on the typed and the claude-cli raw path; and a caller-sent effort. Ten are invariance controls that must pass on both trees: bare between_tools on unary, stream and count_tokens (already forwarded upstream since PR #7665, and recorded here as controls rather than fixes), the three typed sampling cases, the raw path's already-correct sampling tuple, and claude-sonnet-5 keeping its adaptive rewrite, its raw-path asymmetry and its dropped count sampling. The typed sampling cases are controls because this model family is adaptive-only and the typed converter drops temperature/top_p and deletes top_k for it, so the change leaves sampling stripped; the raw path still forwards all three, and that divergence stays visible here rather than being resolved. count_tokens still deletes temperature for every model, which the count cases pin rather than fix.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('anthropicRequestSurfaceFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture accepted the forwarded request', function () {",
+              "  var body = pm.response.text();",
+              "  pm.expect(pm.response.code, body).to.equal(200);",
+              "  pm.expect(body, 'the fixture rejected the forwarded request').to.not.include('surface_mismatch');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Anthropic /v1/messages - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages stream - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-stream\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  },\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message stream', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "  pm.expect(body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - thinking between_tools is forwarded verbatim (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-count\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking between_tools keeps a sibling display (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: between-tools-display-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"between_tools\",\n    \"display\": \"omitted\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled keeps its budget, invents no effort, and carries the interleaved beta (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: enabled-budget-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - thinking enabled on the claude-cli raw path matches the typed path (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: enabled-budget-raw\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - a caller-sent effort survives beside the restored thinking (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: effort-preserved-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - temperature, top_p and top_k stay stripped for this adaptive-only model (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-unary\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages stream - temperature, top_p and top_k stay stripped for this adaptive-only model (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-stream\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message stream', function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), body).to.include('text/event-stream');",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "  pm.expect(body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - all three sampling parameters stay stripped (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-count\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the claude-cli raw path forwards the same sampling tuple (claude-sonnet-5-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: sampling-raw\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the neighbouring model keeps its adaptive rewrite and its dropped sampling (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-unary\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages - the neighbouring model keeps its raw-path asymmetry (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-raw\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a message', function () {",
+                  "  pm.expect(body).to.include('surface ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anthropic /v1/messages/count_tokens - the neighbouring model still loses all three sampling parameters (claude-sonnet-5) - sonnet-5-5-surface",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"surface-case: control-sonnet-5-count\"\n    }\n  ],\n  \"temperature\": 0.5,\n  \"top_p\": 0.9,\n  \"top_k\": 40\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the fixture answered with a token count', function () {",
+                  "  pm.expect(pm.response.json().input_tokens, body).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "289. MCP agent loop upstream latency covers every turn (agent-loop-upstream)",
+      "description": "Requests that opt into the slow_mcp client (x-bf-mcp-include-clients) run Bifrost's MCP agent loop: turn 1 calls the auto-executed slow_echo tool, which the fixture holds for a fixed 1500ms, Bifrost runs it and sends turn 2. Every turn re-entered Bifrost's request handler on the same context and reset the running upstream total, so the response's extra_fields.upstream_latency covered only the last turn. Turn 1's model time and the tool call's time then showed up as Bifrost overhead (in the log detail view and the OTEL/Datadog overhead attributes), which made agent-mode requests look like Bifrost added seconds of latency.\n\nEach case forces the two-turn loop, proves the second turn ran (the final upstream request carries the slow_echo result), proves the 1500ms tool wait sits inside the request, and pins that the client's measured wait minus upstream_latency stays within 250ms. Before the fix that gap is at least the 1500ms tool call plus turn 1's model call, so both cases fail on the old code however fast the model is. Chat and Responses both enter the loop through the same handler, so both routes are pinned.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini chat agent-loop-upstream: upstream_latency covers both turns",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the agent loop completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('the echo tool ran server side and a second turn answered', function () {",
+                  "  var msg = ((body.choices || [])[0] || {}).message || {};",
+                  "  pm.expect(msg.tool_calls || [], 'the tool call came back unexecuted: ' + text).to.have.length(0);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 400)).to.not.equal('null');",
+                  "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so only one turn ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+                  "  pm.expect(raw, 'slow_mcp-slow_echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('slow_mcp-slow_echo');",
+                  "});",
+                  "pm.test('the fixed slow_echo wait happened inside the request', function () {",
+                  "  pm.expect(pm.response.responseTime, 'the request finished before the 1500ms tool wait, so slow_echo did not run: ' + text.slice(0, 600)).to.be.at.least(1500);",
+                  "});",
+                  "pm.test('upstream_latency covers both turns: the client wait is upstream plus a small Bifrost overhead', function () {",
+                  "  var up = (body.extra_fields || {}).upstream_latency;",
+                  "  pm.expect(up, 'extra_fields.upstream_latency missing: ' + text.slice(0, 600)).to.be.a('number');",
+                  "  var gap = pm.response.responseTime - up;",
+                  "  pm.expect(gap, 'client waited ' + pm.response.responseTime + 'ms but upstream_latency is ' + up + 'ms: a ' + gap + 'ms gap means an earlier turn\\'s model time was dropped from upstream and reported as Bifrost overhead').to.be.at.most(250);",
+                  "  pm.expect(gap, 'upstream_latency ' + up + 'ms exceeds the client wait of ' + pm.response.responseTime + 'ms: upstream time was counted twice (for example, parallel tool calls summed instead of overlapped)').to.be.at.least(-5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "slow_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the slow_echo tool exactly once with the message \\\"agent-upstream-4417\\\". After it returns, reply with one short sentence that includes agent-upstream-4417.\"\n    }\n  ],\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini responses agent-loop-upstream: upstream_latency covers both turns",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the agent loop completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('the echo tool ran server side and a second turn answered', function () {",
+                  "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && (o.name || '').indexOf('echo') !== -1; });",
+                  "  pm.expect(calls.length, 'the echo call came back unexecuted: ' + text).to.equal(0);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 400)).to.not.equal('null');",
+                  "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so only one turn ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+                  "  pm.expect(raw, 'slow_mcp-slow_echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('slow_mcp-slow_echo');",
+                  "});",
+                  "pm.test('the fixed slow_echo wait happened inside the request', function () {",
+                  "  pm.expect(pm.response.responseTime, 'the request finished before the 1500ms tool wait, so slow_echo did not run: ' + text.slice(0, 600)).to.be.at.least(1500);",
+                  "});",
+                  "pm.test('upstream_latency covers both turns: the client wait is upstream plus a small Bifrost overhead', function () {",
+                  "  var up = (body.extra_fields || {}).upstream_latency;",
+                  "  pm.expect(up, 'extra_fields.upstream_latency missing: ' + text.slice(0, 600)).to.be.a('number');",
+                  "  var gap = pm.response.responseTime - up;",
+                  "  pm.expect(gap, 'client waited ' + pm.response.responseTime + 'ms but upstream_latency is ' + up + 'ms: a ' + gap + 'ms gap means an earlier turn\\'s model time was dropped from upstream and reported as Bifrost overhead').to.be.at.most(250);",
+                  "  pm.expect(gap, 'upstream_latency ' + up + 'ms exceeds the client wait of ' + pm.response.responseTime + 'ms: upstream time was counted twice (for example, parallel tool calls summed instead of overlapped)').to.be.at.least(-5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "slow_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Call the slow_echo tool exactly once with the message \\\"agent-upstream-4417\\\". After it returns, reply with one short sentence that includes agent-upstream-4417.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "290. Streaming injected-tool loop counts parallel tool waits once (injected-stream-upstream)",
+      "description": "The openai_injectedslow provider injects slow_lookup (the slow_mcp fixture's slow_echo, held 1500ms per call). A streaming request runs Bifrost's injected-tool loop (chainInjectedStream), which executes the model's injected calls in parallel through the MCP tool manager. Each call used to add its full elapsed time to the request's upstream total, so two overlapping 1500ms calls reported about 3000ms of upstream for about 1500ms of waiting: extra_fields.upstream_latency on the final stream frame exceeded the client's own wait, and overhead clamped to zero. Tool waits now add their union. Each case asks for two parallel calls, proves the tool wait sat inside the request and an answer streamed after it, and pins the client wait minus upstream_latency to [-5ms, 250ms]. Red before the fix whenever the model issues the two calls in one turn. If it calls them one turn at a time the waits do not overlap and the bounds still hold. The MCP agent loop (x-bf-mcp-include-clients) does not run for streaming requests, so this injected loop is the streaming route the latency change reaches. The Go-level pin is TestOverheadParallelToolCallsCountedOnce.",
+      "item": [
+        {
+          "name": "290.1 openai gpt-4o-mini /v1/chat/completions stream with injected slow_lookup: upstream_latency counts parallel tool waits once (injected-stream-upstream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var answer = '';",
+                  "var up = null;",
+                  "var completed = false;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var payload = line.slice(6).trim();",
+                  "  if (payload === '[DONE]') { completed = true; return; }",
+                  "  var frame;",
+                  "  try { frame = JSON.parse(payload); } catch (e) { return; }",
+                  "  var ef = frame.extra_fields || (frame.response && frame.response.extra_fields) || {};",
+                  "  if (typeof ef.upstream_latency === 'number') { up = ef.upstream_latency; }",
+                  "  var delta = ((frame.choices || [])[0] || {}).delta || {};",
+                  "  if (typeof delta.content === 'string') { answer += delta.content; }",
+                  "});",
+                  "pm.test('chat stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(completed, 'the stream never terminated: ' + text.slice(-600)).to.equal(true);",
+                  "  pm.expect(answer.trim(), 'no answer text was streamed after the tool turn: ' + text.slice(0, 600)).to.not.equal('');",
+                  "});",
+                  "pm.test('chat stream: the injected slow_lookup wait happened inside the request', function () {",
+                  "  pm.expect(pm.response.responseTime, 'the request finished before the 1500ms tool wait, so slow_lookup did not run: ' + text.slice(0, 600)).to.be.at.least(1500);",
+                  "});",
+                  "pm.test('chat stream: upstream_latency counts parallel tool waits once', function () {",
+                  "  pm.expect(up, 'no stream frame carried extra_fields.upstream_latency: ' + text.slice(-800)).to.be.a('number');",
+                  "  var gap = pm.response.responseTime - up;",
+                  "  pm.expect(gap, 'client waited ' + pm.response.responseTime + 'ms but upstream_latency is ' + up + 'ms: a ' + gap + 'ms gap means provider or tool time was reported as Bifrost overhead').to.be.at.most(250);",
+                  "  pm.expect(gap, 'upstream_latency ' + up + 'ms exceeds the client wait of ' + pm.response.responseTime + 'ms: parallel tool waits were summed instead of overlapped').to.be.at.least(-5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedslow/gpt-4o-mini\",\n  \"max_tokens\": 96,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the slow_lookup tool twice in parallel in one turn, once with the message \\\"alpha-5521\\\" and once with the message \\\"beta-5521\\\". After both return, reply with one short sentence that mentions both messages.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "290.2 openai gpt-4o-mini /v1/responses stream with injected slow_lookup: upstream_latency counts parallel tool waits once (injected-stream-upstream)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var answer = '';",
+                  "var up = null;",
+                  "var completed = false;",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var payload = line.slice(6).trim();",
+                  "  if (payload === '[DONE]') { completed = true; return; }",
+                  "  var frame;",
+                  "  try { frame = JSON.parse(payload); } catch (e) { return; }",
+                  "  var ef = frame.extra_fields || (frame.response && frame.response.extra_fields) || {};",
+                  "  if (typeof ef.upstream_latency === 'number') { up = ef.upstream_latency; }",
+                  "  if (frame.type === 'response.output_text.delta' && typeof frame.delta === 'string') { answer += frame.delta; }",
+                  "  if (frame.type === 'response.completed') { completed = true; }",
+                  "});",
+                  "pm.test('responses stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(completed, 'the stream never terminated: ' + text.slice(-600)).to.equal(true);",
+                  "  pm.expect(answer.trim(), 'no answer text was streamed after the tool turn: ' + text.slice(0, 600)).to.not.equal('');",
+                  "});",
+                  "pm.test('responses stream: the injected slow_lookup wait happened inside the request', function () {",
+                  "  pm.expect(pm.response.responseTime, 'the request finished before the 1500ms tool wait, so slow_lookup did not run: ' + text.slice(0, 600)).to.be.at.least(1500);",
+                  "});",
+                  "pm.test('responses stream: upstream_latency counts parallel tool waits once', function () {",
+                  "  pm.expect(up, 'no stream frame carried extra_fields.upstream_latency: ' + text.slice(-800)).to.be.a('number');",
+                  "  var gap = pm.response.responseTime - up;",
+                  "  pm.expect(gap, 'client waited ' + pm.response.responseTime + 'ms but upstream_latency is ' + up + 'ms: a ' + gap + 'ms gap means provider or tool time was reported as Bifrost overhead').to.be.at.most(250);",
+                  "  pm.expect(gap, 'upstream_latency ' + up + 'ms exceeds the client wait of ' + pm.response.responseTime + 'ms: parallel tool waits were summed instead of overlapped').to.be.at.least(-5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_injectedslow/gpt-4o-mini\",\n  \"max_output_tokens\": 96,\n  \"stream\": true,\n  \"input\": \"Call the slow_lookup tool twice in parallel in one turn, once with the message \\\"alpha-5521\\\" and once with the message \\\"beta-5521\\\". After both return, reply with one short sentence that mentions both messages.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "291. OpenAI passthrough Responses stream ends on response.completed (PR #9177) (passthrough responses end event)",
+      "description": "Codex CLI and Codex Desktop close the connection as soon as they read response.completed. The OpenAI passthrough stream used to finish only on upstream EOF, so a client that hung up first was logged as cancelled (499, 'Request cancelled: client disconnected') with no usage. core/providers/utils/passthrough_stream.go now finishes the stream on a provider end event (PassthroughStreamParams.EndsStream; OpenAI matches response.completed, response.failed, response.incomplete and error) and abandons the upstream body instead of draining it. newman reads the stream to EOF, so it cannot reproduce the early hangup; that is pinned by TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup and TestStreamPassthrough_EndsStreamAbandonsParkedUpstream. This case pins the wire path: a streamed Responses request through /openai_passthrough completes, and its log row ends as success with the usage from response.completed.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /openai_passthrough/v1/responses streaming ends on response.completed - PR #9177",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai responses end event: stream returned 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('openai responses end event: stream carried response.completed', function () { pm.expect(pm.response.text()).to.include('response.completed'); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai responses end event: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('openai responses end event: log row is success, not cancelled', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); });",
+                  "      pm.test('openai responses end event: log row is a passthrough stream', function () { pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(true); });",
+                  "      pm.test('openai responses end event: usage from response.completed recorded', function () { pm.expect(j.token_usage, JSON.stringify(j)).to.be.an('object'); pm.expect(j.token_usage.total_tokens, JSON.stringify(j.token_usage)).to.be.above(0); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai responses end event: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Reply with one word.\",\n  \"stream\": true,\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "292. Unfiltered model listing is not narrowed to the caller's virtual key (unfiltered model listing)",
+      "description": "GET /api/models and /api/models/details with unfiltered=true list a provider's whole catalog, which is what the dashboard pickers that configure the gateway ask for (a key's allowed models, deployments). The listing used to narrow that catalog to what the caller's virtual key or access reaches, so a picker offered only the models the provider's keys already allowed and a key's allowlist could not be widened from it. Every caller that reaches the route can already read every provider and key through the provider routes, so the unfiltered listing is no longer narrowed; a listing without unfiltered still is. The profile key sk-bf-test-key-nocontent is granted openai only: the first case pins that the unfiltered anthropic listing still reaches it in full (empty before the change), the second that the plain listing stays narrowed to nothing, and the third that /api/models/details, which parses the same query, lists the full unfiltered catalog too. No provider calls are made. Run with FEATURE=\"unfiltered model listing\".",
+      "item": [
+        {
+          "name": "[EXPECT-200] anthropic claude catalog lists in full for an openai-only virtual key with unfiltered=true - unfiltered model listing",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models?provider=anthropic&unfiltered=true&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unfiltered listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the openai-only virtual key does not narrow the unfiltered anthropic catalog', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.total, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.models, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('every listed model is an anthropic claude model', function () {",
+                  "  var models = pm.response.json().models;",
+                  "  models.forEach(function (m) {",
+                  "    pm.expect(m.provider, 'unexpected provider: ' + JSON.stringify(m)).to.equal('anthropic');",
+                  "  });",
+                  "  var claude = models.filter(function (m) { return m.name.indexOf('claude') === 0; });",
+                  "  pm.expect(claude.length, 'expected claude models in: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude listing stays empty for an openai-only virtual key without unfiltered - unfiltered model listing",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models?provider=anthropic&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('plain listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('without unfiltered the listing stays narrowed to the virtual key, which is not granted anthropic', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.total, 'expected an empty listing, got: ' + pm.response.text()).to.equal(0);",
+                  "  pm.expect(body.models, 'expected an empty listing, got: ' + pm.response.text()).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] anthropic claude model details list in full for an openai-only virtual key with unfiltered=true - unfiltered model listing",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "url": "{{baseUrl}}/api/models/details?provider=anthropic&unfiltered=true&limit=50"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unfiltered model details returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the openai-only virtual key does not narrow the unfiltered anthropic model details', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.total, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.models, 'expected anthropic catalog models, got: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('every listed model is an anthropic claude model', function () {",
+                  "  var models = pm.response.json().models;",
+                  "  models.forEach(function (m) {",
+                  "    pm.expect(m.provider, 'unexpected provider: ' + JSON.stringify(m)).to.equal('anthropic');",
+                  "  });",
+                  "  var claude = models.filter(function (m) { return m.name.indexOf('claude') === 0; });",
+                  "  pm.expect(claude.length, 'expected claude models in: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "293. MCP OAuth public client moves to new endpoints without a client secret (mcp-oauth-public-client-endpoints)",
+      "description": "An OAuth MCP client whose client_id has no secret (a public PKCE client) can change its authorize_url and token_url through PUT /api/mcp/client/{id} without sending a client_secret. The rule that a changed endpoint needs the secret resent exists so a stored secret is never posted to an endpoint the admin did not pair it with; a public client stores none, so pre-fix the edit was refused with 400 \"client_secret must be resent explicitly when authorize_url or token_url changes\" and a public client could not follow its MCP server to a new authorization server, which is the recovery the authorization server change docs prescribe. A confidential client that changes an endpoint without its secret is still refused; that and the resend case are covered by the Go test TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Its dynamic client registration issues no client_secret, and its /authorize approves without a login page when called with user=..., so the rows complete a real sign-in. Nothing in the harness runners starts it, so the rows are [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp-oauth-public-client-endpoints\" INCLUDE_PREVIEW=1 once it is up. Like folder 207 the registration needs localhost on mcp_oauth_private_allowlist (the harness profile has it). The edit points the client at the same demo server through 127.0.0.1, so the endpoints differ as strings. The last row deletes the client. No provider credentials are used.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints registering an OAuth MCP server starts a sign-in for a public client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration starts the OAuth flow against the demo server', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, pm.response.text()).to.equal('pending_oauth');",
+                  "  pm.expect(String(body.authorize_url || ''), pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  pm.expect(body.mcp_client_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.complete_url, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('publicClientAuthorizeUrl', body.authorize_url);",
+                  "  pm.collectionVariables.set('publicClientId', body.mcp_client_id);",
+                  "  pm.collectionVariables.set('publicClientCompleteUrl', body.complete_url);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_public_client_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the demo authorization server approves and redirects back with a code",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the authorization server redirects to the Bifrost callback with a code', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientAuthorizeUrl'), 'the registration row did not capture an authorize URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = String(pm.response.headers.get('Location') || '');",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/api/oauth/callback?');",
+                  "  pm.expect(location, 'Location: ' + location).to.match(/[?&]code=/);",
+                  "  pm.collectionVariables.set('publicClientCallbackUrl', location);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientAuthorizeUrl}}&user=harness"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the callback exchanges the code and reports success",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OAuth callback completes the sign-in', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCallbackUrl'), 'the authorize row did not capture a callback URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientCallbackUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints completing the sign-in creates the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('complete-oauth creates and connects the client', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCompleteUrl'), 'the registration row did not capture a complete URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}{{publicClientCompleteUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints a public client changes its authorize_url and token_url without a client_secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the endpoint change is accepted with no secret to resend', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.text(), 'pre-fix a public client was asked for a secret it never had').to.not.include('client_secret must be resent');",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"oauth_config\": {\n    \"authorize_url\": \"http://127.0.0.1:3003/authorize\",\n    \"token_url\": \"http://127.0.0.1:3003/token\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints cleanup deletes the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the client is removed', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "294. Azure Voice Live rates on pricing overrides (azure voice live pricing) [SERIAL]",
+      "description": "Pins the nine Azure Voice Live _voice_live pricing fields on the pricing-override API: a create keeps every rate in pricing_patch, the list returns them, and the override is deleted. Before the fields existed the patch type had no _voice_live keys, so the create dropped them. The Voice Live turns these rates price run over the realtime WebSocket, which this collection does not drive; the cost engine and relay are covered by Go tests (TestCalculateCost_VoiceLiveRates, TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns).",
+      "item": [
+        {
+          "name": "Setup - pricing override with the _voice_live rates [EXPECT-201] - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'e2e-voice-live-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+                  "  // Matches a model no other case calls, so the override cannot reprice anything else in the suite.",
+                  "  scope_kind: 'global',",
+                  "  match_type: 'exact',",
+                  "  pattern: 'voice-live-rates-probe',",
+                  "  request_types: ['responses'],",
+                  "  patch: {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055}",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override with the _voice_live rates is created', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && body.pricing_override;",
+                  "pm.test('Override exposes an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('voiceLiveRatesOverrideId', ov.id); }",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('create response', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "pricing override list returns the _voice_live rates - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override list is returned', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "});",
+                  "var id = pm.collectionVariables.get('voiceLiveRatesOverrideId');",
+                  "var overrides = (pm.response.json().pricing_overrides || []);",
+                  "var ov = overrides.filter(function (o) { return o.id === id; })[0];",
+                  "pm.test('The created override is listed', function () {",
+                  "  pm.expect(ov, 'override ' + id + ' among ' + overrides.length).to.be.an('object');",
+                  "});",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('listed override', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=global&limit=500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ],
+              "query": [
+                {
+                  "key": "scope_kind",
+                  "value": "global"
+                },
+                {
+                  "key": "limit",
+                  "value": "500"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - delete the _voice_live rates override - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{voiceLiveRatesOverrideId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{voiceLiveRatesOverrideId}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "295. Tool-output image detail default (tool-output-image-detail) (#5649 / PR #9209)",
+      "description": "Regression: Bifrost defaulted \"detail\": \"auto\" onto input_image blocks in a message's own content when sending to an OpenAI Responses provider (OpenAI's schema requires the field; strict upstreams such as vLLM, which validate against the official OpenAI types, reject requests without it), but not onto an input_image nested in a tool result (function_call_output.output). vLLM answered 400 \"1 validation error for ResponseInputImageParam ... detail: Field required\", and because the image stays in history every later turn failed the same way.\n\nFix: defaultImageDetail in core/providers/openai/responses.go now also defaults ResponsesToolMessage.Output blocks, cloning on write.\n\nOpenAI itself accepts a missing detail, so a 200 alone proves nothing; every case sends x-bf-send-back-raw-request and asserts on the input_image Bifrost put on the wire (extra_fields.raw_request). Red before the fix: the nested input_image carries no detail.\n  1. /anthropic/v1/messages: the reporter's request, a tool_result whose content is an Anthropic image block.\n  2. /v1/responses: a native function_call_output with an output array; also pins that an explicit detail (\"low\") is preserved and that the top-level image keeps its \"auto\" default.\n  3. /v1/chat/completions with x-bf-compat [\"convert_chat_to_responses\"]: a role:tool message carrying an image_url block, which the chat->Responses bridge turns into function_call_output.output. The compat plugin converts only models the catalog lists as Responses-only, so this case uses gpt-5.3-codex (image input, Responses only); gpt-4o-mini would stay on /chat/completions.\n\nStreaming uses the same request converter (ToOpenAIResponsesRequest), so it is not repeated. Every OpenAI-compatible Responses host that calls the converter (vLLM, Azure, OpenRouter, xAI, Fireworks, Databricks, Bedrock Mantle, ...) inherits the fix; the profile has no vLLM provider, so OpenAI stands in and the raw-request assertion pins the wire shape vLLM validates.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini anthropic messages: tool_result image gets detail auto on the Responses wire - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /anthropic/v1/messages: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /anthropic/v1/messages: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read /tmp/img.png and name its color in one word.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_img_detail_1\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"/tmp/img.png\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_img_detail_1\",\n          \"content\": [\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"base64\",\n                \"media_type\": \"image/png\",\n                \"data\": \"iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses: function_call_output image gets detail auto, explicit detail kept, top-level image unchanged - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /v1/responses: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /v1/responses: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});",
+                  "pm.test('openai via /v1/responses: explicit tool image detail is preserved', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs.length, 'expected both tool images: ' + JSON.stringify(imgs)).to.equal(2);",
+                  "  pm.expect(imgs[1].detail, 'explicit detail overwritten: ' + JSON.stringify(imgs[1])).to.equal('low');",
+                  "});",
+                  "pm.test('openai via /v1/responses: top-level and tool images behave the same', function () {",
+                  "  var raw = rawRequest();",
+                  "  var user = (raw.input || []).filter(function (i) { return i.role === 'user' && Array.isArray(i.content); })[0];",
+                  "  pm.expect(user, 'user message with content blocks missing: ' + JSON.stringify(raw.input)).to.be.an('object');",
+                  "  var top = user.content.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(top.length, 'top-level image missing: ' + JSON.stringify(user)).to.equal(1);",
+                  "  pm.expect(top[0].detail, 'top-level image detail: ' + JSON.stringify(top[0])).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a reference image. Read /tmp/img.png and say whether the colors match, in one word.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_img_detail_1\",\n      \"name\": \"read_file\",\n      \"arguments\": \"{\\\"path\\\":\\\"/tmp/img.png\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_img_detail_1\",\n      \"output\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.3-codex compat chat->responses: tool message image gets detail auto - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /v1/chat/completions: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /v1/chat/completions: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});",
+                  "pm.test('openai via /v1/chat/completions: chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"description\": \"Read a file from disk.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read /tmp/img.png and name its color in one word.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_img_detail_2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"/tmp/img.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_img_detail_2\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "297. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
       "description": "Gemini omits `args` for a function call to a tool that takes no parameters. The chat completion converters (final response and stream) left the tool call arguments as an empty string, which OpenAI-shaped clients cannot json-parse; the Responses path already defaulted them to {}. Both rows force a call to a tool declared without parameters and pin that the arguments the client receives parse as a JSON object.",
       "item": [
         {

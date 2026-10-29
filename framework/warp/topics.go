@@ -311,6 +311,12 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		return nil, fmt.Errorf("read Warp configuration: %w", err)
 	}
 	config := configFromRow(row)
+	// No saved configuration means no embedding space, so no topic can be
+	// filed under one. Only a missing row is refused: a disabled Warp still
+	// lists the topics it already built.
+	if config == nil {
+		return nil, ErrUnavailable
+	}
 	if query.Limit < 1 || query.Limit > topicsMaxListed {
 		query.Limit = topicsMaxListed
 	}

@@ -42,17 +42,16 @@ type Stream struct {
 	usage        *schemas.RelayUsage
 	bytesOut     int64
 
-	// capture buffers up to maxStreamBodyCaptureLen response bytes for the log row; nil when the
-	// content-logging policy would not keep the body anyway, so a stream nobody logs the body of
-	// never allocates one.
-	capture []byte
+	capture []byte // bounded body prefix for the log row; nil when content logging is off
 
 	once   sync.Once
 	finish func(resp *schemas.BifrostRelayResponse, err *schemas.BifrostError)
 }
 
 // newStream wraps an open upstream reply. mapping and requestUnits decide what is read; finish runs
-// the post-hooks.
+// the post-hooks. The returned stream buffers up to maxStreamBodyCaptureLen response bytes in
+// capture for the log row, but only when the content-logging policy would keep the body, so a
+// stream nobody logs the body of never allocates the buffer.
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
 	reader, stop := providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx), ctx)
