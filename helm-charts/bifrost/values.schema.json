@@ -914,6 +914,12 @@
               "description": "Maximum depth for routing rule chain evaluation",
               "default": 10
             },
+            "maxRequestTimeoutInSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Upper bound, in seconds, on the per-request x-bf-request-timeout header (values above it are clamped). 0 ignores the header. Maps to client.max_request_timeout_in_seconds.",
+              "default": 0
+            },
             "allowDirectKeys": {
               "type": "boolean",
               "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",

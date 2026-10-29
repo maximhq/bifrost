@@ -401,6 +401,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "vk_rotation_cooldown must not exceed 30 days")
 		return
 	}
+	if payload.ClientConfig.MaxRequestTimeoutInSeconds < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "max_request_timeout_in_seconds must not be negative (use 0 to ignore x-bf-request-timeout)")
+		return
+	}
 
 	// Fetching existing framework config. The URL checks below skip a URL equal
 	// to the stored one, so a save that sends the stored config back is not
@@ -904,6 +908,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
 	updatedConfig.VKRotationCooldown = payload.ClientConfig.VKRotationCooldown
+
+	// Copied only when sent: 0 is a real value (header ignored), so a partial save that omits
+	// the field must not clear a configured cap. Read per request, so no restart is needed.
+	if _, present := clientConfigFields["max_request_timeout_in_seconds"]; present {
+		updatedConfig.MaxRequestTimeoutInSeconds = payload.ClientConfig.MaxRequestTimeoutInSeconds
+	}
 
 	// No restart needed - routing engine reads via pointer, change is effective immediately.
 	if payload.ClientConfig.RoutingChainMaxDepth > 0 {

@@ -884,6 +884,8 @@ export interface CoreConfig {
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
+	// Cap, in seconds, on the per-request x-bf-request-timeout header; 0 ignores the header.
+	max_request_timeout_in_seconds?: number;
 	// Grace period after a virtual key rotation during which the previous value
 	// still authenticates. API returns int64 nanoseconds; writes accept a Go
 	// duration string like "5m". 0 = old value stops working immediately.
@@ -953,6 +955,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
+	max_request_timeout_in_seconds: 0,
 	vk_rotation_cooldown: 0,
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,

@@ -36,6 +36,7 @@ export class ConfigSettingsPage extends BasePage {
   readonly skipAccessProfileUserVirtualKeyDeletionSwitch: Locator
   readonly requiredHeadersTextarea: Locator
   readonly vkRotationCooldownInput: Locator
+  readonly maxRequestTimeoutInput: Locator
   readonly dashboardAuthSwitch: Locator
   readonly currentPasswordInput: Locator
   readonly currentPasswordError: Locator
@@ -86,6 +87,7 @@ export class ConfigSettingsPage extends BasePage {
     this.skipAccessProfileUserVirtualKeyDeletionSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-deletion-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
+    this.maxRequestTimeoutInput = page.getByTestId('security-max-request-timeout-input')
     this.dashboardAuthSwitch = page.locator('#auth-enabled')
     this.currentPasswordInput = page.getByTestId('security-current-password-input')
     this.currentPasswordError = page.getByTestId('security-current-password-error')
@@ -209,6 +211,18 @@ export class ConfigSettingsPage extends BasePage {
    */
   async getVkRotationCooldown(): Promise<string> {
     return await this.vkRotationCooldownInput.inputValue()
+  }
+
+  /**
+   * Set the cap on the per-request x-bf-request-timeout header, in seconds.
+   * "0" is a meaningful value: it makes the gateway ignore the header.
+   */
+  async setMaxRequestTimeout(value: string): Promise<void> {
+    await this.maxRequestTimeoutInput.fill(value)
+  }
+
+  async getMaxRequestTimeout(): Promise<string> {
+    return await this.maxRequestTimeoutInput.inputValue()
   }
 
   /**

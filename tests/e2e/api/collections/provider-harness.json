@@ -298482,6 +298482,196 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Per-request timeout header (request timeout header) (#1406)",
+      "description": "Regression for #1406: a caller could not change the upstream request timeout for one request; default_request_timeout_in_seconds was fixed per provider client. The x-bf-request-timeout header (a Go duration such as \"10m\", or whole seconds) now replaces that per-attempt timeout for one request, clamped to client.max_request_timeout_in_seconds and ignored while that cap is 0. The shared harness profile sets the cap to 900. The 1ms cases are red before the change (the header is ignored, so the request succeeds with 200) and green after (the attempt ends with 504 request_timed_out); they cover chat, chat streaming (the header wait) and the Responses route. The 120s case pins that a value within the cap leaves normal requests working.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini chat: x-bf-request-timeout 1ms ends the attempt with 504 - request timeout header - #1406 [EXPECT-504]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat completion ends at the 1ms per-request timeout with 504 request_timed_out', function () {",
+                  "  pm.expect(pm.response.code, 'x-bf-request-timeout: 1ms was not honored (the provider default timeout applied instead): ' + text.slice(0, 400)).to.equal(504);",
+                  "  pm.expect(text, 'the 504 is not a provider request timeout: ' + text.slice(0, 400)).to.include('request_timed_out');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "1ms"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini chat stream: x-bf-request-timeout 1ms ends the header wait with 504 - request timeout header - #1406 [EXPECT-504]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('streaming chat completion ends at the 1ms per-request timeout with 504 request_timed_out', function () {",
+                  "  pm.expect(pm.response.code, 'x-bf-request-timeout: 1ms was not honored (the provider default timeout applied instead): ' + text.slice(0, 400)).to.equal(504);",
+                  "  pm.expect(text, 'the 504 is not a provider request timeout: ' + text.slice(0, 400)).to.include('request_timed_out');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "1ms"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses: x-bf-request-timeout 1ms ends the attempt with 504 - request timeout header - #1406 [EXPECT-504]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('responses request ends at the 1ms per-request timeout with 504 request_timed_out', function () {",
+                  "  pm.expect(pm.response.code, 'x-bf-request-timeout: 1ms was not honored (the provider default timeout applied instead): ' + text.slice(0, 400)).to.equal(504);",
+                  "  pm.expect(text, 'the 504 is not a provider request timeout: ' + text.slice(0, 400)).to.include('request_timed_out');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "1ms"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 16,\n  \"input\": \"Say ok.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini chat: x-bf-request-timeout 120 within the cap still answers - request timeout header - #1406",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('a request timeout within the cap leaves the request working', function () {",
+                  "  pm.expect(pm.response.code, 'x-bf-request-timeout: 120 broke a normal request: ' + text.slice(0, 400)).to.equal(200);",
+                  "  var choices = (pm.response.json() || {}).choices || [];",
+                  "  pm.expect(choices.length, 'no choices in the reply: ' + text.slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "120"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 5,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

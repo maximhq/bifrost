@@ -111,6 +111,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
+| `max_request_timeout_in_seconds` | integer | `0` | Cap on the per-request `x-bf-request-timeout` header (`0` ignores the header) |
 | `mcp_external_client_url` | string \| EnvVar | - | Public base URL used as `redirect_uri` against upstream MCP OAuth providers; supports `"env.MY_VAR"` |
 | `a2a_private_allowlist` | array of strings | `[]` | Private hosts, IPs, or CIDRs permitted for Agent Gateway card, OAuth, and runtime connections; link-local and metadata addresses stay blocked |
 | `a2a_external_client_url` | string or secret reference | - | Public base URL required for Agent Gateway protocol operations; management remains available when unset |

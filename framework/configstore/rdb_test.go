@@ -2785,6 +2785,38 @@ func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	assert.NotEqual(t, baseHash, headersHash)
 }
 
+// TestUpdateClientConfig_MaxRequestTimeoutInSecondsRoundTrip pins that the x-bf-request-timeout
+// cap persists, reads back as 0 (header ignored) when unset, and is hashed only when set so a
+// config written before the field existed keeps its hash.
+func TestUpdateClientConfig_MaxRequestTimeoutInSecondsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, result.MaxRequestTimeoutInSeconds)
+
+	capped := base
+	capped.MaxRequestTimeoutInSeconds = 900
+	require.NoError(t, store.UpdateClientConfig(ctx, &capped))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 900, result.MaxRequestTimeoutInSeconds)
+
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	unset := base
+	unset.MaxRequestTimeoutInSeconds = 0
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	cappedHash, err := capped.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+	assert.NotEqual(t, baseHash, cappedHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

@@ -594,6 +594,51 @@ func TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence(t *testin
 	}
 }
 
+// TestUpdateConfig_MaxRequestTimeoutInSeconds pins the x-bf-request-timeout cap: copied only when
+// sent so a partial save keeps it, 0 (or null) clears it and turns the header off again, and a
+// negative value is refused before anything changes.
+func TestUpdateConfig_MaxRequestTimeoutInSeconds(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() int {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MaxRequestTimeoutInSeconds
+	}
+	put := func(body string) {
+		t.Helper()
+		req := putConfigCtx(body)
+		h.updateConfig(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), string(req.Response.Body()))
+	}
+
+	put(`{"client_config":{"log_retention_days":8,"max_request_timeout_in_seconds":900}}`)
+	assert.Equal(t, 900, stored())
+	assert.Equal(t, 15*time.Minute, cfg.GetMaxRequestTimeout())
+
+	put(`{"client_config":{"log_retention_days":8}}`)
+	assert.Equal(t, 900, stored(), "an omitted field keeps the stored cap")
+	assert.Equal(t, 15*time.Minute, cfg.GetMaxRequestTimeout(), "an omitted field keeps the live cap")
+
+	refused := putConfigCtx(`{"client_config":{"log_retention_days":8,"max_request_timeout_in_seconds":-1}}`)
+	h.updateConfig(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+	assert.Equal(t, 900, stored(), "a refused value leaves the stored cap unchanged")
+	assert.Equal(t, 15*time.Minute, cfg.GetMaxRequestTimeout(), "a refused value leaves the live cap unchanged")
+
+	put(`{"client_config":{"log_retention_days":8,"max_request_timeout_in_seconds":0}}`)
+	assert.Zero(t, stored())
+	assert.Zero(t, cfg.GetMaxRequestTimeout())
+
+	put(`{"client_config":{"log_retention_days":8,"max_request_timeout_in_seconds":900}}`)
+	put(`{"client_config":{"log_retention_days":8,"max_request_timeout_in_seconds":null}}`)
+	assert.Zero(t, stored(), "null clears the cap, the safe direction")
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

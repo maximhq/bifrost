@@ -51,12 +51,14 @@ export default function SecurityView() {
 		required_headers: string;
 		whitelisted_routes: string;
 		vk_rotation_cooldown: string;
+		max_request_timeout_in_seconds: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
 		whitelisted_routes: "",
 		vk_rotation_cooldown: "",
+		max_request_timeout_in_seconds: "0",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -107,6 +109,7 @@ export default function SecurityView() {
 				required_headers: config?.required_headers?.join(", ") || "",
 				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
 				vk_rotation_cooldown: formatCooldown(config?.vk_rotation_cooldown),
+				max_request_timeout_in_seconds: String(config?.max_request_timeout_in_seconds ?? 0),
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -151,6 +154,7 @@ export default function SecurityView() {
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const maxRequestTimeoutChanged = (localConfig.max_request_timeout_in_seconds ?? 0) !== (config.max_request_timeout_in_seconds ?? 0);
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
@@ -175,6 +179,7 @@ export default function SecurityView() {
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
+			maxRequestTimeoutChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
@@ -226,6 +231,15 @@ export default function SecurityView() {
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
 		if (field === "enforce_auth_on_inference") inferenceAuthTouchedRef.current = true;
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
+	}, []);
+
+	const handleMaxRequestTimeoutChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, max_request_timeout_in_seconds: value }));
+		// Empty input means 0 (header ignored); anything that is not a whole number is caught on save.
+		const seconds = value.trim() === "" ? 0 : Number(value.trim());
+		if (Number.isInteger(seconds) && seconds >= 0) {
+			setLocalConfig((prev) => ({ ...prev, max_request_timeout_in_seconds: seconds }));
+		}
 	}, []);
 
 	const handleVkRotationCooldownChange = useCallback((value: string) => {
@@ -288,6 +302,11 @@ export default function SecurityView() {
 			const oauthModeActive = localConfig.mcp_server_auth_mode === "both" || localConfig.mcp_server_auth_mode === "oauth";
 			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
 				toast.error(t("security.toastIssuerUrlRequired"));
+				return;
+			}
+			const maxRequestTimeoutInput = localValues.max_request_timeout_in_seconds.trim();
+			if (maxRequestTimeoutInput !== "" && !/^\d+$/.test(maxRequestTimeoutInput)) {
+				toast.error("Max per-request timeout must be a whole number of seconds (0 or empty ignores x-bf-request-timeout).");
 				return;
 			}
 			const cooldownInput = localValues.vk_rotation_cooldown.trim();
@@ -366,6 +385,7 @@ export default function SecurityView() {
 		bifrostConfig,
 		localConfig,
 		localValues.vk_rotation_cooldown,
+		localValues.max_request_timeout_in_seconds,
 		authConfig,
 		showPasswordSection,
 		updateCoreConfig,
@@ -613,6 +633,29 @@ export default function SecurityView() {
 						data-testid="security-allow-direct-keys-switch"
 						checked={localConfig.allow_direct_keys}
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
+					/>
+				</div>
+				{/* Max Per-Request Timeout */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="max-request-timeout" className="text-sm font-medium">
+							Max Per-Request Timeout (seconds)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Lets callers replace a provider&apos;s request timeout for one request with the <b>x-bf-request-timeout</b> header, up to this
+							many seconds; longer values are clamped to it. Leave at <b>0</b> to ignore the header, so every request uses the
+							provider&apos;s configured timeout.
+						</p>
+					</div>
+					<Input
+						id="max-request-timeout"
+						data-testid="security-max-request-timeout-input"
+						className="w-[180px]"
+						type="number"
+						min="0"
+						placeholder="0"
+						value={localValues.max_request_timeout_in_seconds}
+						onChange={(e) => handleMaxRequestTimeoutChange(e.target.value)}
 					/>
 				</div>
 				{/* Cooldown After Virtual Key Rotation */}
