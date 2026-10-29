@@ -2622,6 +2622,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			ConnectionString:       req.ConnectionString,
 			RequirePublicTarget:    req.RequirePublicTarget,
 			StdioConfig:            req.StdioConfig,
+			TLSConfig:              req.TLSConfig,
 			AuthType:               schemas.MCPAuthTypePerUserHeaders,
 			PerUserHeaderKeys:      canonHeaderKeys,
 			ToolsToExecute:         req.ToolsToExecute,

@@ -40,6 +40,10 @@ type Fleet struct {
 	// baseURL is set when Serve binds its own listener, since there is no
 	// httptest.Server to read an address from in that mode.
 	baseURL string
+	// tlsURL and tlsCertPEM describe the listener ServeTLS opened, if any, so
+	// GET /control can hand a client its address and certificate.
+	tlsURL     string
+	tlsCertPEM string
 
 	conns *connTracker
 }
