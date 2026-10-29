@@ -1,8 +1,0 @@
-- feat: relay logs with metadata, route-matched headers and, with content logging on, streamed response bodies
-- feat: MCP prompt and resource reads are logged, and tool logs keep output schemas, titles, icons and multimodal results
-- feat: Warp topics are written to the log store as requests are indexed, and dead topic rows and deleted logs are pruned
-- feat: OpenAI decisions log conversation items and JSON parts
-- fix: multi-turn MCP code-mode requests keep upstream and overhead latency across turns, and each attempt of a multi-attempt request gets its own figures
-- fix: passthrough logs record the served service tier
-- fix: realtime turn lifecycles and upstream errors are logged correctly
-- chore: upgraded core to v1.14.0 and framework to v1.11.0
