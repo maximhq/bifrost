@@ -897,7 +897,22 @@
 			"boundTo": "Associado a",
 			"status": "Estado",
 			"accessTokenExpiry": "Expiração do token de acesso",
+			"discovery": "Descoberta",
+			"discoveryHelp": "O que o Bifrost descobriu com esta credencial num servidor com a descoberta por autor da chamada ativada: as suas ferramentas, prompts e recursos, e quando. Ainda não: o autor da chamada não se ligou desde que iniciou sessão, ou a descoberta falhou; é executada na próxima ligação. Partilhado: o servidor guarda uma descoberta que todos os autores das chamadas usam. Um traço: a credencial precisa primeiro de uma ação, ou está associada a uma sessão.",
 			"created": "Criado"
+		},
+		"discoveryCell": {
+			"shared": "Partilhado",
+			"noTools": "Sem ferramentas",
+			"tools_one": "{{count}} ferramenta",
+			"tools_other": "{{count}} ferramentas",
+			"prompts_one": "{{count}} prompt",
+			"prompts_other": "{{count}} prompts",
+			"resources_one": "{{count}} recurso",
+			"resources_other": "{{count}} recursos",
+			"discoveredAgo": "descoberto {{time}}",
+			"notYet": "Ainda não",
+			"onNextConnect": "na próxima ligação"
 		},
 		"tooltips": {
 			"type": "OAuth: credencial OAuth por utilizador, seja um token armazenado de um início de sessão concluído, ou um fluxo de início de sessão pendente. Cabeçalhos: valores de cabeçalho por utilizador (chaves API / tokens assinados), armazenados ou com submissão pendente.",

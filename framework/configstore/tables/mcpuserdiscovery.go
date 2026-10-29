@@ -40,6 +40,9 @@ type TableMCPPerUserDiscovery struct {
 	ResourceTemplatesJSON string    `gorm:"type:text" json:"-"`                              // JSON []mcp.ResourceTemplate; "" when the server offers none
 	PromptsJSON           string    `gorm:"type:text" json:"-"`                              // JSON []mcp.Prompt with bare names (the client prefix is added on read, like tools); "" when the server offers none
 	DiscoveryHash         string    `gorm:"type:varchar(64);not null" json:"discovery_hash"` // Content hash of the discovery (tools and their details, name mapping, instructions, resources, prompts), for change detection and grouping
+	ToolCount             int       `gorm:"not null;default:0" json:"tool_count"`            // Number of tools, so a listing reads it without decoding ToolsJSON
+	PromptCount           int       `gorm:"not null;default:0" json:"prompt_count"`          // Number of prompts
+	ResourceCount         int       `gorm:"not null;default:0" json:"resource_count"`        // Number of resources plus resource templates
 	DiscoveredAt          time.Time `gorm:"not null" json:"discovered_at"`                   // When the upstream last answered tools/list for this caller
 	CreatedAt             time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt             time.Time `gorm:"index;not null" json:"updated_at"`
@@ -57,15 +60,18 @@ func (TableMCPPerUserDiscovery) TableName() string {
 	return "mcp_per_user_discoveries"
 }
 
-// BeforeSave serializes the decoded maps into their JSON columns. A nil
-// Tools map is written as an empty object rather than left empty, since the
-// column is NOT NULL and a caller whose upstream grants it no tool has a
-// valid, meaningful discovery.
+// BeforeSave serializes the decoded maps into their JSON columns and records
+// their counts. A nil Tools map is written as an empty object rather than
+// left empty, since the column is NOT NULL and a caller whose upstream grants
+// it no tool has a valid, meaningful discovery.
 func (s *TableMCPPerUserDiscovery) BeforeSave(tx *gorm.DB) error {
 	tools := s.Tools
 	if tools == nil {
 		tools = map[string]schemas.ChatTool{}
 	}
+	s.ToolCount = len(tools)
+	s.PromptCount = len(s.Prompts)
+	s.ResourceCount = len(s.Resources) + len(s.ResourceTemplates)
 	data, err := json.Marshal(tools)
 	if err != nil {
 		return fmt.Errorf("marshal per-user discovery tools: %w", err)

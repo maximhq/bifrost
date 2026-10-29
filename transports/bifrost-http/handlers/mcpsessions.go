@@ -76,8 +76,18 @@ func (h *MCPSessionsHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 
 // mcpClientSummary is the minimal MCP client view embedded in session rows.
 type mcpClientSummary struct {
-	ClientID string `json:"client_id"`
-	Name     string `json:"name"`
+	ClientID         string `json:"client_id"`
+	Name             string `json:"name"`
+	PerUserDiscovery bool   `json:"per_user_discovery,omitempty"` // Each caller keeps their own discovery on this client
+}
+
+// mcpSessionDiscovery is what Bifrost discovered with a credential row's
+// binding on a client with per_user_discovery on.
+type mcpSessionDiscovery struct {
+	DiscoveredAt  string `json:"discovered_at"`
+	ToolCount     int    `json:"tool_count"`
+	PromptCount   int    `json:"prompt_count"`
+	ResourceCount int    `json:"resource_count"` // Resources plus resource templates
 }
 
 // virtualKeySummary is the minimal VK view embedded in session rows.
@@ -130,6 +140,10 @@ type mcpSessionRow struct {
 	// Always false for kind == "flow" — flow rows are completed via
 	// /api/oauth/per-user/flows/{id}/start, not /reauth.
 	CanReauth bool `json:"can_reauth"`
+	// Discovery is what Bifrost discovered with this credential's binding, on a
+	// client with per_user_discovery on. Token and header rows of user and
+	// virtual-key callers only; nil when the binding holds none.
+	Discovery *mcpSessionDiscovery `json:"discovery,omitempty"`
 }
 
 type mcpSessionsListResponse struct {
@@ -363,6 +377,11 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 		end = totalCount
 	}
 	page := rows[start:end]
+	if err := h.attachDiscoveries(ctx, page); err != nil {
+		logger.Error("[mcp/sessions] reading discoveries failed: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to list MCP sessions")
+		return
+	}
 
 	SendJSON(ctx, mcpSessionsListResponse{
 		Sessions:   page,
@@ -377,6 +396,71 @@ type sessionBindingKey struct {
 	Mode        string
 	Identity    string
 	MCPClientID string
+}
+
+// attachDiscoveries sets Discovery on the page's credential rows whose client
+// has per_user_discovery on, from one read of their bindings' discoveries. The
+// read is skipped when no row on the page can hold one.
+func (h *MCPSessionsHandler) attachDiscoveries(ctx context.Context, page []mcpSessionRow) error {
+	var bindings []configstore.MCPPerUserDiscoveryBinding
+	for _, row := range page {
+		if binding, ok := discoveryBindingOf(row); ok {
+			bindings = append(bindings, binding)
+		}
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	summaries, err := h.store.ConfigStore.GetMCPPerUserDiscoverySummaries(ctx, bindings)
+	if err != nil {
+		return err
+	}
+	for i := range page {
+		binding, ok := discoveryBindingOf(page[i])
+		if !ok {
+			continue
+		}
+		if summary, held := summaries[binding]; held {
+			page[i].Discovery = &mcpSessionDiscovery{
+				DiscoveredAt:  summary.DiscoveredAt.UTC().Format(rfc3339Nano),
+				ToolCount:     summary.ToolCount,
+				PromptCount:   summary.PromptCount,
+				ResourceCount: summary.ResourceCount,
+			}
+		}
+	}
+	return nil
+}
+
+// discoveryBindingOf is the binding whose discovery a row shows: a token or
+// header credential of a user or virtual-key caller on a client with
+// per_user_discovery on. A pending flow has no credential yet, and a
+// session-bound caller keeps no discovery.
+func discoveryBindingOf(row mcpSessionRow) (configstore.MCPPerUserDiscoveryBinding, bool) {
+	if row.Kind == "flow" || row.MCPClient == nil || !row.MCPClient.PerUserDiscovery {
+		return configstore.MCPPerUserDiscoveryBinding{}, false
+	}
+	binding := configstore.MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthMode(row.AuthMode), MCPClientID: row.MCPClient.ClientID}
+	switch binding.Mode {
+	case schemas.MCPAuthModeUser:
+		if row.UserID != nil {
+			binding.Identity = *row.UserID
+		}
+	case schemas.MCPAuthModeVK:
+		if row.VirtualKey != nil {
+			binding.Identity = row.VirtualKey.ID
+		}
+	}
+	return binding, binding.Identity != ""
+}
+
+// clientSummaryOf is a session row's MCP client: the preloaded client, or only
+// its id when the client row is gone.
+func clientSummaryOf(client *tables.TableMCPClient, mcpClientID string) *mcpClientSummary {
+	if client == nil {
+		return &mcpClientSummary{ClientID: mcpClientID}
+	}
+	return &mcpClientSummary{ClientID: client.ClientID, Name: client.Name, PerUserDiscovery: client.PerUserDiscovery != nil && *client.PerUserDiscovery}
 }
 
 func bindingKeyFromToken(t tables.TableMCPOauthToken) sessionBindingKey {
@@ -942,11 +1026,7 @@ func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 		CreatedAt:     t.CreatedAt.UTC().Format(rfc3339Nano),
 		OauthConfigID: t.OauthConfigID,
 	}
-	if t.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: t.MCPClient.ClientID, Name: t.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: t.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(t.MCPClient, t.MCPClientID)
 	if t.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: t.VirtualKey.ID, Name: t.VirtualKey.Name}
 	} else if t.VirtualKeyID != nil {
@@ -1014,11 +1094,7 @@ func flowRow(f tables.TableMCPOauthFlow) mcpSessionRow {
 		CreatedAt:     f.CreatedAt.UTC().Format(rfc3339Nano),
 		OauthConfigID: f.OauthConfigID,
 	}
-	if f.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClient.ClientID, Name: f.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(f.MCPClient, f.MCPClientID)
 	if f.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: f.VirtualKey.ID, Name: f.VirtualKey.Name}
 	} else if f.VirtualKeyID != nil {
@@ -1050,11 +1126,7 @@ func headerCredentialRow(c tables.TableMCPPerUserHeaderCredential) mcpSessionRow
 		CreatedAt: c.CreatedAt.UTC().Format(rfc3339Nano),
 		UpdatedAt: &updated,
 	}
-	if c.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: c.MCPClient.ClientID, Name: c.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: c.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(c.MCPClient, c.MCPClientID)
 	if c.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: c.VirtualKey.ID, Name: c.VirtualKey.Name}
 	} else if c.VirtualKeyID != nil {
@@ -1085,11 +1157,7 @@ func headerFlowRow(f tables.TableMCPPerUserHeaderFlow) mcpSessionRow {
 		ExpiresAt: &exp,
 		CreatedAt: f.CreatedAt.UTC().Format(rfc3339Nano),
 	}
-	if f.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClient.ClientID, Name: f.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(f.MCPClient, f.MCPClientID)
 	if f.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: f.VirtualKey.ID, Name: f.VirtualKey.Name}
 	} else if f.VirtualKeyID != nil {

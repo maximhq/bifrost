@@ -897,7 +897,22 @@
 			"boundTo": "Associato a",
 			"status": "Stato",
 			"accessTokenExpiry": "Scadenza del token di accesso",
+			"discovery": "Rilevamento",
+			"discoveryHelp": "Ciò che Bifrost ha rilevato con questa credenziale su un server con il rilevamento per chiamante attivo: strumenti, prompt e risorse, e quando. Non ancora: il chiamante non si è connesso da quando ha effettuato l'accesso, oppure il rilevamento non è riuscito; viene eseguito alla sua prossima connessione. Condiviso: il server conserva un rilevamento usato da tutti i chiamanti. Un trattino: la credenziale richiede prima un intervento, oppure è legata a una sessione.",
 			"created": "Creato"
+		},
+		"discoveryCell": {
+			"shared": "Condiviso",
+			"noTools": "Nessuno strumento",
+			"tools_one": "{{count}} strumento",
+			"tools_other": "{{count}} strumenti",
+			"prompts_one": "{{count}} prompt",
+			"prompts_other": "{{count}} prompt",
+			"resources_one": "{{count}} risorsa",
+			"resources_other": "{{count}} risorse",
+			"discoveredAgo": "rilevato {{time}}",
+			"notYet": "Non ancora",
+			"onNextConnect": "alla prossima connessione"
 		},
 		"tooltips": {
 			"type": "OAuth: credenziale OAuth per utente, ovvero un token memorizzato da un accesso completato o un flusso di accesso in sospeso. Intestazioni: valori delle intestazioni per utente (chiavi API / token firmati), memorizzati o in attesa di invio.",

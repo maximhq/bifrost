@@ -33,6 +33,7 @@ The table is **scoped to the caller's identity**: a signed-in admin sees rows vi
 | **Bound to**    | Identity column: user (with name when available), VK, or session ID                                  |
 | **Status**       | One of the per-surface statuses below                                                                |
 | **Access token expiry** | When the OAuth access token expires. `—` for header rows (no concept of access-token expiry) |
+| **Discovery**   | On a server with Per-Caller Discovery on, what Bifrost discovered with this credential and when, such as `3 tools · 1 prompt · 2 resources`, discovered 4 min ago. `Not yet` while a sign-in is pending, or until the caller connects after signing in. `Shared` on a server without Per-Caller Discovery, whose one discovery every caller uses. `-` for a credential that needs action (its discovery was deleted with it) or a session-bound one, which keeps none |
 | **Created**     | When the credential or flow was first opened                                                         |
 | Action menu      | Re-authenticate, Edit values, Complete authentication, Revoke — see [Actions](#actions)             |
 

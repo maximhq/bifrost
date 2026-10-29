@@ -897,7 +897,22 @@
 			"boundTo": "Gebunden an",
 			"status": "Status",
 			"accessTokenExpiry": "Ablauf des Access Tokens",
+			"discovery": "Erkennung",
+			"discoveryHelp": "Was Bifrost mit diesen Anmeldedaten auf einem Server mit Erkennung pro Aufrufer erkannt hat: seine Tools, Prompts und Ressourcen sowie wann. Noch nicht: Der Aufrufer hat sich seit der Anmeldung nicht verbunden, oder die Erkennung ist fehlgeschlagen; sie läuft bei seiner nächsten Verbindung. Geteilt: Der Server speichert eine Erkennung, die jeder Aufrufer nutzt. Ein Strich: Die Anmeldedaten erfordern zuerst eine Aktion, oder sie sind an eine Sitzung gebunden.",
 			"created": "Erstellt"
+		},
+		"discoveryCell": {
+			"shared": "Geteilt",
+			"noTools": "Keine Tools",
+			"tools_one": "{{count}} Tool",
+			"tools_other": "{{count}} Tools",
+			"prompts_one": "{{count}} Prompt",
+			"prompts_other": "{{count}} Prompts",
+			"resources_one": "{{count}} Ressource",
+			"resources_other": "{{count}} Ressourcen",
+			"discoveredAgo": "erkannt {{time}}",
+			"notYet": "Noch nicht",
+			"onNextConnect": "bei der nächsten Verbindung"
 		},
 		"tooltips": {
 			"type": "OAuth: benutzerspezifische OAuth-Anmeldedaten – entweder ein gespeichertes Token aus einer abgeschlossenen Anmeldung oder ein ausstehender Anmeldeablauf. Header: benutzerspezifische Header-Werte (API-Schlüssel / signierte Tokens) – entweder gespeichert oder ausstehend zur Übermittlung.",

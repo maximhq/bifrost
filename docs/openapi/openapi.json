@@ -135364,6 +135364,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "per_user_discovery": {
+            "type": "boolean",
+            "description": "Set on sessions list rows. True when each caller keeps their own\ndiscovery on this client; absent when the client keeps one discovery\nevery caller shares.\n"
           }
         }
       },
@@ -135498,6 +135502,34 @@
           "can_reauth": {
             "type": "boolean",
             "description": "Mirrors the server-side identity gate on POST /api/mcp/sessions/{id}/reauth.\nAlways true for vk- and session-mode rows. For user-mode rows, true only\nwhen the calling user matches the row's bound user — admin DAC scope is\nenough to see the row, but reauthing mints credentials under whoever clicks\nthe URL, so the server returns 403 to non-bound callers. The UI hides the\nRe-authenticate / Edit values action when this is false.\n"
+          },
+          "discovery": {
+            "type": "object",
+            "description": "What Bifrost discovered with this credential's binding on a client with\nper_user_discovery on. Token and header rows of user and virtual-key\ncallers only; absent when the binding holds none.\n",
+            "required": [
+              "discovered_at",
+              "tool_count",
+              "prompt_count",
+              "resource_count"
+            ],
+            "properties": {
+              "discovered_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the upstream last answered tools/list for this caller"
+              },
+              "tool_count": {
+                "type": "integer"
+              },
+              "prompt_count": {
+                "type": "integer"
+              },
+              "resource_count": {
+                "type": "integer",
+                "description": "Resources plus resource templates"
+              }
+            },
+            "nullable": true
           }
         }
       },

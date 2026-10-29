@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -241,4 +243,119 @@ func TestMCPSessionsRevoke_DropsTheRevokedCredentialsDiscovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+// countingDiscoverySummaries counts the per-user discovery summary reads made
+// through it.
+type countingDiscoverySummaries struct {
+	configstore.ConfigStore
+	reads atomic.Int32
+}
+
+func (c *countingDiscoverySummaries) GetMCPPerUserDiscoverySummaries(ctx context.Context, bindings []configstore.MCPPerUserDiscoveryBinding) (map[configstore.MCPPerUserDiscoveryBinding]tables.TableMCPPerUserDiscovery, error) {
+	c.reads.Add(1)
+	return c.ConfigStore.GetMCPPerUserDiscoverySummaries(ctx, bindings)
+}
+
+// callList runs the sessions list as the dashboard admin with query and
+// returns the page it answered with.
+func callList(t *testing.T, h *MCPSessionsHandler, query string) mcpSessionsListResponse {
+	t.Helper()
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.SetRequestURI("/api/mcp/sessions?" + query)
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&req, nil, nil)
+	h.list(&ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var page mcpSessionsListResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+	return page
+}
+
+// TestMCPSessionsList_CarriesEachCallersDiscovery lists credential rows with the
+// discovery their binding holds on a client with per_user_discovery on, read
+// once for the whole page. A pending flow has no credential yet, a session-bound
+// caller keeps no discovery, and a client without the flag keeps one shared
+// discovery, so none of those rows carries one.
+func TestMCPSessionsList_CarriesEachCallersDiscovery(t *testing.T) {
+	cfg, store := newSignInConfig(t)
+	counting := &countingDiscoverySummaries{ConfigStore: store}
+	cfg.ConfigStore = counting
+	ctx := context.Background()
+
+	notes := headersNotesClient()
+	createSignInClient(t, store, notes, true)
+	wiki := headersNotesClient()
+	wiki.ID, wiki.Name = "client-wiki", "wiki"
+	createSignInClient(t, store, wiki, false)
+	require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: schemas.Ptr(true)}))
+
+	headerCredential := func(clientID string, mode schemas.MCPAuthMode, identity string) {
+		cred := &tables.TableMCPPerUserHeaderCredential{MCPClientID: clientID, AuthMode: string(mode), Status: "active", HeadersJSON: `{"x-api-key":"k"}`}
+		switch mode {
+		case schemas.MCPAuthModeUser:
+			cred.UserID = schemas.Ptr(identity)
+		case schemas.MCPAuthModeVK:
+			cred.VirtualKeyID = schemas.Ptr(identity)
+		case schemas.MCPAuthModeSession:
+			cred.SessionID = identity
+		}
+		require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, cred))
+	}
+	headerCredential(notes.ID, schemas.MCPAuthModeUser, "alice")
+	seedDiscovery(t, store, schemas.MCPAuthModeUser, "alice", notes.ID)
+	headerCredential(notes.ID, schemas.MCPAuthModeVK, "vk-1")
+	seedDiscovery(t, store, schemas.MCPAuthModeVK, "vk-1", notes.ID)
+	headerCredential(notes.ID, schemas.MCPAuthModeUser, "bob")
+	headerCredential(notes.ID, schemas.MCPAuthModeSession, "sess-1")
+	seedDiscovery(t, store, schemas.MCPAuthModeSession, "sess-1", notes.ID)
+	headerCredential(wiki.ID, schemas.MCPAuthModeUser, "alice")
+	seedDiscovery(t, store, schemas.MCPAuthModeUser, "alice", wiki.ID)
+	require.NoError(t, store.CreateOauthToken(ctx, &tables.TableMCPOauthToken{ID: "tok-erin", MCPClientID: notes.ID, AuthMode: "user", UserID: schemas.Ptr("erin"), Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "oauth-notes"}))
+	seedDiscovery(t, store, schemas.MCPAuthModeUser, "erin", notes.ID)
+	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-dave", MCPClientID: notes.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("dave")})
+
+	h := NewMCPSessionsHandler(cfg, &evictionLog{})
+	rows := map[string]mcpSessionRow{}
+	for _, row := range callList(t, h, "").Sessions {
+		identity := ""
+		switch {
+		case row.UserID != nil:
+			identity = *row.UserID
+		case row.VirtualKey != nil:
+			identity = row.VirtualKey.ID
+		case row.SessionID != nil:
+			identity = *row.SessionID
+		}
+		rows[row.MCPClient.Name+" "+row.Kind+" "+identity] = row
+	}
+	require.Len(t, rows, 7)
+
+	for _, key := range []string{"notes header alice", "notes header vk-1", "notes token erin"} {
+		row := rows[key]
+		assert.True(t, row.MCPClient.PerUserDiscovery, key)
+		require.NotNil(t, row.Discovery, key)
+		assert.Equal(t, 1, row.Discovery.ToolCount, key)
+		assert.Zero(t, row.Discovery.PromptCount, key)
+		assert.Zero(t, row.Discovery.ResourceCount, key)
+		assert.NotEmpty(t, row.Discovery.DiscoveredAt, key)
+	}
+	for key, why := range map[string]string{
+		"notes header bob":    "bob has not connected since signing in",
+		"notes header sess-1": "a session-bound caller keeps no discovery",
+		"notes flow dave":     "a pending sign-in has no credential yet",
+	} {
+		assert.True(t, rows[key].MCPClient.PerUserDiscovery, key)
+		assert.Nil(t, rows[key].Discovery, why)
+	}
+	assert.False(t, rows["wiki header alice"].MCPClient.PerUserDiscovery)
+	assert.Nil(t, rows["wiki header alice"].Discovery, "a client without the flag keeps one shared discovery")
+	assert.EqualValues(t, 1, counting.reads.Load(), "one read for the whole page")
+
+	// A page without a row that can hold a discovery reads none.
+	counting.reads.Store(0)
+	page := callList(t, h, "mcp_client_id="+wiki.ID)
+	require.Len(t, page.Sessions, 1)
+	assert.Zero(t, counting.reads.Load())
 }
