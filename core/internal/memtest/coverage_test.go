@@ -144,9 +144,9 @@ var reviewedSites = map[string]siteReview{
 		reason: "writes accumulate into small local values (a single schema branch, an enum array), " +
 			"never the request body; the quadratic term is in enum cardinality, which is schema-bounded",
 	},
-	"mistral.normalizeMistralStreamContent": {
+	"mistral.normalizeMistralContent": {
 		status: elementSized,
-		reason: "rewrites each choice-sized delta once, then replaces the choices array outside the loop",
+		reason: "rewrites each choice-sized message or delta, then replaces the choices array outside the loop",
 	},
 	"anthropic.BuildAnthropicChatRequestBody": {
 		status: bounded,
