@@ -4848,15 +4848,15 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte(tt.input))
+			result := gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, []byte(tt.input), schemas.Gemini, "")
 			require.NotEmpty(t, result)
 			tt.validate(t, parseBody(t, result))
 		})
 	}
 
 	t.Run("EmptyBodyReturnsEmpty", func(t *testing.T) {
-		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil))
-		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte{}))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, nil, schemas.Gemini, ""))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, []byte{}, schemas.Gemini, ""))
 	})
 }
 
