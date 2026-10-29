@@ -182,8 +182,10 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 // could still win the race against an already-closed ctx.Done(). The receive
 // from ch selects on ctx.Done() too, so a source that goes silent without
 // closing cannot keep the timeout from being reported. Once cancelled, the
-// goroutine stops forwarding and drains ch, see drainAfterCancel, before
-// running its deferred cleanup.
+// goroutine stops forwarding, drains ch (see drainAfterCancel), and only then
+// sends the timeout chunk: the router's stream loop returns on the first error
+// chunk and completes the trace, so the producer's cancellation hooks must
+// have finished by the time that chunk arrives.
 func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool) chan *schemas.BifrostStreamChunk {
 	return wrapStreamWithDrainBounds(ctx, ch, stop, armed, defaultDrainBounds)
 }
@@ -205,8 +207,8 @@ func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.Bif
 			var ok bool
 			select {
 			case <-ctx.Done():
-				forwardTimeoutChunkIfFired(ctx, out)
 				drainAfterCancel(ch, bounds)
+				forwardTimeoutChunkIfFired(ctx, out)
 				return
 			case chunk, ok = <-ch:
 			}
@@ -220,16 +222,16 @@ func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.Bif
 			}
 			select {
 			case <-ctx.Done():
-				forwardTimeoutChunkIfFired(ctx, out)
 				drainAfterCancel(ch, bounds)
+				forwardTimeoutChunkIfFired(ctx, out)
 				return
 			default:
 			}
 			select {
 			case out <- chunk:
 			case <-ctx.Done():
-				forwardTimeoutChunkIfFired(ctx, out)
 				drainAfterCancel(ch, bounds)
+				forwardTimeoutChunkIfFired(ctx, out)
 				return
 			}
 		}
@@ -251,8 +253,9 @@ var defaultDrainBounds = drainBounds{grace: 5 * time.Second, background: time.Mi
 // drainAfterCancel discards what is left on ch after cancellation so the
 // producer is never left blocked writing into it. A provider closes ch
 // promptly once ctx is cancelled, so the drain normally finishes in place,
-// before close(out), and the transport still sees the producer's cancellation
-// post-hook and log land before it completes the trace. A source that neither
+// before the timeout chunk is sent, and the transport still sees the
+// producer's cancellation post-hook and log land before it completes the
+// trace. A source that neither
 // sends nor closes (a plugin short-circuit stream that ignores ctx) must not
 // hold the caller's stream open, so after bounds.grace the rest of the drain
 // moves to a background goroutine. That goroutine also stops after

@@ -1054,3 +1054,39 @@ func TestAsRequestTimeoutError(t *testing.T) {
 		}
 	})
 }
+
+// TestWrapStreamForRequestTimeout_TimeoutChunkWaitsForProducer verifies the
+// timeout chunk is sent only after the producer has closed ch. The router's
+// stream loop returns on the first error chunk and completes the trace, so a
+// chunk sent before the producer finishes its cancellation hooks would export
+// the trace without them.
+func TestWrapStreamForRequestTimeout_TimeoutChunkWaitsForProducer(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	out := wrapStreamWithDrainBounds(ctx, in, func() {}, true, drainBounds{grace: time.Second, background: time.Second})
+
+	var producerDone atomicBool
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+	go func() {
+		// The producer's own cancellation path: a last chunk, then close.
+		in <- &schemas.BifrostStreamChunk{}
+		time.Sleep(30 * time.Millisecond)
+		producerDone.set(true)
+		close(in)
+	}()
+
+	select {
+	case chunk, ok := <-out:
+		if !ok || chunk.BifrostError == nil {
+			t.Fatalf("expected the timeout chunk, got %+v (open=%v)", chunk, ok)
+		}
+		if !producerDone.get() {
+			t.Fatal("timeout chunk was sent before the producer closed ch")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout chunk never arrived")
+	}
+}
