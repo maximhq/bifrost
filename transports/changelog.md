@@ -4,6 +4,7 @@
 
 ## 🐞 Fixed
 
+- **Unmatched `/api` paths return a JSON 404** - A request to an `/api` path with no handler, for example `/api/logs` while the logging plugin is not loaded, was answered with the dashboard's `index.html` and a 200 status, which API clients could not tell apart from a real response. It now returns the same JSON 404 as other unknown routes.
 - **Startup no longer fails on a new key's unknown grant** - A virtual key added in config.json whose `relay_grants` or `agent_grants` named a relay or agent that is not stored (a typo, or a relay skipped as invalid) failed the whole governance sync, and Bifrost exited at startup. That grant is now skipped with a warning and the key is created, as an existing key's update already did. Agent grants in config.json belong on the agent (`agents[].virtual_key_ids`): agents load after virtual keys, so a key cannot grant an agent declared in the same file on its first start.
 
 ## 🔒 Security

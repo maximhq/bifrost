@@ -66,12 +66,20 @@ func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas
 
 // serveDashboard serves the dashboard UI.
 func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
-	if IsDevMode() && h.serveDevDashboard(ctx) {
+	// Get the request path
+	requestPath := string(ctx.Path())
+
+	// An /api path that reached this catch-all has no handler (for example the
+	// logging plugin is not loaded). Answer with a JSON 404 rather than the SPA
+	// shell, which clients would parse as HTML.
+	if requestPath == "/api" || strings.HasPrefix(requestPath, "/api/") {
+		SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+requestPath)
 		return
 	}
 
-	// Get the request path
-	requestPath := string(ctx.Path())
+	if IsDevMode() && h.serveDevDashboard(ctx) {
+		return
+	}
 
 	// Clean the path to prevent directory traversal
 	cleanPath := path.Clean(requestPath)
