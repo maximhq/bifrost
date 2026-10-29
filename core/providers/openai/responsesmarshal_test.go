@@ -1280,7 +1280,7 @@ func TestDisableBuiltinToolRewritingToolSearchHistory(t *testing.T) {
 				tools = append(tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new("ToolSearch"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}})
 				input = append(input,
 					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("ToolSearch"), CallID: new("call_1"), Arguments: new(`{"query":"weather"}`)}},
-					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new("get_weather")}}},
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeToolReference, ToolName: new("get_weather")}}}}},
 				)
 			} else {
 				input = append(input,
@@ -1303,7 +1303,7 @@ func TestDisableBuiltinToolRewritingToolSearchHistory(t *testing.T) {
 					t.Fatalf("implicit hosted history must be dropped without provisioning search: %s", body)
 				}
 			case "function":
-				if len(wire) != 3 || wire[1].Get("type").String() != "function_call" || wire[1].Get("name").String() != "ToolSearch" || wire[2].Get("type").String() != "function_call_output" || wire[2].Get("call_id").String() != "call_1" {
+				if len(wire) != 3 || wire[1].Get("type").String() != "function_call" || wire[1].Get("name").String() != "ToolSearch" || wire[2].Get("type").String() != "function_call_output" || wire[2].Get("call_id").String() != "call_1" || wire[2].Get("output").Type != gjson.String || wire[2].Get("output").String() != "get_weather" {
 					t.Fatalf("application search history was rewritten: %s", body)
 				}
 			case "server":
@@ -1318,14 +1318,84 @@ func TestDisableBuiltinToolRewritingToolSearchHistory(t *testing.T) {
 	}
 }
 
+func TestDisableBuiltinToolRewritingAnthropicToolSearchResults(t *testing.T) {
+	for _, model := range []string{"gpt-6-sol", "gpt-4o"} {
+		for _, mixed := range []bool{false, true} {
+			name := "references"
+			extraContent := ""
+			if mixed {
+				name = "mixed"
+				extraContent = `,{"type":"text","text":"Loaded tool"},{"type":"image","source":{"type":"url","url":"https://example.com/weather.png"}}`
+			}
+			t.Run(model+"/"+name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+				var incoming anthropic.AnthropicMessageRequest
+				payload := `{"model":"claude-sonnet-4-5","max_tokens":64,"tools":[
+     {"name":"ToolSearch","input_schema":{"type":"object","properties":{}}},
+     {"name":"get_weather","defer_loading":true,"input_schema":{"type":"object","properties":{}}}
+    ],"messages":[{"role":"user","content":"Check the weather"},
+     {"role":"assistant","content":[{"type":"tool_use","id":"toolu_search","name":"ToolSearch","input":{"query":"weather"}}]},
+     {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_search","content":[{"type":"tool_reference","tool_name":"get_weather"}` + extraContent + `]}]}
+    ]}`
+				if err := schemas.Unmarshal([]byte(payload), &incoming); err != nil {
+					t.Fatal(err)
+				}
+				r := incoming.ToBifrostResponsesRequest(ctx)
+				r.Provider, r.Model = schemas.OpenAI, model
+				before, err := providerUtils.MarshalSorted(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := ToOpenAIResponsesRequest(ctx, r).MarshalJSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				outputs := wireItemsOfType(gjson.GetBytes(body, "input").Array(), "function_call_output")
+				if len(outputs) != 1 || outputs[0].Get("call_id").String() != "toolu_search" {
+					t.Fatalf("search call/result pairing lost: %s", body)
+				}
+				output := outputs[0].Get("output")
+				if mixed {
+					blocks := output.Array()
+					if len(blocks) != 3 || blocks[0].Get("type").String() != "input_text" || blocks[0].Get("text").String() != "get_weather" || blocks[1].Get("text").String() != "Loaded tool" || blocks[2].Get("image_url").String() != "https://example.com/weather.png" {
+						t.Fatalf("mixed search output lost content: %s", body)
+					}
+				} else if output.Type != gjson.String || output.String() != "get_weather" {
+					t.Fatalf("client search references lost: %s", body)
+				}
+				if gjson.GetBytes(body, "tools.0.type").String() != "function" || gjson.GetBytes(body, "tools.0.name").String() != "ToolSearch" || strings.Contains(string(body), `"defer_loading":true`) {
+					t.Fatalf("opt-out did not keep eager application functions: %s", body)
+				}
+				after, err := providerUtils.MarshalSorted(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(before) != string(after) {
+					t.Fatal("conversion mutated the shared request")
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkBuiltinToolRewritingResponses(b *testing.B) {
 	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
-		for _, count := range []int{0, 1} {
+		for _, count := range []int{0, 1, 2} {
 			name := "no_tools"
+			input := []schemas.ResponsesMessage{toolSearchUserTurn()}
 			var tools []schemas.ResponsesTool
-			if count > 0 {
+			if count == 1 {
 				name = "function"
 				tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+			}
+			if count == 2 {
+				name = "tool_references"
+				tools = []schemas.ResponsesTool{deferredWeatherTool(), {Type: schemas.ResponsesToolTypeFunction, Name: new("ToolSearch"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+				input = append(input,
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("ToolSearch"), CallID: new("search_call"), Arguments: new(`{"query":"weather"}`)}},
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("search_call"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeToolReference, ToolName: new("get_weather")}}}}},
+				)
 			}
 			for _, disabled := range []bool{false, true} {
 				mode := "default"
@@ -1337,7 +1407,7 @@ func BenchmarkBuiltinToolRewritingResponses(b *testing.B) {
 					if disabled {
 						ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
 					}
-					r := &schemas.BifrostResponsesRequest{Provider: provider, Model: "gpt-6-sol", Input: []schemas.ResponsesMessage{toolSearchUserTurn()}, Params: &schemas.ResponsesParameters{Tools: tools}}
+					r := &schemas.BifrostResponsesRequest{Provider: provider, Model: "gpt-6-sol", Input: input, Params: &schemas.ResponsesParameters{Tools: tools}}
 					if provider == schemas.BedrockMantle {
 						r.Model = "openai.gpt-6-sol"
 					}

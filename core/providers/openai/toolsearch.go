@@ -29,6 +29,32 @@ const toolSearchExecutionServer = "server"
 // filterUnsupportedTools, on slices that are not shared with the caller's request.
 func (req *OpenAIResponsesRequest) provisionToolSearch(supported, disableBuiltinToolRewriting bool) {
 	req.keepDeferLoading = false
+	// Keep client search references readable when their results remain function outputs.
+	if disableBuiltinToolRewriting {
+		for i, msg := range req.Input.OpenAIResponsesRequestInputArray {
+			if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeFunctionCallOutput {
+				continue
+			}
+			blocks := responsesToolOutputBlocks(&msg)
+			var converted []schemas.ResponsesMessageContentBlock
+			for j, block := range blocks {
+				if block.Type != schemas.ResponsesInputMessageContentBlockTypeToolReference || block.ToolName == nil {
+					continue
+				}
+				if converted == nil {
+					converted = slices.Clone(blocks)
+				}
+				converted[j] = schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: block.ToolName}
+			}
+			if converted != nil {
+				toolMsg := *msg.ResponsesToolMessage
+				output := *toolMsg.Output
+				output.ResponsesFunctionToolCallOutputBlocks = converted
+				toolMsg.Output = &output
+				req.Input.OpenAIResponsesRequestInputArray[i].ResponsesToolMessage = &toolMsg
+			}
+		}
+	}
 	if !supported || len(req.Tools) == 0 {
 		req.dropTypedToolSearchCalls()
 		return

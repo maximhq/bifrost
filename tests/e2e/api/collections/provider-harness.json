@@ -280295,6 +280295,244 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "openai/gpt-5.6-luna native Messages client search results preserved regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var hasError = false;",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var extra = body.extra_fields;",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (body.error) { hasError = true; }",
+                  "} catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('client search results survive without native tool search', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  var calls = rawRequest.input.filter(function (item) { return item.type === 'function_call'; });",
+                  "  var outputs = rawRequest.input.filter(function (item) { return item.type === 'function_call_output'; });",
+                  "  pm.expect(calls, text).to.have.lengthOf(1);",
+                  "  pm.expect(calls[0].name).to.equal('ToolSearch');",
+                  "  pm.expect(outputs, text).to.have.lengthOf(1);",
+                  "  pm.expect(outputs[0].call_id).to.equal(calls[0].call_id);",
+                  "  pm.expect(outputs[0].output).to.equal('get_weather');",
+                  "  pm.expect(rawRequest.tools, text).to.have.lengthOf(2);",
+                  "  pm.expect(rawRequest.tools.every(function (tool) { return tool.type === 'function' && tool.defer_loading !== true; })).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"Do not use any tools. Reply with OK.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_search\",\"name\":\"ToolSearch\",\"input\":{\"query\":\"weather\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_search\",\"content\":[{\"type\":\"tool_reference\",\"tool_name\":\"get_weather\"}]}]}],\"tools\":[{\"name\":\"ToolSearch\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"get_weather\",\"defer_loading\":true,\"input_schema\":{\"type\":\"object\",\"properties\":{}}}],\"tool_choice\":{\"type\":\"none\"},\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-5.6-luna Responses client search results preserved regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var hasError = false;",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var extra = body.extra_fields;",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (body.error) { hasError = true; }",
+                  "} catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('client search results survive without native tool search', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  var calls = rawRequest.input.filter(function (item) { return item.type === 'function_call'; });",
+                  "  var outputs = rawRequest.input.filter(function (item) { return item.type === 'function_call_output'; });",
+                  "  pm.expect(calls, text).to.have.lengthOf(1);",
+                  "  pm.expect(calls[0].name).to.equal('ToolSearch');",
+                  "  pm.expect(outputs, text).to.have.lengthOf(1);",
+                  "  pm.expect(outputs[0].call_id).to.equal(calls[0].call_id);",
+                  "  pm.expect(outputs[0].output).to.equal('get_weather');",
+                  "  pm.expect(rawRequest.tools, text).to.have.lengthOf(2);",
+                  "  pm.expect(rawRequest.tools.every(function (tool) { return tool.type === 'function' && tool.defer_loading !== true; })).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"input\":[{\"role\":\"user\",\"content\":\"Do not use any tools. Reply with OK.\"},{\"type\":\"function_call\",\"call_id\":\"call_search\",\"name\":\"ToolSearch\",\"arguments\":\"{\\\"query\\\":\\\"weather\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_search\",\"output\":[{\"type\":\"tool_reference\",\"tool_name\":\"get_weather\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"ToolSearch\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},{\"type\":\"function\",\"name\":\"get_weather\",\"defer_loading\":true,\"parameters\":{\"type\":\"object\",\"properties\":{}}}],\"tool_choice\":\"none\",\"max_output_tokens\":128,\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-5.6-luna Responses client search results preserved streaming - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "function inspect(value) {",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { inspect(JSON.parse(data)); } catch (e) { validJSON = false; }",
+                  "});",
+                  "pm.test('stream reached a terminal response', function () { pm.expect(terminal, text).to.equal(true); });",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('client search results survive without native tool search', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  var calls = rawRequest.input.filter(function (item) { return item.type === 'function_call'; });",
+                  "  var outputs = rawRequest.input.filter(function (item) { return item.type === 'function_call_output'; });",
+                  "  pm.expect(calls, text).to.have.lengthOf(1);",
+                  "  pm.expect(calls[0].name).to.equal('ToolSearch');",
+                  "  pm.expect(outputs, text).to.have.lengthOf(1);",
+                  "  pm.expect(outputs[0].call_id).to.equal(calls[0].call_id);",
+                  "  pm.expect(outputs[0].output).to.equal('get_weather');",
+                  "  pm.expect(rawRequest.tools, text).to.have.lengthOf(2);",
+                  "  pm.expect(rawRequest.tools.every(function (tool) { return tool.type === 'function' && tool.defer_loading !== true; })).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"input\":[{\"role\":\"user\",\"content\":\"Do not use any tools. Reply with OK.\"},{\"type\":\"function_call\",\"call_id\":\"call_search\",\"name\":\"ToolSearch\",\"arguments\":\"{\\\"query\\\":\\\"weather\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_search\",\"output\":[{\"type\":\"tool_reference\",\"tool_name\":\"get_weather\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"ToolSearch\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},{\"type\":\"function\",\"name\":\"get_weather\",\"defer_loading\":true,\"parameters\":{\"type\":\"object\",\"properties\":{}}}],\"tool_choice\":\"none\",\"max_output_tokens\":128,\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     }
