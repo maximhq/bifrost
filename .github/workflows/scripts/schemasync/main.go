@@ -232,7 +232,7 @@ var narrowedEnumPaths = map[string]struct {
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
-		excluded: []string{"byteplus", "minimax", "sagemaker"},
+		excluded: []string{"byteplus", "kimchi", "minimax", "sagemaker"},
 		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects them as a custom provider base at load",
 	},
 }

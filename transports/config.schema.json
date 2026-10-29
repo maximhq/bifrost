@@ -721,6 +721,9 @@
         "byteplus": {
           "$ref": "#/$defs/provider"
         },
+        "kimchi": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -4530,7 +4533,8 @@
                         "huggingface",
                         "databricks",
                         "cloudflare",
-                        "byteplus"
+                        "byteplus",
+                        "kimchi"
                       ]
                     },
                     "embedding_model": {

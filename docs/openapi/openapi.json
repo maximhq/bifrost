@@ -115749,7 +115749,8 @@
           "cloudflare",
           "typesafe",
           "minimax",
-          "byteplus"
+          "byteplus",
+          "kimchi"
         ]
       },
       "Fallback": {
