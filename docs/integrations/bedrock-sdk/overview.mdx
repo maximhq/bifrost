@@ -224,49 +224,36 @@ The Bedrock integration currently supports:
 
 ### Mistral native Invoke tools
 
-For messages-based Mistral calls, Bifrost uses the native Invoke API rather than
-translating the body through Converse. Tool definitions, assistant tool calls, and
-tool results retain the OpenAI-style Mistral format. Replies contain `choices[]`;
-streaming replies remain AWS EventStream `chunk.bytes` payloads, with native
-`chat.completion.chunk` JSON inside each chunk.
+Messages-based Mistral requests on `/invoke` and `/invoke-with-response-stream`
+accept native OpenAI-style tools and tool-result messages:
 
-Requests using Bifrost's existing Converse-style `toolConfig` compatibility input
-continue through Converse and return the same native Mistral response shape.
-
-```python
-import json
-
-response = client.invoke_model(
-    modelId="mistral.mistral-large-3-675b-instruct",
-    contentType="application/json",
-    body=json.dumps({
-        "messages": [{"role": "user", "content": "What's the weather in San Francisco?"}],
-        "max_tokens": 256,
-        "tool_choice": "any",
-        "tools": [{
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get weather for a location.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"location": {"type": "string"}},
-                    "required": ["location"]
-                }
-            }
-        }]
-    })
-)
-tool_calls = json.loads(response["body"].read())["choices"][0]["message"]["tool_calls"]
+```json
+{
+  "max_tokens": 256,
+  "messages": [{"role": "user", "content": "What is the weather in San Francisco?"}],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "parameters": {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+        "required": ["location"]
+      }
+    }
+  }],
+  "tool_choice": "any"
+}
 ```
 
 Use `any` to require a tool call, `auto` to let the model choose, and `none` to
-prevent another call while supplying prior tool results. Missing function names
-return an HTTP `400` `ValidationException` naming the invalid field.
+prevent another call. Replay results as `role: "tool"` messages with `tool_call_id`
+set to the corresponding assistant tool call's `id`. Invalid tools return an HTTP
+`400` `ValidationException` naming the invalid field. Replies use native `choices[]`,
+including inside AWS EventStream chunks.
 
-This handling is limited to Mistral's messages-based Invoke endpoints. Prompt-based
-Invoke requests and neutral `/v1/chat/completions` and `/v1/responses` calls retain
-their existing routing.
+Existing `toolConfig` compatibility input still routes through Converse. Prompt-based
+Invoke requests and neutral `/v1/chat/completions` and `/v1/responses` routing are unchanged.
 
 ---
 

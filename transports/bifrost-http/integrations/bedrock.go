@@ -24,11 +24,6 @@ func newBedrockInvokeRequest(ctx context.Context) interface{} {
 	return &bedrock.BedrockInvokeRequest{}
 }
 
-func convertBedrockInvokeChatRequest(ctx *schemas.BifrostContext, request *openai.OpenAIChatRequest) *schemas.BifrostRequest {
-	ctx.SetValue(bedrock.BedrockContextKeyMistralInvokeIngress, true)
-	return &schemas.BifrostRequest{ChatRequest: request.ToBifrostChatRequest(ctx)}
-}
-
 // BedrockRouter handles AWS Bedrock-compatible API endpoints
 type BedrockRouter struct {
 	*GenericRouter
@@ -142,7 +137,8 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if chatReq, ok := req.(*openai.OpenAIChatRequest); ok {
 				chatReq.Stream = schemas.Ptr(true)
-				return convertBedrockInvokeChatRequest(ctx, chatReq), nil
+				ctx.SetValue(bedrock.BedrockContextKeyMistralInvokeIngress, true)
+				return &schemas.BifrostRequest{ChatRequest: chatReq.ToBifrostChatRequest(ctx)}, nil
 			}
 			if invokeReq, ok := req.(*bedrock.BedrockInvokeRequest); ok {
 				requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
@@ -240,7 +236,8 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 			if chatReq, ok := req.(*openai.OpenAIChatRequest); ok {
 				// This URL is unary even if the body happens to carry stream:true.
 				chatReq.Stream = nil
-				return convertBedrockInvokeChatRequest(ctx, chatReq), nil
+				ctx.SetValue(bedrock.BedrockContextKeyMistralInvokeIngress, true)
+				return &schemas.BifrostRequest{ChatRequest: chatReq.ToBifrostChatRequest(ctx)}, nil
 			}
 			invokeReq, ok := req.(*bedrock.BedrockInvokeRequest)
 			if !ok {
