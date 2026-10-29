@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestMistral(t *testing.T) {
@@ -442,6 +444,201 @@ func TestMistralContentArray(t *testing.T) {
 	}
 }
 
+func TestMistralNonStreamingContentArray(t *testing.T) {
+	cases := []struct {
+		name, message, text, reasoning string
+		wantError, wantToolCall        bool
+	}{
+		{
+			name:      "ThinkingAndText",
+			message:   `{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]},{"type":"text","text":"3"},{"type":"text","text":"91"}]}`,
+			text:      "391",
+			reasoning: "Compute 17 times 23.",
+		},
+		{
+			name:      "ThinkingOnly",
+			message:   `{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]}`,
+			reasoning: "Compute.",
+		},
+		{
+			name:    "StringControl",
+			message: `{"role":"assistant","content":"391"}`,
+			text:    "391",
+		},
+		{
+			name:    "TextArrayControl",
+			message: `{"role":"assistant","content":[{"type":"text","text":"391"}]}`,
+			text:    "391",
+		},
+		{
+			name:         "ThinkingWithToolCall",
+			message:      `{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Use a tool."}]}],"tool_calls":[{"id":"call-local","type":"function","function":{"name":"local_tool","arguments":"{}"}}]}`,
+			reasoning:    "Use a tool.",
+			wantToolCall: true,
+		},
+		{
+			name:      "MalformedThinking",
+			message:   `{"role":"assistant","content":[{"type":"thinking","thinking":"not a chunk array"}]}`,
+			wantError: true,
+		},
+	}
+	for _, api := range []string{"ChatCompletion", "Responses", "Anthropic"} {
+		for _, mode := range []struct {
+			name       string
+			raw, alias bool
+		}{{name: "Raw", raw: true}, {name: "NoRaw"}, {name: "CustomAlias", raw: true, alias: true}} {
+			for _, tc := range cases {
+				t.Run(api+"/"+mode.name+"/"+tc.name, func(t *testing.T) {
+					body := mistralUnaryResponse(tc.message)
+					provider, providerName := mistralUnaryProvider(t, body, mode.raw, mode.alias)
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					key := schemas.Key{Value: *schemas.NewSecretVar("offline-mistral-key")}
+					request := &schemas.BifrostChatRequest{
+						Provider: providerName,
+						Model:    "mistral-small-latest",
+						Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 17 times 23?")}}},
+					}
+					var response any
+					var bifrostErr *schemas.BifrostError
+					if api == "ChatCompletion" {
+						response, bifrostErr = provider.ChatCompletion(ctx, key, request)
+					} else if api == "Responses" {
+						response, bifrostErr = provider.Responses(ctx, key, request.ToResponsesRequest())
+					} else {
+						var native anthropic.AnthropicMessageRequest
+						require.NoError(t, json.Unmarshal([]byte(`{"model":"`+string(providerName)+`/mistral-small-latest","max_tokens":1024,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"What is 17 times 23?"}]}`), &native))
+						result, err := provider.Responses(ctx, key, native.ToBifrostResponsesRequest(ctx))
+						bifrostErr = err
+						if err == nil {
+							response = anthropic.ToAnthropicResponsesResponse(ctx, result)
+						}
+					}
+					if tc.wantError {
+						require.NotNil(t, bifrostErr)
+						require.Equal(t, schemas.ErrProviderResponseUnmarshal, bifrostErr.Error.Message)
+						if mode.raw {
+							require.JSONEq(t, body, mistralContentArrayRaw(t, bifrostErr.ExtraFields.RawResponse))
+						}
+						return
+					}
+					require.Nil(t, bifrostErr)
+					encoded, err := json.Marshal(response)
+					require.NoError(t, err)
+					wire := gjson.ParseBytes(encoded)
+					require.Equal(t, "mistral-unary", wire.Get("id").String())
+					if mode.raw {
+						require.JSONEq(t, body, wire.Get("extra_fields.raw_response").Raw)
+					} else {
+						require.False(t, wire.Get("extra_fields.raw_response").Exists())
+					}
+					var text, reasoning strings.Builder
+					var toolCallID string
+					if api == "ChatCompletion" {
+						message := wire.Get("choices.0.message")
+						reasoning.WriteString(message.Get("reasoning").String())
+						content := message.Get("content")
+						if content.IsArray() {
+							for _, block := range content.Array() {
+								require.Equal(t, "text", block.Get("type").String())
+								text.WriteString(block.Get("text").String())
+							}
+						} else {
+							text.WriteString(content.String())
+						}
+						toolCallID = message.Get("tool_calls.0.id").String()
+						require.Equal(t, int64(10), wire.Get("usage.prompt_tokens").Int())
+					} else if api == "Responses" {
+						for _, item := range wire.Get("output").Array() {
+							switch item.Get("type").String() {
+							case "reasoning":
+								for _, block := range item.Get("content").Array() {
+									require.Equal(t, "reasoning_text", block.Get("type").String())
+									reasoning.WriteString(block.Get("text").String())
+								}
+							case "message":
+								for _, block := range item.Get("content").Array() {
+									require.Equal(t, "output_text", block.Get("type").String())
+									text.WriteString(block.Get("text").String())
+								}
+							case "function_call":
+								toolCallID = item.Get("call_id").String()
+							}
+						}
+						require.Equal(t, int64(10), wire.Get("usage.input_tokens").Int())
+					} else {
+						for _, block := range wire.Get("content").Array() {
+							switch block.Get("type").String() {
+							case "thinking":
+								reasoning.WriteString(block.Get("thinking").String())
+							case "text":
+								text.WriteString(block.Get("text").String())
+							case "tool_use":
+								toolCallID = block.Get("id").String()
+							}
+						}
+						require.Equal(t, int64(10), wire.Get("usage.input_tokens").Int())
+					}
+					require.Equal(t, tc.text, text.String())
+					require.Equal(t, tc.reasoning, reasoning.String())
+					if tc.wantToolCall {
+						require.Equal(t, "call-local", toolCallID)
+					}
+				})
+			}
+		}
+	}
+}
+
+func mistralUnaryResponse(message string) string {
+	return `{"id":"mistral-unary","object":"chat.completion","created":1,"model":"mistral-small-latest","choices":[{"index":0,"message":` + message + `,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`
+}
+
+func mistralUnaryProvider(t testing.TB, body string, raw, alias bool) (*mistral.MistralProvider, schemas.ModelProvider) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+	config := &schemas.ProviderConfig{
+		NetworkConfig:      schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+		SendBackRawRequest: raw, SendBackRawResponse: raw,
+	}
+	name := schemas.Mistral
+	if alias {
+		name = schemas.ModelProvider("offline-mistral-alias")
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{CustomProviderKey: string(name), BaseProviderType: schemas.Mistral}
+	}
+	return mistral.NewMistralProvider(config, mistralContentArrayLogger{t}), name
+}
+
+func BenchmarkMistralNonStreamingContent(b *testing.B) {
+	for _, tc := range []struct{ name, message string }{
+		{"String", `{"role":"assistant","content":"391"}`},
+		{"Thinking", `{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute 17 times 23."}]},{"type":"text","text":"391"}]}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			provider, name := mistralUnaryProvider(b, mistralUnaryResponse(tc.message), false, false)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			key := schemas.Key{Value: *schemas.NewSecretVar("offline-mistral-key")}
+			request := &schemas.BifrostChatRequest{Provider: name, Model: "mistral-small-latest", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What is 17 times 23?")}}}}
+			for range 10 {
+				if response, err := provider.ChatCompletion(ctx, key, request); err != nil || response == nil {
+					b.Fatalf("local chat warmup failed: %+v", err)
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				response, err := provider.ChatCompletion(ctx, key, request)
+				if err != nil || response == nil {
+					b.Fatalf("local chat request failed: %+v", err)
+				}
+			}
+		})
+	}
+}
+
 const mistralContentArrayFinishFrame = `{"id":"mistral-array-stream","object":"chat.completion.chunk","created":1,"model":"magistral-small-latest","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":8,"total_tokens":13}}`
 
 func mistralContentArrayFrame(choices string) string {
@@ -617,7 +814,7 @@ func mistralContentArrayAnthropicLifecycle(t *testing.T, events []*anthropic.Ant
 	t.Logf("Anthropic converted=%d block_types=%v answer=%q reasoning=%q", len(events), blockTypes, text.String(), reasoning.String())
 }
 
-type mistralContentArrayLogger struct{ t *testing.T }
+type mistralContentArrayLogger struct{ t testing.TB }
 
 func (l mistralContentArrayLogger) Debug(string, ...any) {}
 func (l mistralContentArrayLogger) Info(string, ...any)  {}
