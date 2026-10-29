@@ -38,6 +38,11 @@ const (
 // MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
 const MaxVKRotationCooldown = 30 * 24 * time.Hour
 
+// MaxRequestTimeoutInSecondsLimit is the largest max_request_timeout_in_seconds that converts to
+// a time.Duration without overflowing; a larger value would wrap negative and disable the
+// x-bf-request-timeout header.
+const MaxRequestTimeoutInSecondsLimit = math.MaxInt64 / int(time.Second)
+
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
 	SecretVar  string                // The environment variable name (without env. prefix)
@@ -134,6 +139,7 @@ type ClientConfig struct {
 	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
+	MaxRequestTimeoutInSeconds              int                                   `json:"max_request_timeout_in_seconds"`                // Cap on the x-bf-request-timeout header; 0 ignores the header
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                    *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`             // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	SkillsExternalClientURL                 *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`          // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
@@ -277,6 +283,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// their config_hash so there is no hash churn on upgrade for unmodified configs.
 	if c.RoutingChainMaxDepth > 0 {
 		hash.Write([]byte("routingChainMaxDepth:" + strconv.Itoa(c.RoutingChainMaxDepth)))
+	}
+
+	// No else: 0 is the default, so writing ":0" would change every existing config's hash.
+	if c.MaxRequestTimeoutInSeconds > 0 {
+		hash.Write([]byte("maxRequestTimeoutInSeconds:" + strconv.Itoa(c.MaxRequestTimeoutInSeconds)))
 	}
 
 	if c.MCPAgentDepth > 0 {

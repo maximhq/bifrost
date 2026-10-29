@@ -60,6 +60,15 @@ ClientConfig:
     max_request_body_size_mb:
       type: integer
       description: Maximum request body size in MB
+    max_request_timeout_in_seconds:
+      type: integer
+      minimum: 0
+      default: 0
+      description: >
+        Upper bound, in seconds, on the per-request x-bf-request-timeout
+        header, which replaces a provider's default_request_timeout_in_seconds
+        for one request; header values above the cap are clamped to it.
+        0 ignores the header.
     compat:
       type: object
       description: Compat plugin configuration
