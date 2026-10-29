@@ -97,8 +97,10 @@ type MCPManagerInterface interface {
 
 	// ConnectConfiguredClients dials all clients supplied at construction time.
 	// Construction no longer connects; call this once all plugins are registered so
-	// PreMCPConnectionHook sees the full plugin set.
-	ConnectConfiguredClients(ctx context.Context)
+	// PreMCPConnectionHook sees the full plugin set. It returns once every client
+	// has been attempted; onClientDone, when not nil, is called as each attempt
+	// finishes, one call at a time.
+	ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string))
 
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error

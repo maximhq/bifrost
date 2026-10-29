@@ -940,12 +940,21 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 // AddClient adds a new MCP client using the provided context for
 // request-scoped connect hooks. Existing transport lifetimes still use the
 // manager context so persistent MCP connections are not tied to the caller.
-func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPClientConfig) (retErr error) {
+func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPClientConfig) error {
+	_, err := m.addClient(requestCtx, config, false)
+	return err
+}
+
+// addClient is AddClient. With keepOnDialFailure, as the boot dial asks, a
+// failed dial keeps the client instead of removing it (see
+// keepAfterFailedBootDial). dialed reports whether the dial was reached, so a
+// caller can tell a failed dial from a client refused before it.
+func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPClientConfig, keepOnDialFailure bool) (dialed bool, retErr error) {
 	if requestCtx == nil {
 		requestCtx = m.ctx
 	}
 	if err := validateMCPClientConfig(config); err != nil {
-		return fmt.Errorf("invalid MCP client configuration: %w", err)
+		return false, fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 	// openapi_config and the connection inputs baked into the synthesized
 	// server (headers, header lists, TLS) are compared field by field on later
@@ -966,14 +975,14 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 
 	// Check if a client with the same name already exists (GetClientByName has its own lock)
 	if client := m.GetClientByName(config.Name); client != nil {
-		return fmt.Errorf("MCP client with name '%s' already exists", config.Name)
+		return false, fmt.Errorf("MCP client with name '%s' already exists", config.Name)
 	}
 
 	m.mu.Lock()
 
 	if _, ok := m.clientMap[config.ID]; ok {
 		m.mu.Unlock()
-		return fmt.Errorf("client %s already exists", config.Name)
+		return false, fmt.Errorf("client %s already exists", config.Name)
 	}
 
 	// Disabled clients get a dormant placeholder — no connection, no workers.
@@ -1000,11 +1009,11 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		m.clientMap[config.ID] = clientState
 		m.mu.Unlock()
 		m.logger.Debug("%s MCP client '%s' registered in disabled state", MCPLogPrefix, config.Name)
-		return nil
+		return false, nil
 	}
 
 	// Create placeholder entry
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	placeholder := &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		ToolMap:         make(map[string]schemas.ChatTool),
@@ -1012,6 +1021,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			Type: config.ConnectionType,
 		},
 	}
+	m.clientMap[config.ID] = placeholder
 
 	// Claim the per-client exclusive-op slot before the placeholder becomes
 	// visible below (m.mu.Unlock): every other entry point that dials this
@@ -1027,7 +1037,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	if !ok {
 		delete(m.clientMap, config.ID)
 		m.mu.Unlock()
-		return fmt.Errorf("client %s: conflicting operation already in progress", config.Name)
+		return false, fmt.Errorf("client %s: conflicting operation already in progress", config.Name)
 	}
 	defer func() { finish(retErr) }()
 
@@ -1058,7 +1068,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		}
 		m.mu.Unlock()
 		m.logger.Debug("%s OAuth MCP client '%s' (auth_type=%s) registered in pending_verification (awaiting admin authorization)", MCPLogPrefix, config.Name, config.AuthType)
-		return nil
+		return false, nil
 	}
 
 	// Per-user-headers clients whose DiscoveredTools has never been set
@@ -1086,7 +1096,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		}
 		m.mu.Unlock()
 		m.logger.Debug("%s Per-user-headers MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
-		return nil
+		return false, nil
 	}
 
 	// Token-exchange clients with no DiscoveredTools have not had their
@@ -1104,7 +1114,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		}
 		m.mu.Unlock()
 		m.logger.Debug("%s Token-exchange MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
-		return nil
+		return false, nil
 	}
 
 	// Per-user auth types: skip persistent connection. Auth is per-request at
@@ -1179,11 +1189,15 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			checker := NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger)
 			m.checkerManager.StartChecking(checker)
 		}
-		return nil
+		return false, nil
 	}
 
 	// Connect using the copied config
 	if err := m.connectToMCPClient(requestCtx, configCopy); err != nil {
+		if keepOnDialFailure {
+			m.keepAfterFailedBootDial(configCopy, placeholder)
+			return true, err
+		}
 		// Clean up the failed entry — this is a user-initiated action (UI/API),
 		// so surface the error cleanly rather than retaining a ghost entry.
 		m.mu.Lock()
@@ -1191,10 +1205,30 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		m.mu.Unlock()
 		// Returned as is: the caller says the connect failed, and repeating it
 		// here is how create errors came to read "failed to connect" three times.
-		return err
+		return true, err
 	}
 
-	return nil
+	return true, nil
+}
+
+// keepAfterFailedBootDial keeps a boot client whose dial failed: the entry the
+// failed dial left unstable, with its failure recorded, gets a checker that
+// recovers it. Nothing is kept once entry is no longer the client's: the API
+// serves while the boot dial runs, and recovering a client an admin removed
+// meanwhile would bring it back.
+func (m *MCPManager) keepAfterFailedBootDial(config *schemas.MCPClientConfig, entry *schemas.MCPClientState) {
+	m.mu.RLock()
+	current := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	if current != entry {
+		return
+	}
+	isPingAvailable := true
+	if config.IsPingAvailable != nil {
+		isPingAvailable = *config.IsPingAvailable
+	}
+	syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
+	m.checkerManager.StartChecking(NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger))
 }
 
 // verifyConnectionType is the transport a one-shot verification dials and
