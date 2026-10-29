@@ -1343,7 +1343,14 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 	if usage == nil {
 		return nil
 	}
-	c := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.PromptTokens, tier)
+	tokens := usage.PromptTokens
+	if tokens == 0 && usage.TotalTokens > 0 {
+		// Some OpenAI-compatible upstreams (e.g. Voyage) report only total_tokens
+		// on embeddings. Embeddings have no output side, so total is provably the
+		// input count — price it rather than dropping the charge.
+		tokens = usage.TotalTokens
+	}
+	c := float64(tokens) * tieredInputRate(pricing, tokens, tier)
 	if c == 0 {
 		return nil
 	}
