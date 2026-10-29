@@ -108,7 +108,14 @@ type ManagementMCPOptions struct {
 // the spec has loaded. Until then Server returns nil.
 type ManagementMCP struct {
 	opts   ManagementMCPOptions
-	server atomic.Pointer[server.MCPServer]
+	loaded atomic.Pointer[managementMCPLoaded]
+}
+
+// managementMCPLoaded is one spec load: the server, and the operation behind
+// each of its tools, by tool name.
+type managementMCPLoaded struct {
+	server     *server.MCPServer
+	operations map[string]openapimcp.Operation
 }
 
 // NewManagementMCP returns an unloaded holder; call Start to load it.
@@ -121,7 +128,10 @@ func (m *ManagementMCP) Server() *server.MCPServer {
 	if m == nil {
 		return nil
 	}
-	return m.server.Load()
+	if loaded := m.loaded.Load(); loaded != nil {
+		return loaded.server
+	}
+	return nil
 }
 
 // Start loads the spec in the background, retrying with backoff until it
@@ -166,7 +176,7 @@ func (m *ManagementMCP) Load(ctx context.Context) error {
 	for _, id := range report.unknown {
 		logger.Warn("[Management MCP] denied operation %s is not in the spec", id)
 	}
-	m.server.Store(srv)
+	m.loaded.Store(&managementMCPLoaded{server: srv, operations: report.operations})
 	return nil
 }
 
@@ -248,7 +258,8 @@ type managementMCPReport struct {
 	excluded    int
 	unrouted    int // excluded because this gateway does not route them
 	unsupported []openapimcp.UnsupportedOperation
-	unknown     []string // managementMCPDenied entries the spec does not define
+	unknown     []string                        // managementMCPDenied entries the spec does not define
+	operations  map[string]openapimcp.Operation // the operation behind each exposed tool
 }
 
 // buildManagementMCPServer turns spec bytes into the management MCP server.
@@ -268,8 +279,10 @@ func buildManagementMCPServer(data []byte, specURL string, opts ManagementMCPOpt
 	}
 	report.unsupported = syn.Unsupported
 	report.exposed = len(syn.Tools)
+	report.operations = make(map[string]openapimcp.Operation, len(syn.Tools))
 	for i := range syn.Tools {
 		annotateManagementTool(&syn.Tools[i])
+		report.operations[syn.Tools[i].Name] = syn.Tools[i].Operation
 	}
 	srv, err := openapimcp.BuildServer(openapimcp.ServerOptions{
 		ClientName:      "management",
@@ -394,6 +407,7 @@ type managementMCPCaller struct {
 	headers http.Header
 	host    string
 	remote  net.Addr
+	cookie  string // the dashboard's Cookie header; set only for Warp (see warpManagementCaller)
 }
 
 // WithManagementMCPCaller records on ctx who the management MCP's tool calls act
@@ -468,14 +482,19 @@ func (e *ManagementMCPExecutor) Close() error {
 }
 
 // managementMCPTransport gives each call the caller's Host and drops any Cookie
-// header, whatever put it there: a call never carries a browser session.
+// header, whatever put it there, so a /v1/mcp call never carries a browser
+// session. The one exception is Warp's caller, whose dashboard cookie replaces it.
 type managementMCPTransport struct{ next http.RoundTripper }
 
 func (t managementMCPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Del("Cookie")
-	if caller, _ := req.Context().Value(managementMCPCallerKey{}).(managementMCPCaller); caller.host != "" {
+	caller, _ := req.Context().Value(managementMCPCallerKey{}).(managementMCPCaller)
+	if caller.host != "" {
 		req.Host = caller.host
+	}
+	if caller.cookie != "" {
+		req.Header.Set("Cookie", caller.cookie)
 	}
 	return t.next.RoundTrip(req)
 }

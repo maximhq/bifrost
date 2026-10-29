@@ -470,6 +470,33 @@ func TestWarpConversationUsageTotals(t *testing.T) {
 	require.Empty(t, empty)
 }
 
+// A question swap is a compare-and-swap on one message, scoped to the owner's
+// thread: it writes only while the stored value is still the expected one, so a
+// confirmation card is claimed once.
+func TestWarpConversationSwapQuestion(t *testing.T) {
+	store := newWarpConversationStore(t)
+	ctx := context.Background()
+	seedWarpConversation(t, store, "u", "c1", "thread", time.Now().UTC())
+	require.NoError(t, store.db.Model(&WarpMessage{}).Where("id = ?", "c1-a").Update("question_json", `{"pending":{"token":"t"}}`).Error)
+
+	swapped, err := store.SwapWarpQuestion(ctx, "other", "c1", "c1-a", `{"pending":{"token":"t"}}`, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "another owner's thread is not touched")
+	swapped, err = store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", `{"stale":true}`, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "a stale expected value does not match")
+	swapped, err = store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", `{"pending":{"token":"t"}}`, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, "u", "c1", "c1-a", `{"pending":{"token":"t"}}`, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	thread, err := store.GetWarpConversation(ctx, "u", "c1")
+	require.NoError(t, err)
+	require.Equal(t, `{}`, thread.Messages[1].QuestionJSON)
+}
+
 // The failed-first-append cleanup must never take a thread that has messages,
 // whoever wrote them, and must say whether it deleted anything.
 func TestWarpConversationDeleteIfEmpty(t *testing.T) {

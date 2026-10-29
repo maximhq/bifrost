@@ -74,6 +74,13 @@ type Turn struct {
 	semantic         *SemanticSearcher
 	utcOffsetMinutes int
 	timezone         string
+	// management and its catalog are snapshotted with the rest, so a spec
+	// reload mid-turn cannot change the tools under the model.
+	management        ManagementTools
+	managementCatalog *ManagementCatalog
+	// confirmToken is set when this turn is the person pressing Confirm on a
+	// confirmation card. RunTurn checks it against the thread's filed card.
+	confirmToken string
 }
 
 // NewTurn validates a chat request and resolves the configuration and model
@@ -87,7 +94,7 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	if err != nil {
 		return nil, err
 	}
-	messages, err := Conversation(request.Messages)
+	messages, err := Conversation(withoutConfirmationTokens(request.Messages))
 	if err != nil {
 		return nil, err
 	}
@@ -123,13 +130,23 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 	if logs == nil {
 		return nil, ErrUnavailable
 	}
+	management, catalog := s.managementTools()
+	question, questionRole := request.Messages[len(request.Messages)-1].Content, request.Messages[len(request.Messages)-1].Role
+	confirmToken := ""
+	if questionRole == "user" && !isNew {
+		confirmToken = confirmationToken(question)
+	}
+	if confirmToken != "" {
+		// Filed as what the person pressed; the token means nothing to a reader.
+		question = "Confirm"
+	}
 	return &Turn{
 		Budget:         time.Duration(config.EffectiveMaxIterations()*config.EffectiveRequestTimeoutSeconds()) * time.Second,
 		ConversationID: conversationID,
 		IsNew:          isNew,
 		// The question is the last turn; history is everything before it.
-		question:       request.Messages[len(request.Messages)-1].Content,
-		questionRole:   request.Messages[len(request.Messages)-1].Role,
+		question:       question,
+		questionRole:   questionRole,
 		questionsAsked: consecutiveQuestions(request.Messages),
 		messages:       messages,
 		config:         config,
@@ -139,8 +156,11 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 		// Sanitized here, once, since this is the one place a raw client value
 		// exists - everything downstream (NewAgent, systemInstructions) trusts
 		// what it's handed rather than re-validating.
-		utcOffsetMinutes: sanitizeUTCOffsetMinutes(request.UTCOffsetMinutes),
-		timezone:         sanitizeTimezone(request.Timezone),
+		utcOffsetMinutes:  sanitizeUTCOffsetMinutes(request.UTCOffsetMinutes),
+		timezone:          sanitizeTimezone(request.Timezone),
+		management:        management,
+		managementCatalog: catalog,
+		confirmToken:      confirmToken,
 	}, nil
 }
 
@@ -173,9 +193,14 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	scope := withCallerRestriction(runCtx, ScopeFromContext(runCtx), s.callerRestriction)
 	agent := NewAgentWithTopics(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, scope, turn.config, turn.utcOffsetMinutes, turn.timezone, s.topicLister(), turn.semantic)
 	agent.SetGovernanceExtras(s.vkDecorator, s.userGovernance)
+	agent.SetManagement(turn.management, turn.managementCatalog, s.conversations != nil)
 	agent.questionsAsked = turn.questionsAsked
+	messages := turn.messages
+	if turn.confirmToken != "" {
+		messages = s.confirmTurn(runCtx, turn, agent)
+	}
 	events := make(chan Event, 16)
-	go agent.Run(runCtx, turn.messages, events)
+	go agent.Run(runCtx, messages, events)
 
 	f := newFold()
 	for event := range events {

@@ -2448,6 +2448,11 @@ func (h *HybridLogStore) SetDistributedLocker(locker DistributedLocker) {
 	}
 }
 
+// SwapWarpQuestion replaces one message's stored question only if it still holds expected.
+func (h *HybridLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	return h.inner.SwapWarpQuestion(ctx, ownerID, conversationID, messageID, expected, replacement)
+}
+
 // DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
 func (h *HybridLogStore) DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error) {
 	return h.inner.DeleteWarpConversationIfEmpty(ctx, ownerID, id)

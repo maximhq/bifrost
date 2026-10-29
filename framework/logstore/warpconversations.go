@@ -134,6 +134,11 @@ type WarpConversationStore interface {
 	// AppendWarpMessages adds turns to a thread, bumping its updated time so it
 	// sorts to the top of the list.
 	AppendWarpMessages(ctx context.Context, ownerID, conversationID string, messages []WarpMessage) error
+	// SwapWarpQuestion replaces one message's stored question only if it still
+	// holds expected, checking and writing as one operation, and reports whether
+	// it did. Claiming a confirmation card goes through it, so of two Confirms on
+	// the same card, on any instances, exactly one sees true.
+	SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error)
 	// DeleteWarpConversation removes a thread and its messages.
 	DeleteWarpConversation(ctx context.Context, ownerID, id string) error
 	// DeleteWarpConversationIfEmpty removes a thread only if it has no messages,
@@ -361,6 +366,21 @@ func (s *RDBLogStore) AppendWarpMessages(ctx context.Context, ownerID, conversat
 		}
 		return tx.Model(&existing).Update("updated_at", stamp).Error
 	})
+}
+
+// SwapWarpQuestion replaces one message's stored question only if it still
+// holds expected. One UPDATE whose WHERE carries the expected value: a second
+// writer re-evaluates it after the first commits and matches nothing, so only
+// one caller sees a row affected.
+func (s *RDBLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	owned := s.db.WithContext(ctx).Model(&WarpConversation{}).Select("id").Where("id = ? AND owner_id = ?", conversationID, ownerID)
+	result := s.db.WithContext(ctx).Model(&WarpMessage{}).
+		Where("id = ? AND conversation_id = ? AND question_json = ? AND conversation_id IN (?)", messageID, conversationID, expected, owned).
+		Update("question_json", replacement)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
 }
 
 // DeleteWarpConversation removes a thread and its messages.
