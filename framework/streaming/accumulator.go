@@ -56,6 +56,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
 	chunk.RawResponse = nil
+	chunk.RawResponseFormat = ""
 	a.chatStreamChunkPool.Put(chunk)
 }
 
@@ -111,6 +112,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
 	chunk.RawResponse = nil
+	chunk.RawResponseFormat = ""
 	a.responsesStreamChunkPool.Put(chunk)
 }
 

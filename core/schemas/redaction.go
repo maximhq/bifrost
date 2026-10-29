@@ -391,6 +391,16 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 	if text == "" || len(replacements) == 0 {
 		return text
 	}
+	redacted := text
+	for _, raw := range literalReplacementOrder(replacements) {
+		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
+	}
+	return redacted
+}
+
+// literalReplacementOrder returns the non-empty keys of replacements in the order ApplyLiteralReplacements applies
+// them: longest first, so a value wins over a shorter one it contains, and alphabetically among equal lengths.
+func literalReplacementOrder(replacements map[string]string) []string {
 	keys := make([]string, 0, len(replacements))
 	for raw := range replacements {
 		if raw != "" {
@@ -403,11 +413,7 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 		}
 		return len(keys[i]) > len(keys[j])
 	})
-	redacted := text
-	for _, raw := range keys {
-		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
-	}
-	return redacted
+	return keys
 }
 
 // RedactAttributeValue applies literal replacements to supported attribute value shapes.
