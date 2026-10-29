@@ -61,6 +61,8 @@ DOCKER_HOSTS = (
     "_https._tcp.download.docker.com:443",
     "tuf-repo-cdn.sigstore.dev:443",
 )
+# The `aws` component pip-installs awscli into a venv.
+PYPI_HOSTS = ("pypi.org:443", "files.pythonhosted.org:443")
 
 failures = []
 checked = 0
@@ -80,6 +82,11 @@ for path in sys.argv[1:]:
             continue
         installs_docker = any(
             ARM64_INSTALLER in line and "docker" in line.split(ARM64_INSTALLER, 1)[1].split()
+            for run in runs
+            for line in run.splitlines()
+        )
+        installs_aws = any(
+            ARM64_INSTALLER in line and "aws" in line.split(ARM64_INSTALLER, 1)[1].split()
             for run in runs
             for line in run.splitlines()
         )
@@ -116,6 +123,8 @@ for path in sys.argv[1:]:
         required = REQUIRED_ARM64_APT_HOSTS if is_arm else REQUIRED_APT_HOSTS
         if installs_docker:
             required += DOCKER_HOSTS
+        if installs_aws:
+            required += PYPI_HOSTS
         missing = [host for host in required if host not in allowed]
         if missing:
             failures.append((path, job_name, missing))
