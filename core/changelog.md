@@ -1,0 +1,1 @@
+- [fix]: copy toolset_name and output_config in DeepCopyResponsesMessage [@citrocat](https://github.com/citrocat)

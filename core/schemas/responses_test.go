@@ -1140,6 +1140,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 	category := "safety"
 	original := ResponsesMessage{
 		ProviderNativeParts: json.RawMessage(`{"thoughtSignature":"opaque"}`),
+		OutputConfig:        &ResponsesMessageOutputConfig{Effort: Ptr("high")},
 		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
 			Type:                                  ResponsesOutputMessageContentTypeText,
 			ResponsesInputMessageContentBlockFile: &ResponsesInputMessageContentBlockFile{FileType: &fileType},
@@ -1166,7 +1167,8 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 			},
 		}}},
 		ResponsesToolMessage: &ResponsesToolMessage{
-			Action: &ResponsesToolMessageActionStruct{ResponsesToolCallActionStr: Ptr("generate")},
+			ToolsetName: Ptr("computer"),
+			Action:      &ResponsesToolMessageActionStruct{ResponsesToolCallActionStr: Ptr("generate")},
 			ResponsesComputerToolCall: &ResponsesComputerToolCall{PendingSafetyChecks: []ResponsesComputerToolCallPendingSafetyCheck{{
 				ID: "check_1", Code: "confirm", Message: "confirm action",
 			}}},
@@ -1228,6 +1230,15 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 	}
 	if original.ResponsesToolMessage.Action.ResponsesToolCallActionStr == copied.ResponsesToolMessage.Action.ResponsesToolCallActionStr {
 		t.Fatal("copy aliases bare tool action")
+	}
+	if original.ResponsesToolMessage.ToolsetName == copied.ResponsesToolMessage.ToolsetName {
+		t.Fatal("copy aliases toolset name")
+	}
+	if copied.OutputConfig == nil || copied.OutputConfig.Effort == nil || *copied.OutputConfig.Effort != "high" {
+		t.Fatal("copy dropped output_config")
+	}
+	if original.OutputConfig.Effort == copied.OutputConfig.Effort {
+		t.Fatal("copy aliases output_config effort")
 	}
 
 	copied.ProviderNativeParts[0] = '['
