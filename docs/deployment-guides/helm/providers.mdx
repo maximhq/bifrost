@@ -203,7 +203,7 @@ bifrost:
 
 ### Azure OpenAI
 
-Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. Use top-level `aliases` to map logical model names to Azure deployment names.
+Azure requires `azure_key_config` on every key with `endpoint` and `api_version`. Use top-level `aliases` to map logical model names to Azure deployment names. To send speech, transcription or realtime sessions on the same key to Azure AI Speech or Voice Live, set `use_speech_endpoints` or `use_voice_live_endpoints` (see [Azure AI Speech](/providers/supported-providers/azure#11-azure-ai-speech) and [Azure Voice Live](/providers/supported-providers/azure#12-azure-voice-live)).
 
 Two auth modes are supported:
 
