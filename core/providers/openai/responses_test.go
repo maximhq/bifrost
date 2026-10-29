@@ -2919,6 +2919,80 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// A web_search_call with a native OpenAI "ws_" id and a valid status is replayed
+			// as is: OpenAI rejects it without status ("Missing required parameter:
+			// input[N].status") and Codex-style backends without id (#8382).
+			name: "native web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// OpenAI defines "incomplete" for an interrupted web search, and requires
+			// status on a replayed web_search_call just like the other values.
+			name: "native incomplete web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("incomplete"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"incomplete"` {
+					t.Errorf("status: got %s, want \"incomplete\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// Gemini synthesizes "ws_<n>" for an ID-less search call and marks it completed.
+			// OpenAI does not know that id and answers 400 "Item with id ... not found".
+			name: "gemini synthetic ws_<n> web_search_call stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_0"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A "ws_" id with a status OpenAI does not define is not a native item.
+			name: "web_search_call with ws_ id and foreign status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("pending"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "signature stripped from content blocks",
 			input: schemas.ResponsesMessage{
 				Type:   &messageType,
@@ -3118,13 +3192,18 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Store original pointers to verify immutability
-			origStatus := tc.input.Status
-			origID := tc.input.ID
-
 			req := &schemas.BifrostResponsesRequest{
 				Model: "gpt-4o",
 				Input: []schemas.ResponsesMessage{tc.input},
+			}
+			// Snapshot the request's own item, since tc.input is only copied into it
+			origStatus, origID := req.Input[0].Status, req.Input[0].ID
+			var origStatusVal, origIDVal string
+			if origStatus != nil {
+				origStatusVal = *origStatus
+			}
+			if origID != nil {
+				origIDVal = *origID
 			}
 
 			converted := ToOpenAIResponsesRequest(nil, req)
@@ -3157,10 +3236,10 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 
 			// Verify caller's input is unmutated
 			if tc.origMutable {
-				if tc.input.Status != origStatus {
+				if req.Input[0].Status != origStatus || (origStatus != nil && *origStatus != origStatusVal) {
 					t.Error("original input status was mutated")
 				}
-				if tc.input.ID != origID {
+				if req.Input[0].ID != origID || (origID != nil && *origID != origIDVal) {
 					t.Error("original input ID was mutated")
 				}
 			} else {
@@ -3245,6 +3324,110 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 	if original.Detail != nil {
 		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
 	}
+}
+
+// TestToOpenAIResponsesRequest_DefaultsToolOutputImageDetail verifies an input_image
+// returned by a tool (inside function_call_output.output) gets the same "auto"
+// default as one in a message's own content. vLLM rejects the whole request with
+// "detail: Field required" otherwise, and the image stays in history so every later
+// turn fails too.
+func TestToOpenAIResponsesRequest_DefaultsToolOutputImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	toolOutput := func(callType schemas.ResponsesMessageType, detail *string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(callType),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr("here is the file"),
+						},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+								ImageURL: &imageURL,
+								Detail:   detail,
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		message    schemas.ResponsesMessage
+		wantDetail string
+	}{
+		{"function_call_output missing detail", toolOutput(schemas.ResponsesMessageTypeFunctionCallOutput, nil), "auto"},
+		{"custom_tool_call_output missing detail", toolOutput(schemas.ResponsesMessageTypeCustomToolCallOutput, nil), "auto"},
+		{"explicit detail preserved", toolOutput(schemas.ResponsesMessageTypeFunctionCallOutput, schemas.Ptr("low")), "low"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostResponsesRequest{Model: "gpt-4o", Input: []schemas.ResponsesMessage{tt.message}}
+
+			req := ToOpenAIResponsesRequest(nil, bifrostReq)
+			require.NotNil(t, req)
+			blocks := req.Input.OpenAIResponsesRequestInputArray[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+			require.Len(t, blocks, 2)
+			require.NotNil(t, blocks[1].ResponsesInputMessageContentBlockImage.Detail, "tool output image left without detail")
+			require.Equal(t, tt.wantDetail, *blocks[1].ResponsesInputMessageContentBlockImage.Detail)
+
+			data, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Contains(t, string(data), `"detail":"`+tt.wantDetail+`"`, "wire JSON: %s", data)
+
+			// Caller's input must remain untouched.
+			original := tt.message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[1].ResponsesInputMessageContentBlockImage
+			if tt.wantDetail == "auto" {
+				require.Nil(t, original.Detail, "caller's input was mutated")
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_ChatIngressToolImageDetail drives a /v1/chat/completions
+// tool message carrying an image through the chat→Responses bridge: the image lands
+// in function_call_output.output and must leave with detail "auto".
+func TestToOpenAIResponsesRequest_ChatIngressToolImageDetail(t *testing.T) {
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	chatReq := &schemas.BifrostChatRequest{
+		Model: "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read /tmp/img.png")}},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:       schemas.Ptr("call_1"),
+						Type:     schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read_file"), Arguments: `{"path":"/tmp/img.png"}`},
+					}},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: imageURL},
+				}}},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, chatReq.ToResponsesRequest())
+	require.NotNil(t, req)
+	data, err := sonic.Marshal(req)
+	require.NoError(t, err)
+	wire := string(data)
+	require.Contains(t, wire, `"type":"function_call_output"`, "wire JSON: %s", wire)
+	require.Contains(t, wire, `"input_image"`, "wire JSON: %s", wire)
+	require.Equal(t, strings.Count(wire, `"input_image"`), strings.Count(wire, `"detail":"auto"`), "every input_image needs detail: %s", wire)
 }
 
 // TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools verifies function tools
@@ -4837,6 +5020,80 @@ func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"max_characters"`) {
 		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
+	}
+}
+
+// The web_search_call branch and the image-detail default run for every input item, so the
+// benchmark covers a history without web searches or tool images (the common case), the same
+// history with one search per turn, and one with a tool returning an image per turn.
+func BenchmarkToOpenAIResponsesRequestInput(b *testing.B) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+	functionCallOutputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	imageURL := "data:image/png;base64,iVBORw0KGgo="
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	history := func(withSearch, withToolImage bool) []schemas.ResponsesMessage {
+		var input []schemas.ResponsesMessage
+		for i := 0; i < 8; i++ {
+			input = append(input, schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("what is new in the news today?"),
+				},
+			})
+			if withToolImage {
+				input = append(input, schemas.ResponsesMessage{
+					Type: &functionCallOutputType,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("call_bench"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+								Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL},
+							}},
+						},
+					},
+				})
+			}
+			if withSearch {
+				input = append(input, schemas.ResponsesMessage{
+					Type:   &webSearchCallType,
+					ID:     schemas.Ptr("ws_bench"),
+					Status: schemas.Ptr("completed"),
+				})
+			}
+			input = append(input, schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_bench"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("here is a summary")},
+					},
+				},
+			})
+		}
+		return input
+	}
+	for name, opts := range map[string]struct{ search, toolImage bool }{
+		"plain-history":      {},
+		"web-search-history": {search: true},
+		"tool-image-history": {toolImage: true},
+	} {
+		b.Run(name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    history(opts.search, opts.toolImage),
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
 	}
 }
 

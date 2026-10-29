@@ -582,6 +582,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_expose_lists_columns"}, run: migrationAddMCPClientExposeListsColumns},
 	{IDs: []string{"add_oauth_issuer_binding_columns"}, run: migrationAddOAuthIssuerBindingColumns},
 	{IDs: []string{"add_mcp_client_discovered_tool_details_column"}, run: migrationAddMCPClientDiscoveredToolDetailsColumn},
+	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
+	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
+	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -786,6 +789,35 @@ func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("add_video_resolution_pricing_columns is non-rollbackable: dropping the resolution-banded video rate columns would permanently delete every custom per-resolution price an operator has set, and the affected models would silently bill at their unbanded rate instead; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddVideoTokenPricingColumn adds output_cost_per_video_token, the
+// per-token video output rate for providers that meter video in tokens
+// (BytePlus Seedance bills on the task's completion_tokens).
+func migrationAddVideoTokenPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_video_token_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "output_cost_per_video_token"); err != nil {
+				return fmt.Errorf("failed to add column output_cost_per_video_token: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_video_token_pricing_column is non-rollbackable: dropping output_cost_per_video_token would permanently delete every custom per-token video price an operator has set, and token-metered video would silently bill at $0; the column is additive and older binaries safely ignore it")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -1196,6 +1228,21 @@ func rssFeedsIconURLColumnMigration(ctx context.Context, logger schemas.Logger, 
 			return fmt.Errorf("%s is non-rollbackable: dropping icon_url would permanently delete every custom feed logo; the column is additive and older binaries ignore it", migrationName)
 		},
 	}
+}
+
+// migrationAddRelaysTables creates the relay table and its virtual-key grant
+// table. Both are additive: older binaries ignore them.
+func migrationAddRelaysTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_relays_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableRelay{}, &tables.TableVirtualKeyRelayGrant{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the relay tables would permanently delete endpoints, their credentials and virtual-key grants", migrationName)
+		},
+	})
 }
 
 func rollbackAgentGatewayTables(*gorm.DB) error {
@@ -16802,4 +16849,52 @@ func migrationAddMCPClientDiscoveredToolDetailsColumn(ctx context.Context, db *g
 		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
 	}
 	return nil
+}
+
+// voiceLivePricingColumns are the Azure Voice Live rate columns on governance_model_pricing.
+var voiceLivePricingColumns = []string{
+	"input_cost_per_token_voice_live",
+	"output_cost_per_token_voice_live",
+	"cache_read_input_token_cost_voice_live",
+	"input_cost_per_audio_token_voice_live",
+	"output_cost_per_audio_token_voice_live",
+	"input_cost_per_standard_speech_audio_token_voice_live",
+	"output_cost_per_standard_speech_audio_token_voice_live",
+	"input_cost_per_custom_speech_audio_token_voice_live",
+	"output_cost_per_custom_speech_audio_token_voice_live",
+}
+
+// migrationAddVoiceLivePricingColumns adds the Azure Voice Live rate columns.
+func migrationAddVoiceLivePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_voice_live_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, field := range voiceLivePricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackVoiceLivePricingColumns(ctx, tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackVoiceLivePricingColumns is the down path of add_voice_live_pricing_columns: it refuses, since
+// the columns hold operator-set rates.
+func rollbackVoiceLivePricingColumns(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_voice_live_pricing_columns is non-rollbackable: dropping the _voice_live columns would permanently delete every Voice Live rate an operator has set, and Voice Live turns would silently bill at the normal rates; the columns are additive and older binaries safely ignore them")
 }

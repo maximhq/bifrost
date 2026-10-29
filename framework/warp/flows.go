@@ -173,6 +173,9 @@ func queryLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
+			if includeContent {
+				hydrateConversations(ctx, deps.logManager, result.Logs)
+			}
 			rows := make([]logRow, 0, len(result.Logs))
 			for i := range result.Logs {
 				rows = append(rows, projectLog(&result.Logs[i], includeContent, LogContentChars))
@@ -192,6 +195,48 @@ func queryLogsTool() Tool {
 				"window":  resolvedWindow(filters),
 			}, filters), nil
 		},
+	}
+}
+
+// hydrateConversations fills list rows in with their message history, so a
+// content preview is read from the conversation and not from the list query's
+// content_summary column - which on the plain store is every message joined
+// from the top, and for a coding agent nothing but its setup.
+//
+// Only the history and output are copied in; every other field stays the list
+// row's. A reader that cannot hydrate, or a failed read, leaves the rows as
+// they were and their previews fall back to the summary.
+func hydrateConversations(ctx context.Context, reader LogReader, logs []logstore.Log) {
+	hydrator, ok := reader.(SemanticHydrator)
+	if !ok {
+		return
+	}
+	ids := make([]string, 0, len(logs))
+	for i := range logs {
+		if !logs[i].ContentHidden {
+			ids = append(ids, logs[i].ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	full, err := hydrator.GetLogsByIDs(ctx, ids)
+	if err != nil {
+		return
+	}
+	byID := make(map[string]*logstore.Log, len(full))
+	for i := range full {
+		byID[full[i].ID] = &full[i]
+	}
+	for i := range logs {
+		entry := byID[logs[i].ID]
+		if entry == nil || entry.ContentHidden {
+			continue
+		}
+		logs[i].InputHistoryParsed = entry.InputHistoryParsed
+		logs[i].ResponsesInputHistoryParsed = entry.ResponsesInputHistoryParsed
+		logs[i].OutputMessageParsed = entry.OutputMessageParsed
+		logs[i].ResponsesOutputParsed = entry.ResponsesOutputParsed
 	}
 }
 

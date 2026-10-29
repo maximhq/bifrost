@@ -381,6 +381,16 @@ type ConfigStore interface {
 	UpdateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error
 	DeleteVirtualKey(ctx context.Context, id string, tx ...*gorm.DB) error
 	ReplaceVirtualKeyAgentGrants(ctx context.Context, virtualKeyID string, agentNames []string, tx ...*gorm.DB) error
+	ReplaceVirtualKeyRelayGrants(ctx context.Context, virtualKeyID string, endpointNames []string, tx ...*gorm.DB) error
+
+	// Relay CRUD.
+	ListRelays(ctx context.Context) ([]*schemas.RelayConfig, error)
+	GetRelay(ctx context.Context, name string) (*schemas.RelayConfig, error)
+	CreateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error
+	UpdateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error
+	DeleteRelay(ctx context.Context, name string) error
+	GetRelayConfigHashes(ctx context.Context) (map[string]string, error)
+	GetRelayGrantedVirtualKeyIDs(ctx context.Context, name string) ([]string, error)
 
 	// Agent Gateway registration CRUD. Declared on the interface (not just the
 	// RDB implementation) so wrappers that embed ConfigStore — like the
@@ -793,6 +803,10 @@ type ConfigStore interface {
 	// client's connection-failure record can say what actually failed rather
 	// than only that the row is no longer usable.
 	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string, reason string) error
+	// MarkOauthTokenNeedsReauthIfUnrenewable flips one token row to 'needs_reauth' only while it is
+	// still active, has no refresh token and its access token has expired, so a reauthorize that
+	// landed in between is not overwritten. Reports whether the row was flipped.
+	MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error)
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret

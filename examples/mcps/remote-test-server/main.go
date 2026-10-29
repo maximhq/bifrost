@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -33,6 +34,9 @@ import (
 const (
 	defaultHTTPPort = "3011"
 	defaultSSEPort  = "3012"
+
+	// slowEchoDelay is how long slow_echo holds before answering.
+	slowEchoDelay = 1500 * time.Millisecond
 
 	httpEndpointPath    = "/mcp"
 	sseEndpointPath     = "/sse"
@@ -205,6 +209,14 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithDescription("Fail with isError and text that opens with \"Error: \""),
 	), prefixedErrorHandler)
 
+	// Backs the provider-harness agent-loop latency cases: a fixed wait between agent turns
+	// that must be counted as upstream time, not Bifrost overhead.
+	s.AddTool(mcp.NewTool(
+		"slow_echo",
+		mcp.WithDescription("Echo back the input message after a fixed delay"),
+		mcp.WithString("message", mcp.Required(), mcp.Description("Message to echo")),
+	), slowEchoHandler)
+
 	return s
 }
 
@@ -220,6 +232,15 @@ func reviewPromptHandler(_ context.Context, req mcp.GetPromptRequest) (*mcp.GetP
 	return mcp.NewGetPromptResult("Review a change", []mcp.PromptMessage{
 		mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("Review this change: "+req.Params.Arguments["diff"])),
 	}), nil
+}
+
+func slowEchoHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	select {
+	case <-time.After(slowEchoDelay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return echoHandler(ctx, req)
 }
 
 func prefixedErrorHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -2769,7 +2769,9 @@ func NormalizeModelName(model string) string {
 				}
 			}
 		}
-		if isRegionalPrefix && (schemas.IsGeminiModel(rest) || schemas.IsVeoModel(rest) || schemas.IsImagenModel(rest) || schemas.IsGemmaModel(rest)) {
+		restLower := strings.ToLower(rest)
+		hasFamilyPrefix := strings.HasPrefix(restLower, "gemini-") || strings.HasPrefix(restLower, "veo-") || strings.HasPrefix(restLower, "imagen-") || strings.HasPrefix(restLower, "gemma-")
+		if isRegionalPrefix && hasFamilyPrefix {
 			return rest
 		}
 	}

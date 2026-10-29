@@ -33,12 +33,14 @@ type endpoint struct {
 	client          *http.Client // unary client; Timeout bounds the whole response
 	streamingClient *http.Client // streaming client; no whole-response timeout
 	operatorHeaders map[string]string
-	usage           resolvedUsage // endpoint-level usage mapping
-	routes          []compiledRoute
-	streamGlobs     []routeGlob
-	awsKey          *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
-	awsRegion       string
-	streamIdle      int // seconds
+	// operatorLogHeaders is operatorHeaders with every secret-backed value redacted, for the log row.
+	operatorLogHeaders map[string]string
+	usage              resolvedUsage // endpoint-level usage mapping
+	routes             []compiledRoute
+	streamGlobs        []routeGlob
+	awsKey             *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
+	awsRegion          string
+	streamIdle         int // seconds
 }
 
 // newEndpoint validates cfg and compiles it. proxy is the effective proxy (the endpoint's own, or
@@ -64,14 +66,15 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
 	}
 	e := &endpoint{
-		cfg:             cfg,
-		client:          client,
-		streamingClient: providerUtils.BuildStreamingHTTPClient(client),
-		operatorHeaders: lowerHeaderValues(cfg.ExtraHeaders),
-		usage:           usage,
-		routes:          routes,
-		streamGlobs:     compileStreamGlobs(cfg),
-		streamIdle:      schemas.DefaultEndpointStreamIdleTimeoutSeconds,
+		cfg:                cfg,
+		client:             client,
+		streamingClient:    providerUtils.BuildStreamingHTTPClient(client),
+		operatorHeaders:    lowerHeaderValues(cfg.ExtraHeaders),
+		operatorLogHeaders: loggableHeaderValues(cfg.ExtraHeaders),
+		usage:              usage,
+		routes:             routes,
+		streamGlobs:        compileStreamGlobs(cfg),
+		streamIdle:         schemas.DefaultEndpointStreamIdleTimeoutSeconds,
 	}
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
@@ -157,6 +160,23 @@ func lowerHeaderValues(extra map[string]schemas.SecretVar) map[string]string {
 	}
 	out := make(map[string]string, len(extra))
 	for name, value := range extra {
+		out[strings.ToLower(name)] = value.GetValue()
+	}
+	return out
+}
+
+// loggableHeaderValues is lowerHeaderValues for the log row: a value the relay reads from the
+// environment or a vault is redacted, so a route matcher never copies an operator secret into a row.
+func loggableHeaderValues(extra map[string]schemas.SecretVar) map[string]string {
+	if len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(extra))
+	for name, value := range extra {
+		if value.IsFromEnv() || value.IsFromVault() {
+			out[strings.ToLower(name)] = schemas.RedactedAttrValue
+			continue
+		}
 		out[strings.ToLower(name)] = value.GetValue()
 	}
 	return out

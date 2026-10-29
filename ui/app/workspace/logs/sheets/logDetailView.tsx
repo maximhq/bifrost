@@ -76,6 +76,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
+import { CopyInlineButton, HeroStat, StatusPill, statusCodeBadgeClass } from "../views/logHeroStat";
 import { FallbackChainBanner, FallbackChainTimeline, useFallbackChain } from "../views/fallbackChain";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
@@ -373,19 +374,6 @@ const isContainerOperation = (object: string) => {
 	return containerTypes.includes(object?.toLowerCase());
 };
 
-const statusPillStyles: Record<string, string> = {
-	success: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
-	error: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
-	processing: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900",
-	cancelled: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-900/40 dark:text-gray-400 dark:border-gray-800",
-};
-const statusDotStyles: Record<string, string> = {
-	success: "bg-chart-success",
-	error: "bg-chart-error",
-	processing: "bg-blue-500",
-	cancelled: "bg-gray-400",
-};
-
 const batchStatusBadgeStyles: Record<string, string> = {
 	completed: "bg-chart-success/15 text-chart-success-ink",
 	ended: "bg-chart-success/15 text-chart-success-ink",
@@ -395,74 +383,6 @@ const batchStatusBadgeStyles: Record<string, string> = {
 	deleted: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300",
 };
 const batchStatusBadgeDefault = "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
-
-function StatusPill({ status }: { status: Status }) {
-	return (
-		<span
-			className={cn(
-				"inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase",
-				statusPillStyles[status] ?? statusPillStyles.cancelled,
-			)}
-		>
-			<span className={cn("h-1.5 w-1.5 rounded-sm", statusDotStyles[status] ?? statusDotStyles.cancelled)} />
-			{status}
-		</span>
-	);
-}
-
-// Colors an HTTP status code badge by response class.
-function statusCodeBadgeClass(code: number): string {
-	if (code >= 200 && code < 300) return "border-chart-success/30 bg-chart-success/10 text-chart-success-ink";
-	if (code >= 300 && code < 400)
-		return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-900";
-	if (code >= 400 && code < 500)
-		return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-900";
-	return "border-chart-error/30 bg-chart-error/10 text-chart-error-ink";
-}
-
-function HeroStat({
-	label,
-	value,
-	sub,
-	mono = false,
-	valueClass,
-	hasRightBorder = false,
-}: {
-	label: string;
-	value: ReactNode;
-	sub?: ReactNode;
-	mono?: boolean;
-	valueClass?: string;
-	hasRightBorder?: boolean;
-}) {
-	return (
-		<div className={cn("border-border/70 border-b px-5 py-3 md:border-b-0", hasRightBorder && "md:border-r")}>
-			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{label}</div>
-			<div className={cn("mt-0.5 truncate text-[18px] font-semibold tabular-nums", mono && "font-mono text-[15px]", valueClass)}>
-				{value}
-			</div>
-			{sub ? <div className="text-muted-foreground mt-0.5 truncate text-[11px]">{sub}</div> : null}
-		</div>
-	);
-}
-
-function CopyInlineButton({ text, testId }: { text: string; testId?: string }) {
-	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
-	return (
-		<button
-			type="button"
-			onClick={(e) => {
-				e.stopPropagation();
-				copy(text);
-			}}
-			className="text-muted-foreground hover:bg-muted hover:text-foreground inline-flex h-6 w-6 items-center justify-center rounded-sm transition"
-			aria-label="Copy"
-			data-testid={testId}
-		>
-			<Clipboard className="h-3.5 w-3.5" />
-		</button>
-	);
-}
 
 // Decision logs store the state as the user message and the answers as the
 // assistant message; label them by what they actually are.
@@ -1410,13 +1330,13 @@ export function LogDetailView({
 								<LogEntryDetailsView
 									className="w-full"
 									label="Latency"
-									tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
+									tooltip="Time this call took end to end: upstream plus Bifrost overhead."
 									value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
 								/>
 								<LogEntryDetailsView
 									className="w-full"
 									label="Upstream Latency"
-									tooltip="Time spent waiting on the provider, summed across every attempt."
+									tooltip="Time this call spent waiting on the provider, including its retries."
 									value={
 										log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>
 									}

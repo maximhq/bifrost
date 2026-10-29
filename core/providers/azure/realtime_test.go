@@ -283,6 +283,31 @@ func TestAzureVoiceLiveWebSocketURL(t *testing.T) {
 	}
 }
 
+// TestAzureVoiceLiveMarksPricingSurface pins that a session sent to Voice Live is marked for the
+// model's _voice_live rates, and one sent to Azure OpenAI is not.
+func TestAzureVoiceLiveMarksPricingSurface(t *testing.T) {
+	t.Parallel()
+	provider := &AzureProvider{}
+	for _, tc := range []struct {
+		name      string
+		voiceLive bool
+		want      schemas.PricingSurface
+	}{
+		{"voice live", true, schemas.PricingSurfaceVoiceLive},
+		{"azure openai", false, ""},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		key := schemas.Key{AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("https://example.openai.azure.com/"), UseVoiceLiveEndpoints: tc.voiceLive}}
+		if _, err := provider.RealtimeWebSocketURL(ctx, key, "gpt-realtime", ""); err != nil {
+			t.Fatalf("%s: RealtimeWebSocketURL: %v", tc.name, err.Error.Message)
+		}
+		got, _ := ctx.Value(schemas.BifrostContextKeyRealtimePricingSurface).(schemas.PricingSurface)
+		if got != tc.want {
+			t.Errorf("%s: pricing surface = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestAzureVoiceLiveRejectsWebRTCAndClientSecrets pins the 400 on the routes Voice Live does not
 // serve the OpenAI way, before any upstream call.
 func TestAzureVoiceLiveRejectsWebRTCAndClientSecrets(t *testing.T) {

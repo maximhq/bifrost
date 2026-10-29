@@ -13,13 +13,22 @@ type BifrostRelayRequest struct {
 	Model      string            // read where the usage mapping says, "" for none
 	RoutePath  string            // the matched route's path glob, "" when none matched
 	RouteIndex int               // index into routes[], -1 when none matched
-	Billable   bool              // a 2xx reply on this call is counted and charged
-	Streams    bool              // relayed as a stream
+	// RouteHeaders holds, by lower-cased name, the value of each header the matched route matches
+	// on: the one that selected the route (the relay's own extra header when it sets one, else the
+	// caller's). A value the relay reads from a secret is already redacted. The logging plugin keeps
+	// these on the row, as it keeps the configured logging headers.
+	RouteHeaders map[string]string
+	Billable     bool // a 2xx reply on this call is counted and charged
+	Streams      bool // relayed as a stream
 }
 
-// BifrostRelayResponse is what PostRelayHook receives. Body is nil for a streamed call, which
-// reaches the post-hooks once the stream has ended. Usage is nil when the call is not counted: a
-// route that is not billable, or a non-2xx reply.
+// BifrostRelayResponse is what PostRelayHook receives, once the reply (or the stream) has ended.
+// Body's content depends on how the reply arrived: a buffered (non-streamed) reply always carries
+// its full body here, regardless of content-capture policy, since it was already read into memory
+// to be forwarded. A streamed reply's Body is nil unless content capture was enabled for the call
+// (see BifrostContextKeyRelayContentLoggingEnabledByDefault), in which case it is a bounded prefix
+// of what was buffered as the reply was forwarded — not the whole reply the way a buffered one is.
+// Usage is nil when the call is not counted: a route that is not billable, or a non-2xx reply.
 type BifrostRelayResponse struct {
 	RelayName       string
 	StatusCode      int

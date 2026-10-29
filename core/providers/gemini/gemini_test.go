@@ -6284,7 +6284,7 @@ func TestGemini35ThinkingAndStreamingUsage(t *testing.T) {
 
 		chunk2 := &gemini.GenerateContentResponse{
 			ResponseID:   "resp-split-1",
-			ModelVersion: "gemini-3.5-flash",
+			ModelVersion: "",
 			Candidates:   []*gemini.Candidate{},
 			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        2500,

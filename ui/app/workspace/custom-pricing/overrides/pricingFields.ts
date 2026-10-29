@@ -477,6 +477,60 @@ export const PRICING_FIELDS = [
 		group: "audio",
 		requestTypeGroups: ["audio"],
 	},
+	{
+		key: "input_cost_per_token_voice_live",
+		label: "Input / token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "output_cost_per_token_voice_live",
+		label: "Output / token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "cache_read_input_token_cost_voice_live",
+		label: "Cache read / token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "input_cost_per_audio_token_voice_live",
+		label: "Input / audio token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "output_cost_per_audio_token_voice_live",
+		label: "Output / audio token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "input_cost_per_standard_speech_audio_token_voice_live",
+		label: "Input / standard speech audio token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "output_cost_per_standard_speech_audio_token_voice_live",
+		label: "Output / standard speech audio token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "input_cost_per_custom_speech_audio_token_voice_live",
+		label: "Input / custom speech audio token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
+	{
+		key: "output_cost_per_custom_speech_audio_token_voice_live",
+		label: "Output / custom speech audio token (Voice Live)",
+		group: "audio",
+		requestTypeGroups: ["chat", "audio"],
+	},
 	// Image fields
 	{
 		key: "input_cost_per_image_token",
@@ -752,6 +806,12 @@ export const PRICING_FIELDS = [
 	{
 		key: "output_cost_per_video_per_second_4k",
 		label: "Output / video second (4K)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "output_cost_per_video_token",
+		label: "Output / video token",
 		group: "video",
 		requestTypeGroups: ["video"],
 	},

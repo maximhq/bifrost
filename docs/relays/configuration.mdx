@@ -1,0 +1,271 @@
+---
+title: "Create a relay"
+description: "Register an upstream API with its base URL and credential, then tune extra headers, timeouts, TLS and proxying."
+icon: "plus"
+---
+
+A relay needs two things to go live: the upstream's base URL and the credential Bifrost signs in with. Routes and pricing are added afterwards and can change at any time; the name cannot.
+
+We use a `tavily` relay in these examples. Replace the name, URL and secret with your upstream's.
+
+## Create the relay
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Relays** in the sidebar and select **Add Relay**.
+2. Enter a **Name**. Callers use `/relay/<name>/...`; it must match `[A-Za-z0-9._-]{1,64}` and cannot be changed later.
+3. Enter the **Base URL**, an absolute `http(s)` URL such as `https://api.tavily.com`. Every request is pinned under this origin and path. A base URL may carry a path prefix (`https://speech.example.com/cognitiveservices/v1`) but no query string, fragment or user info.
+4. Choose how the relay **authenticates** to the upstream and enter the credential. The value is stored encrypted and never shown again; an `env.VAR_NAME` reference reads it from the environment at startup.
+5. Select **Add Relay**.
+
+
+The relay appears in the list on the left with an empty route table. Select **Edit Relay Config** to reach the General, Authentication, Advanced, Network and Proxy tabs described below.
+
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/relays \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "tavily",
+    "description": "Web search for the research assistant",
+    "base_url": "https://api.tavily.com",
+    "auth": { "type": "bearer" },
+    "credential": { "value": "env.TAVILY_API_KEY" }
+  }'
+```
+
+**Response** (`201 Created`). Secrets come back redacted; `url` is the path callers use.
+
+```json
+{
+  "name": "tavily",
+  "description": "Web search for the research assistant",
+  "base_url": "https://api.tavily.com",
+  "auth": { "type": "bearer" },
+  "credential": { "value": { "value": "tvly************************abcd" } },
+  "url": "/relay/tavily"
+}
+```
+
+The masked value keeps the first and last four characters; an `env.` or vault-backed secret also carries its `ref` and `type`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/relays` | List relays. `search` matches name or description; `limit` (1-1000) and `offset` page the result. Returns `relays`, `count`, `total_count`. |
+| `POST` | `/api/relays` | Create a relay. `409` when the name exists. |
+| `GET` | `/api/relays/{name}` | One relay, secrets redacted. |
+| `PUT` | `/api/relays/{name}` | Replace the relay. Send redacted secrets back unchanged to keep the stored values. The name cannot change. |
+| `DELETE` | `/api/relays/{name}` | Remove the relay and its virtual-key grants. `204`. |
+| `POST` | `/api/relays/usage-preview` | [Test pricing](./pricing#test-pricing) against a sample call. |
+
+A `PUT` is validated and compiled before it is saved, so a bad CA certificate or an unparseable proxy URL is refused with `400` and the previous configuration stays live.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "relays": [
+    {
+      "name": "tavily",
+      "description": "Web search for the research assistant",
+      "base_url": "https://api.tavily.com",
+      "auth": { "type": "bearer" },
+      "credential": { "value": "env.TAVILY_API_KEY" }
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Served at `/relay/{name}`. Pattern `^[A-Za-z0-9._-]{1,64}$`. Immutable. |
+| `base_url` | string | Yes | Absolute `http(s)` origin and base path every request is pinned under. |
+| `description` | string | No | Shown in the relay list. |
+| `auth` | object | No | How the credential is presented; see [Authentication types](#authentication-types). Defaults to `bearer`. |
+| `credential` | object | No | `value` for bearer, header, query and basic auth; `aws` for `aws_sigv4`. Omit for `none`. |
+| `extra_headers` | object | No | Headers sent on every request; see [Extra headers](#extra-headers). |
+| `network` | object | No | Timeouts, connection limit and TLS trust; see [Network](#network). |
+| `proxy_config` | object | No | Outbound proxy; see [Proxy](#proxy). |
+| `usage` | object | No | Relay-level pricing; see [Usage mapping and pricing](./pricing). |
+| `streaming` | object | No | Paths that always stream; see [Streaming](./streaming). |
+| `routes` | array | No | Operations callers may use; see [Routes](./routes). |
+| `skip_route_check` | boolean | No | Relay paths that match no route instead of refusing them. Default `false`. |
+| `ignore_upstream_cost` | boolean | No | Drop `cost_path` values from the price. Default `false`. |
+
+Relays in `config.json` are reconciled into the config store at startup, before governance so virtual keys can grant them. They are matched by name with hash-based change detection: an unchanged entry is left alone, a changed one updates the stored relay, a new one is created. When `config.json` is the source of truth, stored relays whose name no longer appears in the list are pruned; an entry that fails validation is skipped with a warning and its stored row survives.
+
+Every secret field (`credential.value`, the AWS fields, `extra_headers` values, proxy fields) accepts a literal string, an `env.VAR_NAME` reference, or a structured secret object (`{"value": "..."}`, `{"from_env": true, "env_var": "..."}` or a vault reference).
+
+</Tab>
+<Tab title="Helm">
+
+`bifrost.relays` takes the same fields as `config.json` and renders them unchanged as top-level `relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: tavily
+      description: "Web search for the research assistant"
+      base_url: "https://api.tavily.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.TAVILY_API_KEY"
+
+# Supply the referenced variable from a Kubernetes Secret
+envFrom:
+  - secretRef:
+      name: relay-credentials
+```
+
+The chart validates each relay against the same schema, and a name used twice fails the render. Startup reconciliation follows the `config.json` rules: with `bifrost.sourceOfTruth: config.json`, an explicit `relays` list (`[]` included) prunes stored relays it does not name, and leaving `relays` out keeps them.
+
+</Tab>
+</Tabs>
+
+## Authentication types
+
+The **Authentication** tab holds one credential and the way it is presented upstream. Callers never send this credential; whatever `Authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `Ocp-Apim-Subscription-Key`, `x-functions-key` or cookie header they send is dropped before the request leaves Bifrost.
+
+| `auth.type` | What is sent upstream | Required fields |
+| --- | --- | --- |
+| `bearer` (default) | `Authorization: Bearer <value>` | `credential.value` |
+| `header` | `<header_name>: <value_prefix><value>` | `auth.header_name`, `credential.value`; `auth.value_prefix` optional |
+| `query` | `?<query_param>=<value>` appended to the URL | `auth.query_param`, `credential.value` |
+| `basic` | `Authorization: Basic base64(<value>)`, with `value` as `user:password` | `credential.value` |
+| `aws_sigv4` | A SigV4 signature for `auth.aws.service` in `credential.aws.region` | `auth.aws.service`, `credential.aws.region` |
+| `none` | Nothing | None |
+
+<Tabs>
+<Tab title="Custom header">
+
+```json
+{
+  "name": "deepgram",
+  "base_url": "https://api.deepgram.com",
+  "auth": { "type": "header", "header_name": "Authorization", "value_prefix": "Token " },
+  "credential": { "value": "env.DEEPGRAM_API_KEY" }
+}
+```
+
+A caller's copy of `header_name` is dropped, and no route may match on it.
+
+</Tab>
+<Tab title="Query parameter">
+
+```json
+{
+  "name": "maps",
+  "base_url": "https://maps.googleapis.com/maps/api",
+  "auth": { "type": "query", "query_param": "key" },
+  "credential": { "value": "env.MAPS_API_KEY" }
+}
+```
+
+A `key` parameter the caller sends is removed, however it is percent-encoded, and the relay's value is appended. The rest of the query string is forwarded byte for byte. The key is also redacted from response headers such as `Location` and from transport errors.
+
+</Tab>
+<Tab title="Basic auth">
+
+```json
+{
+  "name": "internal-api",
+  "base_url": "https://internal.example.com",
+  "auth": { "type": "basic" },
+  "credential": { "value": "env.INTERNAL_API_CREDENTIALS" }
+}
+```
+
+The value is `user:password`; Bifrost base64-encodes it.
+
+</Tab>
+<Tab title="AWS SigV4">
+
+```json
+{
+  "name": "textract",
+  "base_url": "https://textract.us-east-1.amazonaws.com",
+  "auth": { "type": "aws_sigv4", "aws": { "service": "textract" } },
+  "credential": {
+    "aws": {
+      "access_key": "env.AWS_ACCESS_KEY_ID",
+      "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+      "region": "us-east-1"
+    }
+  }
+}
+```
+
+`region` is required; it is the signing region. Leave `access_key` and `secret_key` out to use the default AWS credential chain (instance role, IRSA, environment). `role_arn`, `external_id` and `session_name` assume a role first; `session_token` carries a temporary credential.
+
+In the Web UI the **Authentication Method** toggle switches between **IAM Role (Inherited)** and **Explicit Credentials**.
+
+Under SigV4 the relay signs the request with its own credential, so caller-sent signature headers (`X-Amz-Date`, `X-Amz-Signature`, `X-Amz-Security-Token`, ...) are removed, and of the caller's `x-amz-*` headers only `X-Amz-Target`, which names the operation, is forwarded.
+
+</Tab>
+</Tabs>
+
+## Extra headers
+
+The **Advanced** tab's **Extra Headers** are sent on every relayed request: a tenant id, an API version, a `Content-Type` an upstream insists on. They are the operator's to set, so a caller's copy of the same header is dropped rather than replacing it, and a route's [header matcher](./routes#header-matchers) sees the operator's value.
+
+```json
+{
+  "extra_headers": {
+    "X-Tenant": "research",
+    "Ocp-Apim-Subscription-Key": "env.AZURE_SPEECH_KEY"
+  }
+}
+```
+
+A header name may appear under one spelling only (`X-Tenant` and `x-tenant` together are refused). Values of credential-bearing headers are redacted in API responses; other literal values are shown.
+
+## Network
+
+The **Network** tab bounds the direct connection to the upstream.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `network.timeout_seconds` | `60` | Whole-response timeout for buffered calls, and the time a stream may take to return its headers. |
+| `network.stream_idle_timeout_in_seconds` | `60` | A stream is closed when no bytes arrive for this long. |
+| `network.max_conns_per_host` | `5000` | Upper bound on open connections to the upstream. |
+| `network.insecure_skip_verify` | `false` | Skip TLS verification of the upstream. Only for self-signed certificates in development. |
+| `network.ca_cert_pem` | — | Extra CA bundle (PEM) to trust for a private certificate authority. |
+
+A buffered reply is held up to 64 MB; a larger one is refused with `502` and the message `relay response is too large to buffer`, in which case set the route to [stream](./streaming).
+
+## Proxy
+
+The **Proxy** tab sends this relay's traffic through a forward proxy. `proxy_config` takes the same shape as a provider's proxy: `type` (`http`, `socks5`, `environment`), `url`, `username`, `password`, `ca_cert_pem`.
+
+```json
+{
+  "proxy_config": {
+    "type": "http",
+    "url": "http://egress-proxy.internal:3128"
+  }
+}
+```
+
+A relay with no `proxy_config` inherits the global proxy when it is enabled for inference, and connects directly otherwise. Changing the global proxy rebuilds every relay that inherits it.
+
+## Update and delete
+
+Edits in **Edit Relay Config** save per tab; routes are saved from the route table. Through the API, `PUT /api/relays/{name}` replaces the whole relay. A secret sent back in its redacted form keeps the stored value, so a client that only ever sees redacted values can save without wiping the credential. An `env.` or vault reference is a real change.
+
+Deleting a relay removes it from every virtual key that granted it. Calls already in flight finish on the old configuration.
+
+<Warning>
+Deleting a relay cannot be undone and takes effect immediately: callers get `404 relay "tavily" not found` on the next request.
+</Warning>
+
+## Next steps
+
+- **[Routes and header matchers](./routes)** — Decide which operations callers may use and which are counted.
+- **[Usage mapping and pricing](./pricing)** — Price each call and test the mapping before saving.
+- **[Virtual key access](./access)** — Grant keys access to the relay.

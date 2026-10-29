@@ -213,6 +213,7 @@ const (
 	CountTokensRequest             RequestType = "count_tokens"
 	CompactionRequest              RequestType = "compaction"
 	MCPToolExecutionRequest        RequestType = "mcp_tool_execution"
+	RelayRequest                   RequestType = "relay" // a call to a Relay; no provider, no model
 	PassthroughRequest             RequestType = "passthrough"
 	PassthroughStreamRequest       RequestType = "passthrough_stream"
 	UnknownRequest                 RequestType = "unknown"
@@ -319,6 +320,7 @@ const (
 	BifrostContextKeyRawRequestBodyTextTransformer       BifrostContextKey = "bifrost-raw-request-body-text-transformer"        // RawRequestBodyTextTransformer (set by native integrations for exact provider-managed transformations)
 	BifrostContextKeyRawResponseTextTransformer          BifrostContextKey = "bifrost-raw-response-text-transformer"            // RawResponseTextTransformer (set by native integrations that forward a native non-stream response)
 	BifrostContextKeyRawStreamTextCodec                  BifrostContextKey = "bifrost-raw-stream-text-codec"                    // RawStreamTextCodec (set by native integrations whose client response forwards provider-native stream events)
+	BifrostContextKeyAnthropicNativeRequestSurface       BifrostContextKey = "bifrost-anthropic-native-request-surface"         // opaque provider-owned value (set by the Anthropic Messages ingress converter, recording the caller's own thinking and sampling surface so the Anthropic egress can rebuild what the neutral shape cannot carry). The key is exported ONLY so ClearContextForInternalRequest can shed it: a plugin-owned sub-request built on a derived context would otherwise inherit the caller's parameters. The value type is unexported, so nothing outside that provider can forge one.
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyPromptCacheAutoInject               BifrostContextKey = "bifrost-prompt-cache-auto-inject"                 // bool (per-request override of prompt_cache.auto_inject — read by bifrost.go, never overwritten)
@@ -358,6 +360,7 @@ const (
 	BifrostContextKeyMCPCallbackBaseURL                  BifrostContextKey = "bifrost-mcp-callback-base-url"                    // string (base URL like "https://host" — set by HTTP middleware. OAuth resolver appends /api/oauth/callback; headers resolver appends the workspace submit path. Used for both per-user OAuth and per-user headers auth flows)
 	BifrostContextKeyIsMCPGateway                        BifrostContextKey = "bifrost-is-mcp-gateway"                           // bool (true when request is being handled via the MCP gateway path)
 	BifrostContextKeyHasEmittedMessageDelta              BifrostContextKey = "bifrost-has-emitted-message-delta"                // bool (tracks whether message_delta was already emitted during streaming - avoids duplicates)
+	BifrostContextKeyAnthropicStreamDeltaPromptUsage     BifrostContextKey = "bifrost-anthropic-stream-delta-prompt-usage"      // string ledger ID (one per upstream Anthropic stream, opened by the shared Anthropic streaming reader and recording, PER CHUNK, which prompt-side usage counters that chunk's raw `message_delta` reported -- payload-blind field-presence evidence only, never a value). The Anthropic egress converter reads it so a terminal frame reports no prompt counter the upstream did not report: `input_tokens: 0` synthesized there overwrites the message_start figure in every accumulating client. Per chunk because the reader hands chunks to the egress over a buffered channel, so a later event's reading is taken while earlier chunks are still queued; per stream because chunk numbering restarts on every attempt. It is applied only to a frame of the request that opened it: Value reads through to a parent, and a derived sub-request's chunk numbering restarts, so a chunk number alone would let a caller's reading strip counters the sub-request's own frame reported. Only the ID is held here: the readings themselves live in a top-level store inside that provider, per AGENTS.md's rule that stream-sized state never sits on the context. The store is unexported, so nothing outside the provider can read or forge an entry.
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
 	BifrostContextKeyClusterNodeID                       BifrostContextKey = "bifrost-cluster-node-id"                          // string (cluster node ID for log attribution - set by enterprise server)
@@ -370,6 +373,7 @@ const (
 	BifrostContextKeyDropRawRequestFromClient            BifrostContextKey = "bifrost-drop-raw-request-from-client"             // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request should be stripped from the client-facing response
 	BifrostContextKeyDropRawResponseFromClient           BifrostContextKey = "bifrost-drop-raw-response-from-client"            // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw response should be stripped from the client-facing response
 	BifrostContextKeyShouldStoreRawInLogs                BifrostContextKey = "bifrost-should-store-raw-in-logs"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request/response should be persisted in log records
+	BifrostContextKeyRelayContentLoggingEnabledByDefault BifrostContextKey = "bifrost-relay-content-logging-enabled-by-default" // bool (set by the logging plugin's PreRelayHook - DO NOT SET THIS MANUALLY) — the plugin's own static content-logging setting only, absent governance's and the per-request override, which are not yet on ctx when PreRelayHook runs; core/relay resolves the final capture decision from this plus BifrostContextKeyGovernanceDisableContentLogging and BifrostContextKeyDisableContentLogging once all pre-hooks have completed, right before opening the stream
 	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyBaseProviderType                    BifrostContextKey = "bifrost-base-provider-type"                       // ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY) — built-in provider backing this attempt (custom providers resolve to their BaseProviderType)
@@ -394,6 +398,7 @@ const (
 	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)
 	BifrostContextKeyA2AUpstreamTransport                BifrostContextKey = "bifrost-a2a-upstream-transport"                   // string (A2A binding selected for the upstream agent)
 	BifrostContextKeyRealtimeVoice                       BifrostContextKey = "bifrost-realtime-voice"                           // string
+	BifrostContextKeyRealtimePricingSurface              BifrostContextKey = "bifrost-realtime-pricing-surface"                 // PricingSurface (set by the provider when it opens the realtime session)
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
 	BifrostContextKeyRequestQuery                        BifrostContextKey = "bifrost-request-query"                            // map[string]string (request query params with lowercased keys; consumed by governance routing CEL rules)
@@ -480,7 +485,7 @@ const (
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
-	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
+	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *upstreamAccumulator nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt, plus the current attempt's start mark; subtract from total to get Bifrost overhead
 	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
 )
 
@@ -2029,6 +2034,12 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 	}
 }
 
+// PricingSurface names the product surface whose price list applies to a request.
+type PricingSurface string
+
+// PricingSurfaceVoiceLive prices an Azure Voice Live turn at the model's _voice_live rates.
+const PricingSurfaceVoiceLive PricingSurface = "voice_live"
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType RequestType `json:"request_type"`
@@ -2036,6 +2047,9 @@ type BifrostResponseExtraFields struct {
 	// exposed to plugins and logs.
 	PricingRequestType RequestType `json:"pricing_request_type,omitempty"`
 	RoutingInfo        RoutingInfo `json:"routing_info"`
+	// PricingSurface selects a model's rates for the product that served the request, without
+	// changing the request type or service tier exposed to plugins and logs.
+	PricingSurface PricingSurface `json:"pricing_surface,omitempty"`
 	// Deprecated: use RoutingInfo.Provider. Still populated for backward
 	// compatibility; new consumers should read from RoutingInfo.
 	Provider ModelProvider `json:"provider,omitempty"`

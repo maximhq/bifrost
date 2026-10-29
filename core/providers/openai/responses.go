@@ -554,6 +554,27 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 // retags it by role.
 const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
 
+// isNativeWebSearchCall reports whether message is a web_search_call that OpenAI itself
+// produced: its id has OpenAI's "ws_" prefix and its status is one OpenAI defines.
+// "ws_<n>" is excluded because Gemini synthesizes it for ID-less search calls
+// (convertGeminiCandidatesToResponsesOutput, generateItemID), and OpenAI rejects an id
+// it never issued.
+func isNativeWebSearchCall(message schemas.ResponsesMessage) bool {
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		message.ID == nil || message.Status == nil {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(*message.ID, "ws_")
+	if !ok || suffix == "" || strings.Trim(suffix, "0123456789") == "" {
+		return false
+	}
+	switch *message.Status {
+	case "in_progress", "searching", "completed", "failed", "incomplete":
+		return true
+	}
+	return false
+}
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -734,7 +755,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// Strip it, with four exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
@@ -747,6 +768,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// OpenAI wire, and `error` on an input item is rejected outright. Dropping
 			// it too would make a failed tool call indistinguishable from a successful
 			// one. Only this value is kept; any other status is still stripped.
+		case isNativeWebSearchCall(message):
+			// A web_search_call that keeps its native "ws_" id is OpenAI's own item, where
+			// id and status are both required on replay ("Missing required parameter:
+			// input[N].status" otherwise). Foreign ids and statuses (Gemini) are still stripped.
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage &&
 			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant &&
 			message.ID != nil && *message.ID != "" && message.Status != nil &&
@@ -766,7 +791,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!isNativeWebSearchCall(message) {
 			message.ID = nil
 		}
 
@@ -1229,32 +1255,42 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
 // defaultImageDetail fills "auto" into any input_image content block missing the
-// detail field. Clones content on write — the Content pointer and the image block
-// pointers inside it are shared with the caller's input.
+// detail field, in the message's own content and in a tool output's blocks (an
+// image returned by a tool). Clones on write — the Content and Output pointers and
+// the image block pointers inside them are shared with the caller's input.
 func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
-	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
-		return message
+	if message.Content != nil {
+		if blocks, changed := withDefaultImageDetail(message.Content.ContentBlocks); changed {
+			contentCopy := *message.Content
+			contentCopy.ContentBlocks = blocks
+			message.Content = &contentCopy
+		}
 	}
+	if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Output != nil {
+		if blocks, changed := withDefaultImageDetail(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks); changed {
+			outputCopy := *message.ResponsesToolMessage.Output
+			outputCopy.ResponsesFunctionToolCallOutputBlocks = blocks
+			toolMsgCopy := *message.ResponsesToolMessage
+			toolMsgCopy.Output = &outputCopy
+			message.ResponsesToolMessage = &toolMsgCopy
+		}
+	}
+	return message
+}
 
+// withDefaultImageDetail returns a copy of blocks with detail "auto" on every
+// input_image that lacks one, or blocks itself and false when none does.
+func withDefaultImageDetail(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
 	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
 		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 			block.ResponsesInputMessageContentBlockImage != nil &&
 			block.ResponsesInputMessageContentBlockImage.Detail == nil
 	}
-
-	fixNeeded := false
-	for _, block := range message.Content.ContentBlocks {
-		if needsDetail(block) {
-			fixNeeded = true
-			break
-		}
-	}
-	if !fixNeeded {
-		return message
+	if !slices.ContainsFunc(blocks, needsDetail) {
+		return blocks, false
 	}
 
-	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
-	copy(newBlocks, message.Content.ContentBlocks)
+	newBlocks := slices.Clone(blocks)
 	for i, block := range newBlocks {
 		if needsDetail(block) {
 			imageCopy := *block.ResponsesInputMessageContentBlockImage
@@ -1262,11 +1298,7 @@ func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessa
 			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
 		}
 	}
-
-	contentCopy := *message.Content
-	contentCopy.ContentBlocks = newBlocks
-	message.Content = &contentCopy
-	return message
+	return newBlocks, true
 }
 
 // isMantleGPTOSSResponses reports whether the request is gpt-oss served by Bedrock Mantle's

@@ -423,7 +423,7 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 			return zero, err
 		}
 		result, err := call(callCtx, conn, preReq)
-		recoverable := err != nil && (isAuthFailureErrorText(err.Error()) || (isDeadSessionError(err) && hasProtocolSession(conn)))
+		recoverable := err != nil && (isAuthFailure(err) || (isDeadSessionError(err) && hasProtocolSession(conn)))
 		release()
 		if !recoverable {
 			return result, err

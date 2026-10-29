@@ -376,6 +376,12 @@ type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError)
 // It takes a BifrostError and returns the streaming error format expected by the specific integration.
 type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
 
+// StreamCleanupFunc releases per-stream provider state once the transport has
+// finished converting the stream's chunks. It runs from the producer's deferred
+// cleanup, after the chunk loop has drained, so a stream that ends without a
+// terminal frame still reclaims what it opened.
+type StreamCleanupFunc func(ctx *schemas.BifrostContext)
+
 // RequestParser is a function that handles custom request body parsing.
 // It replaces the default JSON parsing when configured (e.g., for multipart/form-data).
 // The parser should populate the provided request object from the fasthttp context.
@@ -467,6 +473,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
+	Cleanup                                StreamCleanupFunc                      // Releases per-stream provider state after the chunk loop drains
 	HeartbeatFraming                       lib.SSEHeartbeatFraming                // Wire framing for no-op SSE heartbeat comments
 }
 
@@ -3012,6 +3019,13 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// leaving traceCompleter and the post-hooks below an uncancelled context.
 			// cancel is idempotent, so the explicit error-path calls still stand.
 			defer cancel()
+			// The chunk loop below has drained by the time this runs, so every queued
+			// chunk is already converted -- the one ordering a stream cleanup needs.
+			// The error path has its own release in ErrorConverter; this is the normal
+			// close, including a stream that ended without a terminal frame.
+			if config.StreamConfig != nil && config.StreamConfig.Cleanup != nil {
+				config.StreamConfig.Cleanup(bifrostCtx)
+			}
 			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
 			// could still be mid-send on it panics ("send on closed channel"). See
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.

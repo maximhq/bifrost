@@ -3196,11 +3196,21 @@ var pricingSyncUpdateColumns = []string{
 	"output_cost_per_audio_token",
 	"output_cost_per_video_per_second",
 	"output_cost_per_second",
+	"input_cost_per_token_voice_live",
+	"output_cost_per_token_voice_live",
+	"cache_read_input_token_cost_voice_live",
+	"input_cost_per_audio_token_voice_live",
+	"output_cost_per_audio_token_voice_live",
+	"input_cost_per_standard_speech_audio_token_voice_live",
+	"output_cost_per_standard_speech_audio_token_voice_live",
+	"input_cost_per_custom_speech_audio_token_voice_live",
+	"output_cost_per_custom_speech_audio_token_voice_live",
 	"output_cost_per_video_per_second_480p",
 	"output_cost_per_video_per_second_720p",
 	"output_cost_per_video_per_second_1024p",
 	"output_cost_per_video_per_second_1080p",
 	"output_cost_per_video_per_second_4k",
+	"output_cost_per_video_token",
 	// Costs - Other
 	"search_context_cost_per_query",
 	"web_search_cost_per_request",
@@ -3889,7 +3899,8 @@ func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 		}).
 		Preload("MCPConfigs").
 		Preload("MCPConfigs.MCPClient").
-		Preload("AgentGrants")
+		Preload("AgentGrants").
+		Preload("RelayGrants")
 }
 
 // preloadVirtualKeyDetailRelations preloads the detail relationships for a virtual key.
@@ -4602,6 +4613,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete all direct Agent Gateway grants associated with the virtual key.
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyAgentGrant{}, "virtual_key_id = ?", id).Error; err != nil {
+			return err
+		}
+		// Delete the key's relay grants the same way; a grant must not outlive its key.
+		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyRelayGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
@@ -8842,6 +8857,37 @@ func needsReauthColumns(reason string) map[string]any {
 		reason = string(runes[:statusReasonMaxLen-1]) + "…"
 	}
 	return map[string]any{"status": "needs_reauth", "status_reason": reason}
+}
+
+// MarkOauthTokenNeedsReauthIfUnrenewable flips an active row with no refresh token and an expired
+// access token to 'needs_reauth', under a row lock so a concurrent reauthorize wins.
+func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+	marked := false
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current tables.TableMCPOauthToken
+		if err := dbForUpdate(tx).Where("id = ?", tokenID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if current.Status != "active" || strings.TrimSpace(current.RefreshToken) != "" ||
+			current.ExpiresAt == nil || !time.Now().After(*current.ExpiresAt) {
+			return nil
+		}
+		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {
+			return err
+		}
+		marked = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to mark oauth token %s needs_reauth: %w", tokenID, err)
+	}
+	return marked, nil
 }
 
 // MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a single

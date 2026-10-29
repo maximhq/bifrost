@@ -101,6 +101,11 @@ func TestNormalizeModelName(t *testing.T) {
 			input: "google/au.gemini-3.5-flash",
 			want:  "gemini-3.5-flash",
 		},
+		{
+			name:  "keeps regional prefix on custom model containing gemini",
+			input: "us.custom-gemini",
+			want:  "us.custom-gemini",
+		},
 	}
 
 	for _, tc := range tests {

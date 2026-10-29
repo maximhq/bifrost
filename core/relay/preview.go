@@ -107,7 +107,7 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 		routes[i].usage.ignoreUpstreamCost = ignoreCost
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
 	}
-	e := &endpoint{cfg: cfg, usage: usage, routes: routes, streamGlobs: compileStreamGlobs(cfg), operatorHeaders: lowerHeaderValues(cfg.ExtraHeaders)}
+	e := &endpoint{cfg: cfg, usage: usage, routes: routes, streamGlobs: compileStreamGlobs(cfg), operatorHeaders: lowerHeaderValues(cfg.ExtraHeaders), operatorLogHeaders: loggableHeaderValues(cfg.ExtraHeaders)}
 	headers := make(map[string]string, len(in.Headers))
 	for name, value := range in.Headers {
 		headers[strings.ToLower(strings.TrimSpace(name))] = value

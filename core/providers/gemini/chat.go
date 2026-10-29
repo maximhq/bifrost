@@ -387,6 +387,7 @@ type GeminiStreamState struct {
 	nextToolCallIndex int
 	hadToolCalls      bool // true if any tool calls were seen in this stream
 	hadFinishReason   bool // true if a candidate finish reason was seen in this stream
+	modelVersion      string
 	groundingMetadata *GroundingMetadata
 }
 
@@ -522,13 +523,20 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	if state == nil {
 		state = NewGeminiStreamState()
 	}
+	if response.ModelVersion != "" {
+		state.modelVersion = response.ModelVersion
+	}
+	effectiveModel := response.ModelVersion
+	if effectiveModel == "" {
+		effectiveModel = state.modelVersion
+	}
 
 	// Handle empty candidates (filtered/malformed responses, or a trailing usage-only chunk)
 	if len(response.Candidates) == 0 {
 		if response.UsageMetadata != nil && state.hadFinishReason {
 			streamResponse := &schemas.BifrostChatResponse{
 				ID:     response.ResponseID,
-				Model:  response.ModelVersion,
+				Model:  effectiveModel,
 				Object: "chat.completion.chunk",
 				Choices: []schemas.BifrostResponseChoice{{
 					Index: 0,
@@ -541,7 +549,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 			if !response.CreateTime.IsZero() {
 				streamResponse.Created = int(response.CreateTime.Unix())
 			}
-			applyGeminiSearchQueryChatUsage(streamResponse.Usage, state.groundingMetadata, response.ModelVersion)
+			applyGeminiSearchQueryChatUsage(streamResponse.Usage, state.groundingMetadata, effectiveModel)
 			if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
 				streamResponse.ServiceTier = t
 			} else if response.UsageMetadata.ServiceTier != "" {
@@ -578,7 +586,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	// Create the streaming response
 	streamResponse := &schemas.BifrostChatResponse{
 		ID:     response.ResponseID,
-		Model:  response.ModelVersion,
+		Model:  effectiveModel,
 		Object: "chat.completion.chunk",
 	}
 
@@ -782,7 +790,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		if grounding == nil {
 			grounding = state.groundingMetadata
 		}
-		applyGeminiSearchQueryChatUsage(streamResponse.Usage, grounding, response.ModelVersion)
+		applyGeminiSearchQueryChatUsage(streamResponse.Usage, grounding, effectiveModel)
 		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
 			streamResponse.ServiceTier = t
 		} else if response.UsageMetadata.ServiceTier != "" {

@@ -669,7 +669,7 @@ type ProviderConfig struct {
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
-	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP passthrough endpoints may forward
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP relays may forward
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -1432,6 +1432,16 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		}
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
+	}
+	// Hash relay grants only when the key declares them, so every key that predates
+	// relays keeps its hash. Grant names are sorted so file order cannot move it.
+	if vk.RelayGrants != nil {
+		names := make([]string, 0, len(vk.RelayGrants))
+		for _, g := range vk.RelayGrants {
+			names = append(names, g.RelayName)
+		}
+		sort.Strings(names)
+		hash.Write([]byte("relayGrants:" + strings.Join(names, ",")))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -2423,6 +2433,132 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	hashAgentUpstreamAuth(hash, "discovery_auth", r.DiscoveryAuth)
 	hashAgentUpstreamAuth(hash, "runtime_auth", r.RuntimeAuth)
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateRelayHash generates a SHA256 hash of a relay as config.json declares it, the way
+// ProviderConfig.GenerateConfigHash hashes a provider: each field is written on its own and each
+// optional block only when set, so a field added to RelayConfig does not move the hash of every
+// stored relay on upgrade. This is used to detect changes between config.json and the stored row.
+func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
+	hash := sha256.New()
+
+	// Hash Name, BaseURL and Description
+	hash.Write([]byte(cfg.Name))
+	hash.Write([]byte("baseURL:" + cfg.BaseURL))
+	if cfg.Description != "" {
+		hash.Write([]byte("description:" + cfg.Description))
+	}
+
+	// Hash Auth
+	data, err := sonic.Marshal(cfg.Auth)
+	if err != nil {
+		return "", err
+	}
+	hash.Write([]byte("auth:"))
+	hash.Write(data)
+
+	// Hash Credential. Every secret here and below hashes its reference, like a provider key's
+	// value: the row stores the reference and resolves it on read, so a rotated value is not a change.
+	if cfg.Credential != nil {
+		hashRelaySecret(hash, "credential", cfg.Credential.Value)
+		if aws := cfg.Credential.AWS; aws != nil {
+			hash.Write([]byte("credentialAWS:"))
+			hashRelaySecret(hash, "credentialAWS:accessKey", aws.AccessKey)
+			hashRelaySecret(hash, "credentialAWS:secretKey", aws.SecretKey)
+			hashRelaySecret(hash, "credentialAWS:sessionToken", aws.SessionToken)
+			hashRelaySecret(hash, "credentialAWS:region", aws.Region)
+			hashRelaySecret(hash, "credentialAWS:roleARN", aws.RoleARN)
+			hashRelaySecret(hash, "credentialAWS:externalID", aws.ExternalID)
+			hashRelaySecret(hash, "credentialAWS:sessionName", aws.SessionName)
+		}
+	}
+
+	// Hash ExtraHeaders (sorted for deterministic hashing)
+	if len(cfg.ExtraHeaders) > 0 {
+		names := make([]string, 0, len(cfg.ExtraHeaders))
+		for name := range cfg.ExtraHeaders {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			value := cfg.ExtraHeaders[name]
+			hashRelaySecret(hash, "extraHeader:"+name, &value)
+		}
+	}
+
+	// Hash Network
+	if cfg.Network != nil {
+		data, err := sonic.Marshal(cfg.Network)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("network:"))
+		hash.Write(data)
+	}
+
+	// Hash ProxyConfig
+	if p := cfg.ProxyConfig; p != nil {
+		hash.Write([]byte("proxyConfig:" + string(p.Type)))
+		hashRelaySecret(hash, "proxyConfig:url", p.URL)
+		hashRelaySecret(hash, "proxyConfig:username", p.Username)
+		hashRelaySecret(hash, "proxyConfig:password", p.Password)
+		hashRelaySecret(hash, "proxyConfig:caCertPEM", p.CACertPEM)
+	}
+
+	// Hash Usage
+	if cfg.Usage != nil {
+		data, err := sonic.Marshal(cfg.Usage)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("usage:"))
+		hash.Write(data)
+	}
+
+	// Hash Streaming
+	if cfg.Streaming != nil {
+		data, err := sonic.Marshal(cfg.Streaming)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("streaming:"))
+		hash.Write(data)
+	}
+
+	// Hash Routes in file order (the first match wins); route headers are a map, so sort keys
+	if len(cfg.Routes) > 0 {
+		data, err := providerUtils.MarshalSorted(cfg.Routes)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("routes:"))
+		hash.Write(data)
+	}
+
+	// Hash SkipRouteCheck
+	if cfg.SkipRouteCheck {
+		hash.Write([]byte("skipRouteCheck"))
+	}
+
+	// Hash IgnoreUpstreamCost
+	if cfg.IgnoreUpstreamCost {
+		hash.Write([]byte("ignoreUpstreamCost"))
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// hashRelaySecret contributes one relay secret to a relay hash, prefixed with its source type like a
+// provider key's value so a reference and a literal never collide. A nil secret contributes nothing.
+func hashRelaySecret(h hash.Hash, label string, v *schemas.SecretVar) {
+	if v == nil {
+		return
+	}
+	if v.IsFromSecret() {
+		h.Write([]byte(label + ":ref:" + v.GetRawRef()))
+	} else {
+		h.Write([]byte(label + ":val:" + v.Val))
+	}
 }
 
 // GeneratePluginHash generates a SHA256 hash for a plugin.
