@@ -1341,6 +1341,15 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
+	// A stream request that failed before the stream started never had the end
+	// indicator set: core runs post hooks straight from the pre-dispatch
+	// short-circuit path (a plugin rejection, a governance refusal), so this call
+	// is not an intermediate chunk of anything and nothing further will arrive for
+	// the request. Every path that reports an error on a stream already underway
+	// sets the indicator to true before running post hooks, so this stays false
+	// only for the pre-stream case.
+	failedBeforeStreamStart := bifrostErr != nil && !hasFinalChunkIndicator
+
 	// Decrement active requests on the final (or only) call for this request. An error
 	// ends a stream attempt even when the end indicator was not set (e.g. a plugin
 	// short-circuit rejecting a stream request before dispatch).
@@ -1373,8 +1382,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// For streaming requests, handle per-token metrics for intermediate chunks
 		if bifrost.IsStreamRequestType(requestType) {
 			// For intermediate chunks, record per-token metrics and exit.
-			// The final chunk will fall through to record full request metrics.
-			if !hasFinalChunkIndicator || !isFinalChunk {
+			// The final chunk will fall through to record full request metrics, as does a
+			// failure before the stream started: the caller saw that error, so it belongs
+			// in ErrorRequestsTotal exactly as the same failure on a non-stream request
+			// does. An error delivered inside a committed stream still exits here, since
+			// the caller already received a 200.
+			if (!hasFinalChunkIndicator || !isFinalChunk) && !failedBeforeStreamStart {
 				// Record metrics for the first token
 				if result != nil {
 					extraFields := result.GetExtraFields()
