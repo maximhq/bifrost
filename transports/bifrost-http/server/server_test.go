@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -40,6 +41,135 @@ import (
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
+
+// persistentDiscoveryServer connects real routing and catalog code to a shared SQL store and local datasheets.
+func persistentDiscoveryServer(t *testing.T, store configstore.ConfigStore, provider schemas.ModelProvider) *BifrostHTTPServer {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "datasheet.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0600))
+	catalog, err := modelcatalog.Init(t.Context(), &modelcatalog.Config{
+		PricingURL: schemas.Ptr("file://" + path), ModelParametersURL: schemas.Ptr("file://" + path),
+		MCPLibrarySyncInterval: schemas.Ptr(int64(0)),
+	}, store, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, catalog.Cleanup()) })
+	config, err := store.GetProviderConfig(t.Context(), provider)
+	require.NoError(t, err)
+	catalog.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{provider: config.Keys})
+	cfg := &lib.Config{ConfigStore: store, ModelCatalog: catalog,
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{provider: *config}}
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	cfg.SetBifrostClient(client)
+	return &BifrostHTTPServer{Config: cfg, Client: client}
+}
+
+// TestPersistentLiveDiscovery exercises provider filtering, durable fallback, statuses, and DB-only peer reload through real HTTP discovery.
+func TestPersistentLiveDiscovery(t *testing.T) {
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	for _, keyless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keyless=%t", keyless), func(t *testing.T) {
+			var calls, authenticated atomic.Int32
+			var fail atomic.Bool
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Header.Get("Authorization") != "" {
+					authenticated.Add(1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if fail.Load() {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"error":{"message":"synthetic discovery outage","type":"server_error"}}`))
+					return
+				}
+				models := `{"id":"keyless-model"}`
+				if !keyless {
+					models = `{"id":"allowed"},{"id":"blocked"}`
+					if r.Header.Get("Authorization") == "Bearer credential-two" {
+						models = `{"id":"second"},{"id":"blocked"}`
+					}
+				}
+				_, _ = fmt.Fprintf(w, `{"object":"list","data":[%s]}`, models)
+			}))
+			t.Cleanup(upstream.Close)
+			store, err := configstore.NewConfigStore(t.Context(), &configstore.Config{Enabled: true,
+				Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}}, bifrost.NewNoOpLogger())
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+			const provider schemas.ModelProvider = "persistent-provider"
+			keys := []schemas.Key{
+				{ID: "one", Name: "one", Value: *schemas.NewSecretVar("credential-one"), Weight: 1,
+					Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"blocked"},
+					Aliases: schemas.KeyAliases{"nickname": {ModelID: "allowed"}}},
+				{ID: "two", Name: "two", Value: *schemas.NewSecretVar("credential-two"), Weight: 1, Models: schemas.WhiteList{"second"}},
+			}
+			if keyless {
+				keys = []schemas.Key{{ID: "residual", Name: "residual", Value: *schemas.NewSecretVar("unused"), Enabled: schemas.Ptr(false)}}
+			}
+			require.NoError(t, store.AddProvider(t.Context(), provider, configstore.ProviderConfig{Keys: keys,
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 5},
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: keyless},
+			}))
+			server := persistentDiscoveryServer(t, store, provider)
+			var notifications atomic.Int32
+			server.Config.ModelCatalog.SetAfterLiveModelsSyncHook(func(context.Context, schemas.ModelProvider, string) { notifications.Add(1) })
+			require.NoError(t, server.RefreshLiveModelsForAllKeys(t.Context(), provider))
+			wantModels, wantCalls, wantRows := []string{"allowed", "nickname", "second"}, int32(4), 4
+			if keyless {
+				wantModels, wantCalls, wantRows = []string{"keyless-model"}, 2, 2
+				require.Zero(t, authenticated.Load(), "residual credentials must not reach a keyless provider")
+			}
+			require.Equal(t, wantCalls, calls.Load())
+			require.ElementsMatch(t, wantModels, server.Config.ModelCatalog.GetModelsForProvider(provider))
+			repo := store.(configstore.LiveModelListingStore)
+			before, err := repo.GetLiveModelListings(t.Context(), provider, nil)
+			require.NoError(t, err)
+			require.Len(t, before, wantRows)
+			for _, row := range before {
+				if keyless {
+					require.Empty(t, row.KeyID)
+					require.Nil(t, row.TableKeyID)
+				} else if !row.Unfiltered {
+					require.NotContains(t, row.Data, "blocked")
+					if row.KeyID == "two" {
+						require.NotContains(t, row.Data, "allowed")
+						require.NotContains(t, row.Data, "nickname")
+					}
+				} else {
+					require.Contains(t, row.Data, "blocked")
+				}
+			}
+			fail.Store(true)
+			require.NoError(t, server.RefreshLiveModelsForAllKeys(t.Context(), provider), "provider failure retains existing refresh response behavior")
+			require.ElementsMatch(t, wantModels, server.Config.ModelCatalog.GetModelsForProvider(provider))
+			after, err := repo.GetLiveModelListings(t.Context(), provider, nil)
+			require.NoError(t, err)
+			require.ElementsMatch(t, before, after, "a failed fetch must not change either snapshot")
+			require.Equal(t, wantCalls, notifications.Load(), "usable fallback still notifies peers")
+			follower := persistentDiscoveryServer(t, store, provider)
+			follower.Config.ModelCatalog.SetShouldSyncGate(func(context.Context) bool { return false })
+			beforeCalls := calls.Load()
+			follower.RefreshAllLiveModels(t.Context())
+			require.Equal(t, beforeCalls, calls.Load(), "closed gate must reload without provider discovery")
+			require.ElementsMatch(t, wantModels, follower.Config.ModelCatalog.GetModelsForProvider(provider))
+			if keyless {
+				config, err := follower.Config.GetProviderConfigRaw(provider)
+				require.NoError(t, err)
+				require.Equal(t, string(schemas.KeyStatusListModelsFailed), config.Status)
+			} else {
+				loaded, err := follower.Config.GetProviderKeysRaw(provider)
+				require.NoError(t, err)
+				for _, key := range loaded {
+					require.Equal(t, schemas.KeyStatusListModelsFailed, key.Status)
+					require.Contains(t, key.Description, "synthetic discovery outage")
+				}
+			}
+		})
+	}
+}
 
 func TestAgentRegistrationCallbacksRejectUninitializedGateway(t *testing.T) {
 	t.Parallel()
