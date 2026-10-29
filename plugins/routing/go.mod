@@ -10,7 +10,7 @@ require (
 	github.com/maximhq/bifrost/framework v1.10.1
 	github.com/maximhq/bifrost/plugins/governance v1.10.1
 	github.com/stretchr/testify v1.12.1
-	gorm.io/gorm v1.31.1
+	gorm.io/gorm v1.31.2
 )
 
 require (
