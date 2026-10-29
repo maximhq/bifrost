@@ -4,3 +4,4 @@
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
 - [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped
 - [feat]: BytePlus video jobs are settled and priced by the video job sweeper
+- fix: Gemini image models called without the IMAGE response modality (e.g. from Antigravity on /genai) are priced from their image_generation row instead of logging $0, output image tokens bill at the image-token rate, and unattributed output tokens on image calls bill at the text rate
