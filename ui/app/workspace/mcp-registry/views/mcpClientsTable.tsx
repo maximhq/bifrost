@@ -36,7 +36,7 @@ import {
 } from "@/lib/store";
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
-import { MCPAuthType, MCPClient } from "@/lib/types/mcp";
+import { MCPClient } from "@/lib/types/mcp";
 import { supportsClientReregistration } from "@/lib/utils/mcpCredential";
 import { perUserDiscoveryOn } from "@/lib/utils/mcpPerUserDiscovery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -47,6 +47,7 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	Copy,
+	Eye,
 	Info,
 	KeyRound,
 	ListRestart,
@@ -63,9 +64,11 @@ import {
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconWrap, InfoBox } from "./authorizerUi";
+import MCPClientDetailsSheet from "./mcpClientDetailsSheet";
+import type { MCPClientAlertActionKind } from "./mcpClientDetailsSheet.utils";
 import MCPClientSheet from "./mcpClientSheet";
-import { authScopeOf } from "./mcpClientFormFields";
-import { canReconnectMCPClient, exchangeVerifyCopy } from "./mcpClientsTable.utils";
+import { authScopeLabel } from "./mcpClientFormFields";
+import { authTypeLabel, canReconnectMCPClient, connectionTypeLabel, exchangeVerifyCopy } from "./mcpClientsTable.utils";
 import { StateBadge } from "./mcpConnectionFailure";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -84,6 +87,8 @@ function MCPClientActionsMenu({
 	isReauthorizing,
 	isVerifyingExchange,
 	canReconnect,
+	triggerTestId,
+	onView,
 	onEdit,
 	onReconnect,
 	onRefreshTools,
@@ -103,7 +108,9 @@ function MCPClientActionsMenu({
 	isReauthorizing: boolean;
 	isVerifyingExchange: boolean;
 	canReconnect: boolean;
-	onEdit: (client: MCPClient) => void;
+	triggerTestId?: string;
+	onView?: (client: MCPClient) => void; // Omitted on the server's view sheet itself
+	onEdit?: (client: MCPClient) => void; // Omitted on the server's view sheet, which has no Edit entry
 	onReconnect: (client: MCPClient) => void;
 	onRefreshTools: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
@@ -129,7 +136,7 @@ function MCPClientActionsMenu({
 					size="icon"
 					className="h-8 w-8"
 					aria-label={t("registry.actionsAria")}
-					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
+					data-testid={triggerTestId ?? `mcp-client-actions-${client.config.client_id}-btn`}
 					disabled={isReconnecting || isRefreshingTools || isReauthorizing || isVerifyingExchange}
 				>
 					{isReconnecting || isRefreshingTools || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
@@ -142,14 +149,28 @@ function MCPClientActionsMenu({
 			<DropdownMenuContent
 				align="end"
 				onCloseAutoFocus={(e) => {
-					// Edit opens a Sheet; letting the dropdown restore focus to its
+					// View details and Edit open a Sheet; letting the dropdown restore focus to its
 					// trigger fights the Sheet's autofocus and leaves focus outside
 					// the dialog — which breaks ESC-to-close. Hand focus off to the
 					// Sheet by skipping the dropdown's auto-restore.
 					e.preventDefault();
 				}}
 			>
-				{hasUpdateAccess && (
+				{onView && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						data-testid={`mcp-client-view-${client.config.client_id}-menu-item`}
+						onSelect={(e) => {
+							e.preventDefault();
+							onView(client);
+							setIsOpen(false);
+						}}
+					>
+						<Eye className="h-4 w-4" />
+						{t("registry.actions.viewDetails")}
+					</DropdownMenuItem>
+				)}
+				{hasUpdateAccess && onEdit && (
 					<DropdownMenuItem
 						className="cursor-pointer"
 						data-testid={`mcp-client-edit-${client.config.client_id}-menu-item`}
@@ -323,6 +344,7 @@ interface MCPClientsTableProps {
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
+	pageLoading?: boolean; // the requested page has not arrived; the list still holds the previous one
 }
 
 // ClientEndpointCell shows the /mcp/<slug> path and copies the full external URL on click.
@@ -336,7 +358,11 @@ function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string 
 			<TooltipTrigger asChild>
 				<button
 					type="button"
-					onClick={() => copy(`${baseUrl}/mcp/${slug}`)}
+					onClick={(e) => {
+						// The row opens the server's view sheet on click; copying must not.
+						e.stopPropagation();
+						copy(`${baseUrl}/mcp/${slug}`);
+					}}
 					className="text-muted-foreground hover:text-foreground flex w-full min-w-0 cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
 					aria-label={t("registry.sheet.copyEndpointAria")}
 					data-testid={`mcp-client-endpoint-copy-${slug}`}
@@ -354,6 +380,7 @@ function ClientEndpointCell({ slug, baseUrl }: { slug?: string; baseUrl: string 
 
 export default function MCPClientsTable({
 	mcpClients,
+	pageLoading = false,
 	totalCount,
 	refetch,
 	search,
@@ -389,7 +416,9 @@ export default function MCPClientsTable({
 	// replacement client discards the current one, which signs out every
 	// credential bound to this server, not just the admin's.
 	const [reregisterTarget, setReregisterTarget] = useState<MCPClient | null>(null);
-	const [showDetailSheet, setShowDetailSheet] = useState(false);
+	// Which of the two server sheets is open for selectedMCPClient: the read-only
+	// view a row click opens, or the edit sheet the actions menu's Edit opens.
+	const [openSheet, setOpenSheet] = useState<"view" | "edit" | null>(null);
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
@@ -616,58 +645,18 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const getConnectionTypeDisplay = (type: string) => {
-		switch (type) {
-			case "http":
-				return "HTTP";
-			case "sse":
-				return "SSE";
-			case "stdio":
-				return "STDIO";
-			case "openapi":
-				return "OpenAPI";
-			default:
-				return type.toUpperCase();
-		}
-	};
-
-	const getAuthTypeDisplay = (type: string | undefined) => {
-		switch (type) {
-			case "none":
-			case undefined:
-			case "":
-				return t("registry.filter.none");
-			case "headers":
-			case "per_user_headers":
-				return t("registry.filter.headers");
-			case "oauth":
-			case "per_user_oauth":
-				return "OAuth";
-			case "token_exchange":
-				return t("registry.filter.tokenExchange");
-			default:
-				return type;
-		}
-	};
-
-	// token_exchange carries the caller's own token on every call, so it is
-	// per-user even though the form does not expose a scope dropdown for it.
-	// Everything else, including "none", resolves through authScopeOf so the
-	// table agrees with the form.
-	const getAuthScopeDisplay = (type: MCPAuthType | undefined) => {
-		if (type === "token_exchange") {
-			return t("registry.form.perUser");
-		}
-		return authScopeOf(type) === "per_user" ? t("registry.form.perUser") : t("registry.form.shared");
-	};
-
 	const handleRowClick = (mcpClient: MCPClient) => {
 		setSelectedMCPClient(mcpClient);
-		setShowDetailSheet(true);
+		setOpenSheet("view");
 	};
 
-	const handleDetailSheetClose = () => {
-		setShowDetailSheet(false);
+	const handleEdit = (mcpClient: MCPClient) => {
+		setSelectedMCPClient(mcpClient);
+		setOpenSheet("edit");
+	};
+
+	const handleSheetClose = () => {
+		setOpenSheet(null);
 		setSelectedMCPClient(null);
 	};
 
@@ -678,13 +667,15 @@ export default function MCPClientsTable({
 
 	const [pendingEdgeNav, setPendingEdgeNav] = useState<"first" | "last" | null>(null);
 
+	// Prev/next past a page edge waits for the requested page: until it arrives the list still
+	// holds the page being left.
 	useEffect(() => {
-		if (pendingEdgeNav && mcpClients.length > 0) {
+		if (pendingEdgeNav && !pageLoading && mcpClients.length > 0) {
 			const target = pendingEdgeNav === "first" ? mcpClients[0] : mcpClients[mcpClients.length - 1];
 			setSelectedMCPClient(target);
 			setPendingEdgeNav(null);
 		}
-	}, [pendingEdgeNav, mcpClients]);
+	}, [pendingEdgeNav, pageLoading, mcpClients]);
 
 	const handleDetailNavigate = (direction: "prev" | "next") => {
 		const newIndex = direction === "prev" ? selectedMCPClientIndex - 1 : selectedMCPClientIndex + 1;
@@ -699,13 +690,86 @@ export default function MCPClientsTable({
 		}
 	};
 
-	const handleEditTools = async () => {
-		setShowDetailSheet(false);
-		setSelectedMCPClient(null);
+	const handleEditSaved = async () => {
+		handleSheetClose();
 		if (refetch) {
 			await refetch();
 		}
 	};
+
+	// The view sheet shows the server as the latest poll or refetch has it, so a
+	// state change or a menu action lands on the open sheet. selectedMCPClient is
+	// only the fallback while prev/next is loading another page. The edit sheet
+	// keeps the object it opened with: a fresh one every poll would reset its form.
+	const viewedMCPClient = selectedMCPClient
+		? (mcpClients.find((c) => c.config.client_id === selectedMCPClient.config.client_id) ?? selectedMCPClient)
+		: null;
+
+	// A server that leaves the list while its view is open (deleted from the
+	// view's menu, or elsewhere) closes the view, unless prev/next is moving
+	// to another page and the list is about to be replaced.
+	useEffect(() => {
+		if (openSheet !== "view" || !selectedMCPClient || pendingEdgeNav) return;
+		if (!mcpClients.some((c) => c.config.client_id === selectedMCPClient.config.client_id)) {
+			setOpenSheet(null);
+			setSelectedMCPClient(null);
+		}
+	}, [openSheet, selectedMCPClient, pendingEdgeNav, mcpClients]);
+
+	// The view's alert offers the same fix as the actions menu, through the same handler.
+	const handleAlertAction = (client: MCPClient, kind: MCPClientAlertActionKind) => {
+		switch (kind) {
+			case "authorize":
+				void handleStartBootstrap(client);
+				return;
+			case "reauthorize":
+				void handleReauthorize(client);
+				return;
+			case "refresh_headers":
+				handleRefreshHeaders(client);
+				return;
+			case "verify_exchange":
+				handleRequestVerifyExchange(client);
+				return;
+			case "reconnect":
+				void handleReconnect(client);
+				return;
+		}
+	};
+
+	const isClientBusy = (clientId: string) =>
+		reconnectingClients.includes(clientId) ||
+		authorizingClients.includes(clientId) ||
+		reauthorizingClients.includes(clientId) ||
+		verifyingExchangeClients.includes(clientId);
+
+	const renderActionsMenu = (
+		client: MCPClient,
+		options: { onView?: (client: MCPClient) => void; onEdit?: (client: MCPClient) => void; triggerTestId?: string },
+	) => (
+		<MCPClientActionsMenu
+			client={client}
+			hasUpdateAccess={hasUpdateMCPClientAccess}
+			hasDeleteAccess={hasDeleteMCPClientAccess}
+			isReconnecting={reconnectingClients.includes(client.config.client_id)}
+			isRefreshingTools={refreshingToolsClients.includes(client.config.client_id)}
+			isAuthorizing={authorizingClients.includes(client.config.client_id)}
+			isReauthorizing={reauthorizingClients.includes(client.config.client_id)}
+			isVerifyingExchange={verifyingExchangeClients.includes(client.config.client_id)}
+			canReconnect={canReconnectMCPClient(client.config)}
+			triggerTestId={options.triggerTestId}
+			onView={options.onView}
+			onEdit={options.onEdit}
+			onReconnect={(c) => void handleReconnect(c)}
+			onRefreshTools={(c) => void handleRefreshTools(c)}
+			onAuthorize={(c) => void handleStartBootstrap(c)}
+			onReauthorize={(c) => void handleReauthorize(c)}
+			onReregister={(c) => setReregisterTarget(c)}
+			onRefreshHeaders={handleRefreshHeaders}
+			onVerifyExchange={handleRequestVerifyExchange}
+			onDelete={setClientToDelete}
+		/>
+	);
 
 	const hasActiveFilters = Boolean(debouncedSearch) || Boolean(server) || filtersActive;
 
@@ -728,15 +792,23 @@ export default function MCPClientsTable({
 
 	return (
 		<div className="flex grow flex-col overflow-auto">
-			{showDetailSheet && selectedMCPClient && (
-				<MCPClientSheet
-					mcpClient={selectedMCPClient}
-					onClose={handleDetailSheetClose}
-					onSubmitSuccess={handleEditTools}
+			{openSheet === "view" && viewedMCPClient && (
+				<MCPClientDetailsSheet
+					mcpClient={viewedMCPClient}
+					onClose={handleSheetClose}
 					onNavigate={handleDetailNavigate}
 					hasPrev={selectedMCPClientIndex > 0 || offset > 0}
 					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
+					actions={
+						(hasUpdateMCPClientAccess || hasDeleteMCPClientAccess) &&
+						renderActionsMenu(viewedMCPClient, { triggerTestId: "mcpclient-view-actions-btn" })
+					}
+					onAlertAction={hasUpdateMCPClientAccess ? (kind) => handleAlertAction(viewedMCPClient, kind) : undefined}
+					alertActionBusy={isClientBusy(viewedMCPClient.config.client_id)}
 				/>
+			)}
+			{openSheet === "edit" && selectedMCPClient && (
+				<MCPClientSheet mcpClient={selectedMCPClient} onClose={handleSheetClose} onSubmitSuccess={handleEditSaved} />
 			)}
 			<AlertDialog open={!!reregisterTarget} onOpenChange={(open) => !open && setReregisterTarget(null)}>
 				<AlertDialogContent>
@@ -1099,7 +1171,6 @@ export default function MCPClientsTable({
 								</TableRow>
 							) : (
 								mcpClients.map((c: MCPClient) => {
-									const canReconnect = canReconnectMCPClient(c.config);
 									// Tool counts come from the last successful discovery, which is
 									// deliberately retained across a failed connection check, so an
 									// "unstable" (or degraded/needs_reauth) client still has a real
@@ -1126,7 +1197,12 @@ export default function MCPClientsTable({
 									const enabledToolsCount = enabledToolNames.size;
 									const autoExecuteToolsCount = autoExecuteToolNames.size;
 									return (
-										<TableRow key={c.config.client_id} className="group hover:bg-muted/50 transition-colors">
+										<TableRow
+											key={c.config.client_id}
+											className="group hover:bg-muted/50 cursor-pointer transition-colors"
+											onClick={() => handleRowClick(c)}
+											data-testid={`mcp-client-row-${c.config.client_id}`}
+										>
 											<TableCell className="font-medium">
 												<div className="truncate" title={c.config.name}>
 													{c.config.name}
@@ -1137,11 +1213,11 @@ export default function MCPClientsTable({
 											</TableCell>
 											<TableCell data-testid="mcp-client-connection-type">
 												<Badge variant="outline" className="font-mono">
-													{getConnectionTypeDisplay(c.config.connection_type)}
+													{connectionTypeLabel(c.config.connection_type)}
 												</Badge>
 											</TableCell>
-											<TableCell data-testid="mcp-client-auth-type">{getAuthTypeDisplay(c.config.auth_type)}</TableCell>
-											<TableCell data-testid="mcp-client-auth-scope">{getAuthScopeDisplay(c.config.auth_type)}</TableCell>
+											<TableCell data-testid="mcp-client-auth-type">{authTypeLabel(c.config.auth_type)}</TableCell>
+											<TableCell data-testid="mcp-client-auth-scope">{authScopeLabel(c.config.auth_type)}</TableCell>
 											<TableCell data-testid="mcp-client-code-mode">
 												{/* Pure config, valid whatever the connection state is: a server
 												    that can't be reached right now is still configured for code
@@ -1233,26 +1309,7 @@ export default function MCPClientsTable({
 												className={`bg-card group-hover:bg-muted/50 sticky right-0 z-10 text-right ${PIN_SHADOW_RIGHT}`}
 												onClick={(e) => e.stopPropagation()}
 											>
-												<MCPClientActionsMenu
-													client={c}
-													hasUpdateAccess={hasUpdateMCPClientAccess}
-													hasDeleteAccess={hasDeleteMCPClientAccess}
-													isReconnecting={reconnectingClients.includes(c.config.client_id)}
-													isRefreshingTools={refreshingToolsClients.includes(c.config.client_id)}
-													isAuthorizing={authorizingClients.includes(c.config.client_id)}
-													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
-													isVerifyingExchange={verifyingExchangeClients.includes(c.config.client_id)}
-													canReconnect={canReconnect}
-													onEdit={handleRowClick}
-													onReconnect={(client) => void handleReconnect(client)}
-													onRefreshTools={(client) => void handleRefreshTools(client)}
-													onAuthorize={(client) => void handleStartBootstrap(client)}
-													onReauthorize={(client) => void handleReauthorize(client)}
-													onReregister={(client) => setReregisterTarget(client)}
-													onRefreshHeaders={handleRefreshHeaders}
-													onVerifyExchange={handleRequestVerifyExchange}
-													onDelete={setClientToDelete}
-												/>
+												{renderActionsMenu(c, { onView: handleRowClick, onEdit: handleEdit })}
 											</TableCell>
 										</TableRow>
 									);

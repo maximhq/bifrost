@@ -254,7 +254,7 @@ Every per-user header credential shows up on the **MCP Sessions** page with one 
 
 From the sessions table the user can **Edit values** (mints a fresh submission flow against the same MCP/identity) or **Revoke** outright. See [MCP Sessions](../sessions) for the full lifecycle and the orphan/reactivate behavior on VK changes.
 
-The client-level [admin discovery credential](#admin-discovery-credential) is deliberately excluded from this page: it is not an end-user credential, and it is managed from the client sheet instead.
+The client-level [admin discovery credential](#admin-discovery-credential) is deliberately excluded from this page: it is not an end-user credential, and it is managed from the server's view sheet and actions menu instead.
 
 ---
 
@@ -263,14 +263,14 @@ The client-level [admin discovery credential](#admin-discovery-credential) is de
 When admin verification runs through the `verify-headers` flow (the **Verify** dialog on a `pending_verification` client, or the endpoint directly), the sample values are retained as a client-level **admin discovery credential** (auth mode `admin`). Its role is deliberately narrow:
 
 - **Tool-list refresh only.** The periodic tool syncer uses it for a one-shot connect, `tools/list`, disconnect cycle on the client's [tool sync interval](#periodic-tool-sync). It is **never** used for end-user tool calls; those always run under the caller's own submitted values.
-- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the client sheet instead.
+- **Invisible on the sessions page.** Admin credentials are excluded from [MCP Sessions](../sessions); they are managed from the server's view sheet and actions menu instead.
 
-If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the client list projects a **`needs_reauth`** badge next to the client's **View sessions** link. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients created with inline `user_headers` before running `verify-headers` have no admin row and simply stay healthy (their tool list just cannot refresh periodically).
+If the credential falls into `needs_update` (typically because `per_user_header_keys` changed), the server's state shows as **`needs_reauth`** in the servers table and on its view sheet. This is a display-level state: end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it. Clients created with inline `user_headers` before running `verify-headers` have no admin row and simply stay healthy (their tool list just cannot refresh periodically).
 
-To repair it, open the client sheet and click **Update headers**: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is a repeat `POST /api/mcp/client/{id}/verify-headers` call, which is accepted while the admin credential sits in `needs_update` (any other repeat returns `409`).
+To repair it, click **Refresh admin credential** in the server's actions menu, or in the alert at the top of its view sheet: the same sample-values dialog re-runs the upstream verify, re-discovers tools, and flips the credential back to `active`. The scriptable equivalent is a repeat `POST /api/mcp/client/{id}/verify-headers` call, which is accepted while the admin credential sits in `needs_update` (any other repeat returns `409`).
 
 <Frame>
-  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="Per-user headers client sheet showing the needs_reauth badge next to View sessions and the Update headers button" />
+  <img src="/media/ui-mcp-per-user-headers-admin-repair.png" alt="Per-user headers server view sheet with the Needs Reauth badge and an alert offering Refresh admin credential" />
 </Frame>
 
 ### Periodic tool sync
