@@ -14,6 +14,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - `x-api-key` - API key header, eg. `sk-bf-*` (Anthropic style)
 - `x-goog-api-key` - API key header, eg. `sk-bf-*` (Google Gemini style)
 - `api-key` - API key header, eg. `sk-bf-*` (Azure OpenAI style)
+- `Ocp-Apim-Subscription-Key` - API key header, eg. `sk-bf-*` (Azure AI Speech style). Only a value with the `sk-bf-` prefix is read as a virtual key.
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 

@@ -1,0 +1,135 @@
+# Azure AI Speech REST Schemas
+
+AzureSpeechTranscriptionDefinition:
+  type: object
+  description: Fast transcription options, sent as the `definition` form part.
+  properties:
+    locales:
+      type: array
+      items:
+        type: string
+      description: Candidate locales. One locale fixes the language; several let Azure identify it.
+      example: ["en-US", "de-DE"]
+    channels:
+      type: array
+      items:
+        type: integer
+      description: Audio channels to transcribe separately
+    diarization:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        maxSpeakers:
+          type: integer
+    profanityFilterMode:
+      type: string
+      enum: [None, Masked, Removed, Tags]
+    phraseList:
+      type: object
+      properties:
+        phrases:
+          type: array
+          items:
+            type: string
+    enhancedMode:
+      type: object
+      description: LLM Speech or MAI-Transcribe. `model` names the MAI-Transcribe model; without it the request runs on LLM Speech.
+      properties:
+        enabled:
+          type: boolean
+        task:
+          type: string
+          enum: [transcribe, translate]
+        targetLanguage:
+          type: string
+        prompt:
+          type: array
+          items:
+            type: string
+        model:
+          type: string
+          example: MAI-Transcribe-2
+        modelOptions:
+          type: object
+          properties:
+            timestamps:
+              type: string
+              enum: [word, segment, none]
+            transcribeStyle:
+              type: string
+              enum: [verbatim, clean]
+
+AzureSpeechTranscriptionResponse:
+  type: object
+  description: Fast transcription result
+  properties:
+    durationMilliseconds:
+      type: integer
+    combinedPhrases:
+      type: array
+      items:
+        type: object
+        properties:
+          channel:
+            type: integer
+          text:
+            type: string
+    phrases:
+      type: array
+      items:
+        type: object
+        properties:
+          channel:
+            type: integer
+          speaker:
+            type: integer
+          offsetMilliseconds:
+            type: integer
+          durationMilliseconds:
+            type: integer
+          text:
+            type: string
+          locale:
+            type: string
+          confidence:
+            type: number
+
+AzureSpeechShortAudioResponse:
+  type: object
+  description: Short audio recognition result. `NBest` is set when `format=detailed`.
+  properties:
+    RecognitionStatus:
+      type: string
+      example: Success
+    Offset:
+      type: integer
+      description: Start of the speech, in 100-nanosecond ticks
+    Duration:
+      type: integer
+      description: Length of the speech, in 100-nanosecond ticks
+    DisplayText:
+      type: string
+    NBest:
+      type: array
+      items:
+        type: object
+        properties:
+          Confidence:
+            type: number
+          Lexical:
+            type: string
+          ITN:
+            type: string
+          MaskedITN:
+            type: string
+          Display:
+            type: string
+
+AzureSpeechError:
+  type: object
+  properties:
+    code:
+      type: string
+    message:
+      type: string
