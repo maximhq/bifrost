@@ -905,12 +905,10 @@ func TestClearAnthropicPassthroughForInjectedTools_RawOnlyRequestKeepsPassthroug
 // When an attempt with injected tools fails over to one without them, the later
 // attempt gets back the raw-body passthrough the injected attempt switched off.
 func TestRestoreAnthropicPassthroughAfterInjectedTools(t *testing.T) {
-	codec := &struct{ name string }{"codec"}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/messages")
-	ctx.SetValue(schemas.BifrostContextKeyRawStreamTextCodec, codec)
 	typed := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}}}
 
 	require.NotNil(t, clearAnthropicPassthroughForInjectedTools(ctx, testInjectedSet(t), typed))
@@ -920,7 +918,6 @@ func TestRestoreAnthropicPassthroughAfterInjectedTools(t *testing.T) {
 	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeySendBackRawResponse))
 	assert.Equal(t, "/v1/messages", ctx.Value(schemas.BifrostContextKeyURLPath))
-	assert.Same(t, codec, ctx.Value(schemas.BifrostContextKeyRawStreamTextCodec))
 
 	again := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	again.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)

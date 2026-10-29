@@ -445,11 +445,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		if isMessagesRequest {
 			// Native Messages response forwarding is independent of raw request
 			// serialization. Vertex beta modes serialize the normalized request but
-			// still return Anthropic SSE that Guardrails must synchronize.
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawStreamTextCodec,
-				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
-			)
+			// still return the native Anthropic response, whose text plugins rewrite.
 			bifrostCtx.SetValue(
 				schemas.BifrostContextKeyRawResponseTextTransformer,
 				schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms),
@@ -473,55 +469,6 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		}
 	}
 	return nil
-}
-
-// anthropicRawStreamTextCodec owns Anthropic's native text-delta JSON shape.
-type anthropicRawStreamTextCodec struct{}
-
-// Inspect exposes assistant text and tool-argument deltas while keeping reasoning and lifecycle events opaque.
-func (anthropicRawStreamTextCodec) Inspect(rawResponse string) (schemas.RawStreamTextEvent, bool, error) {
-	if !gjson.Valid(rawResponse) {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic raw stream event is not valid JSON")
-	}
-	deltaType := gjson.Get(rawResponse, "delta.type").String()
-	if gjson.Get(rawResponse, "type").String() != "content_block_delta" ||
-		(deltaType != "text_delta" && deltaType != "input_json_delta") {
-		return schemas.RawStreamTextEvent{}, false, nil
-	}
-	index := gjson.Get(rawResponse, "index")
-	if !index.Exists() || index.Type != gjson.Number || index.Int() < 0 {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid index")
-	}
-	path := "delta.text"
-	if deltaType == "input_json_delta" {
-		path = "delta.partial_json"
-	}
-	text := gjson.Get(rawResponse, path)
-	if !text.Exists() || text.Type != gjson.String {
-		return schemas.RawStreamTextEvent{}, false, fmt.Errorf("anthropic text_delta event has invalid delta.text")
-	}
-	return schemas.RawStreamTextEvent{
-		TargetID: strconv.FormatInt(index.Int(), 10),
-		Text:     text.String(),
-	}, true, nil
-}
-
-// Rewrite changes only the inspected text or argument fragment, preserving native event identity.
-func (codec anthropicRawStreamTextCodec) Rewrite(rawResponse string, text string) (string, error) {
-	if _, eligible, err := codec.Inspect(rawResponse); err != nil {
-		return "", err
-	} else if !eligible {
-		return "", fmt.Errorf("anthropic raw stream event is not an eligible text_delta")
-	}
-	path := "delta.text"
-	if gjson.Get(rawResponse, "delta.type").String() == "input_json_delta" {
-		path = "delta.partial_json"
-	}
-	rewritten, err := sjson.Set(rawResponse, path, text)
-	if err != nil {
-		return "", fmt.Errorf("rewrite anthropic text_delta: %w", err)
-	}
-	return rewritten, nil
 }
 
 // rewriteAnthropicRawRequestBody applies runtime replacements only to Anthropic fields mirrored as mutable normalized text.

@@ -1675,6 +1675,7 @@ func HandleOpenAIChatCompletionStreaming(
 				convStart := time.Now()
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
 				schemas.AddStreamConvert(ctx, time.Since(convStart))
+				rawIdx := providerUtils.ResponsesStreamRawIndex(spreadResponses, 0)
 				for i, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
 						bifrostErr := &schemas.BifrostError{
@@ -1706,10 +1707,11 @@ func HandleOpenAIChatCompletionStreaming(
 					// Stamping every one of them made framework/streaming/responses.go
 					// concatenate that single frame once per event, so the captured raw
 					// response reported frames the provider never sent twice over. Only
-					// the first event drains, and it carries every frame queued since
-					// the last emitted event - including frames that produced no event
-					// of their own.
-					if sendBackRawResponse && i == 0 {
+					// one event drains, and it carries every frame queued since the last
+					// emitted event - including frames that produced no event of their
+					// own. It is the event streaming the frame's text or arguments, so the
+					// raw text never travels ahead of the normalized text it backs.
+					if sendBackRawResponse && i == rawIdx {
 						response.ExtraFields.RawResponse = drainPendingRawFrames()
 						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 					}

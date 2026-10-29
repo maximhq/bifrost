@@ -903,14 +903,13 @@ const injectedToolsPassthroughKey injectedToolsContextKey = "injected-tools-pass
 var passthroughKeys = []schemas.BifrostContextKey{
 	schemas.BifrostContextKeyUseRawRequestBody,
 	schemas.BifrostContextKeyRawRequestBodyTextRewriter,
-	schemas.BifrostContextKeyRawStreamTextCodec,
 	schemas.BifrostContextKeySendBackRawResponse,
 	schemas.BifrostContextKeyPassthroughOverridesPresent,
 	schemas.BifrostContextKeyURLPath,
 }
 
 // passthroughSnapshot holds the passthrough settings as ingress set them. Small handles
-// only: flags, a path and codec pointers.
+// only: flags, a path and a rewriter func.
 type passthroughSnapshot struct {
 	values map[schemas.BifrostContextKey]any
 }
