@@ -23,7 +23,7 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
       skip-core-test: ${{ steps.check.outputs.skip-core-test }}
@@ -103,7 +103,7 @@ jobs:
   approve-run:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     environment:
       name: release-run-approval
       url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -121,7 +121,7 @@ jobs:
   # Detect what needs to be released
   detect-changes:
     needs: [check-skip, approve-run]
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     # Skip if first line of commit message contains --skip-ci, or if the phone
     # gate above was rejected. Every other job needs this one, so this edge is
     # what holds the whole graph behind the gate.
@@ -227,7 +227,7 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 30
     permissions:
       contents: read
@@ -318,7 +318,7 @@ jobs:
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.check-skip.outputs.skip-core-test != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 90
     permissions:
       contents: read
@@ -580,7 +580,7 @@ jobs:
         needs.detect-changes.outputs.framework-needs-release == 'true' ||
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 45
     permissions:
       contents: read
@@ -803,7 +803,7 @@ jobs:
     # skip-core-test drops this alongside test-core: both make live calls to the
     # upstream providers, so a provider outage that blocks one blocks both.
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.check-skip.outputs.skip-core-test != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 90
     permissions:
       contents: read
@@ -975,7 +975,7 @@ jobs:
   test-core-unit:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1048,7 +1048,7 @@ jobs:
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true' &&
       needs.test-core.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     environment:
       name: flaky-test-override
       url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1086,7 +1086,7 @@ jobs:
   test-memory:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true')
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1137,7 +1137,7 @@ jobs:
       needs.check-skip.outputs.skip-tests != 'true' &&
       (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true') &&
       needs.test-memory.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     environment:
       name: memory-regression-override
       url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1184,7 +1184,7 @@ jobs:
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
       needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 10
     permissions:
       contents: read
@@ -1267,7 +1267,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.resolve-cli-versions.outputs.matrix) }}
     name: test-cli-harness (${{ matrix.label }})
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     # The five run_cases invocations in test-cli-harness.sh each pass
     # TIMEOUT=25m, so the Go suites alone can take 125m on top of the CLI
     # installs, the UI build and the gateway build. A job timeout cancels the
@@ -1473,7 +1473,7 @@ jobs:
   test-vllm:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 60
     permissions:
       contents: read
@@ -1527,7 +1527,7 @@ jobs:
   test-framework:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1647,7 +1647,7 @@ jobs:
   test-plugins:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1780,7 +1780,7 @@ jobs:
   test-bifrost-http:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -1842,7 +1842,7 @@ jobs:
   test-live:
     needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 20
     permissions:
       contents: read
@@ -1915,7 +1915,7 @@ jobs:
   test-migrations:
     needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -2031,7 +2031,7 @@ jobs:
   test-agentgateway:
     needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -2084,7 +2084,7 @@ jobs:
     needs: [check-skip, detect-changes, build-gateway]
     # Provider-secret redaction spans core schemas, framework storage, and HTTP responses.
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && (needs.detect-changes.outputs.core-needs-release == 'true' || needs.detect-changes.outputs.framework-needs-release == 'true' || needs.detect-changes.outputs.bifrost-http-needs-release == 'true')
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -2290,7 +2290,7 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -2389,7 +2389,7 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
         needs.detect-changes.outputs.docker-needs-release == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     continue-on-error: true
     timeout-minutes: 30
     permissions:
@@ -2486,7 +2486,7 @@ jobs:
   test-docker-image-amd64:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -2640,7 +2640,7 @@ jobs:
   test-docker-image-arm64:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: read
     steps:
@@ -2680,10 +2680,12 @@ jobs:
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
+            azure.ports.ubuntu.com:80
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
+            esm.ubuntu.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
@@ -2696,6 +2698,7 @@ jobs:
             oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
+            ports.ubuntu.com:80
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -2717,6 +2720,15 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
+
+      # The arm64 base image does not ship libatomic1, which the official
+      # linux-arm64 Node binary links against; without it node exits 127.
+      - name: Install libatomic1 for Node.js
+        run: |
+          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libatomic1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2817,7 +2829,7 @@ jobs:
         test-docker-image-arm64,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-vllm.result == 'success' || needs.test-vllm.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -2933,7 +2945,7 @@ jobs:
         core-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -3059,7 +3071,7 @@ jobs:
         framework-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -3206,7 +3218,7 @@ jobs:
         plugins-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -3260,7 +3272,7 @@ jobs:
   build-binaries-x86:
     needs: [bifrost-http-prep, detect-changes]
     if: "always() && needs.bifrost-http-prep.result == 'success' && needs.bifrost-http-prep.outputs.success == 'true'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -3336,7 +3348,7 @@ jobs:
   build-binaries-arm64:
     needs: [bifrost-http-prep, detect-changes]
     if: "always() && needs.bifrost-http-prep.result == 'success' && needs.bifrost-http-prep.outputs.success == 'true'"
-    runs-on: ubuntu-24.04-arm
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: read
     steps:
@@ -3347,11 +3359,14 @@ jobs:
           allowed-endpoints: >
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.github.com:443
+            azure.ports.ubuntu.com:80
+            esm.ubuntu.com:443
             files.pythonhosted.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             github.com:443
             nodejs.org:443
+            ports.ubuntu.com:80
             proxy.golang.org:443
             pypi.org:443
             registry.npmjs.org:443
@@ -3372,6 +3387,15 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
+
+      # The arm64 base image does not ship libatomic1, which the official
+      # linux-arm64 Node binary links against; without it node exits 127.
+      - name: Install libatomic1 for Node.js
+        run: |
+          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libatomic1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3402,7 +3426,7 @@ jobs:
   bifrost-http-release:
     needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -3476,7 +3500,7 @@ jobs:
         bifrost-http-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
       packages: write
@@ -3599,7 +3623,7 @@ jobs:
         bifrost-http-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-24.04-arm
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: write
       packages: write
@@ -3695,7 +3719,7 @@ jobs:
   docker-manifest:
     needs: [check-skip, detect-changes, docker-build-amd64, docker-build-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-amd64.result == 'success' && needs.docker-build-arm64.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
       packages: write
@@ -3768,7 +3792,7 @@ jobs:
         bifrost-http-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
       packages: write
@@ -3895,7 +3919,7 @@ jobs:
         bifrost-http-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-memory.result == 'success' || needs.test-memory.result == 'skipped' || (needs.test-memory.result == 'failure' && needs.approve-memory-regression.result == 'success')) && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-24.04-arm
+    runs-on: arm-64-2cpu-8gb
     permissions:
       contents: write
       packages: write
@@ -3995,7 +4019,7 @@ jobs:
   docker-manifest-ubi9:
     needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
       packages: write
@@ -4066,7 +4090,7 @@ jobs:
         bifrost-http-release,
       ]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.result == 'success' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-proxy-e2e.result == 'success' || needs.test-proxy-e2e.result == 'skipped') && (needs.test-core-integrations.result == 'success' || needs.test-core-integrations.result == 'skipped') && (needs.test-core-unit.result == 'success' || needs.test-core-unit.result == 'skipped') && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-live.result == 'success' || needs.test-live.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-agentgateway.result == 'success' || needs.test-agentgateway.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     steps:
@@ -4136,7 +4160,7 @@ jobs:
     # A run rejected at the phone gate ran nothing, so there is no release to
     # report; without this clause Discord would get an all-skipped "complete".
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.approve-run.result == 'success'"
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
