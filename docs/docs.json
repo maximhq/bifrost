@@ -578,6 +578,13 @@
                   "integrations/cohere-sdk/overview"
                 ]
               },
+              {
+                "group": "Azure SDK",
+                "icon": "microsoft",
+                "pages": [
+                  "integrations/azure-sdk/overview"
+                ]
+              },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",

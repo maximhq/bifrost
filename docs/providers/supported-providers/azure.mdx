@@ -1,6 +1,6 @@
 ---
 title: "Azure"
-description: "Azure OpenAI Service API conversion guide - deployment management, authentication, multi-model support"
+description: "Azure OpenAI Service, Azure AI Speech and Voice Live conversion guide - deployment management, authentication, multi-model support"
 icon: "microsoft"
 ---
 
@@ -15,6 +15,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 - **v1 API** - Uses `/openai/v1/` endpoints for all operations except transcription, which uses the classic `/openai/deployments/{model}/audio/transcriptions?api-version=...` path as the v1 equivalent is not yet available
 - **Custom endpoints** - Full control over Azure endpoint configuration
 - **Multi-model support** - Unified interface for OpenAI, Anthropic (via Azure), and Gemini models
+- **Azure AI Speech and Voice Live** - Speech, transcription and realtime sessions go to [Azure AI Speech](#11-azure-ai-speech) or [Azure Voice Live](#12-azure-voice-live) on the same key when a key or alias turns them on
 - **Request/response pass-through** - Support for raw request/response bodies for advanced use cases
 
 ### Supported Operations
@@ -31,12 +32,13 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Video Generation | ✅            | -         | `/openai/v1/videos`             |
 | Context Compaction | ✅          | -         | `/openai/v1/responses/compact`  |
 | Decisions        | ✅            | -         | `/openai/v1/decisions` (`gpt-6-luna`), `/providers/microsoft/v1/systemone` (`Microsoft-Decision-1`) |
+| Realtime         | -             | ✅        | `/openai/v1/realtime`, or `/voice-live/realtime` for [Azure Voice Live](#12-azure-voice-live) |
 | GPT Live         | -             | ✅        | `/openai/v1/live/sessions`      |
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
 | Speech (TTS)     | ✅            | ✅        | `/openai/v1/audio/speech`, or `/tts/cognitiveservices/v1` for [Azure AI Speech](#11-azure-ai-speech) |
-| Transcription    | ✅            | -         | `/openai/deployments/{model}/audio/transcriptions`, or `/speechtotext/transcriptions:transcribe` for [Azure AI Speech](#11-azure-ai-speech) |
+| Transcription    | ✅            | -         | `/openai/deployments/{model}/audio/transcriptions`, or `/speechtotext/transcriptions:transcribe` and `/stt/speech/recognition/{mode}/cognitiveservices/v1` for [Azure AI Speech](#11-azure-ai-speech) |
 
 <Note>
   **Azure-specific**: Batch operations and Text Completions are not supported by
@@ -963,6 +965,14 @@ Lists available models/deployments configured in the Azure key. Response include
 }
 ```
 
+A key with `use_speech_endpoints` also lists the [Azure AI Speech](#11-azure-ai-speech) model IDs it can call, since Azure's model list leaves them out:
+
+- `neural`
+- one model per voice suffix in the region's voices list, such as `DragonHDLatestNeural` or `MAI-Voice-2.1-Flash`
+- `fast-transcription`, `llm-speech`, `short-audio` and `MAI-Transcribe-2`
+
+The key's `models` list and aliases filter these like any other model. An alias with `use_speech_endpoints` on a key without it is listed under the alias name. If the voices list cannot be fetched, the rest of the list is still returned without the voice suffixes.
+
 ---
 
 ## Caveats
@@ -1076,26 +1086,83 @@ A decision is priced from the model catalog: at the model's decision rates where
 
 # 11. Azure AI Speech
 
-`use_speech_endpoints` sends speech and transcription requests to [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) instead of an Azure OpenAI deployment, on the same key and endpoint. Set it in `azure_key_config` to route every audio request on the key, or on an alias to route one model. An alias value wins over the key's in both directions. Other requests on the key, such as chat, still go to Azure OpenAI.
+`use_speech_endpoints` sends speech and transcription requests to [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) instead of an Azure OpenAI deployment, on the same key and endpoint. Turn it on for the key to route every speech and transcription request on it, or on an alias to route one model. An alias value wins over the key's in both directions. Other requests on the key, such as chat, still go to Azure OpenAI.
 
 The endpoint must be a Foundry (AI Services) resource or a Speech resource with a custom domain. Both `*.openai.azure.com` and `*.cognitiveservices.azure.com` work.
 
-An API key is sent as `Ocp-Apim-Subscription-Key`. Entra ID and managed identity send a bearer token, as for every other Azure call. A key with an explicit `models` list must list the alias names it serves.
+An API key is sent as `Ocp-Apim-Subscription-Key`. Entra ID and managed identity send a bearer token, as for every other Azure call.
+
+## Setup
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Turn on **Use Azure Speech endpoints** to send every speech and transcription request on the key to Azure AI Speech
+4. To route one model instead, add a row under **Deployments** with the name callers send as **Deployment name** and the Azure AI Speech model ID as **Model ID**, such as `fast-stt` and `fast-transcription`. Expand the row and set **Use Azure Speech endpoints** to **On**. **Use key setting** follows the key's switch, and **Off** keeps the row on Azure OpenAI.
+5. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/providers/azure/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-speech",
+    "value": "env.AZURE_API_KEY",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
+      "fast-stt": { "model_id": "fast-transcription", "use_speech_endpoints": true }
+    },
+    "azure_key_config": {
+      "endpoint": "env.AZURE_ENDPOINT"
+    }
+  }'
+```
+
+To route every speech and transcription request on the key, set `"use_speech_endpoints": true` in `azure_key_config` instead.
+
+</Tab>
+
+<Tab title="config.json">
 
 ```json
 {
-  "name": "azure-key",
-  "value": "env.AZURE_API_KEY",
-  "models": ["*"],
-  "azure_key_config": { "endpoint": "env.AZURE_ENDPOINT" },
-  "aliases": {
-    "mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
-    "fast-stt": { "model_id": "fast-transcription", "use_speech_endpoints": true }
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-speech",
+          "value": "env.AZURE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
+            "fast-stt": { "model_id": "fast-transcription", "use_speech_endpoints": true }
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT"
+          }
+        }
+      ]
+    }
   }
 }
 ```
 
-The model ID, which is the alias `model_id` or the requested model on a key with `use_speech_endpoints`, picks the voice or transcription mode.
+To route every speech and transcription request on the key, set `"use_speech_endpoints": true` in `azure_key_config` instead.
+
+</Tab>
+
+</Tabs>
+
+A key with an explicit `models` list must list the alias names it serves. The model ID, which is the alias `model_id` or the requested model on a key with `use_speech_endpoints`, picks the voice or transcription mode.
 
 ## Text to speech
 
@@ -1117,7 +1184,7 @@ A voice that already contains `:` is sent as is. OpenAI voice names such as `all
 | `response_format` | `mp3` (default), `opus`, `wav` and `pcm` map to 24 kHz formats; `aac` and `flac` fall back to mp3; any other value is sent as the `X-Microsoft-OutputFormat` name |
 | `instructions` | Dropped |
 
-`stream_format: "sse"` streams the audio as Azure synthesizes it. `usage.input_chars` counts characters as Azure bills them: the whole SSML except the `<speak>` and `<voice>` tags, with each Chinese character counted twice. Markup Bifrost adds, such as `<prosody>`, is billed.
+`stream_format: "sse"` streams the audio as Azure synthesizes it. `usage.input_chars` counts characters the way Azure meters them, which can differ from the length of `input`.
 
 ```bash
 curl http://localhost:8080/v1/audio/speech \
@@ -1132,12 +1199,13 @@ curl http://localhost:8080/v1/audio/speech \
 
 ## Speech to text
 
-**Endpoint**: `POST /v1/audio/transcriptions`, sent to `{endpoint}/speechtotext/transcriptions:transcribe?api-version=2025-10-15` as an `audio` part and a JSON `definition`
+**Endpoint**: `POST /v1/audio/transcriptions`, sent to `{endpoint}/speechtotext/transcriptions:transcribe?api-version=2025-10-15` as an `audio` part and a JSON `definition`, or to `{endpoint}/stt/speech/recognition/{mode}/cognitiveservices/v1` for `short-audio`
 
 | Model ID | Azure mode |
 | --- | --- |
 | `fast-transcription` | Fast transcription |
 | `llm-speech` | LLM Speech (`enhancedMode.task`) |
+| `short-audio` | [Short audio recognition](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-speech-to-text-short), for WAV or Ogg Opus clips up to 60 seconds |
 | Any other, such as `MAI-Transcribe-2` | `enhancedMode.model` set to the model ID |
 
 LLM Speech and MAI-Transcribe are available only in [some regions](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/regions?tabs=llmspeech); other regions answer `400` with `Enhanced mode is currently not supported yet.`
@@ -1145,6 +1213,7 @@ LLM Speech and MAI-Transcribe are available only in [some regions](https://learn
 | Field | Azure definition |
 | --- | --- |
 | `language` | `locales`. `fast-transcription` needs a full locale such as `en-US`; a bare code such as `en` is dropped and Azure detects the language. |
+| `locales` | `locales` with several candidate locales, such as `en-US,de-DE`, so Azure identifies the language |
 | `prompt` | `enhancedMode.prompt` on `llm-speech`; dropped otherwise |
 | `target_language` | `llm-speech` translates into it |
 | `response_format: "verbose_json"` | `modelOptions.timestamps: "word"` on MAI-Transcribe |
@@ -1152,7 +1221,7 @@ LLM Speech and MAI-Transcribe are available only in [some regions](https://learn
 | `channels`, `phrases` | `channels`, `phraseList.phrases`. Pass a comma-separated value in a multipart form. |
 | `profanity_filter_mode`, `transcribe_style` | `profanityFilterMode`, `modelOptions.transcribeStyle` |
 
-The response carries `text`, `duration`, `language`, `segments` (speaker-labelled when diarized) and `words`. `usage.seconds` is the duration rounded up to the second, which is what Azure meters.
+The response carries `text`, `duration`, `language`, `segments` (speaker-labelled when diarized) and `words`. `usage.seconds` is the duration rounded up to the second.
 
 ```bash
 curl http://localhost:8080/v1/audio/transcriptions \
@@ -1162,27 +1231,116 @@ curl http://localhost:8080/v1/audio/transcriptions \
   -F diarization=true
 ```
 
-Until the model catalog lists rates for these model IDs, Bifrost reports their cost as $0 while Azure still bills the usage; add a [pricing override](/providers/custom-pricing) to track it.
+`short-audio` sends the audio as the request body with the options in the query string. The example below runs on a key with `use_speech_endpoints`, or with a `short-audio` alias that turns it on.
+
+| Field | Short audio |
+| --- | --- |
+| `language` | `language`, `en-US` when not set. Needs a full locale. |
+| `recognition_mode` | The `{mode}` path segment: `conversation` (default), `interactive` or `dictation` |
+| `format` | `format`: `simple` or `detailed` |
+| `profanity` | `profanity`: `masked`, `removed` or `raw` |
+| `cid` | `cid`, the ID of a Custom Speech endpoint |
+| `pronunciation_assessment` | `Pronunciation-Assessment` header, the base64-encoded assessment parameters |
+
+The response carries `text`, `duration` and one segment. `usage.seconds` is the clip length rounded up to the second.
+
+```bash
+curl http://localhost:8080/v1/audio/transcriptions \
+  -F model=azure/short-audio \
+  -F file=@clip.wav \
+  -F language=en-US \
+  -F recognition_mode=dictation
+```
 
 ---
 
 # 12. Azure Voice Live
 
-`use_voice_live_endpoints` sends realtime WebSocket sessions to [Azure Voice Live](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live) instead of Azure OpenAI, on the same key and endpoint. Set it in `azure_key_config` for every realtime session on the key, or on an alias for one model. An alias value wins over the key's in both directions. Other requests on the key still go to Azure OpenAI.
+`use_voice_live_endpoints` sends realtime WebSocket sessions to [Azure Voice Live](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live) instead of Azure OpenAI, on the same key and endpoint. Turn it on for the key to route every realtime session on it, or on an alias to route one model. An alias value wins over the key's in both directions. Other requests on the key still go to Azure OpenAI.
 
 **Endpoint**: `/v1/realtime` (WebSocket), sent to `{endpoint}/voice-live/realtime?api-version=2026-04-10&model={model ID}` with the key's API key or Entra token. An alias `api_version` replaces the default version.
 
+## Setup
+
+<Tabs>
+
+<Tab title="Web UI">
+
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
+2. Click **"Add Key"** (or edit an existing key)
+3. Turn on **Use Azure Voice Live endpoints** to send every realtime session on the key to Voice Live
+4. To route one model instead, add a row under **Deployments** with the name callers send as **Deployment name** and the Voice Live model as **Model ID**, such as `gpt-realtime-vl` and `gpt-realtime`. Expand the row and set **Use Azure Voice Live endpoints** to **On**. **Use key setting** follows the key's switch, and **Off** keeps the row on Azure OpenAI.
+5. Save
+
+</Tab>
+
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/providers/azure/keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "azure-voice-live",
+    "value": "env.AZURE_API_KEY",
+    "models": ["*"],
+    "weight": 1.0,
+    "aliases": {
+      "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
+    },
+    "azure_key_config": {
+      "endpoint": "env.AZURE_ENDPOINT"
+    }
+  }'
+```
+
+To route every realtime session on the key, set `"use_voice_live_endpoints": true` in `azure_key_config` instead.
+
+</Tab>
+
+<Tab title="config.json">
+
 ```json
-"aliases": {
-  "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-voice-live",
+          "value": "env.AZURE_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "aliases": {
+            "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
+          },
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT"
+          }
+        }
+      ]
+    }
+  }
 }
 ```
 
-The model ID is a Voice Live model such as `gpt-realtime`, `gpt-4.1` or `phi4-mm-realtime`, which needs no deployment. Connect to `ws://localhost:8080/v1/realtime?model=azure/gpt-realtime-vl`. Events pass through as Voice Live sends them, including object voices such as `{"name": "en-US-Ava:DragonHDLatestNeural", "type": "azure-standard"}`, `azure_semantic_vad`, noise suppression, word timestamps, visemes and `session.avatar.connect`.
+To route every realtime session on the key, set `"use_voice_live_endpoints": true` in `azure_key_config` instead.
+
+</Tab>
+
+</Tabs>
+
+The model ID is a Voice Live model such as `gpt-realtime`, `gpt-4.1` or `phi4-mm-realtime`, which needs no deployment. Connect to `ws://localhost:8080/v1/realtime?model=azure/gpt-realtime-vl`, or point a Voice Live SDK at Bifrost through the [Azure integration](/integrations/azure-sdk/overview#voice-live). Events pass through as Voice Live sends them, including object voices such as `{"name": "en-US-Ava:DragonHDLatestNeural", "type": "azure-standard"}`, `azure_semantic_vad`, noise suppression, word timestamps and visemes.
 
 - WebRTC (`/v1/realtime/calls`) and client secrets (`/v1/realtime/client_secrets`) answer `400`: Voice Live signals WebRTC over its own WebSocket and reports usage on the browser's data channel.
 - A realtime `intent` answers `400`.
-- Turns are priced at the Azure OpenAI rates for the same model name until the model catalog lists Voice Live rates.
+
+## Avatar
+
+Voice Live avatars work through Bifrost with no extra configuration. Set `avatar` in `session.update` as you would against Azure:
+
+- **WebRTC output** (the default): the client sends `session.avatar.connect` with its SDP offer and receives `session.avatar.connecting` with Azure's answer, both over the session's WebSocket. The avatar's video and audio then flow between the browser and Azure directly, using the TURN server Azure returns in `session.updated`.
+- **WebSocket output** (`"output_protocol": "websocket"`): the video arrives on the session's WebSocket as `response.video.delta` events.
+
+Video avatars and photo avatars (`"type": "photo-avatar"`) both work.
 
 ---
 

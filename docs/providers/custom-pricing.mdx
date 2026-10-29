@@ -468,6 +468,14 @@ Azure Voice Live turns use these rates in place of the matching rates above. Eac
 | `input_cost_per_custom_speech_audio_token_voice_live` | Cost per audio input token transcribed by a custom speech model |
 | `output_cost_per_custom_speech_audio_token_voice_live` | Cost per audio output token from a custom or personal voice |
 
+Bifrost splits a turn's audio from the session's voice and model:
+
+- Output from an `azure-custom` or `azure-personal` voice is custom speech, and output from an `azure-standard` voice is standard speech.
+- A model without `realtime` in its name, such as `gpt-4.1`, hears through Azure speech to text and speaks through Azure text to speech, so its input audio and its output from any other voice are standard speech.
+- Custom speech input is not detected, so it is priced as standard speech.
+
+The `standard_speech_audio_tokens` and `custom_speech_audio_tokens` usage fields show the split. Voice Live turns are priced in the `responses` mode, so an override with `responses` in its `request_types` applies to them. See [Azure Voice Live](/providers/supported-providers/azure#12-azure-voice-live) for turning it on.
+
 ### Other costs
 
 <Info>`input_cost_per_query` and `cost_per_request` are available in **Bifrost v2.0.0 and above**.</Info>

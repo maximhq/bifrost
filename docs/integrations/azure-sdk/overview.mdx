@@ -1,0 +1,198 @@
+---
+title: "Overview"
+description: "Use Bifrost as a drop-in replacement for an Azure AI Services resource: Azure AI Speech REST, Voice Live and Azure OpenAI on one base URL."
+icon: "book"
+---
+
+## Overview
+
+Bifrost serves the paths of an Azure AI Services resource under `/azure`. Clients that call Azure AI Speech REST, Voice Live or Azure OpenAI switch their resource URL (`https://{resource}.cognitiveservices.azure.com`) to Bifrost and keep the rest of the request as it is, with governance, load balancing, logging and cost tracking added underneath.
+
+**Endpoint:** `/azure`
+
+### Supported routes
+
+| Route | Azure API | Bifrost operation |
+|-------|-----------|-------------------|
+| `POST /azure/cognitiveservices/v1`, `POST /azure/tts/cognitiveservices/v1` | Text to speech (SSML) | Speech |
+| `POST /azure/speechtotext/transcriptions:transcribe` | Fast transcription, LLM Speech, MAI-Transcribe | Transcription |
+| `POST /azure/speech/recognition/{mode}/cognitiveservices/v1`, `POST /azure/stt/speech/recognition/{mode}/cognitiveservices/v1` | Short audio recognition; `{mode}` is `conversation`, `interactive` or `dictation` | Transcription |
+| `/azure/openai/deployments/{deployment}/...` | Azure OpenAI chat, completions, responses, embeddings, audio and images | Same as the deployment |
+| `/azure/openai/responses`, `/azure/openai/files`, `/azure/openai/batches`, `/azure/openai/models`, `/azure/openai/videos` | Azure OpenAI resource APIs | Same as the API |
+| `GET /azure/voice-live/realtime`, `GET /voice-live/realtime` | [Voice Live](#voice-live) (WebSocket) | Realtime |
+| `GET /azure/openai/realtime`, `GET /azure/openai/v1/realtime` | Azure OpenAI realtime (WebSocket) | Realtime |
+
+Text to speech and short audio each have two paths because Azure serves them on a regional host (`{region}.tts.speech.microsoft.com`, `{region}.stt.speech.microsoft.com`) and on the resource host under `/tts` and `/stt`. Use the one your client already calls.
+
+---
+
+## Setup
+
+The route does not pick the Azure surface: an Azure key or alias decides it, as on every other route.
+
+- **Azure AI Speech** answers when the key or alias has [`use_speech_endpoints`](../../providers/supported-providers/azure#11-azure-ai-speech) on.
+- **Voice Live** answers when the key or alias has [`use_voice_live_endpoints`](../../providers/supported-providers/azure#12-azure-voice-live) on.
+- **Azure OpenAI** answers otherwise.
+
+Bifrost reads the model from the request:
+
+| Route | Model |
+|-------|-------|
+| Text to speech | The suffix of the first `<voice>` name, such as `DragonHDLatestNeural` for `en-US-Ava:DragonHDLatestNeural`; `neural` for a voice without a suffix |
+| Fast transcription | `fast-transcription`; with `enhancedMode` on, its `model`, else `llm-speech` |
+| Short audio | `short-audio` |
+| Azure OpenAI | The deployment name |
+| Realtime | The `model` or `deployment` query parameter |
+
+That model must be allowed on an Azure key: list it in `models`, or add it as an alias on a key whose `models` is `["*"]`. When several providers serve it, requests on `/azure` prefer Azure.
+
+```json
+{
+  "providers": {
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-speech",
+          "value": "env.AZURE_API_KEY",
+          "models": ["neural", "DragonHDLatestNeural", "fast-transcription", "short-audio", "gpt-realtime", "gpt-4o-mini"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "use_speech_endpoints": true,
+            "use_voice_live_endpoints": true
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### Authentication
+
+Send a Bifrost [virtual key](../../features/governance/virtual-keys) in the header your Azure client already uses:
+
+- `Ocp-Apim-Subscription-Key` on the Azure AI Speech routes. Only a value with the `sk-bf-` prefix is read as a virtual key.
+- `api-key` on the Azure OpenAI and realtime routes. A browser, which cannot set WebSocket headers, can pass `?api-key=` on the realtime routes instead.
+
+Bifrost always calls Azure with the key configured in Bifrost, never with the credential the client sent.
+
+---
+
+## Text to speech
+
+The SSML body and the `X-Microsoft-OutputFormat` header go to Azure as sent. The audio comes back under the Content-Type of that format.
+
+```bash
+curl http://localhost:8080/azure/cognitiveservices/v1 \
+  -H "Ocp-Apim-Subscription-Key: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -H "Content-Type: application/ssml+xml" \
+  -H "X-Microsoft-OutputFormat: audio-24khz-48kbitrate-mono-mp3" \
+  -d '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="en-US-Ava:DragonHDLatestNeural">Your order shipped.</voice></speak>' \
+  --output speech.mp3
+```
+
+---
+
+## Fast transcription
+
+Send the `audio` and `definition` form parts as you would to Azure. The definition's `locales`, `diarization`, `channels`, `phraseList` and `profanityFilterMode` reach Azure as sent. From `enhancedMode`, Bifrost keeps `model`, `modelOptions.transcribeStyle` and `modelOptions.timestamps` when it is `word`; on LLM Speech it keeps the first `prompt` and the translation target.
+
+```bash
+curl "http://localhost:8080/azure/speechtotext/transcriptions:transcribe?api-version=2024-11-15" \
+  -H "Ocp-Apim-Subscription-Key: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -F audio=@call.wav \
+  -F 'definition={"locales":["en-US","de-DE"],"diarization":{"enabled":true,"maxSpeakers":2}}'
+```
+
+---
+
+## Short audio
+
+The audio is the request body. The `language`, `format`, `profanity` and `cid` query parameters and the `Pronunciation-Assessment` header reach Azure as sent.
+
+```bash
+curl "http://localhost:8080/azure/stt/speech/recognition/conversation/cognitiveservices/v1?language=en-US&format=detailed" \
+  -H "Ocp-Apim-Subscription-Key: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -H "Content-Type: audio/wav; codecs=audio/pcm; samplerate=16000" \
+  --data-binary @clip.wav
+```
+
+---
+
+## Azure OpenAI
+
+The Azure OpenAI paths take the same requests as `/openai/openai/deployments/...`, so the Azure OpenAI SDK works with `/azure` as its endpoint.
+
+<Tabs group="azure-sdk">
+<Tab title="curl">
+
+```bash
+curl "http://localhost:8080/azure/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-10-21" \
+  -H "api-key: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello from Azure!"}]}'
+```
+
+</Tab>
+<Tab title="Python">
+
+```python {4}
+from openai import AzureOpenAI
+
+client = AzureOpenAI(
+    azure_endpoint="http://localhost:8080/azure",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",
+    api_version="2024-10-21",
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello from Azure!"}],
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {4}
+import { AzureOpenAI } from "openai";
+
+const client = new AzureOpenAI({
+  endpoint: "http://localhost:8080/azure",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>",
+  apiVersion: "2024-10-21",
+});
+
+const response = await client.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello from Azure!" }],
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Voice Live
+
+Open the WebSocket on `/azure/voice-live/realtime` with the Voice Live query parameters. The key or alias serving the model needs `use_voice_live_endpoints`. Bifrost sends its own `api-version` upstream, the alias `api_version` or else `2026-04-10`, not the one in the client's URL. Voice Live agent connections, which name an agent instead of a `model`, are not supported.
+
+```text
+ws://localhost:8080/azure/voice-live/realtime?api-version=2026-04-10&model=gpt-realtime
+api-key: <YOUR-BIFROST-VIRTUAL-KEY>
+```
+
+A Voice Live SDK takes `http://localhost:8080/azure` as its endpoint. The JavaScript SDK connects to `/voice-live/realtime` on the host whatever path the endpoint has, so Bifrost serves that root path too. Events, avatars and the other Voice Live features behave as described on the [Azure provider page](../../providers/supported-providers/azure#12-azure-voice-live).
+
+Azure OpenAI realtime clients connect to `/azure/openai/realtime?deployment={deployment}` or `/azure/openai/v1/realtime?model={model}`.
+
+---
+
+## Next Steps
+
+- **[Azure Provider](../../providers/supported-providers/azure)** - Azure AI Speech, Voice Live and Azure OpenAI configuration
+- **[OpenAI SDK](../openai-sdk/overview)** - Azure OpenAI deployments on `/openai`
+- **[Virtual Keys](../../features/governance/virtual-keys)** - Budgets, rate limits and access control per client
+- **[Custom Pricing](../../providers/custom-pricing)** - Rates for speech and transcription models

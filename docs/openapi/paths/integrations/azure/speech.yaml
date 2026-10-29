@@ -1,0 +1,256 @@
+# Azure Integration - Azure AI Speech REST and Voice Live Endpoints
+#
+# The Azure key or alias decides which Azure surface answers (use_speech_endpoints,
+# use_voice_live_endpoints), not the route.
+
+text-to-speech:
+  post:
+    operationId: azureSpeechSynthesize
+    summary: Synthesize speech (Azure AI Speech)
+    description: |
+      Synthesizes the SSML body with Azure AI Speech text to speech. The model is the suffix of
+      the first `<voice>` name (`en-US-Ava:DragonHDLatestNeural` is `DragonHDLatestNeural`), or
+      `neural` for a voice without a suffix, and must be served by an Azure key with
+      `use_speech_endpoints`.
+
+      **Note:** This endpoint is also served at `/azure/tts/cognitiveservices/v1`.
+    tags:
+    - Azure Integration
+    parameters:
+    - name: X-Microsoft-OutputFormat
+      in: header
+      required: false
+      schema:
+        type: string
+        example: audio-24khz-48kbitrate-mono-mp3
+      description: Azure audio output format
+    requestBody:
+      required: true
+      content:
+        application/ssml+xml:
+          schema:
+            type: string
+            example: <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="en-US-Ava:DragonHDLatestNeural">Your order shipped.</voice></speak>
+    responses:
+      '200':
+        description: Synthesized audio, under the Content-Type of the requested output format
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          audio/wav:
+            schema:
+              type: string
+              format: binary
+          audio/ogg:
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechError'
+    security:
+    - VirtualKeyAzureSpeechAuth: []
+    - VirtualKeyAuth: []
+    - VirtualKeyAzureAuth: []
+
+fast-transcription:
+  post:
+    operationId: azureSpeechFastTranscribe
+    summary: Fast transcription (Azure AI Speech)
+    description: |
+      Transcribes the `audio` part with Azure AI Speech fast transcription. The model is
+      `fast-transcription`, or with `enhancedMode` on, its `model` (else `llm-speech`), and must
+      be served by an Azure key with `use_speech_endpoints`.
+    tags:
+    - Azure Integration
+    parameters:
+    - name: api-version
+      in: query
+      required: false
+      schema:
+        type: string
+        example: '2024-11-15'
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required:
+            - audio
+            properties:
+              audio:
+                type: string
+                format: binary
+                description: Audio file
+              definition:
+                $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechTranscriptionDefinition'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechTranscriptionResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechError'
+    security:
+    - VirtualKeyAzureSpeechAuth: []
+    - VirtualKeyAuth: []
+    - VirtualKeyAzureAuth: []
+
+short-audio:
+  post:
+    operationId: azureSpeechShortAudioRecognize
+    summary: Short audio recognition (Azure AI Speech)
+    description: |
+      Recognizes a WAV or Ogg Opus clip of up to 60 seconds with the Azure AI Speech short audio
+      API. The model is `short-audio` and must be served by an Azure key with
+      `use_speech_endpoints`.
+
+      **Note:** This endpoint is also served at `/azure/speech/recognition/{mode}/cognitiveservices/v1`.
+    tags:
+    - Azure Integration
+    parameters:
+    - name: mode
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [conversation, interactive, dictation]
+    - name: language
+      in: query
+      required: false
+      schema:
+        type: string
+        default: en-US
+    - name: format
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [simple, detailed]
+    - name: profanity
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [masked, removed, raw]
+    - name: cid
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Custom Speech endpoint ID
+    - name: Pronunciation-Assessment
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Base64-encoded pronunciation assessment parameters
+    requestBody:
+      required: true
+      content:
+        audio/wav:
+          schema:
+            type: string
+            format: binary
+        audio/ogg:
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechShortAudioResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/azure/speech.yaml#/AzureSpeechError'
+    security:
+    - VirtualKeyAzureSpeechAuth: []
+    - VirtualKeyAuth: []
+    - VirtualKeyAzureAuth: []
+
+voice-live:
+  get:
+    operationId: azureVoiceLiveWebSocket
+    summary: WebSocket Voice Live (Azure)
+    description: |
+      WebSocket upgrade endpoint for Azure Voice Live. The `model` query parameter selects the
+      model, which must be served by an Azure key or alias with `use_voice_live_endpoints`.
+      Browsers, which cannot set WebSocket headers, can pass the virtual key as `api-key` in the
+      query string.
+
+      **Note:** This endpoint is also served at `/voice-live/realtime`, where the JavaScript Voice
+      Live SDK connects, and Azure OpenAI realtime clients connect at `/azure/openai/realtime` and
+      `/azure/openai/v1/realtime`.
+    tags:
+    - Azure Integration
+    parameters:
+    - name: model
+      in: query
+      required: true
+      schema:
+        type: string
+        example: gpt-realtime
+    - name: api-version
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: api-key
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Virtual key, for browser clients
+    - name: Upgrade
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: [websocket]
+    responses:
+      '101':
+        description: WebSocket connection established.
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Unauthorized.
+    security:
+    - VirtualKeyAzureAuth: []
+    - VirtualKeyAuth: []
+    - BearerAuth: []
