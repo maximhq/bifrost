@@ -32,10 +32,15 @@ type OpenRouterDecisionResponse struct {
 // OpenRouterBatchRequest keeps all batch-level fields before Requests: OpenRouter
 // parses this envelope as a stream and rejects metadata following the request array.
 type OpenRouterBatchRequest struct {
-	Endpoint         schemas.BatchEndpoint      `json:"endpoint"`
-	Model            string                     `json:"model"`
-	Provider         map[string]any             `json:"provider,omitempty"`
-	CompletionWindow string                     `json:"completion_window"`
-	CallbackURL      string                     `json:"callback_url,omitempty"`
-	Requests         []schemas.BatchRequestItem `json:"requests"`
+	Endpoint         schemas.BatchEndpoint        `json:"endpoint"`
+	Model            string                       `json:"model"`
+	Provider         map[string]any               `json:"provider,omitempty"`
+	CompletionWindow string                       `json:"completion_window"`
+	CallbackURL      string                       `json:"callback_url,omitempty"`
+	Requests         []OpenRouterBatchRequestItem `json:"requests"`
+}
+
+type OpenRouterBatchRequestItem struct {
+	CustomID string         `json:"custom_id"`
+	Body     map[string]any `json:"body"`
 }

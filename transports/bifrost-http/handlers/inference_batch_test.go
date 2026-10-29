@@ -185,6 +185,10 @@ func TestOpenRouterNativeBatchRoutesAndAccounting(t *testing.T) {
 				fmt.Fprint(w, `{"id":"batch-active","object":"batch","status":"in_progress"}`)
 				return
 			}
+			if id == "batch-failed-no-charge" {
+				fmt.Fprint(w, `{"id":"batch-failed-no-charge","model":"openai/gpt-4o","status":"failed","request_counts":{"total":1,"completed":0,"failed":1},"results":[{"custom_id":"a","error":{"message":"provider failed"}}]}`)
+				return
+			}
 			if id == "batch-no-charge" {
 				fmt.Fprint(w, `{"id":"batch-no-charge","model":"openai/gpt-4o","status":"completed","request_counts":{"total":1,"completed":1,"failed":0},"results":[{"custom_id":"a","response":{"status_code":200}}],"usage":{"total_tokens":30}}`)
 				return
@@ -285,16 +289,30 @@ func TestOpenRouterNativeBatchRoutesAndAccounting(t *testing.T) {
 			})
 		}
 	}
+	beforeInvalidLimits := len(hits)
+	for _, prefix := range []string{"", "/openai"} {
+		for _, limit := range []string{"0", "bad", "101"} {
+			invalid := invoke("GET", prefix+"/v1/batches?provider=openrouter&limit="+limit, "", "sk-bf-owner")
+			require.Equal(t, 400, invalid.Response.StatusCode(), string(invalid.Response.Body()))
+		}
+	}
+	require.Len(t, hits, beforeInvalidLimits, "invalid pagination must be rejected before reaching OpenRouter")
 	for _, prefix := range []string{"", "/openai"} {
 		for _, op := range []struct{ method, suffix string }{{"GET", "/results"}, {"DELETE", ""}} {
 			active := invoke(op.method, prefix+"/v1/batches/batch-active"+op.suffix+"?provider=openrouter", "", "sk-bf-owner")
 			require.Equal(t, 409, active.Response.StatusCode(), string(active.Response.Body()))
 		}
 	}
-	blocked := invoke("DELETE", "/v1/batches/batch-no-charge?provider=openrouter", "", "sk-bf-owner")
-	require.Equal(t, 503, blocked.Response.StatusCode(), string(blocked.Response.Body()))
-	for _, hit := range hits {
-		require.NotEqual(t, "DELETE /v1/batches/batch-no-charge", hit, "pending accounting must not destroy the only settlement input")
+	for _, batchID := range []string{"batch-no-charge", "batch-failed-no-charge"} {
+		blocked := invoke("DELETE", "/v1/batches/"+batchID+"?provider=openrouter", "", "sk-bf-owner")
+		require.Equal(t, 503, blocked.Response.StatusCode(), string(blocked.Response.Body()))
+		pending, err := state.GetProviderJob(t.Context(), configtables.ProviderJobID(configtables.ProviderJobKindBatch, "openrouter", batchID))
+		require.NoError(t, err)
+		require.Equal(t, configtables.ProviderJobAccountingStatusPending, pending.AccountingStatus)
+		require.NotNil(t, pending.NextCheckAt, "the preflight results read must stay scheduled for settlement")
+		for _, hit := range hits {
+			require.NotEqual(t, "DELETE /v1/batches/"+batchID, hit, "pending accounting must not destroy the only settlement input")
+		}
 	}
 	// All eight batches were settled once despite repeated polling, downloads and the
 	// deletion preflight, and billing stayed on the original creating virtual key.

@@ -279554,7 +279554,7 @@
           }
         },
         {
-          "name": "OpenRouter anthropic/claude-sonnet-5 native batch Anthropic Messages inline submission - #7429",
+          "name": "OpenRouter anthropic/claude-haiku-5.5 native batch Anthropic Messages inline submission - #7429",
           "event": [
             {
               "listen": "test",
@@ -279567,7 +279567,7 @@
                   "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty;",
                   "  pm.expect(['validating','in_progress','completed','failed','expired','cancelled'], pm.response.text()).to.include(j.status);",
                   "  pm.expect(j.endpoint).to.equal('/v1/messages');",
-                  "  pm.expect(j.model).to.equal('anthropic/claude-sonnet-5');",
+                  "  pm.expect(j.model).to.equal('anthropic/claude-haiku-5.5');",
                   "  pm.expect(j.input_file_id || '').to.equal('');",
                   "});"
                 ]
@@ -279584,7 +279584,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"endpoint\": \"/v1/messages\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply OK.\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-haiku-5.5\",\n  \"endpoint\": \"/v1/messages\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply OK.\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/batches",

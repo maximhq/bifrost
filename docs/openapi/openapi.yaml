@@ -1952,6 +1952,16 @@ components:
       $ref: "./schemas/inference/batch.yaml#/BatchListResponse"
     BatchRetrieveResponse:
       $ref: "./schemas/inference/batch.yaml#/BatchRetrieveResponse"
+    BatchResultsResponse:
+      $ref: "./schemas/inference/batch.yaml#/BatchResultsResponse"
+    BatchDeleteResponse:
+      $ref: "./schemas/inference/batch.yaml#/BatchDeleteResponse"
+    BatchUsage:
+      $ref: "./schemas/inference/batch.yaml#/BatchUsage"
+    BatchResultItem:
+      $ref: "./schemas/inference/batch.yaml#/BatchResultItem"
+    BatchResultError:
+      $ref: "./schemas/inference/batch.yaml#/BatchResultError"
 
     # ==================== Files ====================
     FileUploadRequest:

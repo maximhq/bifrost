@@ -805,44 +805,59 @@ func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
 
 func TestOpenAIBatchExtensionRoutes(t *testing.T) {
 	routes := CreateOpenAIBatchRouteConfigs("/openai", &mockHandlerStore{})
-	for _, method := range []string{"GET", "DELETE"} {
-		for _, provider := range []schemas.ModelProvider{schemas.OpenRouter, schemas.Gemini, schemas.Vertex} {
-			path := "/openai/v1/batches/{batch_id}"
-			if method == "GET" {
-				path += "/results"
-			}
-			var selected *RouteConfig
-			for i := range routes {
-				if routes[i].Path == path && routes[i].Method == method {
-					selected = &routes[i]
-					break
+	for _, operation := range []struct {
+		method, suffix string
+		requestType    schemas.RequestType
+	}{
+		{"GET", "", schemas.BatchRetrieveRequest},
+		{"POST", "/cancel", schemas.BatchCancelRequest},
+		{"GET", "/results", schemas.BatchResultsRequest},
+		{"DELETE", "", schemas.BatchDeleteRequest},
+	} {
+		for _, provider := range []schemas.ModelProvider{schemas.OpenRouter, schemas.Gemini, schemas.Bedrock, schemas.Vertex} {
+			t.Run(string(operation.requestType)+"/"+string(provider), func(t *testing.T) {
+				var selected *RouteConfig
+				for i := range routes {
+					if routes[i].Path == "/openai/v1/batches/{batch_id}"+operation.suffix && routes[i].Method == operation.method {
+						selected = &routes[i]
+						break
+					}
 				}
-			}
-			require.NotNil(t, selected)
-			request := selected.GetRequestTypeInstance(context.Background())
-			var ctx fasthttp.RequestCtx
-			id := "batch-1"
-			expected := id
-			if provider == schemas.Gemini {
-				id = "batches-test"
-				expected = "batches/test"
-			}
-			if provider == schemas.Vertex {
-				expected = "projects/p/locations/l/batchPredictionJobs/x"
-				id = base64.RawURLEncoding.EncodeToString([]byte(expected))
-			}
-			ctx.SetUserValue("batch_id", id)
-			ctx.QueryArgs().Set("provider", string(provider))
-			require.NoError(t, selected.PreCallback(&ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request))
-			converted, err := selected.BatchRequestConverter(nil, request)
-			require.NoError(t, err)
-			if method == "DELETE" {
-				require.Equal(t, provider, converted.DeleteRequest.Provider)
-				require.Equal(t, expected, converted.DeleteRequest.BatchID)
-			} else {
-				require.Equal(t, provider, converted.ResultsRequest.Provider)
-				require.Equal(t, expected, converted.ResultsRequest.BatchID)
-			}
+				require.NotNil(t, selected)
+				request := selected.GetRequestTypeInstance(context.Background())
+				var ctx fasthttp.RequestCtx
+				id, expected := "batch-1", "batch-1"
+				switch provider {
+				case schemas.Gemini:
+					id, expected = "batches-test", "batches/test"
+				case schemas.Bedrock:
+					expected = "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/test"
+					id = base64.StdEncoding.EncodeToString([]byte(expected))
+				case schemas.Vertex:
+					expected = "projects/p/locations/l/batchPredictionJobs/x"
+					id = base64.RawURLEncoding.EncodeToString([]byte(expected))
+				}
+				ctx.SetUserValue("batch_id", id)
+				ctx.QueryArgs().Set("provider", string(provider))
+				require.NoError(t, selected.PreCallback(&ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request))
+				converted, err := selected.BatchRequestConverter(nil, request)
+				require.NoError(t, err)
+				require.Equal(t, operation.requestType, converted.Type)
+				switch operation.requestType {
+				case schemas.BatchRetrieveRequest:
+					require.Equal(t, expected, converted.RetrieveRequest.BatchID)
+					require.Equal(t, provider, converted.RetrieveRequest.Provider)
+				case schemas.BatchCancelRequest:
+					require.Equal(t, expected, converted.CancelRequest.BatchID)
+					require.Equal(t, provider, converted.CancelRequest.Provider)
+				case schemas.BatchResultsRequest:
+					require.Equal(t, expected, converted.ResultsRequest.BatchID)
+					require.Equal(t, provider, converted.ResultsRequest.Provider)
+				case schemas.BatchDeleteRequest:
+					require.Equal(t, expected, converted.DeleteRequest.BatchID)
+					require.Equal(t, provider, converted.DeleteRequest.Provider)
+				}
+			})
 		}
 	}
 	var _ RequestWithSettableExtraParams = (*schemas.BifrostBatchCreateRequest)(nil)

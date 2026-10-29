@@ -2096,20 +2096,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 					if retrieveReq.Provider == "" {
 						retrieveReq.Provider = schemas.OpenAI
 					}
-					switch retrieveReq.Provider {
-					case schemas.Gemini:
-						retrieveReq.BatchID = strings.Replace(retrieveReq.BatchID, "batches-", "batches/", 1)
-					case schemas.Bedrock:
-						// Base64 decode the batch ID (ARN) for Bedrock
-						if decodedBatchID, err := base64.StdEncoding.DecodeString(retrieveReq.BatchID); err == nil {
-							retrieveReq.BatchID = string(decodedBatchID)
-						}
-					case schemas.Vertex:
-						// Reverse the RawURLEncoding applied to the full resource name.
-						if decodedBatchID, err := base64.RawURLEncoding.DecodeString(retrieveReq.BatchID); err == nil {
-							retrieveReq.BatchID = string(decodedBatchID)
-						}
-					}
+					retrieveReq.BatchID = decodeOpenAIBatchID(retrieveReq.Provider, retrieveReq.BatchID)
 					return &BatchRequest{
 						Type:            schemas.BatchRetrieveRequest,
 						RetrieveRequest: retrieveReq,
@@ -2159,20 +2146,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 					if cancelReq.Provider == "" {
 						cancelReq.Provider = schemas.OpenAI
 					}
-					switch cancelReq.Provider {
-					case schemas.Gemini:
-						cancelReq.BatchID = strings.Replace(cancelReq.BatchID, "batches-", "batches/", 1)
-					case schemas.Bedrock:
-						// Base64 decode the batch ID (ARN) for Bedrock
-						if decodedBatchID, err := base64.StdEncoding.DecodeString(cancelReq.BatchID); err == nil {
-							cancelReq.BatchID = string(decodedBatchID)
-						}
-					case schemas.Vertex:
-						// Reverse the RawURLEncoding applied to the full resource name.
-						if decodedBatchID, err := base64.RawURLEncoding.DecodeString(cancelReq.BatchID); err == nil {
-							cancelReq.BatchID = string(decodedBatchID)
-						}
-					}
+					cancelReq.BatchID = decodeOpenAIBatchID(cancelReq.Provider, cancelReq.BatchID)
 					return &BatchRequest{
 						Type:          schemas.BatchCancelRequest,
 						CancelRequest: cancelReq,
@@ -2528,13 +2502,12 @@ func extractBatchListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 
 			// Extract limit from query parameters
 			if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
-				if limit, err := strconv.Atoi(limitStr); err == nil {
+				limit, err := strconv.Atoi(limitStr)
+				if listReq.Provider == schemas.OpenRouter && (err != nil || limit <= 0 || limit > 100) {
+					return errors.New("limit must be between 1 and 100")
+				}
+				if err == nil {
 					listReq.Limit = limit
-					if listReq.Provider == schemas.OpenRouter && limit == 0 {
-						listReq.Limit = -1
-					}
-				} else if listReq.Provider == schemas.OpenRouter {
-					listReq.Limit = -1
 				} else {
 					// We are keeping default as 30
 					listReq.Limit = 30
@@ -2603,18 +2576,11 @@ func extractBatchIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 				r.Provider = provider
 			}
 		case *schemas.BifrostBatchResultsRequest:
-			r.BatchID = batchIDStr
+			r.BatchID = decodeOpenAIBatchID(provider, batchIDStr)
 			r.Provider = provider
 		case *schemas.BifrostBatchDeleteRequest:
-			r.BatchID = batchIDStr
+			r.BatchID = decodeOpenAIBatchID(provider, batchIDStr)
 			r.Provider = provider
-		}
-
-		switch r := req.(type) {
-		case *schemas.BifrostBatchDeleteRequest:
-			r.BatchID = decodeOpenAIBatchID(r.Provider, r.BatchID)
-		case *schemas.BifrostBatchResultsRequest:
-			r.BatchID = decodeOpenAIBatchID(r.Provider, r.BatchID)
 		}
 		return nil
 	}

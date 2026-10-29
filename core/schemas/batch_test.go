@@ -77,14 +77,20 @@ func TestBatchRequestCountsFromResults(t *testing.T) {
 }
 
 func TestBatchUsagePreservesNativeCharge(t *testing.T) {
-	for _, cost := range []string{"0", "0.123"} {
-		raw := []byte(`{"id":"b","model":"m","usage":{"prompt_tokens":2,"total_tokens":2,"cost":` + cost + `,"is_byok":false,"cost_details":{"upstream_inference_cost":0.5}},"results":[{"id":"r","custom_id":"a","error":{"type":"bad_input","param":"input","error_type":"invalid_request","message":"bad"}}]}`)
+	for _, tc := range []struct {
+		raw  string
+		cost float64
+	}{{"0", 0}, {"0.123", 0.123}} {
+		raw := []byte(`{"id":"b","model":"m","usage":{"prompt_tokens":2,"total_tokens":2,"cost":` + tc.raw + `,"is_byok":false,"cost_details":{"upstream_inference_cost":0.5}},"results":[{"id":"r","custom_id":"a","error":{"type":"bad_input","param":"input","error_type":"invalid_request","message":"bad"}}]}`)
 		var response BifrostBatchRetrieveResponse
 		if e := Unmarshal(raw, &response); e != nil {
 			t.Fatal(e)
 		}
 		if response.Usage == nil || response.Usage.Cost == nil || response.Usage.IsBYOK == nil || *response.Usage.IsBYOK || response.Usage.CostDetails["upstream_inference_cost"] != 0.5 {
 			t.Fatalf("usage %+v", response.Usage)
+		}
+		if response.Usage.Cost.TotalCost != tc.cost {
+			t.Fatalf("native charge changed: %+v", response.Usage.Cost)
 		}
 		if len(response.Results) != 1 || response.Results[0].Error.Param != "input" || response.Results[0].ID != "r" {
 			t.Fatalf("results %+v", response.Results)

@@ -209,6 +209,8 @@ batches-results:
               $ref: '../../schemas/inference/batch.yaml#/BatchResultsResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: Batch is still active or results are not ready
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:

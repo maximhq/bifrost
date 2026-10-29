@@ -93,7 +93,7 @@ func TestOpenRouterNativeBatchCreate(t *testing.T) {
 				if err := json.Unmarshal(body, &wire); err != nil {
 					t.Error(err)
 				}
-				if wire["model"] != "openai/gpt-4o" || wire["endpoint"] != string(endpoint) {
+				if wire["model"] != "openai/gpt-4o" || wire["endpoint"] != string(endpoint) || wire["completion_window"] != "24h" {
 					t.Errorf("request %s", body)
 				}
 				for _, field := range []string{"endpoint", "model", "completion_window"} {
@@ -120,16 +120,6 @@ func TestOpenRouterNativeBatchCreate(t *testing.T) {
 				t.Fatalf("response %+v", resp)
 			}
 		})
-	}
-}
-func BenchmarkOpenRouterBatchCancel(b *testing.B) {
-	p := &openrouter.OpenRouterProvider{}
-	b.ReportAllocs()
-	for b.Loop() {
-		_, e := p.BatchCancel(nil, nil, nil)
-		if e == nil {
-			b.Fatal("expected unsupported cancel")
-		}
 	}
 }
 
@@ -306,16 +296,23 @@ func TestOpenRouterBatchValidationFailureAndPendingResults(t *testing.T) {
 }
 
 func BenchmarkOpenRouterBatchConversion(b *testing.B) {
-	q := &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}}}}
-	b.ReportAllocs()
-	for b.Loop() {
-		native, e := openrouter.ToOpenRouterBatchRequest(q)
-		if e != nil {
-			b.Fatal(e)
-		}
-		if _, e := providerUtils.MarshalSorted(native); e != nil {
-			b.Fatal(e)
-		}
+	for _, size := range []int{1, 1000} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			request := &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: make([]schemas.BatchRequestItem, size)}
+			for i := range request.Requests {
+				request.Requests[i] = schemas.BatchRequestItem{CustomID: fmt.Sprint(i), Body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}}
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				native, err := openrouter.ToOpenRouterBatchRequest(request)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := providerUtils.MarshalSorted(native); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -401,8 +398,17 @@ func TestOpenRouterBatchParamsInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if native.Requests[0].CustomID != "params-id" || native.Requests[0].Body["model"] != body["model"] || native.Requests[0].Params != nil || native.Requests[0].Method != "" || native.Requests[0].URL != "" {
+	if native.Requests[0].CustomID != "params-id" || native.Requests[0].Body["model"] != body["model"] {
 		t.Fatalf("params must become native custom_id/body items: %+v", native.Requests[0])
+	}
+	wire, err := providerUtils.MarshalSorted(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"method", "url", "params"} {
+		if strings.Contains(string(wire), `"`+field+`"`) {
+			t.Fatalf("Bifrost-only item field %q reached the wire: %s", field, wire)
+		}
 	}
 }
 

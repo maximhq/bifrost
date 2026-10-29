@@ -4061,7 +4061,6 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 
 // batchDelete handles terminal-batch cleanup; it is not cancellation.
 func (h *CompletionHandler) batchDelete(ctx *fasthttp.RequestCtx) {
-	// Get batch ID from URL parameter
 	batchID, ok := ctx.UserValue("batch_id").(string)
 	if !ok || batchID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
@@ -4073,28 +4072,18 @@ func (h *CompletionHandler) batchDelete(ctx *fasthttp.RequestCtx) {
 		batchID = decoded
 	}
 
-	// Get provider from query parameters
 	provider := string(ctx.QueryArgs().Peek("provider"))
 	if provider == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
 		return
 	}
 
-	// Build Bifrost batch retrieve request
-	bifrostBatchReq := &schemas.BifrostBatchDeleteRequest{
-		Provider: schemas.ModelProvider(provider),
-		BatchID:  batchID,
-	}
-
-	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
-	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
-		return
-	}
 
-	resp, bifrostErr := h.client.BatchDeleteRequest(bifrostCtx, bifrostBatchReq)
+	resp, bifrostErr := h.client.BatchDeleteRequest(bifrostCtx, &schemas.BifrostBatchDeleteRequest{
+		Provider: schemas.ModelProvider(provider), BatchID: batchID,
+	})
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)

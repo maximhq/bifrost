@@ -3710,7 +3710,7 @@ func TestRecordBatchJobLifecycle_CompletedSetsNextCheckAt(t *testing.T) {
 			result := &schemas.BifrostResponse{
 				BatchRetrieveResponse: retrieveResp,
 			}
-			plugin.recordBatchJobLifecycle(entry, result)
+			plugin.recordBatchJobLifecycle(context.Background(), entry, result)
 
 			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", batchID))
 			if err != nil {
@@ -3771,7 +3771,7 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	result := &schemas.BifrostResponse{
 		BatchCreateResponse: createResp,
 	}
-	plugin.recordBatchJobLifecycle(entry, result)
+	plugin.recordBatchJobLifecycle(context.Background(), entry, result)
 
 	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", "batch-create-123"))
 	if err != nil {
@@ -4010,7 +4010,7 @@ func TestRecordBatchJobLifecycle_CreatePersistsRequesterIdentity(t *testing.T) {
 		BudgetIDsParsed:    []string{"budget-1"},
 		RateLimitIDsParsed: []string{"rl-1"},
 	}
-	plugin.recordBatchJobLifecycle(entry, &schemas.BifrostResponse{
+	plugin.recordBatchJobLifecycle(context.Background(), entry, &schemas.BifrostResponse{
 		BatchCreateResponse: &schemas.BifrostBatchCreateResponse{
 			ID:     "batch-identity-123",
 			Status: schemas.BatchStatusValidating,
@@ -5037,16 +5037,19 @@ func TestOpenRouterBatchRetrieveSettlesAndRepeatedReadsDoNotBill(t *testing.T) {
 func TestOpenRouterBatchMissingChargeBlocksDestructiveCleanup(t *testing.T) {
 	store := newTestStore(t)
 	bs := newFakeBatchStore()
-	plugin, e := Init(context.Background(), &Config{}, testLogger{}, store, bs, newTestPricingManager(t), nil)
-	if e != nil {
-		t.Fatal(e)
-	}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newTestPricingManager(t), nil)
+	require.NoError(t, err)
 	defer plugin.Cleanup()
 	resp := &schemas.BifrostBatchResultsResponse{BatchID: "batch-no-charge", Model: "openai/gpt-4o", Status: schemas.BatchStatusCompleted, Usage: &schemas.BatchUsage{}}
-	plugin.accountBatchResults(&logstore.Log{ID: "fetch", Provider: "openrouter", Model: "openai/gpt-4o"}, &schemas.BifrostResponse{BatchResultsResponse: resp}, nil)
-	if !resp.AccountingPending {
-		t.Fatal("cleanup must be deferred when configured accounting cannot settle the authoritative charge")
-	}
+	entry := &logstore.Log{ID: "fetch", Provider: "openrouter", Model: "openai/gpt-4o"}
+	result := &schemas.BifrostResponse{BatchResultsResponse: resp}
+	// A results-only read must leave a lifecycle job for the sweeper to retry.
+	plugin.accountBatchResults(entry, result, nil)
+	require.True(t, resp.AccountingPending, "missing native charges must block cleanup")
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", resp.BatchID))
+	require.NoError(t, err)
+	require.Equal(t, cstables.ProviderJobAccountingStatusPending, job.AccountingStatus)
+	require.NotNil(t, job.NextCheckAt)
 }
 
 func TestOpenRouterBatchCleanupWaitsForAccountingCompletion(t *testing.T) {
@@ -5106,7 +5109,7 @@ func TestOpenRouterBatchRetrieveMissingChargeStaysPending(t *testing.T) {
 				}}
 				entry := &logstore.Log{ID: "poll", Provider: "openrouter", Model: "openai/gpt-4o"}
 				// Match PostLLMHook's lifecycle-before-accounting order for every status.
-				plugin.recordBatchJobLifecycle(entry, result)
+				plugin.recordBatchJobLifecycle(context.Background(), entry, result)
 				plugin.accountBatchResults(entry, result, nil)
 				job, err := bs.GetProviderJob(context.Background(), jobID)
 				require.NoError(t, err)
@@ -5151,7 +5154,23 @@ func BenchmarkRecordBatchJobLifecycle(b *testing.B) {
 			result := &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{ID: "batch-benchmark", Status: schemas.BatchStatusExpired}}
 			b.ReportAllocs()
 			for b.Loop() {
-				plugin.recordBatchJobLifecycle(entry, result)
+				plugin.recordBatchJobLifecycle(context.Background(), entry, result)
+			}
+		})
+	}
+}
+
+func BenchmarkAttachBatchResultsDisplay(b *testing.B) {
+	for _, supplied := range []bool{false, true} {
+		b.Run(fmt.Sprintf("upstream-counts=%t", supplied), func(b *testing.B) {
+			response := &schemas.BifrostBatchResultsResponse{BatchID: "batch", Results: make([]schemas.BatchResultItem, 1000)}
+			if supplied {
+				response.RequestCounts = &schemas.BatchRequestCounts{Total: 1000, Completed: 1000}
+			}
+			entry := &logstore.Log{}
+			b.ReportAllocs()
+			for b.Loop() {
+				attachBatchResultsDisplay(entry, response, nil)
 			}
 		})
 	}

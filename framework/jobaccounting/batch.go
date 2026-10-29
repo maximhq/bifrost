@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -138,12 +139,7 @@ func AccountBatchResults(ctx context.Context, stateStore JobStore, logStore Aggr
 	}
 	req.Job = job
 
-	// Holding results or an authoritative aggregate charge earns the right to re-drive
-	// an unpriceable job: the
-	// state was reached by giving up on polling (max attempts, a terminal status
-	// with nothing to fetch, unpriceable rows), and none of those reasons survive
-	// a caller arriving with new settlement inputs. Without those there is nothing new
-	// to say, so the terminal guard stands.
+	// New results or an authoritative charge can re-drive an unpriceable job.
 	req.ForceClaim = len(load.Results) > 0 || (load.Usage != nil && load.Usage.Cost != nil)
 
 	return AccountJob(ctx, stateStore, logStore, pricing, NewBatchSettler(nil), req)
@@ -218,23 +214,12 @@ func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 	// OpenRouter returns aggregate usage and inline results on this GET. Reuse
 	// them instead of downloading the same potentially large resource twice.
 	if schemas.ModelProvider(job.Provider) == schemas.OpenRouter && isTerminalStatus(retrieved.Status) {
-		if retrieved.Status == schemas.BatchStatusCompleted && retrieved.Results == nil {
-			return &PollResult{Job: latest, Retry: true}, nil
-		}
-		usage := retrieved.Usage
-		if usage == nil && retrieved.Status == schemas.BatchStatusFailed && retrieved.RequestCounts.Completed == 0 {
-			usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{}}}
-		}
-		if usage == nil || usage.Cost == nil {
-			// Completion and usage publication can become visible separately.
-			// Keep the existing bounded retry/backoff instead of parking the job
-			// without the provider's authoritative charge.
+		results, err := openrouter.ToBifrostBatchResultsResponse(retrieved)
+		if err != nil || results.Usage == nil || results.Usage.Cost == nil {
+			// Terminal state can precede publication of results and the charge.
 			return &PollResult{Job: latest, Terminal: true, Retry: true}, nil
 		}
-		return &PollResult{Job: latest, Terminal: true, Settleable: true, Payload: BatchPayload{
-			Endpoint: schemas.BatchEndpoint(retrieved.Endpoint), Results: retrieved.Results,
-			Usage: usage, RequestCounts: &retrieved.RequestCounts,
-		}}, nil
+		return settleablePoll(latest, retrieved, results), nil
 	}
 
 	if retrieved.Status != schemas.BatchStatusCompleted && retrieved.Status != schemas.BatchStatusEnded {
@@ -325,9 +310,12 @@ func (s *BatchSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	// Native OpenRouter batches have one model and an authoritative aggregate
 	// charge. Do not estimate inference rates or add each result's usage again;
 	// for BYOK this charge is only OpenRouter's fee. Explicit zero is final too.
-	if in.Provider == schemas.OpenRouter && in.Usage != nil {
+	if in.Provider == schemas.OpenRouter {
+		if in.Usage == nil || in.Usage.Cost == nil {
+			return &Settlement{UnpriceableReason: UnpriceableReasonNoUsage}, nil
+		}
 		usage := *in.Usage.BifrostLLMUsage.DeepCopy()
-		if usage.Cost == nil || usage.Cost.TotalCost < 0 || math.IsNaN(usage.Cost.TotalCost) || math.IsInf(usage.Cost.TotalCost, 0) {
+		if usage.Cost.TotalCost < 0 || math.IsNaN(usage.Cost.TotalCost) || math.IsInf(usage.Cost.TotalCost, 0) {
 			return &Settlement{UnpriceableReason: UnpriceableReasonNoUsage}, nil
 		}
 		usage.TotalTokens = max(usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
@@ -700,16 +688,18 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 type usageExtractor func(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error)
 
 var usageExtractors = map[schemas.ModelProvider]usageExtractor{
-	schemas.OpenAI:     extractResponseBodyUsage,
-	schemas.OpenRouter: extractResponseBodyUsage,
-	schemas.Azure:      extractResponseBodyUsage,
-	schemas.Bedrock:    extractResponseBodyUsage,
-	schemas.Gemini:     extractResponseBodyUsage,
-	schemas.Vertex:     extractResponseBodyUsage,
-	schemas.Anthropic:  extractAnthropicUsage,
+	schemas.OpenAI:    extractResponseBodyUsage,
+	schemas.Azure:     extractResponseBodyUsage,
+	schemas.Bedrock:   extractResponseBodyUsage,
+	schemas.Gemini:    extractResponseBodyUsage,
+	schemas.Vertex:    extractResponseBodyUsage,
+	schemas.Anthropic: extractAnthropicUsage,
 }
 
 func IsProviderSupported(provider schemas.ModelProvider) bool {
+	if provider == schemas.OpenRouter {
+		return true
+	}
 	_, ok := usageExtractors[provider]
 	return ok
 }
@@ -1003,9 +993,11 @@ func (s *BatchSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 	for model, breakdown := range accounting.ModelBreakdowns {
 		usage := breakdown.Usage
 		var details modelcatalog.BatchCostDetails
-		if schemas.ModelProvider(entry.Provider) == schemas.OpenRouter && usage.Cost != nil {
-			// Keep authoritative zero charges on repricing as well as settlement.
-			details = modelcatalog.BatchCostDetails{Cost: usage.Cost.TotalCost, Priced: true, ProviderCostUsed: true}
+		if schemas.ModelProvider(entry.Provider) == schemas.OpenRouter {
+			// Repricing, like settlement, requires the authoritative charge.
+			if usage.Cost != nil {
+				details = modelcatalog.BatchCostDetails{Cost: usage.Cost.TotalCost, Priced: true, ProviderCostUsed: true}
+			}
 		} else {
 			details = pricing.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(entry.Provider), model, requestType, &scopes)
 		}

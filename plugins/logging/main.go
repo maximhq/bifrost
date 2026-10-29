@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
@@ -502,34 +503,9 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	}
 	batchResp := result.BatchResultsResponse
 	if batchResp == nil && entry.Provider == string(schemas.OpenRouter) && result.BatchRetrieveResponse != nil {
-		retrieved := result.BatchRetrieveResponse
-		switch retrieved.Status {
-		case schemas.BatchStatusCompleted:
-			if retrieved.Results == nil {
-				return
-			}
-		case schemas.BatchStatusFailed, schemas.BatchStatusExpired, schemas.BatchStatusCancelled:
-		default:
-			return
-		}
-		usage := retrieved.Usage
-		if usage == nil && retrieved.Status == schemas.BatchStatusFailed && retrieved.RequestCounts.Completed == 0 {
-			usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{}}}
-		}
-		if usage == nil || usage.Cost == nil {
-			// The charge is not published yet. Leave the lifecycle job pending
-			// for the sweeper instead of marking it unpriceable inline.
-			return
-		}
-		batchResp = &schemas.BifrostBatchResultsResponse{BatchID: retrieved.ID, Model: retrieved.Model,
-			Endpoint: schemas.BatchEndpoint(retrieved.Endpoint), Status: retrieved.Status, Usage: usage,
-			Results: retrieved.Results, RequestCounts: &retrieved.RequestCounts, ExtraFields: retrieved.ExtraFields}
+		batchResp, _ = openrouter.ToBifrostBatchResultsResponse(result.BatchRetrieveResponse)
 	}
-	if batchResp == nil {
-		return
-	}
-	batchResp.AccountingPending = true
-	if batchResp.BatchID == "" {
+	if batchResp == nil || batchResp.BatchID == "" {
 		return
 	}
 
@@ -541,6 +517,15 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	// job left un-accounted stays due.
 	ctx, cancel := context.WithTimeout(p.ctx, jobAccountingTimeout)
 	defer cancel()
+	if entry.Provider == string(schemas.OpenRouter) {
+		batchResp.AccountingPending = true
+		if batchResp.Usage == nil || batchResp.Usage.Cost == nil {
+			if result.BatchResultsResponse != nil {
+				p.recordBatchJobLifecycle(ctx, entry, result)
+			}
+			return // Wait for OpenRouter's charge instead of estimating it.
+		}
+	}
 
 	model := entry.Model
 	if batchResp.Model != "" {
@@ -580,14 +565,15 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	if summary != nil && summary.Accounted {
 		p.logger.Info("accounted batch results for provider=%s batch_id=%s cost=%f log_id=%s", entry.Provider, batchResp.BatchID, summary.Cost, summary.LogID)
 	}
-	batchResp.AccountingPending = summary == nil || !summary.Complete
-	if !batchResp.AccountingPending && entry.Provider == string(schemas.OpenRouter) && !summary.Accounted {
-		// A losing claim can display a price before its owner finishes reporting
-		// governance usage. Only the durable accounted marker permits cleanup.
-		job, lookupErr := p.batchStore.GetProviderJob(ctx, summary.JobID)
-		batchResp.AccountingPending = lookupErr != nil || job == nil || job.AccountingStatus != tables.ProviderJobAccountingStatusAccounted
-		if lookupErr != nil {
-			p.logger.Warn("failed to verify batch accounting completion for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, lookupErr)
+	if entry.Provider == string(schemas.OpenRouter) && summary != nil {
+		batchResp.AccountingPending = !summary.Accounted
+		if !summary.Accounted {
+			// A persisted price does not prove that governance reporting finished.
+			job, lookupErr := p.batchStore.GetProviderJob(ctx, summary.JobID)
+			batchResp.AccountingPending = lookupErr != nil || job == nil || job.AccountingStatus != tables.ProviderJobAccountingStatusAccounted
+			if lookupErr != nil {
+				p.logger.Warn("failed to verify batch accounting completion for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, lookupErr)
+			}
 		}
 	}
 	attachBatchResultsDisplay(entry, batchResp, summary)
@@ -641,9 +627,11 @@ func (p *LoggerPlugin) accountVideoResults(entry *logstore.Log, result *schemas.
 
 func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBatchResultsResponse, summary *jobaccounting.Outcome) {
 	debug := &schemas.BifrostBatchDebug{BatchID: batchResp.BatchID}
-	counts := schemas.BatchRequestCountsFromResults(batchResp.Results)
+	var counts schemas.BatchRequestCounts
 	if batchResp.RequestCounts != nil {
 		counts = *batchResp.RequestCounts
+	} else {
+		counts = schemas.BatchRequestCountsFromResults(batchResp.Results)
 	}
 	if !counts.IsZero() {
 		debug.RequestCounts = &counts
@@ -771,7 +759,7 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 	tracer.CompleteAndFlushTrace(traceID)
 }
 
-func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
+func (p *LoggerPlugin) recordBatchJobLifecycle(ctx context.Context, entry *logstore.Log, result *schemas.BifrostResponse) {
 	if entry == nil || result == nil || p.batchStore == nil {
 		return
 	}
@@ -795,6 +783,9 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		job.ErrorFileID = resp.ErrorFileID
 		job.ResultsURL = resp.ResultsURL
 		addBatchDetailToLog(entry, resp.ID, string(resp.Status), resp.RequestCounts)
+	case result.BatchResultsResponse != nil && entry.Provider == string(schemas.OpenRouter):
+		resp := result.BatchResultsResponse
+		job = batchJobFromEntry(entry, resp.BatchID, resp.Model, string(resp.Endpoint), string(resp.Status))
 	default:
 		return
 	}
@@ -810,7 +801,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		job.ProviderStatus == string(schemas.BatchStatusEnded) {
 		job.NextCheckAt = &now
 	}
-	if err := p.batchStore.UpsertProviderJob(p.ctx, job); err != nil {
+	if err := p.batchStore.UpsertProviderJob(ctx, job); err != nil {
 		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.JobID, err)
 	}
 }
@@ -2535,7 +2526,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 	if bifrostErr == nil && (requestType == schemas.BatchCreateRequest || requestType == schemas.BatchRetrieveRequest) {
-		p.recordBatchJobLifecycle(entry, result)
+		p.recordBatchJobLifecycle(p.ctx, entry, result)
 	}
 	if bifrostErr == nil && isVideoJobRequestType(requestType) {
 		p.recordVideoJobLifecycle(entry, result, requestType)

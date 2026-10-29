@@ -8141,38 +8141,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "object": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "validating",
-                        "failed",
-                        "in_progress",
-                        "finalizing",
-                        "completed",
-                        "expired",
-                        "cancelling",
-                        "canceled",
-                        "cancelled",
-                        "deleted",
-                        "ended"
-                      ]
-                    },
-                    "deletion": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "extra_fields": {
-                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
-                    }
-                  }
+                  "$ref": "#/components/schemas/BatchDeleteResponse"
                 }
               }
             }
@@ -8436,166 +8405,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "model": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "validating",
-                        "failed",
-                        "in_progress",
-                        "finalizing",
-                        "completed",
-                        "expired",
-                        "cancelling",
-                        "canceled",
-                        "cancelled",
-                        "deleted",
-                        "ended"
-                      ]
-                    },
-                    "usage": {
-                      "allOf": [
-                        {
-                          "$ref": "#/components/schemas/BifrostLLMUsage"
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "is_byok": {
-                              "type": "boolean"
-                            },
-                            "cost_details": {
-                              "type": "object",
-                              "additionalProperties": {
-                                "type": "number"
-                              }
-                            }
-                          }
-                        }
-                      ]
-                    },
-                    "request_counts": {
-                      "type": "object",
-                      "properties": {
-                        "total": {
-                          "type": "integer"
-                        },
-                        "completed": {
-                          "type": "integer"
-                        },
-                        "failed": {
-                          "type": "integer"
-                        },
-                        "succeeded": {
-                          "type": "integer"
-                        },
-                        "expired": {
-                          "type": "integer"
-                        },
-                        "canceled": {
-                          "type": "integer"
-                        },
-                        "pending": {
-                          "type": "integer"
-                        }
-                      }
-                    },
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "type": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "error_type": {
-                          "type": "string"
-                        }
-                      }
-                    },
-                    "batch_id": {
-                      "type": "string"
-                    },
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "custom_id": {
-                            "type": "string"
-                          },
-                          "response": {
-                            "type": "object",
-                            "properties": {
-                              "status_code": {
-                                "type": "integer"
-                              },
-                              "request_id": {
-                                "type": "string"
-                              },
-                              "body": {
-                                "type": "object"
-                              }
-                            }
-                          },
-                          "result": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string"
-                              },
-                              "message": {
-                                "type": "object"
-                              }
-                            }
-                          },
-                          "error": {
-                            "type": "object",
-                            "properties": {
-                              "code": {
-                                "type": "string"
-                              },
-                              "message": {
-                                "type": "string"
-                              },
-                              "type": {
-                                "type": "string"
-                              },
-                              "param": {
-                                "type": "string"
-                              },
-                              "error_type": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    },
-                    "has_more": {
-                      "type": "boolean"
-                    },
-                    "next_cursor": {
-                      "type": "string"
-                    },
-                    "extra_fields": {
-                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
-                    }
-                  }
+                  "$ref": "#/components/schemas/BatchResultsResponse"
                 }
               }
             }
@@ -8609,6 +8419,9 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Batch is still active or results are not ready"
           },
           "500": {
             "description": "Internal server error",
@@ -19164,7 +18977,6 @@
           {
             "name": "provider",
             "in": "query",
-            "required": true,
             "schema": {
               "type": "string"
             }
@@ -19176,38 +18988,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "object": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "validating",
-                        "failed",
-                        "in_progress",
-                        "finalizing",
-                        "completed",
-                        "expired",
-                        "cancelling",
-                        "canceled",
-                        "cancelled",
-                        "deleted",
-                        "ended"
-                      ]
-                    },
-                    "deletion": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "extra_fields": {
-                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
-                    }
-                  }
+                  "$ref": "#/components/schemas/BatchDeleteResponse"
                 }
               }
             }
@@ -19333,166 +19114,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "model": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "validating",
-                        "failed",
-                        "in_progress",
-                        "finalizing",
-                        "completed",
-                        "expired",
-                        "cancelling",
-                        "canceled",
-                        "cancelled",
-                        "deleted",
-                        "ended"
-                      ]
-                    },
-                    "usage": {
-                      "allOf": [
-                        {
-                          "$ref": "#/components/schemas/BifrostLLMUsage"
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "is_byok": {
-                              "type": "boolean"
-                            },
-                            "cost_details": {
-                              "type": "object",
-                              "additionalProperties": {
-                                "type": "number"
-                              }
-                            }
-                          }
-                        }
-                      ]
-                    },
-                    "request_counts": {
-                      "type": "object",
-                      "properties": {
-                        "total": {
-                          "type": "integer"
-                        },
-                        "completed": {
-                          "type": "integer"
-                        },
-                        "failed": {
-                          "type": "integer"
-                        },
-                        "succeeded": {
-                          "type": "integer"
-                        },
-                        "expired": {
-                          "type": "integer"
-                        },
-                        "canceled": {
-                          "type": "integer"
-                        },
-                        "pending": {
-                          "type": "integer"
-                        }
-                      }
-                    },
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "type": {
-                          "type": "string"
-                        },
-                        "param": {
-                          "type": "string"
-                        },
-                        "error_type": {
-                          "type": "string"
-                        }
-                      }
-                    },
-                    "batch_id": {
-                      "type": "string"
-                    },
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "custom_id": {
-                            "type": "string"
-                          },
-                          "response": {
-                            "type": "object",
-                            "properties": {
-                              "status_code": {
-                                "type": "integer"
-                              },
-                              "request_id": {
-                                "type": "string"
-                              },
-                              "body": {
-                                "type": "object"
-                              }
-                            }
-                          },
-                          "result": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "string"
-                              },
-                              "message": {
-                                "type": "object"
-                              }
-                            }
-                          },
-                          "error": {
-                            "type": "object",
-                            "properties": {
-                              "code": {
-                                "type": "string"
-                              },
-                              "message": {
-                                "type": "string"
-                              },
-                              "type": {
-                                "type": "string"
-                              },
-                              "param": {
-                                "type": "string"
-                              },
-                              "error_type": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    },
-                    "has_more": {
-                      "type": "boolean"
-                    },
-                    "next_cursor": {
-                      "type": "string"
-                    },
-                    "extra_fields": {
-                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
-                    }
-                  }
+                  "$ref": "#/components/schemas/BatchResultsResponse"
                 }
               }
             }
@@ -120249,45 +119871,10 @@
             "description": "Upstream provider selected by OpenRouter"
           },
           "usage": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/BifrostLLMUsage"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "is_byok": {
-                    "type": "boolean"
-                  },
-                  "cost_details": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "number"
-                    }
-                  }
-                }
-              }
-            ]
+            "$ref": "#/components/schemas/BatchUsage"
           },
           "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "message": {
-                "type": "string"
-              },
-              "type": {
-                "type": "string"
-              },
-              "param": {
-                "type": "string"
-              },
-              "error_type": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/BatchResultError"
           },
           "finalized_at": {
             "type": "integer"
@@ -120423,45 +120010,10 @@
             "description": "Upstream provider selected by OpenRouter"
           },
           "usage": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/BifrostLLMUsage"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "is_byok": {
-                    "type": "boolean"
-                  },
-                  "cost_details": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "number"
-                    }
-                  }
-                }
-              }
-            ]
+            "$ref": "#/components/schemas/BatchUsage"
           },
           "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "message": {
-                "type": "string"
-              },
-              "type": {
-                "type": "string"
-              },
-              "param": {
-                "type": "string"
-              },
-              "error_type": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/BatchResultError"
           },
           "finalized_at": {
             "type": "integer"
@@ -120469,60 +120021,7 @@
           "results": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "custom_id": {
-                  "type": "string"
-                },
-                "response": {
-                  "type": "object",
-                  "properties": {
-                    "status_code": {
-                      "type": "integer"
-                    },
-                    "request_id": {
-                      "type": "string"
-                    },
-                    "body": {
-                      "type": "object"
-                    }
-                  }
-                },
-                "result": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "object"
-                    }
-                  }
-                },
-                "error": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "type": {
-                      "type": "string"
-                    },
-                    "param": {
-                      "type": "string"
-                    },
-                    "error_type": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
+              "$ref": "#/components/schemas/BatchResultItem"
             }
           },
           "id": {
@@ -120679,6 +120178,194 @@
           },
           "extra_fields": {
             "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "BatchResultsResponse": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "validating",
+              "failed",
+              "in_progress",
+              "finalizing",
+              "completed",
+              "expired",
+              "cancelling",
+              "canceled",
+              "cancelled",
+              "deleted",
+              "ended"
+            ]
+          },
+          "usage": {
+            "$ref": "#/components/schemas/BatchUsage"
+          },
+          "request_counts": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "completed": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "succeeded": {
+                "type": "integer"
+              },
+              "expired": {
+                "type": "integer"
+              },
+              "canceled": {
+                "type": "integer"
+              },
+              "pending": {
+                "type": "integer"
+              }
+            }
+          },
+          "error": {
+            "$ref": "#/components/schemas/BatchResultError"
+          },
+          "batch_id": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchResultItem"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "BatchDeleteResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "validating",
+              "failed",
+              "in_progress",
+              "finalizing",
+              "completed",
+              "expired",
+              "cancelling",
+              "canceled",
+              "cancelled",
+              "deleted",
+              "ended"
+            ]
+          },
+          "deletion": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "BatchUsage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BifrostLLMUsage"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "is_byok": {
+                "type": "boolean"
+              },
+              "cost_details": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "BatchResultItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "custom_id": {
+            "type": "string"
+          },
+          "response": {
+            "type": "object",
+            "properties": {
+              "status_code": {
+                "type": "integer"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "body": {
+                "type": "object"
+              }
+            }
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "message": {
+                "type": "object"
+              }
+            }
+          },
+          "error": {
+            "$ref": "#/components/schemas/BatchResultError"
+          }
+        }
+      },
+      "BatchResultError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "param": {
+            "type": "string"
+          },
+          "error_type": {
+            "type": "string"
           }
         }
       },

@@ -88,7 +88,6 @@ batches-by-id:
         type: string
     - name: provider
       in: query
-      required: true
       schema:
         type: string
     responses:
