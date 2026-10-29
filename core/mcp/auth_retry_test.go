@@ -63,7 +63,9 @@ func TestIsAuthFailureErrorText_OpposesIsTransientErrorOnAuthText(t *testing.T) 
 	}
 }
 
-// isAuthFailure matches mcp-go's typed 401 through any wrapping, and falls back to the text.
+// isAuthFailure matches mcp-go's typed 401 through any wrapping, and auth-shaped text inside the
+// transport's error frame. A JSON-RPC error, which mcp-go hands back as plain text, is the tool's own
+// answer and never matches, whatever it says.
 func TestIsAuthFailure(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,8 +76,11 @@ func TestIsAuthFailure(t *testing.T) {
 		{"typed oauth 401", &transport.OAuthAuthorizationRequiredError{}, true},
 		{"transport-wrapped 401", transport.NewError(&transport.AuthorizationRequiredError{}), true},
 		{"fmt-wrapped 401", fmt.Errorf("call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), true},
-		{"status text", errors.New("tool call failed: 401 Unauthorized"), true},
+		{"transport 403", transport.NewError(errors.New("request failed with status 403: Forbidden")), true},
+		{"fmt-wrapped transport 403", fmt.Errorf("call failed: %w", transport.NewError(errors.New("request failed with status 403: Forbidden"))), true},
+		{"a tool's own error saying forbidden", errors.New("forbidden: this caller may not use echo_tool"), false},
+		{"a tool's own error saying 401", errors.New("tool call failed: 401 Unauthorized"), false},
+		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), false},
 		{"unrelated", errors.New("connection refused"), false},
 		{"nil", nil, false},
 	}

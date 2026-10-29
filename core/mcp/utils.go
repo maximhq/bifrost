@@ -507,11 +507,12 @@ func isTransientToolCallError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	// Auth failures are checked first, before the transient substring scan:
-	// error text like "401 unauthorized: try again" would otherwise match
-	// "try again" below and get retried, contradicting the non-retryable
-	// auth-failure rule this classifier exists to enforce for tool calls.
-	if isAuthFailure(err) {
+	// Auth failures, and any error that reads like one, are checked first,
+	// before the transient substring scan: error text like "401 unauthorized:
+	// try again" would otherwise match "try again" below and get retried,
+	// contradicting the non-retryable auth-failure rule this classifier exists
+	// to enforce for tool calls.
+	if isAuthFailure(err) || isAuthFailureErrorText(errStr) {
 		return false
 	}
 	for _, transientErr := range transientErrorSubstrings {
@@ -528,33 +529,29 @@ func isAuthRequiredError(err error) bool {
 	return errors.Is(err, transport.ErrAuthorizationRequired) || errors.Is(err, transport.ErrOAuthAuthorizationRequired)
 }
 
-// isAuthFailure reports whether a tool-call error is an upstream auth rejection: mcp-go's typed
-// 401 first, then the error text for rejections that reach us only as text.
+// isAuthFailure reports whether a tool-call error is an upstream auth rejection:
+// mcp-go's typed 401, or auth-shaped text inside the *transport.Error frame,
+// which wraps only what the transport produced, as isDeadSessionError reads
+// it. A JSON-RPC error the server answered with is the tool's own result and
+// carries no such frame, so it never matches whatever its text says: a tool
+// reporting "forbidden" for its own reasons used to force a credential refresh
+// and a reconnect of a healthy client.
 func isAuthFailure(err error) bool {
-	return err != nil && (isAuthRequiredError(err) || isAuthFailureErrorText(err.Error()))
+	if err == nil {
+		return false
+	}
+	if isAuthRequiredError(err) {
+		return true
+	}
+	transportErr, ok := errors.AsType[*transport.Error](err)
+	return ok && isAuthFailureErrorText(transportErr.Error())
 }
 
-// isAuthFailureErrorText reports whether a raw upstream tool-call error looks
-// like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
-// HTTP status codes into a plain error string by the time a CallTool error
-// reaches toolmanager.go — no typed status field survives — so, like
-// isTransientError above, substring matching on the same class of text is
-// the only option.
-//
-// This is deliberately not a reuse of isTransientError: that function matches
-// this exact substring class too, but as a PERMANENT signal (don't retry) for
-// its connection-establishment callers — the opposite polarity needed here,
-// where the same text is the POSITIVE trigger for a forced-refresh-and-retry.
-// A tool call that reaches this point already has a live, previously-healthy
-// connection (AcquireClientConn already succeeded once), so a 401/403 here
-// means the upstream server is actively rejecting a credential Bifrost's own
-// bookkeeping still considers valid — worth reacting to, not giving up on.
-//
-// This is also distinct from schemas.ErrOAuth2TokenExpired-based
-// classification (see connectToMCPClient), which fires only after Bifrost's
-// own refresh logic already ran and classified a credential as permanently
-// dead. A raw CallTool error never goes through that classification at all —
-// it's the upstream server's rejection text verbatim, not Bifrost's.
+// isAuthFailureErrorText reports whether an error's text reads like an auth
+// rejection (401/403/unauthorized/forbidden). isAuthFailure applies it only
+// inside the transport's error frame, since a tool's own error can carry any of
+// these words. isTransientToolCallError applies it to any error, to keep such a
+// failure from being retried whichever side produced it.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
 	for _, needle := range []string{"401", "403", "unauthorized", "forbidden", "authorization required"} {
