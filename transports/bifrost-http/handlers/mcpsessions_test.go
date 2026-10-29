@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
+	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -105,4 +110,31 @@ func TestMCPSessionsListQuery_KindAllowed(t *testing.T) {
 	if q.kindAllowed("flow") {
 		t.Fatalf("flow should not match {token, header}")
 	}
+}
+
+// TestRevokeMCPSession_PendingOAuthFlow pins that a pending OAuth flow, which the
+// sessions list shows as kind "flow" with auth_kind "oauth", can be revoked like the
+// other rows: 204, and the flow row is gone, so its callback can no longer mint a
+// token. It was a 404 "MCP session not found". An unknown id stays a 404.
+func TestRevokeMCPSession_PendingOAuthFlow(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	ctx := context.Background()
+	vk := "vk-1"
+	now := time.Now()
+	require.NoError(t, h.store.ConfigStore.CreateOauthUserSession(ctx, &configtables.TableMCPOauthFlow{
+		ID: "flow-1", MCPClientID: "client-1", OauthConfigID: "oauth-config-1", State: "state-1",
+		VirtualKeyID: &vk, FlowMode: "vk", Status: "pending",
+		ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now, UpdatedAt: now,
+	}))
+	sessions := NewMCPSessionsHandler(h.store, nil)
+
+	status, body := doMCPRequest(t, sessions.revoke, fasthttp.MethodDelete, "", "flow-1", false)
+	require.Equal(t, fasthttp.StatusNoContent, status, body)
+	flow, err := h.store.ConfigStore.GetOauthUserSessionByID(ctx, "flow-1")
+	require.NoError(t, err)
+	assert.Nil(t, flow, "the flow row is deleted")
+
+	status, body = doMCPRequest(t, sessions.revoke, fasthttp.MethodDelete, "", "no-such-row", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, body)
+	assert.Contains(t, body, "MCP session not found")
 }

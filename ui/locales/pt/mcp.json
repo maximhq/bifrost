@@ -799,12 +799,16 @@
 			"updateValues": "Atualizar valores",
 			"editValues": "Editar valores"
 		},
+		"revokeFlowTitle": "Revogar este fluxo pendente?",
+		"revokeFlowDescription": "O Bifrost excluirá este fluxo pendente e seu link deixará de funcionar. Ainda não há nada armazenado para este vínculo; a próxima solicitação a este servidor MCP iniciará um novo fluxo.",
 		"revokeHeaderTitle": "Revogar estes valores de cabeçalho armazenados?",
 		"revokeHeaderDescription": "O Bifrost removerá os valores de credencial armazenados para esta associação. Não há token a montante para revogar; o utilizador terá de voltar a submeter os valores de cabeçalho para usar este MCP novamente.",
 		"revokeSessionTitle": "Revogar esta sessão MCP?",
 		"revokeSessionDescription": "O Bifrost removerá a credencial armazenada para esta associação. O token OAuth a montante não é revogado no fornecedor; permanece desassociado e expira naturalmente. Quem usar esta associação terá de se voltar a autenticar para obter um token novo.",
 		"toast": {
 			"reauthFailed": "A reautenticação falhou",
+			"flowRevoked": "Fluxo pendente revogado",
+			"flowRevokeFailed": "Não foi possível revogar o fluxo pendente",
 			"headerRevoked": "Valores de cabeçalho revogados",
 			"sessionRevoked": "Sessão revogada",
 			"headerRevokeFailed": "Falha ao revogar valores de cabeçalho",

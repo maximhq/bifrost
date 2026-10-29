@@ -799,12 +799,16 @@
 			"updateValues": "Aggiorna valori",
 			"editValues": "Modifica valori"
 		},
+		"revokeFlowTitle": "Revocare questo flusso in sospeso?",
+		"revokeFlowDescription": "Bifrost eliminerà questo flusso in sospeso e il suo collegamento smetterà di funzionare. Non è ancora stato memorizzato nulla per questa associazione; la prossima richiesta a questo server MCP avvierà un nuovo flusso.",
 		"revokeHeaderTitle": "Revocare questi valori di intestazione memorizzati?",
 		"revokeHeaderDescription": "Bifrost rimuoverà i valori delle credenziali memorizzati per questa associazione. Non c'è alcun token a monte da revocare; l'utente dovrà inviare nuovamente i propri valori di intestazione per utilizzare di nuovo questo MCP.",
 		"revokeSessionTitle": "Revocare questa sessione MCP?",
 		"revokeSessionDescription": "Bifrost rimuoverà la credenziale memorizzata per questa associazione. Il token OAuth a monte non viene revocato presso il provider; rimane scollegato e scade naturalmente. Chiunque utilizzi questa associazione dovrà riautenticarsi per ottenere un nuovo token.",
 		"toast": {
 			"reauthFailed": "Riautenticazione non riuscita",
+			"flowRevoked": "Flusso in sospeso revocato",
+			"flowRevokeFailed": "Impossibile revocare il flusso in sospeso",
 			"headerRevoked": "Valori degli header revocati",
 			"sessionRevoked": "Sessione revocata",
 			"headerRevokeFailed": "Impossibile revocare i valori degli header",

@@ -4878,7 +4878,8 @@ const ADM75 = folder("ADM-75 Sessions reauth", `Setup: dashboard auth on, admin 
   restoreConfig("ADM-75"),
 ]);
 
-const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PH_TEXT("adm76h")}, with a header credential (adm76-hsess1 submitted key-a, then reauth opened a flow for it) and a pending header flow (adm76-hsess2); ${PU_SERVER_TEXT("adm76")}, verified as admin, with an OAuth token (adm76-sess1 completed as alice, then reauth opened a pending flow for it); and a shared OAuth client on fleet server adm76s, connected.`, [
+const ADM76_OAUTH_FLOW = "s.kind === 'flow' && s.auth_kind === 'oauth' && s.id === pm.collectionVariables.get('adm76_of')";
+const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PH_TEXT("adm76h")}, with a header credential (adm76-hsess1 submitted key-a, then reauth opened a flow for it) and a pending header flow (adm76-hsess2); ${PU_SERVER_TEXT("adm76")}, verified as admin, with an OAuth token (adm76-sess1 completed as alice, then reauth opened a pending flow for it) and a pending OAuth flow (adm76-sess2); and a shared OAuth client on fleet server adm76s, connected.`, [
   ...puConfig("ADM-76", false),
   ...phClient("ADM-76", "adm76h"),
   ...phCredential("ADM-76", "adm76h", "adm76-hsess1", "adm76_hc"),
@@ -4893,12 +4894,17 @@ const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin 
   oauthStatus("ADM-76", "setup: record the shared token_id", "adm76s", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], ["pm.collectionVariables.set('adm76s_tok', pm.response.json().token_id);"]),
   request("ADM-76", "control: the header credential's flow is open", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(200)] }),
   flowDetail("ADM-76", "control: the OAuth token's pending flow is open", "adm76_t_flow", [A.status(200)]),
+  execTool("ADM-76", "setup: execute as adm76-sess2 opens a pending OAuth flow", "adm76-echo_tool", [A.status(400), keepFlow("adm76_of", "adm76_f")], { session: "adm76-sess2" }),
+  sessionsHas("ADM-76", "control: the pending OAuth flow is listed", "adm76-u", ADM76_OAUTH_FLOW, "one kind \"flow\", auth_kind \"oauth\" entry for it"),
   request("ADM-76", "revoke the header credential", "DELETE", "/api/mcp/sessions/{{adm76_hc}}", { asserts: [A.status(204)] }),
   request("ADM-76", "the header credential's flow is gone", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(404)] }),
   request("ADM-76", "revoke the pending header flow", "DELETE", "/api/mcp/sessions/{{adm76_hf}}", { asserts: [A.status(204)] }),
   request("ADM-76", "revoke the OAuth token", "DELETE", "/api/mcp/sessions/{{adm76_t}}", { asserts: [A.status(204)] }),
   flowDetail("ADM-76", "the OAuth token's pending flow is gone", "adm76_t_flow", [A.status(404), A.msgEquals(NO_FLOW)]),
   request("ADM-76", "revoke the shared token id", "DELETE", "/api/mcp/sessions/{{adm76s_tok}}", { asserts: [A.status(404), A.msgEquals(NO_SESSION)] }),
+  request("ADM-76", "revoke the pending OAuth flow", "DELETE", "/api/mcp/sessions/{{adm76_of}}", { asserts: [A.status(204)] }),
+  flowDetail("ADM-76", "the pending OAuth flow is gone", "adm76_of", [A.status(404), A.msgEquals(NO_FLOW)]),
+  request("ADM-76", "the pending OAuth flow is no longer listed", "GET", SESSIONS, { asserts: [A.status(200), A.custom("no entry for it", [sessionRows("adm76-u", ADM76_OAUTH_FLOW), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] }),
   deleteClient("ADM-76", "adm76h-c"),
   deleteClient("ADM-76", "adm76-u"),
   deleteClient("ADM-76", "adm76s-o"),

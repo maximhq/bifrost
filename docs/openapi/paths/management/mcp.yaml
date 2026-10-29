@@ -1032,11 +1032,8 @@ session-by-id:
       - Header credential rows → hard-deletes the credential plus any pending
         header submission flow for the same binding
       - Pending per-user-headers flow rows → hard-deletes just the flow
-
-      Note: pending per-user OAuth flow rows are **not** revocable by this
-      endpoint — they expire naturally or are cleared when the bound token
-      row is revoked. To cancel a pending OAuth flow, revoke its parent token
-      (if one exists) or wait for expiry.
+      - Pending per-user OAuth flow rows → hard-deletes just the flow, so its
+        callback can no longer mint a token
 
       Bifrost does **not** call the upstream provider's revoke endpoint —
       revocation is local. Per-user-headers credentials never call upstream.

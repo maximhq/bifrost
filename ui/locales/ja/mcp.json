@@ -799,12 +799,16 @@
 			"updateValues": "値を更新",
 			"editValues": "値を編集"
 		},
+		"revokeFlowTitle": "この保留中のフローを取り消しますか？",
+		"revokeFlowDescription": "Bifrost はこの保留中のフローを削除し、リンクを無効にします。この紐付けにはまだ何も保存されていません。この MCP サーバーへの次のリクエストで新しいフローが開始されます。",
 		"revokeHeaderTitle": "これらの保存されたヘッダ値を取り消しますか？",
 		"revokeHeaderDescription": "Bifrost は、このバインディングの保存された認証情報の値を削除します。取り消すべき上流のトークンはありません。ユーザーはこの MCP を再度使用するために、ヘッダーの値を再送信する必要があります。",
 		"revokeSessionTitle": "このMCPセッションを取り消しますか？",
 		"revokeSessionDescription": "Bifrost は、このバインディングに保存されている資格情報を削除します。上流の OAuth トークンはプロバイダーで取り消されることはなく、切り離されたまま自然に有効期限が切れます。このバインディングを使用する人は誰でも、新しいトークンを取得するために再認証する必要があります。",
 		"toast": {
 			"reauthFailed": "再認証に失敗しました",
+			"flowRevoked": "保留中のフローを取り消しました",
+			"flowRevokeFailed": "保留中のフローを取り消せませんでした",
 			"headerRevoked": "ヘッダー値が無効になりました",
 			"sessionRevoked": "セッションが取り消されました",
 			"headerRevokeFailed": "ヘッダー値の取り消しに失敗しました",
