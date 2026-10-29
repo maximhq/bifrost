@@ -1,1 +1,3 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- fix: bifrost_overhead_latency_microseconds is emitted for requests served over HTTP
+- feat: relay request metrics, and MCP prompt and resource reads are counted under their MCP metrics
+- chore: upgraded core to v1.14.0 and framework to v1.11.0

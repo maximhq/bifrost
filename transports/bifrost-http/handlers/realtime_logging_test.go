@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
@@ -626,5 +628,62 @@ func TestNewBifrostErrorFromRealtimeErrorCarriesRealtimeMetadata(t *testing.T) {
 	}
 	if bifrostErr.Error == nil || bifrostErr.Error.Param != "session.type" {
 		t.Fatalf("error param = %#v, want session.type", bifrostErr.Error)
+	}
+}
+
+// TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns pins that a turn on a session the provider opened on
+// Azure Voice Live reaches the post-hooks marked for the model's _voice_live rates, with the Azure
+// voice's output audio counted as Standard Speech, and that other sessions are left unmarked.
+func TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns(t *testing.T) {
+	t.Parallel()
+	rawResponse := []byte(`{"type":"response.done","response":{"id":"resp_1","status":"completed","output":[],"usage":{"total_tokens":136,"input_tokens":70,"output_tokens":66,"input_token_details":{"text_tokens":20,"audio_tokens":50},"output_token_details":{"text_tokens":14,"audio_tokens":52}}}}`)
+	for _, tc := range []struct {
+		name               string
+		voiceLive          bool
+		wantSurface        schemas.PricingSurface
+		wantOutputStandard int
+	}{
+		{name: "voice live session", voiceLive: true, wantSurface: schemas.PricingSurfaceVoiceLive, wantOutputStandard: 52},
+		{name: "azure openai session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			baseCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.voiceLive {
+				baseCtx.SetValue(schemas.BifrostContextKeyRealtimePricingSurface, schemas.PricingSurfaceVoiceLive)
+			}
+			session := bfws.NewSession(nil)
+			update, err := schemas.ParseRealtimeEvent([]byte(`{"type":"session.update","session":{"voice":{"name":"en-US-AvaNeural","type":"azure-standard"}}}`))
+			if err != nil {
+				t.Fatalf("ParseRealtimeEvent: %v", err)
+			}
+			updateRealtimeSessionFromEvent(session, update)
+			var captured *schemas.BifrostResponse
+			session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+				RequestID: "req_voice_live",
+				StartedAt: time.Now(),
+				PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					captured = result
+					return result, nil
+				},
+			})
+
+			if postErr := finalizeRealtimeTurnHooks(&bifrost.Bifrost{}, baseCtx, session, &openai.OpenAIProvider{}, schemas.Azure, "gpt-realtime", nil, rawResponse, "", schemas.RTEventResponseDone, false); postErr != nil {
+				t.Fatalf("finalizeRealtimeTurnHooks: %v", postErr.Error.Message)
+			}
+			if captured == nil || captured.ResponsesResponse == nil || captured.ResponsesResponse.Usage == nil {
+				t.Fatalf("post-hooks got %#v, want a response with usage", captured)
+			}
+			r := captured.ResponsesResponse
+			if r.ExtraFields.PricingSurface != tc.wantSurface {
+				t.Errorf("pricing surface = %q, want %q", r.ExtraFields.PricingSurface, tc.wantSurface)
+			}
+			if got := r.Usage.OutputTokensDetails.StandardSpeechAudioTokens; got != tc.wantOutputStandard {
+				t.Errorf("output standard speech audio tokens = %d, want %d", got, tc.wantOutputStandard)
+			}
+			if got := r.Usage.InputTokensDetails.StandardSpeechAudioTokens; got != 0 {
+				t.Errorf("input standard speech audio tokens = %d, want 0 for a realtime model", got)
+			}
+		})
 	}
 }

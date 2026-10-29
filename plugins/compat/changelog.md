@@ -1,1 +1,2 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- feat: decision emulation defers to native decisions on vLLM, SGLang, Databricks System One and Azure gpt-6-luna
+- chore: upgraded core to v1.14.0 and framework to v1.11.0

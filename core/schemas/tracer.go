@@ -75,6 +75,10 @@ type Tracer interface {
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
 
+	// SetSpanStartTime moves a span's start time. A caller that opens a span only once
+	// the work has finished uses it so the span covers the work's real duration.
+	SetSpanStartTime(handle SpanHandle, start time.Time)
+
 	// SpanFromHandle resolves the *Span for a handle once, so a caller writing many
 	// attributes (e.g. the per-request LLM-call block) can call span.SetAttribute
 	// directly instead of paying a trace+span lookup on every attribute. Returns
@@ -250,6 +254,9 @@ func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
+
+// SetSpanStartTime does nothing.
+func (n *NoOpTracer) SetSpanStartTime(_ SpanHandle, _ time.Time) {}
 
 func (n *NoOpTracer) SpanFromHandle(_ SpanHandle) *Span { return nil }
 
