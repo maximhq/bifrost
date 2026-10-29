@@ -1,10 +1,10 @@
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Relay } from "@/lib/types/relays";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { FlaskConical, SettingsIcon, Trash } from "lucide-react";
 import { useState } from "react";
+import { HeaderActionButton } from "../fragments/headerActionButton";
 import { UsagePreviewPanel } from "../fragments/usagePreviewPanel";
 import { EndpointConfigSheet } from "../sheets/endpointConfigSheet";
 import { EndpointRoutesTable } from "./endpointRoutesTable";
@@ -29,36 +29,22 @@ export function EndpointView({ endpoint, onRequestDelete }: { endpoint: Relay; o
 					<Trash className="h-4 w-4" />
 				</Button>
 			)}
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<Button
-						variant="outline"
-						className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
-						onClick={() => setShowTestSheet(true)}
-						aria-label="Test pricing"
-						data-testid="relay-preview-toggle"
-					>
-						<FlaskConical className="h-4 w-4" />
-						<span className="hidden @3xl/card-header:inline">Test Pricing</span>
-					</Button>
-				</TooltipTrigger>
-				<TooltipContent>Run a sample call through the routes and pricing without calling the upstream</TooltipContent>
-			</Tooltip>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<Button
-						variant="outline"
-						className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
-						onClick={() => setShowConfigSheet(true)}
-						aria-label={canUpdate ? "Edit relay configuration" : "View relay configuration"}
-						data-testid="relay-edit-config"
-					>
-						<SettingsIcon className="h-4 w-4" />
-						<span className="hidden @3xl/card-header:inline">{canUpdate ? "Edit Relay Config" : "View Relay Config"}</span>
-					</Button>
-				</TooltipTrigger>
-				<TooltipContent>{canUpdate ? "Edit Relay Config" : "View Relay Config"}</TooltipContent>
-			</Tooltip>
+			<HeaderActionButton
+				variant="outline"
+				icon={<FlaskConical className="h-4 w-4" />}
+				label="Test Pricing"
+				onClick={() => setShowTestSheet(true)}
+				aria-label="Test pricing"
+				data-testid="relay-preview-toggle"
+			/>
+			<HeaderActionButton
+				variant="outline"
+				icon={<SettingsIcon className="h-4 w-4" />}
+				label={canUpdate ? "Edit Relay Config" : "View Relay Config"}
+				onClick={() => setShowConfigSheet(true)}
+				aria-label={canUpdate ? "Edit relay configuration" : "View relay configuration"}
+				data-testid="relay-edit-config"
+			/>
 		</div>
 	);
 
@@ -73,7 +59,7 @@ export function EndpointView({ endpoint, onRequestDelete }: { endpoint: Relay; o
 							Runs a sample call through the saved routes and pricing of {endpoint.name}. Nothing is sent upstream.
 						</SheetDescription>
 					</SheetHeader>
-					<div className="px-4 pb-6 md:px-8">
+					<div className="flex grow flex-col gap-6 pt-4">
 						<UsagePreviewPanel endpoint={endpoint} />
 					</div>
 				</SheetContent>

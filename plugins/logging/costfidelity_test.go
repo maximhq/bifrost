@@ -1460,6 +1460,25 @@ func TestCalculateVideoAggregateCost_RepricesFromCapturedDimensions(t *testing.T
 	assert.Equal(t, "1792x1024", roundTripped.Accounting.Size)
 }
 
+// Seedance settles on the task's metered tokens, so repricing must read them back
+// from the accounting record rather than fall to a per-second rate it lacks.
+func TestCalculateVideoAggregateCost_RepricesFromOutputTokens(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := videoSettlementRow("v-seedance", &schemas.VideoAccountingDebug{
+		Seconds:      new(5),
+		Size:         "720p",
+		OutputCount:  1,
+		OutputTokens: 108900,
+		RequestType:  schemas.VideoGenerationRequest,
+	}, schemas.VideoStatusCompleted)
+	entry.Provider = "byteplus"
+	entry.Model = "dreamina-seedance-2-0-260128"
+
+	cost, _, err := repriceAggregate(t, plugin, entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "per-video-token reprice", cost, 108900*0.000007)
+}
+
 // A provider that reported its own cost is right about its own bill. Without this
 // a full reprice would replace an exact figure with a catalog estimate — Runware
 // bills exactly, and its rows must survive a repricing pass untouched.

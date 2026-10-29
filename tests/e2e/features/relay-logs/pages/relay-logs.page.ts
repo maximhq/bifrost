@@ -43,19 +43,6 @@ export type RelayFilterListPrefix =
   | "relay-business-units-filter"
   | "relay-projects-filter";
 
-/** Section keys of the per-section "N selected" clear buttons (`relay-clear-<key>`). */
-export type RelayFilterClearKey =
-  | "relay_names"
-  | "methods"
-  | "apps"
-  | "virtual_key_ids"
-  | "user_ids"
-  | "team_ids"
-  | "customer_ids"
-  | "business_unit_ids"
-  | "project_ids"
-  | "cost";
-
 /** Normalizes a list key the way SearchableCheckboxList does when `normalizeTestIdKey` is on. */
 export function normalizeFilterKey(key: string): string {
   return key
@@ -161,9 +148,14 @@ export class RelayLogsPage extends BasePage {
     await waitForNetworkIdle(this.page);
   }
 
-  /** The data rows of one relay (the status row carries no relay name, so it is excluded). */
+  /** The data rows of one relay. */
   rowsFor(relayName: string): Locator {
-    return this.pageRoot.locator("tbody tr").filter({ hasText: relayName });
+    return this.pageRoot.getByTestId("relay-logs-row").filter({ hasText: relayName });
+  }
+
+  /** One data row by its log id, for rows the visible text cannot tell apart (several calls share a path). */
+  rowById(logId: string): Locator {
+    return this.pageRoot.locator(`[data-testid="relay-logs-row"][data-log-id="${logId}"]`);
   }
 
   /** The "No results found" row the table shows for an empty page. */
@@ -253,14 +245,9 @@ export class RelayLogsPage extends BasePage {
     return this.page.getByTestId(`${prefix}-add-custom`);
   }
 
-  /** The per-section clear button. */
-  clearSection(key: RelayFilterClearKey): Locator {
-    return this.page.getByTestId(`relay-clear-${key}`);
-  }
-
-  /** Clicks a row that mentions the given text and waits for the sheet. */
-  async openRow(relayName: string, rowText: string): Promise<void> {
-    const row = this.rowsFor(relayName).filter({ hasText: rowText }).first();
+  /** Clicks a row that mentions the given text (or has the given log id) and waits for the sheet. */
+  async openRow(relayName: string, rowText: string | { logId: string }): Promise<void> {
+    const row = typeof rowText === "string" ? this.rowsFor(relayName).filter({ hasText: rowText }).first() : this.rowById(rowText.logId);
     await expect(row).toBeVisible();
     // The relay badge sits in a plain cell whatever the column order; the actions cell swallows clicks.
     await row.getByText(relayName, { exact: true }).click();

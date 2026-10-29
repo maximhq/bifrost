@@ -2494,6 +2494,40 @@ PricingPatch:
     output_cost_per_second:
       type: number
       minimum: 0
+    input_cost_per_token_voice_live:
+      type: number
+      minimum: 0
+      description: >-
+        Azure Voice Live input rate per text token, used on Voice Live turns in place of
+        input_cost_per_token. Each _voice_live rate falls back to its normal rate when unset.
+    output_cost_per_token_voice_live:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_voice_live:
+      type: number
+      minimum: 0
+    input_cost_per_audio_token_voice_live:
+      type: number
+      minimum: 0
+    output_cost_per_audio_token_voice_live:
+      type: number
+      minimum: 0
+    input_cost_per_standard_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
+      description: >-
+        Azure Voice Live rate per input audio token handled by Azure speech to text.
+    output_cost_per_standard_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
+      description: >-
+        Azure Voice Live rate per output audio token from an Azure standard voice.
+    input_cost_per_custom_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
+    output_cost_per_custom_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
     output_cost_per_video_per_second_480p:
       type: number
       minimum: 0
@@ -2529,6 +2563,15 @@ PricingPatch:
         Per-second output rate for 4K video. Matched on the short edge of the
         generated video's size; falls back to output_cost_per_video_per_second
         when unset.
+    output_cost_per_video_token:
+      type: number
+      minimum: 0
+      description: >-
+        Per-token output rate for video, for providers that meter generated
+        video in tokens (BytePlus Seedance bills on the task's
+        completion_tokens). Takes precedence over output_cost_per_token for
+        video output tokens. When no token rate applies (unset or zero), video
+        output falls back to the per-second video rates.
     # Costs - Other
     web_search_cost_per_request:
       type: number

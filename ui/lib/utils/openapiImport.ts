@@ -1,4 +1,5 @@
 import type { RelayAuthConfig, RelayRouteConfig, RelayRouteMethod } from "@/lib/types/relays";
+import { compareRoutes } from "@/lib/utils/relayForm";
 
 // What an OpenAPI or Swagger document resolves into for a relay: the
 // operations as routes, the first security scheme as an auth suggestion, and the first server as
@@ -140,20 +141,63 @@ export function authFromSecuritySchemes(doc: Doc, security: unknown = doc.securi
 }
 
 // baseUrlFromServers reads the first absolute server URL (OpenAPI 3) or host + basePath (Swagger 2).
-export function baseUrlFromServers(doc: Doc): string | undefined {
+// With documentUrl (a fetched document), a relative server resolves against it, and a Swagger 2
+// document without a host takes the documentUrl's host, as both specifications define.
+export function baseUrlFromServers(doc: Doc, documentUrl?: string): string | undefined {
+	return serverBase(doc, documentUrl).baseUrl;
+}
+
+// serverBase is baseUrlFromServers plus the query the chosen server carried: a relay base URL cannot
+// carry one, so it is left out of the suggestion and importOpenAPI warns about it.
+function serverBase(doc: Doc, documentUrl?: string): { baseUrl?: string; droppedQuery?: string } {
 	const servers = Array.isArray(doc.servers) ? doc.servers : [];
 	for (const raw of servers) {
 		const url = asString(asRecord(raw)?.url);
-		if (url && /^https?:\/\//i.test(url) && !url.includes("{")) return url.replace(/\/+$/, "");
+		if (!url || url.includes("{")) continue;
+		const split = splitUrl(url, /^https?:\/\//i.test(url) ? undefined : documentUrl);
+		if (split) return split;
 	}
 	const host = asString(doc.host);
 	if (host) {
 		const schemes = Array.isArray(doc.schemes) ? doc.schemes.map(asString) : [];
 		const scheme = schemes.includes("https") || schemes.length === 0 ? "https" : schemes[0];
 		const basePath = asString(doc.basePath) ?? "";
-		return `${scheme}://${host}${basePath}`.replace(/\/+$/, "");
+		return { baseUrl: `${scheme}://${host}${basePath}`.replace(/\/+$/, "") };
 	}
-	return undefined;
+	if (doc.swagger !== undefined) return { baseUrl: swaggerBaseFromDocument(doc, documentUrl) };
+	// OpenAPI 3: with no servers (or an empty list) the server is "/", that is, the document's own origin.
+	if (doc.openapi !== undefined && servers.length === 0) return { baseUrl: resolveAgainst("/", documentUrl) };
+	return {};
+}
+
+// A Swagger 2 document without a host is served from the API's own host, so only the host comes from
+// documentUrl; a declared scheme still wins (https when both are listed), else the document's.
+function swaggerBaseFromDocument(doc: Doc, documentUrl: string | undefined): string | undefined {
+	const resolved = resolveAgainst(asString(doc.basePath) ?? "/", documentUrl);
+	if (!resolved) return undefined;
+	const schemes = (Array.isArray(doc.schemes) ? doc.schemes.map(asString) : []).filter((s) => s === "http" || s === "https");
+	if (schemes.length === 0) return resolved;
+	const scheme = schemes.includes("https") ? "https" : schemes[0];
+	const url = new URL(resolved);
+	url.protocol = `${scheme}:`;
+	return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+}
+
+function resolveAgainst(url: string, documentUrl: string | undefined): string | undefined {
+	return documentUrl ? splitUrl(url, documentUrl)?.baseUrl : undefined;
+}
+
+// splitUrl parses an absolute URL, or a relative one against base, into the origin and path a relay
+// base URL can hold and the query it cannot. A relative URL without a base, or a non-http(s) one, is
+// undefined.
+function splitUrl(url: string, base: string | undefined): { baseUrl: string; droppedQuery?: string } | undefined {
+	try {
+		const parsed = base ? new URL(url, base) : new URL(url);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+		return { baseUrl: `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, ""), ...(parsed.search ? { droppedQuery: parsed.search } : {}) };
+	} catch {
+		return undefined;
+	}
 }
 
 // AWS specifications key every operation of a JSON-protocol API as "/#X-Amz-Target=Service.Op": the
@@ -169,10 +213,8 @@ export function templateToRoute(template: string): { path: string; headers?: Rec
 	return { path: templateToGlob(base), headers: { [fragment.slice(0, eq)]: fragment.slice(eq + 1) } };
 }
 
-const wildcardCount = (path: string) => path.split("*").length - 1;
-
 // importOpenAPI resolves a parsed document into endpoint fields.
-export function importOpenAPI(doc: Doc): OpenAPIImport {
+export function importOpenAPI(doc: Doc, documentUrl?: string): OpenAPIImport {
 	const info = asRecord(doc.info);
 	const result: OpenAPIImport = { title: asString(info?.title), version: asString(info?.version), routes: [], warnings: [] };
 	const paths = asRecord(doc.paths);
@@ -199,21 +241,8 @@ export function importOpenAPI(doc: Doc): OpenAPIImport {
 				if (!Array.isArray(effective) || !(effective.length === 0 || effective.some(isEmptyRequirement))) requirements.push(effective);
 			}
 		}
-		// The relay takes the first route that matches, so a literal path must come before a
-		// parameter glob covering it (GET /files/latest before GET /files/*) or its settings would
-		// never apply. Among globs with as many wildcards and segments, the one with more literal text goes first:
-		// /models/*:predict before /models/*, which also matches foo:predict. The sort is stable, so
-		// the document's order holds otherwise.
-		// A total order (wildcards, then segments, then literal text, longest first) keeps the sort
-		// consistent; it is stable, so document order holds for ties.
-		const literalLength = (path: string) => path.replaceAll("*", "").length;
-		const segments = (path: string) => path.split("/").length;
-		result.routes.sort(
-			(a, b) =>
-				wildcardCount(a.path) - wildcardCount(b.path) ||
-				segments(a.path) - segments(b.path) ||
-				literalLength(b.path) - literalLength(a.path),
-		);
+		// The relay takes the first route that matches; compareRoutes is the order every save uses.
+		result.routes.sort(compareRoutes);
 		if (referenced.length > 0) {
 			result.partial = true;
 			result.warnings.push(
@@ -240,6 +269,11 @@ export function importOpenAPI(doc: Doc): OpenAPIImport {
 		if (first.auth) result.auth = first.auth;
 		if (first.warning) result.warnings.push(first.warning);
 	}
-	result.baseUrl = baseUrlFromServers(doc);
+	const server = serverBase(doc, documentUrl);
+	result.baseUrl = server.baseUrl;
+	if (server.droppedQuery)
+		result.warnings.push(
+			`The server URL's query (${server.droppedQuery}) is left out of the suggested base URL, since a relay base URL cannot carry one; callers must send it themselves.`,
+		);
 	return result;
 }
