@@ -26,9 +26,6 @@ func TestCustomDocumentContentRoundTrip(t *testing.T) {
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			req := in.ToBifrostResponsesRequest(ctx)
-			for i := range req.Input {
-				req.Input[i] = schemas.DeepCopyResponsesMessage(req.Input[i])
-			}
 			out, err := ToAnthropicResponsesRequest(ctx, req)
 			if err != nil {
 				t.Fatal(err)

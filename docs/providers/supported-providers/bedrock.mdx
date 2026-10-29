@@ -878,6 +878,28 @@ Note: `file_data` is raw base64-encoded content (no `data:` URI prefix, unlike `
 
 Formats currently supported by Bifrost's Bedrock document conversion path: `pdf`, `txt`, `md`, `html`, `csv`, `doc`, `docx`, `xls`, `xlsx`.
 
+### Custom Documents with Citations
+
+For custom-content documents, use `file_content` instead of `file_data` or `file_url`. On `/v1/responses`, a document content block looks like:
+
+```json
+{
+  "type": "input_file",
+  "filename": "pack",
+  "file_content": [
+    { "type": "text", "text": "The approved budget is $4.2M." },
+    { "type": "text", "text": "The audit committee met in March." }
+  ],
+  "citations": { "enabled": true }
+}
+```
+
+On Chat Completions, put `file_content` and `filename` inside a `type: "file"` block's `file` object; keep `citations` on the block. A string is also accepted as `file_content`. Array boundaries are preserved for chunk citations.
+
+Bifrost also accepts native Converse `document.source.content` and Anthropic `source.type: "content"` documents routed to Bedrock. The Converse conversion requires `citations.enabled: true`; missing or disabled citations and non-text content return HTTP 400 before dispatch.
+
+Unary and streaming Responses replies include generated text and document-location annotations. Native Converse and Anthropic replies render those annotations in their respective citation formats. Chat Completions returns the generated text, without document-location annotations.
+
 ### Standalone Cache Point Example (Bedrock-specific)
 
 ```json
@@ -895,7 +917,7 @@ This standalone `cachePoint` block is a Bifrost/Bedrock extension (not OpenAI-st
 ### Unsupported Block Notes
 
 - `input_audio` blocks are not supported by Bedrock Converse and return an error.
-- For chat content conversion, use `file.file_data` for document payloads. `file_url` and `file_id` are not the documented Bedrock chat-content path here.
+- For chat content conversion, use `file.file_data` for file bytes or `file.file_content` for custom documents with citations. `file_id` alone is not a Bedrock document source.
 
 ### Cache Control Locations
 

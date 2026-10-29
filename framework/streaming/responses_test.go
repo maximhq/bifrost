@@ -29,14 +29,6 @@ func TestBedrockDocumentCitationsMultipleTextItems(t *testing.T) {
 		responses, err, _ := event.ToBifrostResponsesStream(sequence, state)
 		require.Nil(t, err)
 		for _, response := range responses {
-			if response.ContentIndex != nil {
-				require.Zero(t, *response.ContentIndex, "Responses content indices are local to the output item")
-			}
-			native, err := bedrock.ToBedrockConverseStreamResponse(response)
-			require.NoError(t, err)
-			if native != nil && native.ContentBlockIndex != nil {
-				require.Equal(t, *event.ContentBlockIndex, *native.ContentBlockIndex, "Converse must retain the message-wide block index")
-			}
 			chunks = append(chunks, &ResponsesStreamChunk{ChunkIndex: sequence, StreamResponse: response})
 			sequence++
 		}

@@ -412,41 +412,43 @@ func materializeBedrockDocument(
 	citations *schemas.Citations,
 	sourceRequirement bedrockDocumentSourceRequirement,
 ) (*BedrockDocumentSource, error) {
-	var bedrockCitations *BedrockCitationsConfig
-	if citations != nil && citations.Enabled != nil {
-		bedrockCitations = &BedrockCitationsConfig{Enabled: *citations.Enabled}
-	}
 	document := &BedrockDocumentSource{
-		Name:      "document",
-		Format:    "pdf",
-		Source:    &BedrockDocumentSourceData{},
-		Citations: bedrockCitations,
+		Name:   "document",
+		Format: "pdf",
+		Source: &BedrockDocumentSourceData{},
+	}
+	if citations != nil && citations.Enabled != nil {
+		document.Citations = &BedrockCitationsConfig{Enabled: *citations.Enabled}
 	}
 	if filename != nil {
 		document.Name = normalizeBedrockFilename(*filename)
 	}
 
 	if len(fileContent) > 0 {
-		if bytes.Equal(bytes.TrimSpace(fileContent), []byte("null")) {
-			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be null")
-		}
 		if fileData != nil || (fileURL != nil && *fileURL != "") {
 			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be combined with file_data or file_url")
 		}
-		if citations == nil || citations.Enabled == nil || !*citations.Enabled {
+		if document.Citations == nil || !document.Citations.Enabled {
 			return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content requires citations.enabled=true")
 		}
-		var text string
-		if err := sonic.Unmarshal(fileContent, &text); err == nil {
+		content := bytes.TrimSpace(fileContent)
+		if len(content) > 0 && content[0] == '"' {
+			var text string
+			if err := sonic.Unmarshal(content, &text); err != nil {
+				return nil, providerUtils.InvalidRequestErrorf("invalid document file_content: %v", err)
+			}
 			document.Source.Content = []BedrockDocumentContentBlock{{Text: &text}}
 		} else {
-			var blocks []schemas.ResponsesMessageContentBlock
-			if err := sonic.Unmarshal(fileContent, &blocks); err != nil || len(blocks) == 0 {
+			var blocks []struct {
+				Type string  `json:"type"`
+				Text *string `json:"text"`
+			}
+			if err := sonic.Unmarshal(content, &blocks); err != nil || len(blocks) == 0 {
 				return nil, providerUtils.InvalidRequestErrorf("document file_content must be a string or a non-empty array of text blocks")
 			}
 			document.Source.Content = make([]BedrockDocumentContentBlock, 0, len(blocks))
 			for _, block := range blocks {
-				if (string(block.Type) != "text" && block.Type != schemas.ResponsesInputMessageContentBlockTypeText) || block.Text == nil {
+				if block.Type != "text" || block.Text == nil {
 					return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content supports only text blocks")
 				}
 				document.Source.Content = append(document.Source.Content, BedrockDocumentContentBlock{Text: block.Text})

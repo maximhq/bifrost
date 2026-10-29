@@ -269,21 +269,32 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
 			{Type: ChatContentBlockTypeText, Text: Ptr("18C, light rain"), CacheControl: &CacheControl{Type: CacheControlTypeEphemeral}},
 			{Type: ChatContentBlockTypeImage, ImageURLStruct: &ChatInputImage{URL: "https://example.com/radar.png"}},
+			{Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileURL: Ptr("s3://bucket/document.pdf"), Filename: Ptr("pack.pdf"), FileType: Ptr("application/pdf")}},
+			{Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileContent: json.RawMessage(`[{"type":"text","text":"Budget."}]`), Filename: Ptr("pack")}, Citations: &Citations{Enabled: Ptr(true)}},
 		}},
 	}
-	want := []ResponsesMessageContentBlockType{ResponsesInputMessageContentBlockTypeText, ResponsesInputMessageContentBlockTypeImage}
+	want := []ResponsesMessageContentBlockType{ResponsesInputMessageContentBlockTypeText, ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockTypeFile}
 
 	check := func(t *testing.T, name string, msg *ResponsesMessage) {
 		if msg == nil || msg.Type == nil || *msg.Type != ResponsesMessageTypeFunctionCallOutput {
 			t.Fatalf("%s: expected a function_call_output message, got %#v", name, msg)
 		}
 		out := msg.ResponsesToolMessage.Output
-		if out == nil || out.ResponsesFunctionToolCallOutputBlocks == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != 2 {
-			t.Fatalf("%s: expected 2 output blocks, got %#v", name, out)
+		if out == nil || out.ResponsesFunctionToolCallOutputBlocks == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != len(want) {
+			t.Fatalf("%s: expected 4 output blocks, got %#v", name, out)
 		}
 		for i, b := range out.ResponsesFunctionToolCallOutputBlocks {
 			if b.Type != want[i] {
 				t.Errorf("%s: output[%d].type = %q, want %q", name, i, b.Type, want[i])
+			}
+			if file := cm.Content.ContentBlocks[i].File; file != nil {
+				expected := &ResponsesInputMessageContentBlockFile{FileData: file.FileData, FileURL: file.FileURL, FileContent: file.FileContent, Filename: file.Filename, FileType: file.FileType}
+				if !reflect.DeepEqual(expected, b.ResponsesInputMessageContentBlockFile) {
+					t.Errorf("%s: output[%d] lost file data: %+v", name, i, b.ResponsesInputMessageContentBlockFile)
+				}
+				if !reflect.DeepEqual(cm.Content.ContentBlocks[i].Citations, b.Citations) {
+					t.Errorf("%s: output[%d] lost citation settings", name, i)
+				}
 			}
 		}
 		if out.ResponsesFunctionToolCallOutputBlocks[0].CacheControl == nil {
@@ -297,47 +308,6 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 		t.Fatalf("ToResponsesMessages: expected 1 message, got %d", len(msgs))
 	}
 	check(t, "ToResponsesMessages", &msgs[0])
-}
-
-func TestToResponsesMessages_ToolResultFilesPreserveSources(t *testing.T) {
-	for _, file := range []ChatInputFile{
-		{FileURL: Ptr("https://example.test/document.pdf"), Filename: Ptr("pack.pdf"), FileType: Ptr("application/pdf")},
-		{FileURL: Ptr("s3://bucket/document.pdf"), Filename: Ptr("pack.pdf"), FileType: Ptr("application/pdf")},
-		{FileData: Ptr("QnVkZ2V0Lg=="), Filename: Ptr("pack.txt"), FileType: Ptr("text/plain")},
-		{FileContent: json.RawMessage(`[{"type":"text","text":"Budget."}]`), Filename: Ptr("pack")},
-	} {
-		cm := ChatMessage{
-			Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_document")},
-			Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
-				Type: ChatContentBlockTypeFile, File: &file, Citations: &Citations{Enabled: Ptr(true)},
-			}}},
-		}
-		messages := cm.ToResponsesMessages()
-		if len(messages) != 1 {
-			t.Fatalf("expected one tool result, got %d", len(messages))
-		}
-		for name, message := range map[string]*ResponsesMessage{
-			"ToResponsesMessages": &messages[0], "ToResponsesToolMessage": cm.ToResponsesToolMessage(),
-		} {
-			if message == nil || message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Output == nil {
-				t.Fatalf("%s: missing structured tool result", name)
-			}
-			blocks := message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
-			if len(blocks) != 1 || blocks[0].ResponsesInputMessageContentBlockFile == nil {
-				t.Fatalf("%s: expected one file block, got %#v", name, blocks)
-			}
-			want := &ResponsesInputMessageContentBlockFile{
-				FileData: file.FileData, FileContent: file.FileContent, FileURL: file.FileURL,
-				Filename: file.Filename, FileType: file.FileType,
-			}
-			if !reflect.DeepEqual(want, blocks[0].ResponsesInputMessageContentBlockFile) {
-				t.Errorf("%s: file source changed: want %+v, got %+v", name, want, blocks[0].ResponsesInputMessageContentBlockFile)
-			}
-			if blocks[0].Citations == nil || blocks[0].Citations.Enabled == nil || !*blocks[0].Citations.Enabled {
-				t.Errorf("%s: citation configuration was lost", name)
-			}
-		}
-	}
 }
 
 func BenchmarkToResponsesMessagesToolFileURL(b *testing.B) {

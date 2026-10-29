@@ -3872,15 +3872,15 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	}
 
 	file := block.File
-	if len(file.FileContent) > 0 {
-		documentBlock.Title = file.Filename
-		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: file.FileContent}
-		return documentBlock
-	}
 
 	// Set title if provided
 	if file.Filename != nil {
 		documentBlock.Title = file.Filename
+	}
+
+	if len(file.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: file.FileContent}
+		return documentBlock
 	}
 
 	// Handle uploaded file references from OpenAI-compatible file blocks.

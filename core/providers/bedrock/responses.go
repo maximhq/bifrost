@@ -365,33 +365,8 @@ func recordBedrockOutputItems(state *BedrockResponsesStreamState, responses []*s
 	if state == nil {
 		return
 	}
-	// Uncited streams keep the original recording path behind one empty check.
-	if len(state.TextAnnotations) > 0 {
-		for _, response := range responses {
-			if response == nil || response.OutputIndex == nil {
-				continue
-			}
-			annotations := state.TextAnnotations[*response.OutputIndex]
-			if len(annotations) == 0 {
-				continue
-			}
-			if response.Type == schemas.ResponsesStreamResponseTypeContentPartDone && response.Part != nil && response.Part.ResponsesOutputMessageContentText != nil {
-				response.Part.Annotations = append([]schemas.ResponsesOutputMessageContentTextAnnotation(nil), annotations...)
-			}
-			if response.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && response.Item != nil && response.Item.Content != nil {
-				for i := range response.Item.Content.ContentBlocks {
-					block := &response.Item.Content.ContentBlocks[i]
-					if block.ResponsesOutputMessageContentText != nil {
-						block.Annotations = append([]schemas.ResponsesOutputMessageContentTextAnnotation(nil), annotations...)
-					}
-				}
-			}
-		}
-	}
 	for _, response := range responses {
-		// Each Bedrock block becomes a separate Responses item with one content
-		// part. Retain a nonzero native index for Converse egress before making
-		// the Responses index item-local. Index-zero streams allocate nothing extra.
+		// Responses indices are item-local; Converse keeps the native block index.
 		if response != nil && response.ContentIndex != nil && *response.ContentIndex != 0 {
 			response.BedrockContentBlockIndex = response.ContentIndex
 			response.ContentIndex = schemas.Ptr(0)
@@ -789,14 +764,17 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 		if exists && state.CompletedOutputIndices[outputIndex] {
 			return nil, nil, false
 		}
-		if !exists {
-			isTextBlock := chunk.Delta.Text != nil || (chunk.Delta.Citation != nil && (chunk.Delta.Citation.Location.Web != nil ||
-				chunk.Delta.Citation.Location.DocumentChunk != nil || chunk.Delta.Citation.Location.DocumentChar != nil || chunk.Delta.Citation.Location.DocumentPage != nil))
-			if chunk.Delta.Citation != nil && !isTextBlock {
-				return nil, nil, false // An unknown citation must not reserve an uninitialized text item.
+		var responses []*schemas.BifrostResponsesStreamResponse
+		var annotation *schemas.ResponsesOutputMessageContentTextAnnotation
+		if chunk.Delta.Citation != nil {
+			annotation = chunk.Delta.Citation.toBifrostAnnotation()
+			if annotation == nil {
+				return nil, nil, false
 			}
+		}
+		if !exists {
+			isTextBlock := chunk.Delta.Text != nil || annotation != nil
 			// Check if this is a new content block that should close previous reasoning blocks
-			var responses []*schemas.BifrostResponsesStreamResponse
 
 			// If this is a text delta with a new content block index, close any open reasoning blocks
 			if isTextBlock && contentBlockIndex > 0 {
@@ -940,39 +918,6 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 					Part:           part,
 				})
 			}
-
-			// If this is a text delta for a new content block, also emit the text delta in the same batch
-			if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
-				text := *chunk.Delta.Text
-				// Accumulate text for done events
-				if state.TextBuffers[outputIndex] == nil {
-					state.TextBuffers[outputIndex] = &strings.Builder{}
-				}
-				state.TextBuffers[outputIndex].WriteString(text)
-				itemID := state.ItemIDs[outputIndex]
-				textDeltaResponse := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   &contentBlockIndex,
-					Delta:          &text,
-					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
-				}
-				if itemID != "" {
-					textDeltaResponse.ItemID = &itemID
-				}
-				responses = append(responses, textDeltaResponse)
-			}
-
-			if chunk.Delta.Citation != nil {
-				if event := chunk.Delta.Citation.toBifrostStreamAnnotation(state, outputIndex, contentBlockIndex, sequenceNumber+len(responses)); event != nil {
-					responses = append(responses, event)
-				}
-			}
-			// If we have responses to return (either from closing reasoning or creating text item), return them first
-			if len(responses) > 0 {
-				return responses, nil, false
-			}
 		}
 
 		switch {
@@ -988,7 +933,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-					SequenceNumber: sequenceNumber,
+					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   &contentBlockIndex,
 					Delta:          &text,
@@ -997,13 +942,35 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				if itemID != "" {
 					response.ItemID = &itemID
 				}
-				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+				responses = append(responses, response)
 			}
 
-		case chunk.Delta.Citation != nil:
-			if response := chunk.Delta.Citation.toBifrostStreamAnnotation(state, outputIndex, contentBlockIndex, sequenceNumber); response != nil {
-				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+			return responses, nil, false
+
+		case annotation != nil:
+			if annotation.URL != nil && state.NovaGroundingIndices[outputIndex] {
+				state.NovaGroundingCitations[outputIndex] = append(state.NovaGroundingCitations[outputIndex],
+					schemas.ResponsesWebSearchToolCallActionSearchSource{Type: "url", URL: *annotation.URL, Title: annotation.Title})
+			} else {
+				if state.TextAnnotations == nil {
+					state.TextAnnotations = make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation)
+				}
+				state.TextAnnotations[outputIndex] = append(state.TextAnnotations[outputIndex], *annotation)
 			}
+			annotationIndex := state.AnnotationIndices[outputIndex]
+			state.AnnotationIndices[outputIndex]++
+			response := &schemas.BifrostResponsesStreamResponse{
+				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				SequenceNumber:  sequenceNumber + len(responses),
+				OutputIndex:     schemas.Ptr(outputIndex),
+				ContentIndex:    &contentBlockIndex,
+				AnnotationIndex: &annotationIndex,
+				Annotation:      annotation,
+			}
+			if itemID := state.ItemIDs[outputIndex]; itemID != "" {
+				response.ItemID = &itemID
+			}
+			return append(responses, response), nil, false
 
 		case chunk.Delta.ToolUse != nil:
 			// Handle tool use delta - function call arguments or code interpreter code
@@ -1279,10 +1246,9 @@ func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, c
 	}
 }
 
-// appendBedrockTextDoneEvents closes a text item at a native block stop, before a
-// tool starts, or at EOF. Keeping these paths together preserves the same text
-// and annotation lifecycle regardless of which boundary closes the item first.
+// appendBedrockTextDoneEvents closes text and citations at a block stop, tool start, or EOF.
 func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResponse, state *BedrockResponsesStreamState, outputIndex, contentIndex, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	annotations := state.TextAnnotations[outputIndex]
 	itemID := state.ItemIDs[outputIndex]
 	text := ""
 	if buf := state.TextBuffers[outputIndex]; buf != nil {
@@ -1301,7 +1267,7 @@ func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResp
 		Type: schemas.ResponsesOutputMessageContentTypeText,
 		Text: schemas.Ptr(text),
 		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+			Annotations: append([]schemas.ResponsesOutputMessageContentTextAnnotation{}, annotations...),
 			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 		},
 	}
@@ -1314,12 +1280,12 @@ func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResp
 		Part:           part,
 	})
 	contentBlocks := []schemas.ResponsesMessageContentBlock{}
-	if text != "" || len(state.TextAnnotations[outputIndex]) > 0 {
+	if text != "" || len(annotations) > 0 {
 		contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
 			Type: schemas.ResponsesOutputMessageContentTypeText,
 			Text: schemas.Ptr(text),
 			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-				Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				Annotations: append([]schemas.ResponsesOutputMessageContentTextAnnotation{}, annotations...),
 				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			},
 		})
@@ -1337,6 +1303,7 @@ func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResp
 			Content: &schemas.ResponsesMessageContent{ContentBlocks: contentBlocks},
 		},
 	})
+	delete(state.TextAnnotations, outputIndex)
 	delete(state.TextBuffers, outputIndex)
 	state.CompletedOutputIndices[outputIndex] = true
 	return responses
@@ -4709,35 +4676,6 @@ func (citation BedrockCitation) toBifrostAnnotation() *schemas.ResponsesOutputMe
 	return annotation
 }
 
-func (citation BedrockCitation) toBifrostStreamAnnotation(state *BedrockResponsesStreamState, outputIndex, contentIndex, sequenceNumber int) *schemas.BifrostResponsesStreamResponse {
-	annotation := citation.toBifrostAnnotation()
-	if annotation == nil {
-		return nil
-	}
-	if citation.Location.Web != nil && state.NovaGroundingIndices[outputIndex] {
-		state.NovaGroundingCitations[outputIndex] = append(state.NovaGroundingCitations[outputIndex],
-			schemas.ResponsesWebSearchToolCallActionSearchSource{Type: "url", URL: *annotation.URL, Title: annotation.Title})
-	}
-	annotationIndex := state.AnnotationIndices[outputIndex]
-	state.AnnotationIndices[outputIndex]++
-	if state.TextAnnotations == nil {
-		state.TextAnnotations = make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation)
-	}
-	state.TextAnnotations[outputIndex] = append(state.TextAnnotations[outputIndex], *annotation)
-	event := &schemas.BifrostResponsesStreamResponse{
-		Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
-		SequenceNumber:  sequenceNumber,
-		OutputIndex:     &outputIndex,
-		ContentIndex:    &contentIndex,
-		AnnotationIndex: &annotationIndex,
-		Annotation:      annotation,
-	}
-	if itemID := state.ItemIDs[outputIndex]; itemID != "" {
-		event.ItemID = &itemID
-	}
-	return event
-}
-
 func bedrockCitationFromAnnotation(annotation schemas.ResponsesOutputMessageContentTextAnnotation) *BedrockCitation {
 	citation := &BedrockCitation{}
 	switch annotation.Type {
@@ -5272,9 +5210,12 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				} else if block.Document.Source.S3Location != nil {
 					fileBlock.ResponsesInputMessageContentBlockFile.FileURL = &block.Document.Source.S3Location.URI
 				} else if block.Document.Source.Content != nil {
-					content := make([]schemas.ResponsesMessageContentBlock, 0, len(block.Document.Source.Content))
-					for _, part := range block.Document.Source.Content {
-						content = append(content, schemas.ResponsesMessageContentBlock{Type: "text", Text: part.Text})
+					content := make([]struct {
+						Type string  `json:"type"`
+						Text *string `json:"text,omitempty"`
+					}, len(block.Document.Source.Content))
+					for i, part := range block.Document.Source.Content {
+						content[i].Type, content[i].Text = "text", part.Text
 					}
 					raw, err := providerUtils.MarshalSorted(content)
 					if err == nil {
@@ -5866,29 +5807,17 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				blocks = append(blocks, bedrockBlock)
 			}
 
-			// For text blocks: emit a citationsContent block per url_citation annotation,
-			// reconstructing the interleaved text+citation structure Bedrock uses.
+			// Legacy Nova web citations remain separate from the preceding text block.
 			if bedrockBlock.Text != nil && block.ResponsesOutputMessageContentText != nil {
-				for _, annotation := range block.ResponsesOutputMessageContentText.Annotations {
-					if annotation.Type != "url_citation" || annotation.URL == nil {
+				for _, annotation := range block.Annotations {
+					if annotation.Type != "url_citation" {
 						continue
 					}
-					domain := ""
-					if annotation.Title != nil {
-						domain = *annotation.Title
+					if citation := bedrockCitationFromAnnotation(annotation); citation != nil {
+						blocks = append(blocks, BedrockContentBlock{
+							CitationsContent: &BedrockCitationsContent{Citations: []BedrockCitation{*citation}},
+						})
 					}
-					blocks = append(blocks, BedrockContentBlock{
-						CitationsContent: &BedrockCitationsContent{
-							Citations: []BedrockCitation{{
-								Location: BedrockCitationLocation{
-									Web: &BedrockWebCitationLocation{
-										URL:    *annotation.URL,
-										Domain: domain,
-									},
-								},
-							}},
-						},
-					})
 				}
 			}
 

@@ -276457,7 +276457,7 @@
     },
     {
       "name": "261. Bedrock document citation fidelity (#8666)",
-      "description": "Pins the native Converse and Anthropic custom-document failures, text-source citation loss, generated text and document location fidelity, and typed 400 refusals. Both unary and streaming paths are covered. Chat has no document-location annotation contract, so its cases pin generated answer text rather than inventing a new wire shape. All calls are small and user-triggered; structural validation makes no provider requests. Verified on 2026-10-19 against the current AWS/Anthropic model documentation: Claude Haiku 5.5 uses fixed, undated IDs. Bedrock cases use global.anthropic.claude-haiku-5-5, a documented Converse profile. Short-budget cases explicitly disable thinking, which is otherwise adaptive by default. S3 model refusals are independent of citation generation.",
+      "description": "Covers custom-document forwarding and document citation fidelity on Converse, Anthropic-to-Bedrock, Responses, and Chat routes, including streaming. Chat preserves generated text; document locations are returned on the other surfaces. Custom content requires enabled citations; existing model-specific S3 refusals remain unchanged.",
       "item": [
         {
           "name": "261.01 bedrock/claude-haiku-5-5 custom content Converse (document citation fidelity) - #8666",
@@ -276467,7 +276467,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var j=pm.response.json(), text='', citations=[];",
                   "(j.output.message.content || []).forEach(function (b) {",
                   "  if (b.citationsContent) {",
@@ -276522,7 +276521,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "pm.test('AWS EventStream framing', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('vnd.amazon.eventstream'); });",
                   "var raw=pm.response.stream.toString('utf8'), text='', citations=[], m;",
                   "var textDeltas=/\"delta\":\\s*\\{\"text\":\\s*(\"(?:[^\"\\\\]|\\\\.)*\")\\s*\\}/g;",
@@ -276576,7 +276574,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var j=pm.response.json(), text='', citations=[];",
                   "(j.output.message.content || []).forEach(function (b) {",
                   "  if (b.citationsContent) {",
@@ -276631,7 +276628,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "pm.test('AWS EventStream framing', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('vnd.amazon.eventstream'); });",
                   "var raw=pm.response.stream.toString('utf8'), text='', citations=[], m;",
                   "var textDeltas=/\"delta\":\\s*\\{\"text\":\\s*(\"(?:[^\"\\\\]|\\\\.)*\")\\s*\\}/g;",
@@ -276685,7 +276681,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var j=pm.response.json(), text='', citations=[];",
                   "(j.content || []).forEach(function (b) { text += b.text || ''; (b.citations || []).forEach(function (a) { citations.push({documentIndex:a.document_index,start:a.start_block_index,end:a.end_block_index}); }); });",
                   "pm.test('document citations preserve source locations', function () {",
@@ -276734,7 +276729,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
                   "var text='', citations=[];",
                   "events.forEach(function (e) { if (e.delta && e.delta.type === 'text_delta') { text += e.delta.text || ''; } if (e.delta && e.delta.type === 'citations_delta') { var a=e.delta.citation; citations.push({documentIndex:a.document_index,start:a.start_block_index,end:a.end_block_index}); } });",
@@ -276784,7 +276778,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var j=pm.response.json(), text='', citations=[];",
                   "(j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { text += b.text || ''; (b.annotations || []).forEach(function (a) { citations.push({documentIndex:a.index,start:a.start_block_index,end:a.end_block_index}); }); }); });",
                   "pm.test('document citations preserve source locations', function () {",
@@ -276832,7 +276825,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
                   "var text='', citations=[];",
                   "events.forEach(function (e) { if (e.type === 'response.output_text.delta') { text += e.delta || ''; } if (e.type === 'response.output_text.annotation.added') { var a=e.annotation; citations.push({documentIndex:a.index,start:a.start_block_index,end:a.end_block_index}); } });",
@@ -276899,9 +276891,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var j=pm.response.json(), text='', citations=[];",
-                  "text=j.choices[0].message.content || '';",
+                  "var text=pm.response.json().choices[0].message.content || '';",
                   "pm.test('cited answer text is not discarded', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
                 ]
               }
@@ -276940,9 +276930,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
-                  "var text='', citations=[];",
+                  "var text='';",
                   "events.forEach(function (e) { if (e.choices && e.choices[0].delta) { text += e.choices[0].delta.content || ''; } });",
                   "pm.test('cited answer text is not discarded', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
                 ]
@@ -277046,309 +277035,6 @@
                 "model",
                 "global.anthropic.claude-haiku-5-5",
                 "converse"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.13 bedrock/claude-haiku-5-5 empty optional document citations are normalized (document citation fidelity) - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('empty optional citations do not produce provider validation errors', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var j=pm.response.json(), text=''; (j.output || []).forEach(function (m) { (m.content || []).forEach(function (b) { text += b.text || ''; }); });",
-                  "pm.test('document source survives normalization', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack.txt\",\n          \"file_data\": \"data:text/plain,The board approved a budget of $4.2M.\",\n          \"citations\": {}\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/responses",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "responses"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.14 bedrock/claude-haiku-5-5 responses conflicting custom content and file_data (document citation fidelity) [EXPECT-400] - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('conflicting document sources are rejected locally as 400', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); pm.expect(pm.response.text()).to.include('cannot be combined'); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          },\n          \"file_data\": \"QnVkZ2V0Lg==\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/responses",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "responses"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.15 bedrock/claude-haiku-5-5 chat conflicting custom content and file_url (document citation fidelity) [EXPECT-400] - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('conflicting document sources are rejected locally as 400', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); pm.expect(pm.response.text()).to.include('cannot be combined'); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ],\n            \"file_url\": \"https://example.test/pack.txt\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.16 anthropic/claude-haiku-5-5 native custom content unary (document citation fidelity) - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var j=pm.response.json(), text='', citations=[];",
-                  "(j.content || []).forEach(function (b) { text += b.text || ''; (b.citations || []).forEach(function (a) { citations.push({documentIndex:a.document_index,start:a.start_block_index,end:a.end_block_index}); }); });",
-                  "pm.test('document citations preserve source locations', function () {",
-                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
-                  "  citations.forEach(function (a) {",
-                  "    pm.expect(a.documentIndex).to.eql(0);",
-                  "    pm.expect(a.start).to.be.at.least(0);",
-                  "    pm.expect(a.end).to.be.above(a.start);",
-                  "  });",
-                  "});",
-                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"title\": \"pack\",\n          \"source\": {\n            \"type\": \"content\",\n            \"content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.17 anthropic/claude-haiku-5-5 native custom content streaming (document citation fidelity) - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
-                  "var text='', citations=[];",
-                  "events.forEach(function (e) { if (e.delta && e.delta.type === 'text_delta') { text += e.delta.text || ''; } if (e.delta && e.delta.type === 'citations_delta') { var a=e.delta.citation; citations.push({documentIndex:a.document_index,start:a.start_block_index,end:a.end_block_index}); } });",
-                  "pm.test('document citations preserve source locations', function () {",
-                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
-                  "  citations.forEach(function (a) {",
-                  "    pm.expect(a.documentIndex).to.eql(0);",
-                  "    pm.expect(a.start).to.be.at.least(0);",
-                  "    pm.expect(a.end).to.be.above(a.start);",
-                  "  });",
-                  "});",
-                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"title\": \"pack\",\n          \"source\": {\n            \"type\": \"content\",\n            \"content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.18 bedrock/claude-haiku-5-5 responses string custom content unary (document citation fidelity) - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('expected HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var j=pm.response.json(), text='', citations=[];",
-                  "(j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { text += b.text || ''; (b.annotations || []).forEach(function (a) { citations.push({documentIndex:a.index,start:a.start_block_index,end:a.end_block_index}); }); }); });",
-                  "pm.test('document citations preserve source locations', function () {",
-                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
-                  "  citations.forEach(function (a) {",
-                  "    pm.expect(a.documentIndex).to.eql(0);",
-                  "    pm.expect(a.start).to.be.at.least(0);",
-                  "    pm.expect(a.end).to.be.above(a.start);",
-                  "  });",
-                  "});",
-                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": \"The board approved the 2026 budget of $4.2M.\",\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/responses",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "responses"
-              ]
-            }
-          }
-        },
-        {
-          "name": "261.19 bedrock/claude-haiku-5-5 chat-to-responses tool file URL preserves S3 refusal (document citation fidelity) [EXPECT-400] - #8666",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('tool-result URL survives the compatibility mux and reaches the S3 model gate', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); pm.expect(pm.response.text()).to.include('does not support s3://'); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "x-bf-compat",
-                "value": "[\"convert_chat_to_responses\"]"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read the retrieved document.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_document\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_document\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_document\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_url\": \"s3://bucket/pack.pdf\",\n            \"filename\": \"pack.pdf\",\n            \"file_type\": \"application/pdf\"\n          }\n        }\n      ]\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
               ]
             }
           }

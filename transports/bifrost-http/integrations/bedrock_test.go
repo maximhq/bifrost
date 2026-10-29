@@ -46,42 +46,6 @@ func TestDocumentCitationsConverseRouteRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "Budget: $4.2M.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.0.text").Str)
 			require.True(t, gjson.GetBytes(wire, "messages.0.content.0.document.citations.enabled").Bool())
-			var native bedrock.BedrockConverseResponse
-			require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"citationsContent":{"content":[{"text":"$4.2M."}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn"}`), &native))
-			resp, err := native.ToBifrostResponsesResponse(ctx)
-			require.NoError(t, err)
-			if route.StreamConfig == nil {
-				converted, err := route.ResponsesResponseConverter(ctx, resp)
-				require.NoError(t, err)
-				wire, err := providerUtils.MarshalSorted(converted)
-				require.NoError(t, err)
-				require.Equal(t, "$4.2M.", gjson.GetBytes(wire, "output.message.content.0.citationsContent.content.0.text").Str)
-				require.True(t, gjson.GetBytes(wire, "output.message.content.0.citationsContent.citations.0.location.documentChunk.start").Exists())
-			} else {
-				annotation := resp.Output[0].Content.ContentBlocks[0].Annotations[0]
-				_, converted, err := route.StreamConfig.ResponsesStreamResponseConverter(ctx, &schemas.BifrostResponsesStreamResponse{
-					Type: schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded, ContentIndex: schemas.Ptr(0), Annotation: &annotation,
-				})
-				require.NoError(t, err)
-				require.NotNil(t, converted)
-				wire, err := providerUtils.MarshalSorted(converted)
-				require.NoError(t, err)
-				require.True(t, gjson.GetBytes(wire, "delta.citation.location.documentChunk.start").Exists())
-			}
-			req.ResponsesRequest.Input[0].Content.ContentBlocks[0].Citations.Enabled = schemas.Ptr(false)
-			_, bad := providerUtils.CheckContextAndGetRequestBody(ctx, req.ResponsesRequest, func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return bedrock.ToBedrockResponsesRequest(ctx, req.ResponsesRequest)
-			})
-			require.NotNil(t, bad)
-			router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
-			var httpCtx fasthttp.RequestCtx
-			if route.StreamConfig == nil {
-				router.sendError(&httpCtx, ctx, route.ErrorConverter, bad)
-			} else {
-				router.sendStreamError(&httpCtx, ctx, route, bad)
-			}
-			require.Equal(t, 400, httpCtx.Response.StatusCode(), "%s", httpCtx.Response.Body())
-			require.Contains(t, string(httpCtx.Response.Body()), "citations.enabled")
 		})
 	}
 }

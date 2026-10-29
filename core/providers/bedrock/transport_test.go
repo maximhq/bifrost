@@ -10,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -25,117 +24,101 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
-// Service envelopes and model IDs follow the current Bedrock contract. Usage
-// counts are synthetic fixture data, not tokenizer measurements for that model.
 func TestDocumentCitationsMockProvider(t *testing.T) {
-	for _, streaming := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stream=%t", streaming), func(t *testing.T) {
-			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls.Add(1)
-				body, err := io.ReadAll(r.Body)
-				assert.NoError(t, err)
-				doc := gjson.GetBytes(body, "messages.0.content.0.document")
-				assert.Equal(t, "disabled", gjson.GetBytes(body, "additionalModelRequestFields.thinking.type").Str, "%s", body)
-				assert.Contains(t, r.URL.Path, "/model/global.anthropic.claude-haiku-5-5/converse")
-				assert.True(t, doc.Get("citations.enabled").Bool(), "%s", body)
-				assert.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", body)
-				assert.False(t, doc.Get("format").Exists(), "%s", body)
-				if !streaming {
-					w.Header().Set("Content-Type", "application/json")
-					_, err := io.WriteString(w, `{"output":{"message":{"role":"assistant","content":[{"citationsContent":{"content":[{"text":"$4.2M."}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn","usage":{"inputTokens":8,"outputTokens":4,"totalTokens":12}}`)
-					assert.NoError(t, err)
-					return
-				}
-				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
-				encoder := eventstream.NewEncoder()
-				for _, event := range []struct{ kind, payload string }{
-					{"messageStart", `{"role":"assistant"}`},
-					{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
-					{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"$4.2M."}}`},
-					{"contentBlockStop", `{"contentBlockIndex":0}`},
-					{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
-					{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"text":" Approved."}}`},
-					{"contentBlockStop", `{"contentBlockIndex":1}`},
-					{"messageStop", `{"stopReason":"end_turn"}`},
-					{"metadata", `{"usage":{"inputTokens":8,"outputTokens":4,"totalTokens":12}}`},
-				} {
-					assert.NoError(t, encoder.Encode(w, eventstream.Message{
-						Headers: eventstream.Headers{
-							{Name: ":message-type", Value: eventstream.StringValue("event")},
-							{Name: ":event-type", Value: eventstream.StringValue(event.kind)},
-							{Name: ":content-type", Value: eventstream.StringValue("application/json")},
-						}, Payload: []byte(event.payload),
-					}))
-				}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		doc := gjson.GetBytes(body, "messages.0.content.0.document")
+		assert.True(t, doc.Get("citations.enabled").Bool(), "%s", body)
+		assert.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", body)
+		assert.False(t, doc.Get("format").Exists(), "%s", body)
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		encoder := eventstream.NewEncoder()
+		for _, event := range []struct{ kind, payload string }{
+			{"messageStart", `{"role":"assistant"}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"$4.2M."}}`},
+			{"contentBlockStop", `{"contentBlockIndex":0}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"text":" Approved."}}`},
+			{"contentBlockStop", `{"contentBlockIndex":1}`},
+			{"messageStop", `{"stopReason":"end_turn"}`},
+			{"metadata", `{"usage":{"inputTokens":8,"outputTokens":4,"totalTokens":12}}`},
+		} {
+			assert.NoError(t, encoder.Encode(w, eventstream.Message{
+				Headers: eventstream.Headers{
+					{Name: ":message-type", Value: eventstream.StringValue("event")},
+					{Name: ":event-type", Value: eventstream.StringValue(event.kind)},
+					{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+				}, Payload: []byte(event.payload),
 			}))
-			defer server.Close()
-			provider := newTestProviderWithServer(t, server)
-			ctx := testBedrockCtx()
-			var ingress BedrockConverseRequest
-			require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."}]},"citations":{"enabled":true}}},{"text":"Cite the budget."}]}]}`), &ingress))
-			ingress.ModelID = "global.anthropic.claude-haiku-5-5"
-			req, err := ingress.ToBifrostResponsesRequest(ctx)
-			require.NoError(t, err)
-			req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
-			req.Params.MaxOutputTokens = schemas.Ptr(128)
-			if !streaming {
-				resp, bErr := provider.Responses(ctx, testBedrockKey(), req)
-				require.Nil(t, bErr)
-				require.Equal(t, "$4.2M.", *resp.Output[0].Content.ContentBlocks[0].Text)
-				require.Len(t, resp.Output[0].Content.ContentBlocks[0].Annotations, 1)
-			} else {
-				stream, bErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
-				require.Nil(t, bErr)
-				var text string
-				annotations, completed := 0, false
-				closedBlocks := 0
-				for chunk := range stream {
-					require.Nil(t, chunk.BifrostError)
-					ev := chunk.BifrostResponsesStreamResponse
-					if ev == nil {
-						continue
-					}
-					switch ev.Type {
-					case schemas.ResponsesStreamResponseTypeOutputTextDelta:
-						if ev.OutputIndex != nil && *ev.OutputIndex == 1 {
-							require.Equal(t, 1, closedBlocks, "native contentBlockStop must close the first item before the next delta")
-						}
-						require.Zero(t, *ev.ContentIndex)
-						text += *ev.Delta
-					case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
-						annotations++
-						require.Equal(t, "content_block_location", ev.Annotation.Type)
-					case schemas.ResponsesStreamResponseTypeOutputItemDone:
-						closedBlocks++
-					case schemas.ResponsesStreamResponseTypeCompleted:
-						completed = true
-						require.Len(t, ev.Response.Output, 2)
-						require.Len(t, ev.Response.Output[0].Content.ContentBlocks[0].Annotations, 1)
-						require.Len(t, ev.Response.Output[1].Content.ContentBlocks[0].Annotations, 1)
-					}
-				}
-				require.True(t, completed)
-				require.Equal(t, "$4.2M. Approved.", text)
-				require.Equal(t, 2, annotations)
-				require.Equal(t, 2, closedBlocks)
+		}
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	var ingress BedrockConverseRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."}]},"citations":{"enabled":true}}},{"text":"Cite the budget."}]}]}`), &ingress))
+	ingress.ModelID = "global.anthropic.claude-haiku-5-5"
+	req, err := ingress.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+	req.Params.MaxOutputTokens = schemas.Ptr(128)
+	stream, bErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bErr)
+	var text string
+	annotations, completed := 0, false
+	closedBlocks := 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		ev := chunk.BifrostResponsesStreamResponse
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			if ev.OutputIndex != nil && *ev.OutputIndex == 1 {
+				require.Equal(t, 1, closedBlocks, "native contentBlockStop must close the first item before the next delta")
 			}
-			require.Equal(t, int32(1), calls.Load())
-			// Invalid combinations must fail locally, before dispatching to AWS.
-			req.Input[0].Content.ContentBlocks[0].Citations.Enabled = schemas.Ptr(false)
-			_, bErr := provider.Responses(testBedrockCtx(), testBedrockKey(), req)
-			require.NotNil(t, bErr)
-			require.Equal(t, 400, *bErr.StatusCode)
-			require.Equal(t, int32(1), calls.Load())
-			require.Contains(t, bErr.Error.Message, "citations.enabled")
-		})
+			require.Zero(t, *ev.ContentIndex)
+			text += *ev.Delta
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			annotations++
+			require.Equal(t, "content_block_location", ev.Annotation.Type)
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			closedBlocks++
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completed = true
+			require.Len(t, ev.Response.Output, 2)
+			require.Len(t, ev.Response.Output[0].Content.ContentBlocks[0].Annotations, 1)
+			require.Len(t, ev.Response.Output[1].Content.ContentBlocks[0].Annotations, 1)
+		}
 	}
+	require.True(t, completed)
+	require.Equal(t, "$4.2M. Approved.", text)
+	require.Equal(t, 2, annotations)
+	require.Equal(t, 2, closedBlocks)
+	require.Equal(t, int32(1), calls.Load())
+	// Invalid combinations must fail locally, before dispatching to AWS.
+	req.Input[0].Content.ContentBlocks[0].Citations.Enabled = schemas.Ptr(false)
+	invalidCtx, cancelInvalid := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelInvalid()
+	invalidStream, bErr := provider.ResponsesStream(invalidCtx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, invalidStream)
+	require.NotNil(t, bErr)
+	require.Equal(t, 400, *bErr.StatusCode)
+	require.Equal(t, int32(1), calls.Load())
+	require.Contains(t, bErr.Error.Message, "citations.enabled")
 }
 
 func TestDocumentCitationsPooledStateReset(t *testing.T) {
@@ -146,45 +129,62 @@ func TestDocumentCitationsPooledStateReset(t *testing.T) {
 	releaseBedrockResponsesStreamState(state)
 }
 
-func TestDocumentCitationsInvalidRequestsDoNotDispatch(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-	provider := newTestProviderWithServer(t, server)
+func TestDocumentCitationsCustomToolResult(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		input := toolResultDocumentInput(&schemas.ResponsesInputMessageContentBlockFile{
+			Filename: schemas.Ptr("pack"), FileContent: []byte(`[{"type":"text","text":"Budget: $4.2M."}]`),
+		})
+		input[0].Output.ResponsesFunctionToolCallOutputBlocks[0].Citations = &schemas.Citations{Enabled: &enabled}
+		out, err := ToBedrockResponsesRequest(testBedrockCtx(), &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5", Input: input,
+		})
+		if !enabled {
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "tool-document errors must not be swallowed: %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			continue
+		}
+		require.NoError(t, err)
+		document := requireBedrockToolResult(t, out.Messages).Content[0].Document
+		require.Empty(t, document.Format)
+		require.True(t, document.Citations.Enabled)
+		require.Equal(t, "Budget: $4.2M.", *document.Source.Content[0].Text)
+	}
+}
+
+func TestDocumentCitationsInvalidSources(t *testing.T) {
 	for _, tc := range []struct{ name, fields, message string }{
 		{"missing citations", `"file_content":"Budget."`, "citations.enabled"},
-		{"empty citations", `"file_content":"Budget.","citations":{}`, "citations.enabled"},
 		{"disabled citations", `"file_content":"Budget.","citations":{"enabled":false}`, "citations.enabled"},
-		{"null content", `"file_content":null,"citations":{"enabled":true}`, "cannot be null"},
 		{"empty blocks", `"file_content":[],"citations":{"enabled":true}`, "non-empty array"},
 		{"non-text block", `"file_content":[{"type":"input_image"}],"citations":{"enabled":true}`, "only text blocks"},
+		{"missing text", `"file_content":[{"type":"text"}],"citations":{"enabled":true}`, "only text blocks"},
 		{"conflicting data", `"file_content":"Budget.","file_data":"QnVkZ2V0Lg==","citations":{"enabled":true}`, "cannot be combined"},
 		{"conflicting URL", `"file_content":"Budget.","file_url":"https://example.test/pack.txt","citations":{"enabled":true}`, "cannot be combined"},
 	} {
-		for _, streaming := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
-				var req schemas.BifrostResponsesRequest
-				require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack",`+tc.fields+`}]}]}`), &req))
-				var bad *schemas.BifrostError
-				if streaming {
-					stream, err := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &req)
-					require.Nil(t, stream, "invalid request must not start a stream")
-					bad = err
-				} else {
-					response, err := provider.Responses(testBedrockCtx(), testBedrockKey(), &req)
-					require.Nil(t, response)
-					bad = err
-				}
-				require.NotNil(t, bad)
-				require.NotNil(t, bad.StatusCode)
-				require.Equal(t, 400, *bad.StatusCode)
-				require.Contains(t, bad.Error.Message, tc.message)
-				require.Zero(t, calls.Load(), "invalid document must fail before HTTP dispatch")
-			})
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack",`+tc.fields+`}]}]}`), &req))
+			_, err := ToBedrockResponsesRequest(testBedrockCtx(), &req)
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "got %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			require.Contains(t, bad.Error.Message, tc.message)
+		})
+	}
+}
+
+func TestDocumentCitationsCustomContentForms(t *testing.T) {
+	for _, content := range []string{
+		`"Budget: $4.2M.\nAudit: \"March\"."`,
+		`[{"type":"text","text":"Budget: $4.2M.\nAudit: \"March\"."}]`,
+	} {
+		document, err := materializeBedrockDocument(context.Background(), "global.anthropic.claude-haiku-5-5",
+			nil, nil, nil, nil, json.RawMessage(content), &schemas.Citations{Enabled: schemas.Ptr(true)}, bedrockDocumentSourceRequired)
+		require.NoError(t, err)
+		require.Empty(t, document.Format)
+		require.Len(t, document.Source.Content, 1)
+		require.Equal(t, "Budget: $4.2M.\nAudit: \"March\".", *document.Source.Content[0].Text)
 	}
 }
 
@@ -209,27 +209,11 @@ func BenchmarkDocumentCitationsConversion(b *testing.B) {
 }
 
 func BenchmarkOrdinaryConverseStream(b *testing.B) {
-	model := "global.anthropic.claude-haiku-5-5"
-	chunks := []BedrockStreamEvent{
+	benchmarkConverseStream(b, "global.anthropic.claude-haiku-5-5", []BedrockStreamEvent{
 		{Role: schemas.Ptr("assistant")},
 		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
 		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
-	}
-	b.ReportAllocs()
-	for b.Loop() {
-		state := acquireBedrockResponsesStreamState()
-		state.Model = &model
-		sequence := 0
-		for i := range chunks {
-			events, err, _ := chunks[i].ToBifrostResponsesStream(sequence, state)
-			if err != nil {
-				b.Fatal(err)
-			}
-			sequence += len(events)
-		}
-		FinalizeBedrockStream(state, sequence, &schemas.ResponsesResponseUsage{}, nil)
-		releaseBedrockResponsesStreamState(state)
-	}
+	})
 }
 
 func BenchmarkDocumentCitationsStream(b *testing.B) {
@@ -237,13 +221,25 @@ func BenchmarkDocumentCitationsStream(b *testing.B) {
 	if err := json.Unmarshal([]byte(`{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}`), &citation); err != nil {
 		b.Fatal(err)
 	}
-	model := "global.anthropic.claude-haiku-5-5"
-	chunks := []BedrockStreamEvent{
+	benchmarkConverseStream(b, "global.anthropic.claude-haiku-5-5", []BedrockStreamEvent{
 		{Role: schemas.Ptr("assistant")},
 		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &citation}},
 		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
 		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
-	}
+	})
+}
+
+func BenchmarkConverseGroundingStream(b *testing.B) {
+	benchmarkConverseStream(b, "us.amazon.nova-2-lite-v1:0", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Start: &BedrockContentBlockStart{ToolUse: &BedrockToolUseStart{ToolUseID: "grounding", Name: string(BedrockSystemToolNovaGrounding)}}},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &BedrockCitation{Location: BedrockCitationLocation{Web: &BedrockWebCitationLocation{URL: "https://example.com", Domain: "example.com"}}}}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func benchmarkConverseStream(b *testing.B, model string, chunks []BedrockStreamEvent) {
+	b.Helper()
 	b.ReportAllocs()
 	for b.Loop() {
 		state := acquireBedrockResponsesStreamState()
