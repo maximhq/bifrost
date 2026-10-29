@@ -750,7 +750,7 @@ func TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload(t *tes
 	mh.addMCPClient(add)
 
 	body := string(add.Response.Body())
-	require.Equal(t, fasthttp.StatusInternalServerError, add.Response.StatusCode(), "a host removed from the saved allowlist must not stay reachable: %s", body)
+	require.Equal(t, fasthttp.StatusBadRequest, add.Response.StatusCode(), "a host removed from the saved allowlist must not stay reachable: %s", body)
 	assert.Contains(t, body, "blocked connection to non-public address")
 }
 

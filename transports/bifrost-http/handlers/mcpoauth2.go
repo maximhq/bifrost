@@ -318,9 +318,16 @@ func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 
 	var before map[string]any
 	if h.store != nil && h.store.ConfigStore != nil {
-		if cfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, configID); err == nil && cfg != nil {
-			before = auditOAuthConfigBefore(cfg)
+		cfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, configID)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load OAuth config: %v", err))
+			return
 		}
+		if cfg == nil {
+			SendError(ctx, fasthttp.StatusNotFound, "oauth config not found")
+			return
+		}
+		before = auditOAuthConfigBefore(cfg)
 	}
 
 	if err := h.oauthProvider.RevokeToken(ctx, configID); err != nil {

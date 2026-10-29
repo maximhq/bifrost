@@ -18,6 +18,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -442,13 +443,15 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 
 	for _, tc := range []struct {
 		name         string
+		authType     string
 		allow        []string
 		authBypassed bool
 		wantStatus   int
 		wantBody     string
 	}{
 		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
-		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
+		{name: "authenticated, no allowlist, per-user OAuth", authType: "per_user_oauth", wantStatus: fasthttp.StatusBadRequest, wantBody: "blocked connection to non-public address"},
 		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -464,7 +467,11 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			req.Header.SetMethod(fasthttp.MethodPost)
 			req.Header.SetContentType("application/json")
 			req.Header.SetHost("bifrost.example.com")
-			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			authType := tc.authType
+			if authType == "" {
+				authType = "oauth"
+			}
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`)
 			ctx := initCtx(&req)
 			if tc.authBypassed {
 				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
@@ -843,6 +850,7 @@ func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
 func TestOAuthBootstrapErrorStatus(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentWithClientID)))
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", &network.PrivateTargetNotAllowedError{Host: "127.0.0.1", IP: net.ParseIP("127.0.0.1")})))
 	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
 }
 
@@ -1749,4 +1757,87 @@ func TestReconnectMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
 	assert.Contains(t, respBody, "mcp client not found")
 	assert.Empty(t, mgr.reconnected)
+}
+
+// newLoopbackOAuthMCPHandler returns an MCP handler whose OAuth creates discover
+// against a loopback authorization server the private allowlist permits.
+func newLoopbackOAuthMCPHandler(t *testing.T) (*MCPHandler, *oauth2.OAuth2Provider, *httptest.Server) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	server := newLoopbackOAuthMCPServer(t)
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider, MCPConfig: &schemas.MCPConfig{}}
+	return &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}, provider, server
+}
+
+// TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing pins that an
+// OAuth create whose name or endpoint slug is already taken answers 409 at
+// create, before anyone is sent to consent. The conflict used to surface only
+// when the flow was completed.
+func TestAddMCPClient_OAuthRefusesATakenNameOrSlugBeforeAuthorizing(t *testing.T) {
+	for _, tc := range []struct {
+		name, authType, body, want string
+	}{
+		{name: "oauth, same name", authType: "oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "per-user OAuth, same name", authType: "per_user_oauth", body: `"name":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, another name with the taken slug", authType: "oauth", body: `"name":"other","endpoint_slug":"taken"`, want: "An MCP endpoint with this slug already exists"},
+		{name: "oauth, same name with another slug", authType: "oauth", body: `"name":"taken","endpoint_slug":"other"`, want: "An MCP client with this name already exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, server := newLoopbackOAuthMCPHandler(t)
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+				ID: "taken-id", Name: "taken", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://taken.example.com/mcp"), AuthType: schemas.MCPAuthTypeNone,
+			}))
+			body := `{` + tc.body + `,"connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusConflict, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.NotContains(t, respBody, "authorize_url")
+		})
+	}
+}
+
+// TestAddMCPClient_OAuthKeepsTheEndpointSlug pins that an OAuth create's
+// endpoint_slug is kept for the client its completion creates. It was dropped,
+// so the client got the slug derived from its name.
+func TestAddMCPClient_OAuthKeepsTheEndpointSlug(t *testing.T) {
+	for _, authType := range []string{"oauth", "per_user_oauth"} {
+		t.Run(authType, func(t *testing.T) {
+			h, provider, server := newLoopbackOAuthMCPHandler(t)
+			body := `{"name":"slugged","endpoint_slug":"custom-slug","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + authType + `","oauth_config":{}}`
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body, "", false)
+			require.Equal(t, fasthttp.StatusOK, status, respBody)
+			var resp struct {
+				OauthConfigID string `json:"oauth_config_id"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+			pending, err := provider.GetPendingMCPClient(resp.OauthConfigID)
+			require.NoError(t, err)
+			require.NotNil(t, pending)
+			assert.Equal(t, "custom-slug", pending.EndpointSlug)
+		})
+	}
+}
+
+// TestRevokeOAuthConfig_UnknownIDIsNotFound pins that deleting an OAuth config
+// id that does not exist answers 404. It was a 500 reading
+// "oauth config not found: %!w(<nil>)".
+func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+	h := NewOAuthHandler(provider, nil, cfg)
+	status, respBody := doMCPRequest(t, h.revokeOAuthConfig, fasthttp.MethodDelete, "", "no-such-config", false)
+	require.Equal(t, fasthttp.StatusNotFound, status, respBody)
+	assert.Contains(t, respBody, "oauth config not found")
+	assert.NotContains(t, respBody, "%!w")
 }
