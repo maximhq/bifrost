@@ -434,6 +434,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
 	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
 	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogByID), middlewares...))
+	r.GET("/api/logs/{id}/trace", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogTrace), middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsStats), middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsHistogram), middlewares...))
 	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsTokenHistogram), middlewares...))
@@ -959,6 +960,28 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+// getLogTrace returns the causal chain behind one request: its retries, every
+// fallback hop in order, and each hop's error, guardrail, cache and latency
+// detail. The id can be the root request or any of its fallback hops. Reads go
+// through the log manager, so the caller's access scope applies to every row.
+func (h *LoggingHandler) getLogTrace(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || id == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "log id is required")
+		return
+	}
+	trace, err := logstore.BuildRequestTrace(ctx, h.logManager, id)
+	if errors.Is(err, logstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to build request trace: %v", err))
+		return
+	}
+	SendJSON(ctx, trace)
 }
 
 // getLogByID handles GET /api/logs/{id} - Get a single log entry by ID including raw_request and raw_response
