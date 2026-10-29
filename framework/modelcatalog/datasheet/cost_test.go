@@ -2191,6 +2191,25 @@ func TestComputeTextCost_OutputImageTokensWithoutImageRateStayText(t *testing.T)
 	assert.Zero(t, cost.OutputCostDetails.ImageCost)
 }
 
+func TestCalculateCost_VertexPrefixedImageModelOverChatUsesImageRow(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-3.1-flash-image", "vertex", "image_generation"): {
+			Model: "gemini-3.1-flash-image", Provider: "vertex", Mode: "image_generation",
+			InputCostPerToken:       bifrost.Ptr(0.0000005),
+			OutputCostPerToken:      bifrost.Ptr(0.000003),
+			OutputCostPerImageToken: bifrost.Ptr(0.00006),
+		},
+	})
+	imageTokens := 1120
+	resp := makeChatResponse(schemas.Vertex, "google/gemini-3.1-flash-image", &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1120,
+		TotalTokens:             1128,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	})
+	assert.InDelta(t, 0.067204, s.CalculateCost(resp, nil), 1e-12)
+}
+
 func TestCalculateCost_TextModelMissStaysUnpriced(t *testing.T) {
 	// The image_generation fallback must not invent a price for a model with no row at all
 	resp := makeChatResponse(schemas.Gemini, "gemini-unknown", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20})

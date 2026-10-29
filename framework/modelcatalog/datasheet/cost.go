@@ -2679,6 +2679,12 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 				return &pricing, true
 			}
 		}
+		// Vertex "publisher/model" form, matching the prefix strip above
+		if provider == string(schemas.Vertex) && strings.Contains(model, "/") {
+			if pricing, ok = s.pricingData[makeKey(strings.SplitN(model, "/", 2)[1], provider, imageMode)]; ok {
+				return &pricing, true
+			}
+		}
 	}
 
 	// Lookup fallback chain for container_create:
