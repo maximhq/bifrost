@@ -799,12 +799,16 @@
 			"updateValues": "Mettre à jour les valeurs",
 			"editValues": "Modifier les valeurs"
 		},
+		"revokeFlowTitle": "Révoquer ce flux en attente ?",
+		"revokeFlowDescription": "Bifrost supprimera ce flux en attente et son lien cessera de fonctionner. Un identifiant déjà enregistré pour cette association est conservé ; révoquez sa propre ligne pour le retirer.",
 		"revokeHeaderTitle": "Révoquer ces valeurs d’en-tête stockées ?",
 		"revokeHeaderDescription": "Bifrost retirera les valeurs d’identifiant stockées pour cette liaison. Il n’y a pas de jeton amont à révoquer ; l’utilisateur devra renvoyer ses valeurs d’en-tête pour réutiliser ce MCP.",
 		"revokeSessionTitle": "Révoquer cette session MCP ?",
 		"revokeSessionDescription": "Bifrost retirera l’identifiant stocké pour cette liaison. Le jeton OAuth amont n’est pas révoqué chez le fournisseur ; il reste détaché et expire naturellement. Quiconque utilise cette liaison devra se réauthentifier pour obtenir un nouveau jeton.",
 		"toast": {
 			"reauthFailed": "Échec de la réauthentification",
+			"flowRevoked": "Flux en attente révoqué",
+			"flowRevokeFailed": "Impossible de révoquer le flux en attente",
 			"headerRevoked": "Valeurs d’en-tête révoquées",
 			"sessionRevoked": "Session révoquée",
 			"headerRevokeFailed": "Échec de la révocation des valeurs d’en-tête",
