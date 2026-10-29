@@ -584,6 +584,20 @@ const toolNamesAre = (names) => A.custom(`tools are ${lit(names)}`, [
   `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${lit(names)});`,
 ]);
 const clientState = (state) => A.custom(`state is ${lit(state)}`, ["pm.expect(pm.response.json().clients[0].state, 'body: ' + pm.response.text()).to.equal(" + lit(state) + ");"]);
+// waitForClient polls the client list, 250ms apart, until cond (ES5 on the client c) holds or tries polls ran (20 by
+// default, about 5s).
+const waitForClient = (clientId, cond, tries = 20) => [
+  `var left = ${tries};`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var list = !err && res.code === 200 ? res.json().clients : null;",
+  "    var c = list && list[0];",
+  `    if ((c && (${cond})) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
 const httpClient = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${CHAOS}/s/${server}/mcp`, auth_type: "none", ...over });
 
 // ---------------------------------------------------------------- ADM tests on the fleet
@@ -898,6 +912,21 @@ const ADM12 = folder("ADM-12 Reused explicit client_id", "Setup: admin credentia
     "pm.expect(c.connection_string).to.eql(before.connection_string);",
   ])]),
   deleteClient("ADM-12", "fixed-id"),
+]);
+
+const ADM15 = folder("ADM-15 Sticky vs per-call create against a dead upstream", "Setup: admin credentials; alpha (echo_tool, add_tool) refusing connections; an HTTP client on alpha with needs_session_stickiness true, and one without it.", [
+  ...freshServer("ADM-15", "alpha", ["echo_tool", "add_tool"]),
+  mockPost("ADM-15", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
+  createExpect("ADM-15", "create the sticky client", httpClient("adm15-s", "adm15_s", "alpha", { needs_session_stickiness: true }), [A.status(500), A.msgStartsWith("Failed to connect MCP client: "),
+    A.custom("the reason after it does not repeat \"failed to connect\"", [
+      "var m = pm.response.json().error.message.slice('Failed to connect MCP client: '.length);",
+      "pm.expect(m.toLowerCase(), 'message: ' + pm.response.json().error.message).to.not.include('failed to connect');",
+    ])]),
+  request("ADM-15", "the sticky client is not kept", "GET", "/api/mcp/clients?server=adm15-s", { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] }),
+  createExpect("ADM-15", "create the per-call client", httpClient("adm15-p", "adm15_p", "alpha"), [A.status(200)]),
+  getClient("ADM-15", "adm15-p", "the per-call client is healthy with no tools", [clientState("healthy"), A.custom("tools is []", ["pm.expect(pm.response.json().clients[0].tools, 'body: ' + pm.response.text()).to.eql([]);"])]),
+  mockPost("ADM-15", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("ADM-15", "adm15-p"),
 ]);
 
 const ADM16 = folder("ADM-16 Missing connection target is rolled back", "Setup: admin credentials; alpha (echo_tool, add_tool) for the reuse checks (an HTTP client and a STDIO bridge).", [
@@ -1775,16 +1804,21 @@ const ADM47 = folder("ADM-47 PUT is a patch and ignores immutable fields", "Setu
   deleteClient("ADM-47", "adm47-c"),
 ]);
 
-const ADM52 = folder("ADM-52 Enabling a sticky client with a dead upstream", "Setup: alpha (echo_tool, add_tool); a client on alpha with needs_session_stickiness true, disabled; then alpha refuses connections. The client being reported disabled after the enable is a known issue, so that check is skipped.", [
+const ADM52 = folder("ADM-52 Enabling a sticky client with a dead upstream", "Setup: alpha (echo_tool, add_tool); a client on alpha with needs_session_stickiness true, disabled; then alpha refuses connections. 12s after the enable, while alpha still refuses, the client is renamed; then alpha accepts connections again.", [
   ...freshServer("ADM-52", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-52", httpClient("adm52-s", "adm52_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
   request("ADM-52", "setup: disable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: true }, asserts: [A.status(200)] }),
   mockPost("ADM-52", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
-  request("ADM-52", "enable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: false }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("message contains \"establishing the shared connection failed\"", [
-    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('establishing the shared connection failed');",
+  request("ADM-52", "enable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: false }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("message starts with \"MCP client edited successfully. However, establishing the shared connection failed: \"", [
+    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.match(/^MCP client edited successfully\\. However, establishing the shared connection failed: /);",
   ])] }),
-  getClient("ADM-52", "adm52-s", "disabled is false and the client is not reported disabled", [clientField("config.disabled", false), A.skip(A.custom("state is not \"disabled\"", ["pm.expect(pm.response.json().clients[0].state, 'body: ' + pm.response.text()).to.not.equal('disabled');"]))]),
-  mockPost("ADM-52", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  getClient("ADM-52", "adm52-s", "disabled is false and the client is unstable at stage connect", [clientField("config.disabled", false), clientState("unstable"), clientField("last_failure.stage", "connect")]),
+  request("ADM-52", "rename it 12s later, while alpha still refuses", "PUT", "/api/mcp/client/adm52-s", { body: { name: "adm52_renamed" }, pre: ["setTimeout(function () {}, 12000);"],
+    asserts: [A.status(200), A.jsonMessage("MCP client edited successfully"), A.custom("the response took under 6s", ["pm.expect(pm.response.responseTime, 'ms').to.be.below(6000);"])] }),
+  mockPost("ADM-52", "alpha", "faults/clear", "alpha accepts connections again"),
+  getClient("ADM-52", "adm52-s", "within 20s the client is healthy, with no admin action", [clientState("healthy")], { pre: waitForClient("adm52-s", "c.state === 'healthy'", 80) }),
+  request("ADM-52", "disable it again", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: true }, asserts: [A.status(200)] }),
+  getClient("ADM-52", "adm52-s", "it is disabled", [clientField("config.disabled", true), clientState("disabled")]),
   deleteClient("ADM-52", "adm52-s"),
 ]);
 
@@ -1985,19 +2019,6 @@ const messageStarts = (m) => A.custom(`message starts with ${lit(m)}`, [
   "pm.expect(b.message, 'body: ' + pm.response.text()).to.be.a('string');",
   `pm.expect(b.message.indexOf(${lit(m)}), 'message: ' + b.message).to.equal(0);`,
 ]);
-// waitForClient polls the client list for up to about 5s until cond (ES5 on the client c) holds.
-const waitForClient = (clientId, cond) => [
-  "var left = 20;",
-  "function poll() {",
-  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
-  "    var list = !err && res.code === 200 ? res.json().clients : null;",
-  "    var c = list && list[0];",
-  `    if ((c && (${cond})) || --left <= 0) { return; }`,
-  "    setTimeout(poll, 250);",
-  "  });",
-  "}",
-  "poll();",
-];
 
 // T1 is the bearer token AUTH and CONN servers require; the mock maps it to identity id1.
 const T1 = "auth-t1-token";
@@ -7679,7 +7700,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
