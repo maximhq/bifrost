@@ -1618,3 +1618,162 @@ func TestPushConfigDeletionWithSDKDefaultTenant(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, stored, "SDK tenant mutation must not leave the gateway callback behind")
 }
+
+func BenchmarkEmbeddedPushConfigAbsent(b *testing.B) {
+	h := &proxyRequestHandler{}
+	req := &a2a.SendMessageRequest{}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, err := h.rewriteEmbeddedPushConfig(context.Background(), req)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSendMessageWithoutPush(b *testing.B) {
+	_, h, _, client := pushGateway(b)
+	client.send = func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+		return &a2a.Task{ID: "task"}, nil
+	}
+	req := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := h.SendMessage(context.Background(), req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSendMessageWithEmbeddedPush(b *testing.B) {
+	_, h, _, client := pushGateway(b)
+	client.send = func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+		return &a2a.Task{ID: "task"}, nil
+	}
+	req := &a2a.SendMessageRequest{Tenant: "tenant", Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		// Restore the client callback after each upstream rewrite; the fixture
+		// keeps one bound row rather than retaining every iteration's registration.
+		req.Config = &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{Tenant: "tenant", ID: "config", URL: "https://callback.example"}}
+		if _, err := h.SendMessage(context.Background(), req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestEmbeddedPushTenantResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name, explicit, iface, contextTenant, child, want string
+		invalid                                           bool
+	}{
+		{name: "explicit wins", explicit: "explicit", iface: "interface", contextTenant: "context", want: "explicit"},
+		{name: "interface wins", iface: "interface", contextTenant: "context", want: "interface"},
+		{name: "context fallback", contextTenant: "context", want: "context"},
+		{name: "empty namespace"},
+		{name: "mismatched child", explicit: "tenant-a", child: "tenant-b", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, handler, store, client := pushGateway(t)
+			require.NoError(t, handler.runtime.replaceGeneration(newCandidateGeneration(&a2a.AgentCard{}, []upstreamCandidate{{client: client, tenant: tc.iface, transport: string(a2a.TransportProtocolJSONRPC)}})))
+			ctx := a2a.AttachTenant(context.Background(), tc.contextTenant)
+			client.send = func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+				return &a2a.Task{ID: "task"}, nil
+			}
+			req := &a2a.SendMessageRequest{Tenant: tc.explicit, Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Config: &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{Tenant: tc.child, ID: "config", URL: "http://callback.example"}}}
+			_, err := handler.SendMessage(ctx, req)
+			if tc.invalid {
+				require.ErrorIs(t, err, a2a.ErrInvalidParams)
+				_, count, err := m.ListStoredPushConfigs(ctx, schemas.AgentPushConfigQuery{})
+				require.NoError(t, err)
+				require.Zero(t, count)
+				return
+			}
+			require.NoError(t, err)
+			stored, err := store.GetAgentPushConfig(ctx, "fixture", tc.want, "task", "config")
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			require.Equal(t, tc.want, req.Tenant)
+			require.Equal(t, tc.want, req.Config.PushConfig.Tenant)
+		})
+	}
+}
+
+type pushRefreshPipeline struct {
+	*fakePipeline
+	refresh func()
+}
+
+func (p *pushRefreshPipeline) RunA2APreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest, entered func(int)) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, int) {
+	p.refresh()
+	return p.fakePipeline.RunA2APreHooks(ctx, req, entered)
+}
+
+func TestEmbeddedPushUsesLeasedTenant(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
+			m, handler, store, upstream := pushGateway(t)
+			// Simulate a refresh between request construction and the plugin gate.
+			pipeline := &pushRefreshPipeline{fakePipeline: &fakePipeline{}, refresh: func() {
+				rows, _, err := store.ListAgentPushConfigsPaginated(t.Context(), schemas.AgentPushConfigQuery{})
+				require.NoError(t, err)
+				require.Empty(t, rows, "preparation must not run before the plugin gate")
+				generation := newCandidateGeneration(&a2a.AgentCard{}, []upstreamCandidate{{client: upstream, tenant: "interface", transport: string(a2a.TransportProtocolJSONRPC)}})
+				require.NoError(t, handler.runtime.replaceGeneration(generation))
+			}}
+			m.SetPluginPipeline(func() PluginPipeline { return pipeline }, func(PluginPipeline) {})
+			upstream.send = func(ctx context.Context, req *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+				require.Equal(t, "interface", req.Tenant)
+				require.Equal(t, req.Tenant, req.Config.PushConfig.Tenant)
+				stored, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", hashPushIngressToken(req.Config.PushConfig.Token))
+				require.NoError(t, err)
+				require.NotNil(t, stored)
+				require.Equal(t, req.Tenant, stored.Tenant, "persist before sending, under the namespace of the client actually leased")
+				return &a2a.Task{ID: "task"}, nil
+			}
+			upstream.stream = func(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+				return func(yield func(a2a.Event, error) bool) {
+					result, err := upstream.send(ctx, req)
+					yield(result, err)
+				}
+			}
+			req := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Config: &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{ID: "config", URL: "https://callback.example"}}}
+			if streaming {
+				for _, err := range handler.SendStreamingMessage(t.Context(), req) {
+					require.NoError(t, err)
+				}
+			} else {
+				_, err := handler.SendMessage(t.Context(), req)
+				require.NoError(t, err)
+			}
+			stored, err := store.GetAgentPushConfig(t.Context(), "fixture", "interface", "task", "config")
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+		})
+	}
+}
+
+func TestEmbeddedPushRetryCannotChangeDefaultTenant(t *testing.T) {
+	_, handler, store, _ := pushGateway(t)
+	first := &fakeSDKClient{send: func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+		return nil, dialFailure()
+	}}
+	second := &fakeSDKClient{send: func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+		t.Error("a retry must not forward a default-tenant registration to another namespace")
+		return &a2a.Task{ID: "task"}, nil
+	}}
+	require.NoError(t, handler.runtime.replaceGeneration(newCandidateGeneration(&a2a.AgentCard{}, []upstreamCandidate{
+		{client: first, transport: string(a2a.TransportProtocolJSONRPC)},
+		{client: second, tenant: "other-tenant", transport: string(a2a.TransportProtocolJSONRPC)},
+	})))
+	_, err := handler.SendMessage(t.Context(), &a2a.SendMessageRequest{
+		Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")),
+		Config:  &a2a.SendMessageConfig{PushConfig: &a2a.PushConfig{URL: "https://callback.example"}},
+	})
+	require.ErrorIs(t, err, a2a.ErrInvalidParams)
+	configs, _, err := store.ListAgentPushConfigsPaginated(t.Context(), schemas.AgentPushConfigQuery{})
+	require.NoError(t, err)
+	require.Empty(t, configs, "an unsuccessful send must discard its pending registration")
+}

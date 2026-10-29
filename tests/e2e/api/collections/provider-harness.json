@@ -277037,6 +277037,64 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "A2A embedded-push-tenant (local fixture)",
+      "description": "Reject a conflicting embedded callback tenant before forwarding or storing it. Local fixture only; no provider calls. Run FEATURE=embedded-push-tenant INCLUDE_SKIP=1.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const required = [\"a2aPushAgent\", \"a2aPushVirtualKey\", \"a2aPushTenant\", \"a2aPushOtherTenant\", \"a2aPushTaskId\", \"a2aPushConfigId\", \"a2aPushCallbackUrl\", \"a2aPushUpstreamAuthorization\"];",
+              "for (const key of required) { if (!pm.variables.get(key)) { throw new Error(\"Missing local A2A fixture variable: \" + key); } }",
+              "pm.request.headers.upsert({ key: \"Content-Type\", value: \"application/json\" });",
+              "pm.request.headers.upsert({ key: \"A2A-Version\", value: \"1.0\" });"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "[SKIP] [NO-CONTENT] A2A embedded-push-tenant: reject conflicting message and config tenants",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP success\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"no callback returned for rejected request\", function () {",
+                  "  pm.expect(body.result, pm.response.text()).to.be.undefined;",
+                  "  pm.expect(body.error.code, pm.response.text()).to.equal(-32602);",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include(\"must match the message tenant\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{a2aPushVirtualKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "{{a2aPushUpstreamAuthorization}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": \"reject mismatched embedded configuration tenant\",\n  \"method\": \"SendMessage\",\n  \"params\": {\n    \"tenant\": \"{{a2aPushTenant}}\",\n    \"message\": {\n      \"messageId\": \"tenant-isolation-probe\",\n      \"role\": \"ROLE_USER\",\n      \"taskId\": \"{{a2aPushTaskId}}\",\n      \"parts\": [\n        {\n          \"text\": \"tenant isolation probe\"\n        }\n      ]\n    },\n    \"configuration\": {\n      \"taskPushNotificationConfig\": {\n        \"tenant\": \"{{a2aPushOtherTenant}}\",\n        \"id\": \"{{a2aPushConfigId}}\",\n        \"url\": \"{{a2aPushCallbackUrl}}\"\n      }\n    }\n  }\n}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          }
+        }
+      ]
     }
   ]
 }
