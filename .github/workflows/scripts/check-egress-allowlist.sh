@@ -44,6 +44,13 @@ import yaml
 # esm.ubuntu.com serves the Expanded Security Maintenance lists apt refreshes
 # alongside it.
 REQUIRED_APT_HOSTS = ("azure.archive.ubuntu.com:80", "esm.ubuntu.com:443")
+# arm64 Ubuntu pulls from the ports mirror (ubuntu-ports), never the archive one;
+# the arm-64-2cpu-8gb image's apt sources point straight at ports.ubuntu.com.
+REQUIRED_ARM64_APT_HOSTS = ("ports.ubuntu.com:80",)
+# install-arm64-runner-deps.sh runs apt-get itself, so a step calling it never
+# shows "apt-get" here; its `docker` component also adds Docker's apt repo.
+ARM64_INSTALLER = "install-arm64-runner-deps.sh"
+DOCKER_APT_HOST = "download.docker.com:443"
 
 failures = []
 checked = 0
@@ -57,13 +64,15 @@ for path in sys.argv[1:]:
             continue
         steps = job.get("steps") or []
 
-        uses_apt = any(
-            "apt-get" in (step.get("run") or "")
-            for step in steps
-            if isinstance(step, dict)
-        )
+        runs = [step.get("run") or "" for step in steps if isinstance(step, dict)]
+        uses_apt = any("apt-get" in run or ARM64_INSTALLER in run for run in runs)
         if not uses_apt:
             continue
+        installs_docker = any(
+            ARM64_INSTALLER in line and "docker" in line.split(ARM64_INSTALLER, 1)[1].split()
+            for run in runs
+            for line in run.splitlines()
+        )
 
         harden = next(
             (
@@ -83,7 +92,11 @@ for path in sys.argv[1:]:
 
         checked += 1
         allowed = set((with_block.get("allowed-endpoints") or "").split())
-        missing = [host for host in REQUIRED_APT_HOSTS if host not in allowed]
+        is_arm = "arm" in str(job.get("runs-on") or "").lower()
+        required = REQUIRED_ARM64_APT_HOSTS if is_arm else REQUIRED_APT_HOSTS
+        if installs_docker:
+            required += (DOCKER_APT_HOST,)
+        missing = [host for host in required if host not in allowed]
         if missing:
             failures.append((path, job_name, missing))
 
