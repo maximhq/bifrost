@@ -550,10 +550,9 @@ func (plugin *Plugin) extractTextForEmbedding(state *cacheState, req *schemas.Bi
 }
 
 // buildUnifiedMetadata builds the property map written alongside the cache
-// entry: the columns the vector store indexes for filtering (cache_key,
-// provider, model, params_hash, expires_at) plus the from_bifrost marker
-// used by Cleanup and ClearCacheForKey to scope deletes. Caller still adds
-// the response payload (response or stream_chunks) before Add.
+// entry: filter fields (cache_key, provider, model, params_hash and the
+// from_bifrost marker) plus expires_at for expiry checks after retrieval.
+// Caller still adds the response payload (response or stream_chunks) before Add.
 func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model string, paramsHash string, cacheKey string, ttl time.Duration) map[string]interface{} {
 	unifiedMetadata := make(map[string]interface{})
 	unifiedMetadata["provider"] = string(provider)

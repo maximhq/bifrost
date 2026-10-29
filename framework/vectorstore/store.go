@@ -70,7 +70,7 @@ const (
 type VectorStoreProperties struct {
 	DataType    VectorStorePropertyType `json:"data_type"`
 	Description string                  `json:"description"`
-	// Filterable marks a property used in Query filters; stores may encode it.
+	// Filterable marks Query filter fields; stores may index or encode them.
 	Filterable bool `json:"filterable,omitempty"`
 }
 

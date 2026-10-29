@@ -1,14 +1,20 @@
 package semanticcache
 
 import (
+	"context"
+	"maps"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/qdrant/go-client/qdrant"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // requiresVectors returns true if the vector store requires vectors for storage.
@@ -422,6 +428,231 @@ func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
 			AssertCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response2}, "direct")
 
 			t.Logf("[%s] Embedding request caching test passed!", tc.Name)
+		})
+	}
+}
+
+// Run real cache hooks and Qdrant RPCs without paid embedding/provider calls.
+// Payload-only fields must survive storage, replay and index cleanup, while
+// strict-mode queries still have every index they need.
+func TestSemanticCache_QdrantPayloadOnlyFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Qdrant integration test in short mode")
+	}
+	for _, stream := range []bool{false, true} {
+		name := "response"
+		if stream {
+			name = "stream_chunks"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			config := getQdrantConfigFromEnv()
+			logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+			store, err := vectorstore.NewVectorStore(ctx, &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeQdrant, Config: config}, logger)
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, store.Close(context.Background(), "")) })
+			admin, err := qdrant.NewClient(&qdrant.Config{
+				Host: config.Host.GetValue(), Port: config.Port.CoerceInt(6334), APIKey: config.APIKey.GetValue(),
+				UseTLS: config.UseTLS.CoerceBool(false), SkipCompatibilityCheck: true,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, admin.Close()) })
+			namespace := "cache-payload-policy-" + uuid.NewString()
+			require.NoError(t, admin.CreateCollection(ctx, &qdrant.CreateCollection{
+				CollectionName: namespace, OnDiskPayload: qdrant.PtrOf(true),
+				VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{Size: 3, Distance: qdrant.Distance_Cosine}),
+			}))
+			t.Cleanup(func() { assert.NoError(t, store.DeleteNamespace(context.Background(), namespace)) })
+			initPlugin := func() *Plugin {
+				llmPlugin, err := Init(ctx, &Config{Provider: schemas.OpenAI, EmbeddingModel: "test-embedding", Dimension: 3, VectorStoreNamespace: namespace}, logger, store)
+				require.NoError(t, err)
+				plugin := llmPlugin.(*Plugin)
+				plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+					return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0, 0}}}}}, nil
+				})
+				t.Cleanup(func() { assert.NoError(t, plugin.Cleanup()) })
+				return plugin
+			}
+			plugin := initPlugin()
+			newContext := func(key string, cacheType CacheType) *schemas.BifrostContext {
+				requestCtx := withTestRequestID(schemas.NewBifrostContext(ctx, schemas.NoDeadline))
+				requestCtx.SetValue(CacheKey, key)
+				if cacheType != "" {
+					requestCtx.SetValue(CacheTypeKey, cacheType)
+				}
+				t.Cleanup(requestCtx.Cancel)
+				return requestCtx
+			}
+			requestType := schemas.ChatCompletionRequest
+			if stream {
+				requestType = schemas.ChatCompletionStreamRequest
+			}
+			newRequest := func(text string) *schemas.BifrostRequest {
+				return &schemas.BifrostRequest{RequestType: requestType, ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "test-model", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+				}}
+			}
+			request := newRequest("original request")
+			writeCtx := newContext("scope-a", "")
+			_, hit, err := plugin.PreLLMHook(writeCtx, request)
+			require.NoError(t, err)
+			require.Nil(t, hit)
+			contents := []string{strings.Repeat("cached response ", 256)}
+			if stream {
+				contents = []string{"first chunk", "second chunk"}
+			}
+			for i, content := range contents {
+				choice := schemas.BifrostResponseChoice{Index: 0}
+				if stream {
+					choice.ChatStreamResponseChoice = &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content}}
+					writeCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, i == len(contents)-1)
+				} else {
+					choice.ChatNonStreamResponseChoice = &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &content}}}
+				}
+				response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "provider-response", Choices: []schemas.BifrostResponseChoice{choice}, ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider: schemas.OpenAI, OriginalModelRequested: "test-model", RequestType: requestType, ChunkIndex: i,
+				}}}
+				_, bifrostErr, err := plugin.PostLLMHook(writeCtx, response, nil)
+				require.NoError(t, err)
+				require.Nil(t, bifrostErr)
+			}
+			plugin.WaitForPendingOperations()
+			assertSchema := func(extraFields ...string) {
+				info, err := admin.GetCollectionInfo(ctx, namespace)
+				require.NoError(t, err)
+				fields := make([]string, 0, len(info.PayloadSchema))
+				for field := range info.PayloadSchema {
+					fields = append(fields, field)
+				}
+				assert.ElementsMatch(t, append([]string{"cache_key", "provider", "model", "params_hash", "from_bifrost_semantic_cache_plugin"}, extraFields...), fields)
+				assert.True(t, info.Config.Params.OnDiskPayload)
+			}
+			assertSchema()
+			entries, _, err := store.GetAll(ctx, namespace, nil, nil, nil, 10)
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			entry := entries[0]
+			stored, err := store.GetChunk(ctx, namespace, entry.ID)
+			require.NoError(t, err)
+			assert.Equal(t, entry.Properties, stored.Properties)
+			assertRetainedEntry := func() {
+				t.Helper()
+				// Flush queued index operations without recreating a missing
+				// point or restoring its response, chunks or vector.
+				result, err := admin.SetPayload(ctx, &qdrant.SetPayloadPoints{
+					CollectionName: namespace, Wait: qdrant.PtrOf(true),
+					PointsSelector: qdrant.NewPointsSelector(qdrant.NewID(entry.ID)),
+					Payload:        map[string]*qdrant.Value{},
+				})
+				require.NoError(t, err)
+				require.Equal(t, qdrant.UpdateStatus_Completed, result.GetStatus())
+				stored, err := store.GetChunk(ctx, namespace, entry.ID)
+				require.NoError(t, err)
+				assert.Equal(t, entry.Properties, stored.Properties)
+			}
+
+			// Required indexes are asynchronous. The completed upsert above
+			// follows them in the collection's update queue before strict mode.
+			require.NoError(t, admin.UpdateCollection(ctx, &qdrant.UpdateCollection{CollectionName: namespace, StrictModeConfig: &qdrant.StrictModeConfig{
+				Enabled: qdrant.PtrOf(true), UnindexedFilteringRetrieve: qdrant.PtrOf(false), UnindexedFilteringUpdate: qdrant.PtrOf(false),
+			}}))
+			assertHit := func(cacheType CacheType, req *schemas.BifrostRequest) {
+				readCtx := newContext("scope-a", cacheType)
+				_, hit, err := plugin.PreLLMHook(readCtx, req)
+				require.NoError(t, err)
+				require.NotNil(t, hit)
+				var replayed []string
+				if stream {
+					require.NotNil(t, hit.Stream)
+					var last *schemas.BifrostChatResponse
+					for chunk := range hit.Stream {
+						require.Nil(t, chunk.BifrostError)
+						require.NotNil(t, chunk.BifrostChatResponse)
+						last = chunk.BifrostChatResponse
+						for _, choice := range last.Choices {
+							require.NotNil(t, choice.ChatStreamResponseChoice)
+							require.NotNil(t, choice.Delta)
+							require.NotNil(t, choice.Delta.Content)
+							replayed = append(replayed, *choice.Delta.Content)
+						}
+						_, bifrostErr, err := plugin.PostLLMHook(readCtx, &schemas.BifrostResponse{ChatResponse: last}, nil)
+						require.NoError(t, err)
+						require.Nil(t, bifrostErr)
+					}
+					require.NotNil(t, last)
+					require.NotNil(t, last.ExtraFields.CacheDebug)
+					assert.True(t, last.ExtraFields.CacheDebug.CacheHit)
+					require.NotNil(t, last.ExtraFields.CacheDebug.HitType)
+					assert.Equal(t, string(cacheType), *last.ExtraFields.CacheDebug.HitType)
+				} else {
+					require.NotNil(t, hit.Response)
+					require.NotNil(t, hit.Response.ChatResponse)
+					require.Len(t, hit.Response.ChatResponse.Choices, 1)
+					require.NotNil(t, hit.Response.ChatResponse.Choices[0].ChatNonStreamResponseChoice)
+					require.NotNil(t, hit.Response.ChatResponse.Choices[0].Message)
+					require.NotNil(t, hit.Response.ChatResponse.Choices[0].Message.Content)
+					require.NotNil(t, hit.Response.ChatResponse.Choices[0].Message.Content.ContentStr)
+					replayed = []string{*hit.Response.ChatResponse.Choices[0].Message.Content.ContentStr}
+					AssertCacheHit(t, hit.Response, string(cacheType))
+				}
+				assert.Equal(t, contents, replayed)
+			}
+			assertHit(CacheTypeDirect, request)
+			assertHit(CacheTypeSemantic, newRequest("different phrasing"))
+			_, hit, err = plugin.PreLLMHook(newContext("scope-b", CacheTypeSemantic), request)
+			require.NoError(t, err)
+			require.Nil(t, hit, "semantic searches must still isolate cache keys")
+
+			// Upgrades do not delete externally managed or legacy indexes.
+			for field, fieldType := range map[string]qdrant.FieldType{
+				"response":      qdrant.FieldType_FieldTypeKeyword,
+				"stream_chunks": qdrant.FieldType_FieldTypeKeyword,
+				"expires_at":    qdrant.FieldType_FieldTypeInteger,
+				"operator_note": qdrant.FieldType_FieldTypeKeyword,
+			} {
+				_, err := admin.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{CollectionName: namespace, FieldName: field, FieldType: &fieldType, Wait: qdrant.PtrOf(true)})
+				require.NoError(t, err)
+			}
+			require.NoError(t, plugin.Cleanup())
+			plugin = initPlugin()
+			assertRetainedEntry()
+			assertSchema("response", "stream_chunks", "expires_at", "operator_note")
+			for _, field := range []string{"response", "stream_chunks", "expires_at"} {
+				_, err := admin.DeleteFieldIndex(ctx, &qdrant.DeleteFieldIndexCollection{CollectionName: namespace, FieldName: field, Wait: qdrant.PtrOf(true)})
+				require.NoError(t, err)
+			}
+			require.NoError(t, plugin.Cleanup())
+			plugin = initPlugin()
+			assertRetainedEntry()
+			assertSchema("operator_note")
+			assertHit(CacheTypeDirect, request)
+			assertHit(CacheTypeSemantic, newRequest("different phrasing"))
+
+			// Expiry and clear-by-key need payloads and the filter indexes, not
+			// indexes on the response, chunks or expiry timestamp.
+			expired := maps.Clone(entry.Properties)
+			expired["expires_at"] = time.Now().Add(-time.Minute).Unix()
+			require.NoError(t, store.Add(ctx, namespace, entry.ID, []float32{1, 0, 0}, expired))
+			_, hit, err = plugin.PreLLMHook(newContext("scope-a", CacheTypeDirect), request)
+			require.NoError(t, err)
+			require.Nil(t, hit)
+			plugin.WaitForPendingOperations()
+			require.Eventually(t, func() bool {
+				points, err := admin.Get(ctx, &qdrant.GetPoints{CollectionName: namespace, Ids: []*qdrant.PointId{qdrant.NewID(entry.ID)}})
+				return err == nil && len(points) == 0
+			}, 5*time.Second, 10*time.Millisecond)
+			require.NoError(t, store.Add(ctx, namespace, uuid.NewString(), []float32{1, 0, 0}, entry.Properties))
+			other := maps.Clone(entry.Properties)
+			other["cache_key"] = "scope-b"
+			otherID := uuid.NewString()
+			require.NoError(t, store.Add(ctx, namespace, otherID, []float32{1, 0, 0}, other))
+			require.NoError(t, plugin.ClearCacheForKey("scope-a"))
+			require.Eventually(t, func() bool {
+				remaining, _, err := store.GetAll(ctx, namespace, nil, nil, nil, 10)
+				return err == nil && len(remaining) == 1 && remaining[0].ID == otherID
+			}, 5*time.Second, 10*time.Millisecond)
+			assertSchema("operator_note")
 		})
 	}
 }

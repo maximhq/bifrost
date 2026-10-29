@@ -2,14 +2,22 @@ package vectorstore
 
 import (
 	"context"
+	"maps"
+	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/qdrant/go-client/qdrant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 const (
@@ -569,4 +577,217 @@ func TestQdrantStore_DeleteMissingIDSucceeds(t *testing.T) {
 	props := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
 	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, QdrantTestCollection, QdrantTestDimension, props))
 	assert.NoError(t, setup.Store.Delete(setup.ctx, QdrantTestCollection, generateUUID()))
+}
+
+type qdrantNamespaceCalls struct {
+	mu          sync.Mutex
+	collections []*qdrant.CreateCollection
+	indexes     []*qdrant.CreateFieldIndexCollection
+}
+
+// Exercise the concrete client without a server dependency or a production
+// client abstraction. The interceptor records provisioning RPCs, including
+// failed index attempts, and rejects unexpected operations such as deletion.
+func newQdrantNamespaceRPCFixture(t *testing.T, exists bool, dimension int, failMethod string) (*QdrantStore, *qdrantNamespaceCalls) {
+	t.Helper()
+	calls := &qdrantNamespaceCalls{}
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer(grpc.UnaryInterceptor(func(_ context.Context, req interface{}, info *grpc.UnaryServerInfo, _ grpc.UnaryHandler) (interface{}, error) {
+		calls.mu.Lock()
+		defer calls.mu.Unlock()
+		switch request := req.(type) {
+		case *qdrant.CreateCollection:
+			calls.collections = append(calls.collections, request)
+		case *qdrant.CreateFieldIndexCollection:
+			calls.indexes = append(calls.indexes, request)
+		}
+		if info.FullMethod == failMethod {
+			return nil, status.Error(codes.Unavailable, "provisioning unavailable")
+		}
+		switch info.FullMethod {
+		case qdrant.Collections_CollectionExists_FullMethodName:
+			return &qdrant.CollectionExistsResponse{Result: &qdrant.CollectionExists{Exists: exists}}, nil
+		case qdrant.Collections_Get_FullMethodName:
+			return &qdrant.GetCollectionInfoResponse{Result: &qdrant.CollectionInfo{Config: &qdrant.CollectionConfig{Params: &qdrant.CollectionParams{
+				VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{Size: uint64(dimension), Distance: qdrant.Distance_Cosine}),
+			}}}}, nil
+		case qdrant.Collections_Create_FullMethodName:
+			return &qdrant.CollectionOperationResponse{Result: true}, nil
+		case qdrant.Points_CreateFieldIndex_FullMethodName:
+			return &qdrant.PointsOperationResponse{Result: &qdrant.UpdateResult{Status: qdrant.UpdateStatus_Completed}}, nil
+		default:
+			t.Errorf("unexpected Qdrant RPC: %s", info.FullMethod)
+			return nil, status.Error(codes.Unimplemented, "unexpected provisioning operation")
+		}
+	}))
+	qdrant.RegisterCollectionsServer(server, &qdrant.UnimplementedCollectionsServer{})
+	qdrant.RegisterPointsServer(server, &qdrant.UnimplementedPointsServer{})
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+	client, err := qdrant.NewClient(&qdrant.Config{
+		Host: "localhost", Port: 6334, PoolSize: 1, SkipCompatibilityCheck: true,
+		GrpcOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		})},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, client.Close()) })
+	return &QdrantStore{client: client, logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}, calls
+}
+
+func TestQdrantStore_CreateNamespacePayloadIndexPolicy(t *testing.T) {
+	filterable := map[string]VectorStoreProperties{
+		"label": {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"count": {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+		"flag":  {DataType: VectorStorePropertyTypeBoolean, Filterable: true},
+		"tags":  {DataType: VectorStorePropertyTypeStringArray, Filterable: true},
+	}
+	expected := map[string]qdrant.FieldType{
+		"label": qdrant.FieldType_FieldTypeKeyword,
+		"count": qdrant.FieldType_FieldTypeInteger,
+		"flag":  qdrant.FieldType_FieldTypeBool,
+		"tags":  qdrant.FieldType_FieldTypeKeyword,
+	}
+	mixed := maps.Clone(filterable)
+	mixed["response"] = VectorStoreProperties{DataType: VectorStorePropertyTypeString}
+	mixed["stream_chunks"] = VectorStoreProperties{DataType: VectorStorePropertyTypeStringArray}
+	mixed["expires_at"] = VectorStoreProperties{DataType: VectorStorePropertyTypeInteger}
+	mixed["payload_flag"] = VectorStoreProperties{DataType: VectorStorePropertyTypeBoolean}
+	legacy := maps.Clone(filterable)
+	for field, prop := range legacy {
+		prop.Filterable = false
+		legacy[field] = prop
+	}
+	tests := []struct {
+		name       string
+		properties map[string]VectorStoreProperties
+		indexes    map[string]qdrant.FieldType
+	}{
+		{"mixed", mixed, expected},
+		{"all filterable", filterable, expected},
+		{"legacy unannotated", legacy, expected},
+		{"empty", map[string]VectorStoreProperties{}, map[string]qdrant.FieldType{}},
+		{"nil", nil, map[string]qdrant.FieldType{}},
+	}
+	for _, tt := range tests {
+		for _, exists := range []bool{false, true} {
+			name := "new"
+			if exists {
+				name = "existing"
+			}
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				store, calls := newQdrantNamespaceRPCFixture(t, exists, 3, "")
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				require.NoError(t, store.CreateNamespace(ctx, "payload-policy", 3, tt.properties))
+				calls.mu.Lock()
+				defer calls.mu.Unlock()
+				if exists {
+					assert.Empty(t, calls.collections)
+				} else {
+					require.Len(t, calls.collections, 1)
+					assert.Equal(t, "payload-policy", calls.collections[0].CollectionName)
+					assert.Equal(t, uint64(3), calls.collections[0].VectorsConfig.GetParams().Size)
+					assert.Equal(t, qdrant.Distance_Cosine, calls.collections[0].VectorsConfig.GetParams().Distance)
+				}
+				actual := make(map[string]qdrant.FieldType)
+				for _, index := range calls.indexes {
+					assert.Equal(t, "payload-policy", index.CollectionName)
+					actual[index.FieldName] = index.GetFieldType()
+				}
+				assert.Len(t, calls.indexes, len(tt.indexes))
+				assert.Equal(t, tt.indexes, actual)
+			})
+		}
+	}
+}
+
+func TestQdrantStore_CreateNamespaceAddsFilterableIndexesOnRepeat(t *testing.T) {
+	store, calls := newQdrantNamespaceRPCFixture(t, true, 3, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	properties := map[string]VectorStoreProperties{
+		"cache_key": {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"response":  {DataType: VectorStorePropertyTypeString},
+	}
+	require.NoError(t, store.CreateNamespace(ctx, "payload-policy", 3, properties))
+	properties["provider"] = VectorStoreProperties{DataType: VectorStorePropertyTypeString, Filterable: true}
+	require.NoError(t, store.CreateNamespace(ctx, "payload-policy", 3, properties))
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	require.Len(t, calls.indexes, 3)
+	fields := make([]string, 0, len(calls.indexes))
+	for _, index := range calls.indexes {
+		fields = append(fields, index.FieldName)
+	}
+	assert.ElementsMatch(t, []string{"cache_key", "cache_key", "provider"}, fields)
+}
+
+func TestQdrantStore_CreateNamespaceProvisioningErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		exists     bool
+		dimension  int
+		failMethod string
+		errorMsg   string
+		indexes    int
+	}{
+		{"existence failure", false, 3, qdrant.Collections_CollectionExists_FullMethodName, "failed to check collection existence", 0},
+		{"creation failure", false, 3, qdrant.Collections_Create_FullMethodName, "failed to create collection", 0},
+		{"dimension mismatch", true, 4, "", "already exists with dimension 4 but config requires 3", 0},
+		{"inspection failure remains best effort", true, 3, qdrant.Collections_Get_FullMethodName, "", 1},
+		{"index failure remains best effort", true, 3, qdrant.Points_CreateFieldIndex_FullMethodName, "", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, calls := newQdrantNamespaceRPCFixture(t, tt.exists, tt.dimension, tt.failMethod)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := store.CreateNamespace(ctx, "payload-policy", 3, map[string]VectorStoreProperties{
+				"cache_key": {DataType: VectorStorePropertyTypeString, Filterable: true},
+				"response":  {DataType: VectorStorePropertyTypeString},
+			})
+			if tt.errorMsg != "" {
+				require.ErrorContains(t, err, tt.errorMsg)
+				if tt.name == "dimension mismatch" {
+					assert.ErrorIs(t, err, ErrDimensionMismatch)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			calls.mu.Lock()
+			defer calls.mu.Unlock()
+			assert.Len(t, calls.indexes, tt.indexes)
+		})
+	}
+}
+
+// Legacy callers such as Warp and semantic routing do not annotate their
+// filter fields. Keep their indexes, including on strict-mode collections.
+func TestQdrantStore_LegacyPayloadFiltersInStrictMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewQdrantTestSetup(t)
+	t.Cleanup(func() { setup.Cleanup(t) })
+	namespace := "payload-policy-legacy-" + generateUUID()
+	t.Cleanup(func() { assert.NoError(t, setup.Store.DeleteNamespace(context.Background(), namespace)) })
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, 3, map[string]VectorStoreProperties{
+		"kind":     {DataType: VectorStorePropertyTypeString},
+		"warp_log": {DataType: VectorStorePropertyTypeBoolean},
+	}))
+	id := generateUUID()
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, id, []float32{1, 0, 0}, map[string]interface{}{"kind": "example", "warp_log": true}))
+	require.NoError(t, setup.Store.client.UpdateCollection(setup.ctx, &qdrant.UpdateCollection{CollectionName: namespace, StrictModeConfig: &qdrant.StrictModeConfig{
+		Enabled: qdrant.PtrOf(true), UnindexedFilteringRetrieve: qdrant.PtrOf(false), UnindexedFilteringUpdate: qdrant.PtrOf(false),
+	}}))
+	for _, query := range []Query{{Field: "kind", Operator: QueryOperatorEqual, Value: "example"}, {Field: "warp_log", Operator: QueryOperatorEqual, Value: true}} {
+		results, err := setup.Store.GetNearest(setup.ctx, namespace, []float32{1, 0, 0}, []Query{query}, nil, 0.8, 1)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, id, results[0].ID)
+	}
 }
