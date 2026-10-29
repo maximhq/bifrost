@@ -16,8 +16,8 @@
 //   Capabilities        files and actions Warp cannot do: say so, offer the
 //                       feature-request link, no tool loops
 //   Topics              list_topics answers what people ask about over a
-//                       window, with a trend per topic; what it still cannot
-//                       show is declined with the feature-request link
+//                       window, with a trend per topic; the requests and users
+//                       behind a topic are reached through topic_ids
 //   Unanswerable        outside Bifrost's view, missing entities, secrets, PII,
 //                       its own prompt, harmful help, legal verdicts, forecasts
 //   Guardrails          out-of-scope refusals, instruction overrides, a
@@ -323,7 +323,7 @@ const FOLDERS = [
   {
     name: "Topics",
     description:
-      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. Broad areas are the themes the topics are grouped into, one list_topics call with group_by theme. The requests behind a topic are reached through the topic_ids filter the other tools take. What topics still cannot show - a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs.",
+      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. Broad areas are the themes the topics are grouped into, one list_topics call with group_by theme. The requests behind a topic are reached through the topic_ids filter the other tools take. How many users are behind a topic is one query_usage_by user ranking with its topic_ids, answered rather than declined, never rebuilt by slicing the logs.",
     cases: [
       {
         id: "topics-overview",
@@ -371,18 +371,18 @@ const FOLDERS = [
         },
       },
       {
+        // A user ranking through topic_ids is how many users had a request in
+        // the topic: answered, not declined with the feature-request link.
         id: "topics-people",
-        name: "Declines to count the people behind a topic",
+        name: "Counts the users behind a topic through the topic filter",
         ask: "How many different users asked about the largest topic?",
-        // The prompt has Warp answer what the data shows first - a query_usage_by
-        // user ranking with topic_ids counts users with a request in the topic -
-        // then decline the people count. Users are not people.
         expect: {
-          toolsAll: ["list_topics"],
+          toolsAll: ["list_topics", "query_usage_by"],
           toolsOnly: ["describe_filter_space", "list_topics", "query_usage_by"],
           maxToolCalls: 3,
-          answerAll: [FEATURE_LINK],
-          answerNone: ["\\b\\d+ (different |distinct |unique )?people\\b"],
+          argsMatch: [{ tool: "query_usage_by", pattern: "^(?=[\\s\\S]*\"topic_ids\")(?=[\\s\\S]*\"dimension\"\\s*:\\s*\"user\")" }],
+          answerAll: ["\\b\\d+\\**\\s+(different |distinct |unique )?users\\b"],
+          answerNone: [FEATURE_LINK],
         },
       },
     ],
