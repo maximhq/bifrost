@@ -298516,7 +298516,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"kimchi/glm-5.3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"kimchi/glm-5.3-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ],\n  \"max_tokens\": 512\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
