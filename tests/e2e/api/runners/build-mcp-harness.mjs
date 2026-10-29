@@ -924,7 +924,7 @@ const ADM15 = folder("ADM-15 Sticky vs per-call create against a dead upstream",
     ])]),
   request("ADM-15", "the sticky client is not kept", "GET", "/api/mcp/clients?server=adm15-s", { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] }),
   createExpect("ADM-15", "create the per-call client", httpClient("adm15-p", "adm15_p", "alpha"), [A.status(200)]),
-  getClient("ADM-15", "adm15-p", "the per-call client is healthy with no tools", [clientState("healthy"), A.custom("tools is []", ["pm.expect(pm.response.json().clients[0].tools, 'body: ' + pm.response.text()).to.eql([]);"])]),
+  getClient("ADM-15", "adm15-p", "the per-call client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), A.custom("tools is []", ["pm.expect(pm.response.json().clients[0].tools, 'body: ' + pm.response.text()).to.eql([]);"])]),
   mockPost("ADM-15", "alpha", "faults/clear", "teardown: clear alpha's faults"),
   deleteClient("ADM-15", "adm15-p"),
 ]);
@@ -2059,6 +2059,18 @@ const AUTH03 = folder("AUTH-03 headers auth, per call", `Setup: ${T1_TEXT("alpha
   ]),
   request("AUTH-03", "reconnect the per-call client", "POST", "/api/mcp/client/auth03-c/reconnect", { asserts: [A.status(400), A.msgContains("reconnect is not applicable for this client type")] }),
   deleteClient("AUTH-03", "auth03-c"),
+]);
+
+const badT1Client = (clientId, name, over = {}) => t1Client(clientId, name, { headers: { Authorization: "Bearer BAD" }, ...over });
+const AUTH04 = folder("AUTH-04 Wrong token", `Setup: ${T1_TEXT("alpha")}; an HTTP client on alpha with auth headers "Authorization: Bearer BAD", tools_to_execute ["*"], created sticky (needs_session_stickiness true), then per call.`, [
+  ...requiresT1("AUTH-04", "alpha"),
+  createExpect("AUTH-04", "create the sticky client", badT1Client("auth04-s", "auth04_s", { needs_session_stickiness: true }), [A.status(500), A.msgStartsWith("Failed to connect MCP client")]),
+  request("AUTH-04", "the sticky client is not listed", "GET", "/api/mcp/clients?server=auth04-s", { asserts: [A.status(200), A.custom("no client is returned", [
+    "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.have.lengthOf(0);",
+  ])] }),
+  createExpect("AUTH-04", "create the per-call client", badT1Client("auth04-p", "auth04_p"), [A.status(200)]),
+  getClient("AUTH-04", "auth04-p", "the per-call client is unstable at stage tool_discovery, with no tools", [clientState("unstable"), clientField("last_failure.stage", "tool_discovery"), toolNamesAre([])]),
+  deleteClient("AUTH-04", "auth04-p"),
 ]);
 
 const AUTH05 = folder("AUTH-05 Token revoked after connect", `Setup: ${T1_TEXT("alpha")}; ${T1_CLIENT_TEXT}, needs_session_stickiness true, tools_to_execute ["*"] (as AUTH-02); then alpha revokes T1.`, [
@@ -7747,7 +7759,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
