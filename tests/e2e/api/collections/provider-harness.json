@@ -44703,6 +44703,76 @@
               }
             }
           ]
+        },
+        {
+          "name": "[EXPECT-400] deepseek/deepseek-v4-flash-anthropic rejects document content before egress (#6741)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarise the attached document in one sentence.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKJcOkw7zDtsOfCjIgMCBvYmoKPDwvTGVuZ3RoIDMgMCBSL0ZpbHRlci9GbGF0ZURlY29kZT4+\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// DeepSeek documents document blocks as unsupported on its Anthropic-compatible",
+                  "// endpoint, but accepts the request and silently drops them: the upstream returns",
+                  "// success, so no fallback can ever trigger and the caller gets a confident answer",
+                  "// computed without the document they supplied. Bifrost refuses before egress instead.",
+                  "// The collection-level [EXPECT-400] tag already asserts the status; these rows pin",
+                  "// that the refusal is typed (so a fallback can act on it) and that it is local.",
+                  "pm.test('the refusal is typed invalid_request_error so a fallback can act on it', function () {",
+                  "  var err = body.error || {};",
+                  "  pm.expect(err.type, 'error.type: ' + txt.slice(0, 400)).to.eql('invalid_request_error');",
+                  "  pm.expect(err.message, 'error.message: ' + txt.slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('the refusal names document content, not some unrelated validation error', function () {",
+                  "  var msg = ((body.error || {}).message) || '';",
+                  "  pm.expect(/document/i.test(msg), 'message does not mention document content: ' + txt.slice(0, 400)).to.be.true;",
+                  "});",
+                  "",
+                  "// The row asks for raw_request capture, so an upstream rejection would carry the",
+              "// attempted payload here. Its absence is therefore evidence of a local refusal",
+              "// rather than an artefact of capture being switched off.",
+              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
+                  "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -297161,18 +297231,643 @@
       ]
     },
     {
-      "name": "293. Upstream model metadata passthrough in model listings (#8914 / PR #9201)",
-      "description": "Custom OpenAI-compatible providers lost per-model metadata end to end (#8914): the shared list-models decoder whitelist dropped context_length/max_input_tokens/max_output_tokens/display_name/reasoning/modalities for envelope-shaped upstream responses, and the OpenAI-shape output converters (drop-in routes via ToOpenAIListModelsResponse / ToOpenAIModelRetrieveResponse) re-stripped them on the way out, so clients probing their base URL fell back to default context limits. PR #9201 decodes the fields in both response shapes and carries them through both converters. 293.1 pins the native /v1/models contract on a live metadata-emitting upstream (OpenRouter emits context_length in the envelope shape). 293.2 and 293.3 are the red-before pins (293.2 scopes the listing with x-bf-model-provider: openrouter — the header selects which provider is asked) for the output converters: the /openai drop-in routes used to emit context_window only, so a missing context_length there can only mean the converter stripped it again.",
+      "name": "293. MCP OAuth public client moves to new endpoints without a client secret (mcp-oauth-public-client-endpoints)",
+      "description": "An OAuth MCP client whose client_id has no secret (a public PKCE client) can change its authorize_url and token_url through PUT /api/mcp/client/{id} without sending a client_secret. The rule that a changed endpoint needs the secret resent exists so a stored secret is never posted to an endpoint the admin did not pair it with; a public client stores none, so pre-fix the edit was refused with 400 \"client_secret must be resent explicitly when authorize_url or token_url changes\" and a public client could not follow its MCP server to a new authorization server, which is the recovery the authorization server change docs prescribe. A confidential client that changes an endpoint without its secret is still refused; that and the resend case are covered by the Go test TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Its dynamic client registration issues no client_secret, and its /authorize approves without a login page when called with user=..., so the rows complete a real sign-in. Nothing in the harness runners starts it, so the rows are [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp-oauth-public-client-endpoints\" INCLUDE_PREVIEW=1 once it is up. Like folder 207 the registration needs localhost on mcp_oauth_private_allowlist (the harness profile has it). The edit points the client at the same demo server through 127.0.0.1, so the endpoints differ as strings. The last row deletes the client. No provider credentials are used.",
       "item": [
         {
-          "name": "293.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914",
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints registering an OAuth MCP server starts a sign-in for a public client",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('293.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914 succeeds', function () {",
+                  "pm.test('registration starts the OAuth flow against the demo server', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, pm.response.text()).to.equal('pending_oauth');",
+                  "  pm.expect(String(body.authorize_url || ''), pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  pm.expect(body.mcp_client_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.complete_url, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('publicClientAuthorizeUrl', body.authorize_url);",
+                  "  pm.collectionVariables.set('publicClientId', body.mcp_client_id);",
+                  "  pm.collectionVariables.set('publicClientCompleteUrl', body.complete_url);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_public_client_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the demo authorization server approves and redirects back with a code",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the authorization server redirects to the Bifrost callback with a code', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientAuthorizeUrl'), 'the registration row did not capture an authorize URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = String(pm.response.headers.get('Location') || '');",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/api/oauth/callback?');",
+                  "  pm.expect(location, 'Location: ' + location).to.match(/[?&]code=/);",
+                  "  pm.collectionVariables.set('publicClientCallbackUrl', location);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientAuthorizeUrl}}&user=harness"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the callback exchanges the code and reports success",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OAuth callback completes the sign-in', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCallbackUrl'), 'the authorize row did not capture a callback URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientCallbackUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints completing the sign-in creates the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('complete-oauth creates and connects the client', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCompleteUrl'), 'the registration row did not capture a complete URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}{{publicClientCompleteUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints a public client changes its authorize_url and token_url without a client_secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the endpoint change is accepted with no secret to resend', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.text(), 'pre-fix a public client was asked for a secret it never had').to.not.include('client_secret must be resent');",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"oauth_config\": {\n    \"authorize_url\": \"http://127.0.0.1:3003/authorize\",\n    \"token_url\": \"http://127.0.0.1:3003/token\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints cleanup deletes the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the client is removed', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "294. Azure Voice Live rates on pricing overrides (azure voice live pricing) [SERIAL]",
+      "description": "Pins the nine Azure Voice Live _voice_live pricing fields on the pricing-override API: a create keeps every rate in pricing_patch, the list returns them, and the override is deleted. Before the fields existed the patch type had no _voice_live keys, so the create dropped them. The Voice Live turns these rates price run over the realtime WebSocket, which this collection does not drive; the cost engine and relay are covered by Go tests (TestCalculateCost_VoiceLiveRates, TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns).",
+      "item": [
+        {
+          "name": "Setup - pricing override with the _voice_live rates [EXPECT-201] - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'e2e-voice-live-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+                  "  // Matches a model no other case calls, so the override cannot reprice anything else in the suite.",
+                  "  scope_kind: 'global',",
+                  "  match_type: 'exact',",
+                  "  pattern: 'voice-live-rates-probe',",
+                  "  request_types: ['responses'],",
+                  "  patch: {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055}",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override with the _voice_live rates is created', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && body.pricing_override;",
+                  "pm.test('Override exposes an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('voiceLiveRatesOverrideId', ov.id); }",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('create response', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "pricing override list returns the _voice_live rates - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override list is returned', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "});",
+                  "var id = pm.collectionVariables.get('voiceLiveRatesOverrideId');",
+                  "var overrides = (pm.response.json().pricing_overrides || []);",
+                  "var ov = overrides.filter(function (o) { return o.id === id; })[0];",
+                  "pm.test('The created override is listed', function () {",
+                  "  pm.expect(ov, 'override ' + id + ' among ' + overrides.length).to.be.an('object');",
+                  "});",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('listed override', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=global&limit=500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ],
+              "query": [
+                {
+                  "key": "scope_kind",
+                  "value": "global"
+                },
+                {
+                  "key": "limit",
+                  "value": "500"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - delete the _voice_live rates override - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{voiceLiveRatesOverrideId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{voiceLiveRatesOverrideId}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "295. Tool-output image detail default (tool-output-image-detail) (#5649 / PR #9209)",
+      "description": "Regression: Bifrost defaulted \"detail\": \"auto\" onto input_image blocks in a message's own content when sending to an OpenAI Responses provider (OpenAI's schema requires the field; strict upstreams such as vLLM, which validate against the official OpenAI types, reject requests without it), but not onto an input_image nested in a tool result (function_call_output.output). vLLM answered 400 \"1 validation error for ResponseInputImageParam ... detail: Field required\", and because the image stays in history every later turn failed the same way.\n\nFix: defaultImageDetail in core/providers/openai/responses.go now also defaults ResponsesToolMessage.Output blocks, cloning on write.\n\nOpenAI itself accepts a missing detail, so a 200 alone proves nothing; every case sends x-bf-send-back-raw-request and asserts on the input_image Bifrost put on the wire (extra_fields.raw_request). Red before the fix: the nested input_image carries no detail.\n  1. /anthropic/v1/messages: the reporter's request, a tool_result whose content is an Anthropic image block.\n  2. /v1/responses: a native function_call_output with an output array; also pins that an explicit detail (\"low\") is preserved and that the top-level image keeps its \"auto\" default.\n  3. /v1/chat/completions with x-bf-compat [\"convert_chat_to_responses\"]: a role:tool message carrying an image_url block, which the chat->Responses bridge turns into function_call_output.output. The compat plugin converts only models the catalog lists as Responses-only, so this case uses gpt-5.3-codex (image input, Responses only); gpt-4o-mini would stay on /chat/completions.\n\nStreaming uses the same request converter (ToOpenAIResponsesRequest), so it is not repeated. Every OpenAI-compatible Responses host that calls the converter (vLLM, Azure, OpenRouter, xAI, Fireworks, Databricks, Bedrock Mantle, ...) inherits the fix; the profile has no vLLM provider, so OpenAI stands in and the raw-request assertion pins the wire shape vLLM validates.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini anthropic messages: tool_result image gets detail auto on the Responses wire - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /anthropic/v1/messages: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /anthropic/v1/messages: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read /tmp/img.png and name its color in one word.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_img_detail_1\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"/tmp/img.png\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_img_detail_1\",\n          \"content\": [\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"base64\",\n                \"media_type\": \"image/png\",\n                \"data\": \"iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses: function_call_output image gets detail auto, explicit detail kept, top-level image unchanged - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /v1/responses: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /v1/responses: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});",
+                  "pm.test('openai via /v1/responses: explicit tool image detail is preserved', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs.length, 'expected both tool images: ' + JSON.stringify(imgs)).to.equal(2);",
+                  "  pm.expect(imgs[1].detail, 'explicit detail overwritten: ' + JSON.stringify(imgs[1])).to.equal('low');",
+                  "});",
+                  "pm.test('openai via /v1/responses: top-level and tool images behave the same', function () {",
+                  "  var raw = rawRequest();",
+                  "  var user = (raw.input || []).filter(function (i) { return i.role === 'user' && Array.isArray(i.content); })[0];",
+                  "  pm.expect(user, 'user message with content blocks missing: ' + JSON.stringify(raw.input)).to.be.an('object');",
+                  "  var top = user.content.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(top.length, 'top-level image missing: ' + JSON.stringify(user)).to.equal(1);",
+                  "  pm.expect(top[0].detail, 'top-level image detail: ' + JSON.stringify(top[0])).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a reference image. Read /tmp/img.png and say whether the colors match, in one word.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_img_detail_1\",\n      \"name\": \"read_file\",\n      \"arguments\": \"{\\\"path\\\":\\\"/tmp/img.png\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_img_detail_1\",\n      \"output\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.3-codex compat chat->responses: tool message image gets detail auto - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /v1/chat/completions: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /v1/chat/completions: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});",
+                  "pm.test('openai via /v1/chat/completions: chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"description\": \"Read a file from disk.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read /tmp/img.png and name its color in one word.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_img_detail_2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"/tmp/img.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_img_detail_2\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "296. Upstream model metadata passthrough in model listings (#8914 / PR #9201)",
+      "description": "Custom OpenAI-compatible providers lost per-model metadata end to end (#8914): the shared list-models decoder whitelist dropped context_length/max_input_tokens/max_output_tokens/display_name/reasoning/modalities for envelope-shaped upstream responses, and the OpenAI-shape output converters (drop-in routes via ToOpenAIListModelsResponse / ToOpenAIModelRetrieveResponse) re-stripped them on the way out, so clients probing their base URL fell back to default context limits. PR #9201 decodes the fields in both response shapes and carries them through both converters. 296.1 pins the native /v1/models contract on a live metadata-emitting upstream (OpenRouter emits context_length in the envelope shape). 296.2 and 296.3 are the red-before pins (296.2 scopes the listing with x-bf-model-provider: openrouter — the header selects which provider is asked) for the output converters: the /openai drop-in routes used to emit context_window only, so a missing context_length there can only mean the converter stripped it again.",
+      "item": [
+        {
+          "name": "296.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('296.1 openrouter/openai/gpt-4o-mini via /v1/models carries the upstream context_length - #8914 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -297213,14 +297908,14 @@
           }
         },
         {
-          "name": "293.2 openrouter/openai/gpt-4o-mini via /openai/v1/models carries context_window and context_length - #8914",
+          "name": "296.2 openrouter/openai/gpt-4o-mini via /openai/v1/models carries context_window and context_length - #8914",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('293.2 openrouter/openai/gpt-4o-mini via /openai/v1/models carries context_window and context_length - #8914 succeeds', function () {",
+                  "pm.test('296.2 openrouter/openai/gpt-4o-mini via /openai/v1/models carries context_window and context_length - #8914 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -297261,14 +297956,14 @@
           }
         },
         {
-          "name": "293.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914",
+          "name": "296.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('293.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914 succeeds', function () {",
+                  "pm.test('296.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_length - #8914 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -297308,14 +298003,14 @@
           }
         },
         {
-          "name": "293.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914",
+          "name": "296.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('293.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914 succeeds', function () {",
+                  "pm.test('296.4 openrouter/openai/gpt-4o-mini via /anthropic/v1/models carries display_name - #8914 succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",

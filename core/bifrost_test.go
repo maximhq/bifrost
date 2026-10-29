@@ -3274,6 +3274,161 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 	wg.Wait()
 }
 
+// streamSpanRecorder records each span's parent, start and end, for checking the
+// shape of streaming post-hook spans.
+type streamSpanRecorder struct {
+	schemas.NoOpTracer
+	mu       sync.Mutex
+	spans    map[string]*streamSpanRecord
+	deferred string // the stream's LLM span, as GetDeferredSpanID returns it
+}
+
+type streamSpanRecord struct {
+	name, parent string
+	start, end   time.Time
+	attrs        map[string]any
+}
+
+func (t *streamSpanRecorder) StartSpanID(ctx context.Context, name string, _ schemas.SpanKind) (string, schemas.SpanHandle) {
+	parent, _ := ctx.Value(schemas.BifrostContextKeySpanID).(string)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id := fmt.Sprintf("span-%d", len(t.spans)+1)
+	t.spans[id] = &streamSpanRecord{name: name, parent: parent, start: time.Now(), attrs: map[string]any{}}
+	return id, id
+}
+
+func (t *streamSpanRecorder) StartSpan(ctx context.Context, name string, kind schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	id, h := t.StartSpanID(ctx, name, kind)
+	return context.WithValue(ctx, schemas.BifrostContextKeySpanID, id), h
+}
+
+func (t *streamSpanRecorder) SetAttribute(h schemas.SpanHandle, key string, value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].attrs[key] = value
+}
+
+func (t *streamSpanRecorder) SetSpanStartTime(h schemas.SpanHandle, start time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].start = start
+}
+
+func (t *streamSpanRecorder) EndSpan(h schemas.SpanHandle, _ schemas.SpanStatus, _ string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].end = time.Now()
+}
+
+func (t *streamSpanRecorder) GetDeferredSpanID(_ string) string { return t.deferred }
+
+func (t *streamSpanRecorder) byName(name string) (string, *streamSpanRecord) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id, s := range t.spans {
+		if s.name == name {
+			return id, s
+		}
+	}
+	return "", nil
+}
+
+// slowStreamPlugin takes a fixed time per chunk and, on the final chunk, records a
+// span of its own the way a guardrail writes its result span.
+type slowStreamPlugin struct {
+	fakeRoutingPlugin
+	delay time.Duration
+}
+
+func (p *slowStreamPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	time.Sleep(p.delay)
+	if IsFinalChunk(ctx) {
+		tracer := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		_, h := tracer.StartSpan(ctx, "plugin.slow.output", schemas.SpanKindPlugin)
+		tracer.EndSpan(h, schemas.SpanStatusOk, "")
+	}
+	return resp, bifrostErr, nil
+}
+
+// Streaming post-hook spans are siblings under the LLM span, each as long as its
+// plugin's summed per-chunk time and ending when its final-chunk hook returns. A span
+// the plugin opens mid-stream nests under that post-hook span and inside its window,
+// even when the client is slow to take the final chunk.
+func TestStreamingPostHookSpans_SiblingsWithRealDuration(t *testing.T) {
+	tracer := &streamSpanRecorder{spans: map[string]*streamSpanRecord{}, deferred: "llm"}
+	slow := &slowStreamPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "slow"}, delay: 10 * time.Millisecond}
+	fast := &fakeRoutingPlugin{name: "fast"}
+	p := &PluginPipeline{
+		llmPlugins: []schemas.LLMPlugin{fast, slow},
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     tracer,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(tracer))
+	ctx.SetValue(schemas.BifrostContextKeySpanID, "llm")
+	ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+
+	const chunks = 3
+	for i := 0; i < chunks; i++ {
+		if i == chunks-1 {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		}
+		p.RunPostLLMHooks(ctx, &schemas.BifrostResponse{}, nil, len(p.llmPlugins))
+	}
+	hooksDone := time.Now()
+	time.Sleep(50 * time.Millisecond) // a slow client send of the final chunk, before finalizing
+	p.FinalizeStreamingPostHookSpans(ctx)
+
+	slowID, slowSpan := tracer.byName("plugin.slow.posthook")
+	_, fastSpan := tracer.byName("plugin.fast.posthook")
+	_, output := tracer.byName("plugin.slow.output")
+	if slowSpan == nil || fastSpan == nil || output == nil {
+		t.Fatalf("missing spans: slow=%v fast=%v output=%v", slowSpan, fastSpan, output)
+	}
+	if slowSpan.parent != "llm" || fastSpan.parent != "llm" {
+		t.Errorf("posthook parents = slow:%q fast:%q, want both under the LLM span", slowSpan.parent, fastSpan.parent)
+	}
+	got := slowSpan.end.Sub(slowSpan.start)
+	if want := chunks * slow.delay; got < want || got > want+15*time.Millisecond {
+		t.Errorf("slow posthook span lasts %v, want about %v (its summed hook time)", got, want)
+	}
+	if output.parent != slowID {
+		t.Errorf("output span parent = %q, want the slow posthook span %q", output.parent, slowID)
+	}
+	if slowSpan.end.After(hooksDone) {
+		t.Errorf("slow posthook span ends %v after the hooks, want it to end with its final-chunk hook", slowSpan.end.Sub(hooksDone))
+	}
+	if output.start.Before(slowSpan.start) || output.end.After(slowSpan.end) {
+		t.Errorf("output span [%v, %v] lies outside its parent [%v, %v]", output.start, output.end, slowSpan.start, slowSpan.end)
+	}
+}
+
+// BenchmarkStreamingPostHooks runs one 20-chunk stream's post-hooks across 5 plugins,
+// finalizing and releasing the pipeline as a stream does.
+func BenchmarkStreamingPostHooks(b *testing.B) {
+	plugins := make([]schemas.LLMPlugin, 5)
+	for i := range plugins {
+		plugins[i] = &fakeRoutingPlugin{name: fmt.Sprintf("plugin-%d", i)}
+	}
+	resp := &schemas.BifrostResponse{}
+	logger, tracer := NewDefaultLogger(schemas.LogLevelError), &schemas.NoOpTracer{}
+	p := &PluginPipeline{}
+	b.ReportAllocs()
+	for b.Loop() {
+		p.llmPlugins, p.logger, p.tracer = plugins, logger, tracer
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+		ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+		for range 20 {
+			p.RunPostLLMHooks(ctx, resp, nil, len(plugins))
+		}
+		p.FinalizeStreamingPostHookSpans(ctx)
+		p.resetPluginPipeline()
+	}
+}
+
 // TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
 // a hit returns the single matching key, a miss returns an empty slice
 // (which the caller surfaces as "no key found"), and the input slice must
