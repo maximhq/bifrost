@@ -957,6 +957,212 @@ func TestContextTransport_MatchesDefaultForBufferedBodies(t *testing.T) {
 	}
 }
 
+// newSlowContextTransportClient returns a client on NewContextTransport whose
+// Read/WriteTimeout stand in for default_request_timeout_in_seconds, talking to
+// an upstream that answers after delay.
+func newSlowContextTransportClient(t *testing.T, delay, clientTimeout time.Duration) *fasthttp.Client {
+	t.Helper()
+	ln := fasthttputil.NewInmemoryListener()
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			time.Sleep(delay)
+			ctx.SetStatusCode(200)
+			ctx.SetBodyString(`{"ok":true}`)
+		},
+	}
+	go server.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+	return &fasthttp.Client{
+		Dial:         func(addr string) (net.Conn, error) { return ln.Dial() },
+		ReadTimeout:  clientTimeout,
+		WriteTimeout: clientTimeout,
+		Transport:    NewContextTransport(),
+	}
+}
+
+// requestTimeoutCtx returns a BifrostContext carrying a per-request timeout
+// override, with deadline as the whole-request budget (zero for none).
+func requestTimeoutCtx(t *testing.T, override time.Duration, deadline time.Time) *schemas.BifrostContext {
+	t.Helper()
+	parent, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ctx := schemas.NewBifrostContext(parent, deadline)
+	if override > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, override)
+	}
+	return ctx
+}
+
+func doSlowUnary(t *testing.T, client *fasthttp.Client, ctx context.Context) *schemas.BifrostError {
+	t.Helper()
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://slow/")
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	if bifrostErr == nil && resp.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode())
+	}
+	return bifrostErr
+}
+
+func TestContextTransport_RequestTimeoutOverrideExtendsClientTimeout(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	ctx := requestTimeoutCtx(t, 2*time.Second, schemas.NoDeadline)
+	if bifrostErr := doSlowUnary(t, client, ctx); bifrostErr != nil {
+		t.Fatalf("override (2s) should replace the client timeout (100ms) for a 300ms response, got error: %s", bifrostErr.Error.Message)
+	}
+}
+
+func TestContextTransport_RequestTimeoutOverrideExtendsStreamHeaderWait(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	client.StreamResponseBody = true
+	ctx := requestTimeoutCtx(t, 2*time.Second, schemas.NoDeadline)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer ReleaseStreamingResponse(ctx, resp)
+	req.SetRequestURI("http://slow/")
+
+	if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+		t.Fatalf("override (2s) should replace the client timeout (100ms) for a 300ms header wait, got error: %v", err)
+	}
+	if resp.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode())
+	}
+}
+
+func TestContextTransport_RequestTimeoutOverrideShortensClientTimeout(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 5*time.Second)
+	ctx := requestTimeoutCtx(t, 50*time.Millisecond, schemas.NoDeadline)
+	start := time.Now()
+	bifrostErr := doSlowUnary(t, client, ctx)
+	if bifrostErr == nil {
+		t.Fatal("override (50ms) should replace the client timeout (5s) and fail a 300ms response")
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("expected the 50ms override to end the attempt early, took %v", elapsed)
+	}
+}
+
+// TestContextTransport_RequestTimeoutOverrideBoundsPoolWait pins that a shorter override also
+// bounds the wait for a free pooled connection, not only the write and read once one is held.
+func TestContextTransport_RequestTimeoutOverrideBoundsPoolWait(t *testing.T) {
+	client := newSlowContextTransportClient(t, time.Second, 5*time.Second)
+	client.MaxConnsPerHost = 1
+	client.MaxConnWaitTimeout = 3 * time.Second
+
+	busy := make(chan *schemas.BifrostError, 1)
+	go func() { busy <- doSlowUnary(t, client, requestTimeoutCtx(t, 0, schemas.NoDeadline)) }()
+	time.Sleep(100 * time.Millisecond) // let the first request take the only connection
+
+	start := time.Now()
+	bifrostErr := doSlowUnary(t, client, requestTimeoutCtx(t, 100*time.Millisecond, schemas.NoDeadline))
+	elapsed := time.Since(start)
+	if bifrostErr == nil {
+		t.Fatal("override (100ms) should fail a request still waiting for the only connection")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected the 100ms override to bound the pool wait (MaxConnWaitTimeout 3s, connection busy for 1s), took %v", elapsed)
+	}
+	if busyErr := <-busy; busyErr != nil {
+		t.Fatalf("the request holding the connection should succeed, got: %s", busyErr.Error.Message)
+	}
+}
+
+// TestContextTransport_RequestTimeoutOverrideBoundsDial pins that a shorter override also bounds
+// connection setup. ConfigureDialer installs an addr-only client.Dial, so fasthttp drops the
+// override it passes to the dial, and DNS, TCP and TLS run on the client timeouts instead.
+// MaxConnsPerHost 1 makes a leaked connection slot from the abandoned dial fail the follow-up.
+func TestContextTransport_RequestTimeoutOverrideBoundsDial(t *testing.T) {
+	client := newSlowContextTransportClient(t, 0, 5*time.Second)
+	client.MaxConnsPerHost = 1
+	inner := client.Dial
+	var slowDials atomic.Int32
+	slowDials.Store(1)
+	client.Dial = func(addr string) (net.Conn, error) {
+		if slowDials.Add(-1) >= 0 {
+			time.Sleep(time.Second) // an unreachable host or a stalled DNS lookup
+		}
+		return inner(addr)
+	}
+
+	start := time.Now()
+	bifrostErr := doSlowUnary(t, client, requestTimeoutCtx(t, 100*time.Millisecond, schemas.NoDeadline))
+	elapsed := time.Since(start)
+	if bifrostErr == nil {
+		t.Fatal("override (100ms) should fail a request whose dial takes 1s")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected the 100ms override to bound the dial (client timeout 5s, dial 1s), took %v", elapsed)
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected RequestTimedOut, got type %v: %s", bifrostErr.Error.Type, bifrostErr.Error.Message)
+	}
+
+	time.Sleep(1200 * time.Millisecond) // let the abandoned dial finish and give its slot back
+	if followErr := doSlowUnary(t, client, requestTimeoutCtx(t, 0, schemas.NoDeadline)); followErr != nil {
+		t.Fatalf("the abandoned dial must release its connection slot, follow-up failed: %s", followErr.Error.Message)
+	}
+}
+
+// TestAcquireConnWithin_CappedByContextDeadline pins that a ctx deadline shorter than the override
+// caps the timeout handed to AcquireConn, so an abandoned acquire does not stay queued for a pool
+// slot past the point the caller gave up.
+func TestAcquireConnWithin_CappedByContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got := make(chan time.Duration, 1)
+	acquire := func(timeout time.Duration, _ bool) (*int, error) {
+		got <- timeout
+		time.Sleep(timeout)
+		return nil, fasthttp.ErrNoFreeConns
+	}
+	start := time.Now()
+	_, err := acquireConnWithin(ctx, acquire, func(*int) {}, 2*time.Second, false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("returned after %v, want about the 100ms ctx deadline", elapsed)
+	}
+	if timeout := <-got; timeout > 100*time.Millisecond {
+		t.Fatalf("AcquireConn got timeout %v, want at most the ctx's remaining 100ms", timeout)
+	}
+
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	called := false
+	_, err = acquireConnWithin(expired, func(time.Duration, bool) (*int, error) { called = true; return nil, nil }, func(*int) {}, 2*time.Second, false)
+	if !errors.Is(err, context.DeadlineExceeded) || called {
+		t.Fatalf("expired ctx: err = %v, acquire called = %v; want DeadlineExceeded without an acquire", err, called)
+	}
+}
+
+func TestContextTransport_ContextDeadlineCapsRequestTimeoutOverride(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	ctx := requestTimeoutCtx(t, 2*time.Second, time.Now().Add(50*time.Millisecond))
+	bifrostErr := doSlowUnary(t, client, ctx)
+	if bifrostErr == nil {
+		t.Fatal("ctx deadline (50ms) should still cap the override (2s)")
+	}
+	if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected RequestTimedOut, got: %v", bifrostErr.Error.Type)
+	}
+}
+
+func TestContextTransport_ClientTimeoutAppliesWithoutOverride(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	// A longer ctx deadline alone does not lift the per-attempt client timeout:
+	// the deadline is the whole-request budget across retries and fallbacks.
+	ctx := requestTimeoutCtx(t, 0, time.Now().Add(2*time.Second))
+	if bifrostErr := doSlowUnary(t, client, ctx); bifrostErr == nil {
+		t.Fatal("expected the client timeout (100ms) to bound a request without an override")
+	}
+}
+
 // benchServer serves either a small buffered JSON body or a 20-chunk SSE stream
 // over an in-memory listener, so the transport benchmarks measure client-side
 // cost only.
@@ -995,10 +1201,14 @@ func benchClient(ln *fasthttputil.InmemoryListener, transport fasthttp.RoundTrip
 }
 
 func benchmarkBuffered(b *testing.B, transport fasthttp.RoundTripper) {
-	ln := benchServer(b, false)
-	client := benchClient(ln, transport, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	benchmarkBufferedCtx(b, transport, ctx)
+}
+
+func benchmarkBufferedCtx(b *testing.B, transport fasthttp.RoundTripper, ctx context.Context) {
+	ln := benchServer(b, false)
+	client := benchClient(ln, transport, false)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -1053,6 +1263,25 @@ func BenchmarkTransport_Buffered_Default(b *testing.B) {
 	benchmarkBuffered(b, fasthttp.DefaultTransport)
 }
 func BenchmarkTransport_Buffered_Context(b *testing.B) { benchmarkBuffered(b, NewContextTransport()) }
+
+// BenchmarkTransport_Buffered_ContextBifrost runs the context transport with the
+// BifrostContext providers pass in production, so the request-timeout override
+// lookup in RoundTrip is measured on the context type it actually reads.
+func BenchmarkTransport_Buffered_ContextBifrost(b *testing.B) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	benchmarkBufferedCtx(b, NewContextTransport(), schemas.NewBifrostContext(parent, schemas.NoDeadline))
+}
+
+// BenchmarkTransport_Buffered_ContextOverride measures a request carrying
+// BifrostContextKeyRequestTimeout, whose connection acquire runs bounded on its own goroutine.
+func BenchmarkTransport_Buffered_ContextOverride(b *testing.B) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 5*time.Second)
+	benchmarkBufferedCtx(b, NewContextTransport(), ctx)
+}
 func BenchmarkTransport_Streamed_Default(b *testing.B) {
 	benchmarkStreamed(b, fasthttp.DefaultTransport)
 }

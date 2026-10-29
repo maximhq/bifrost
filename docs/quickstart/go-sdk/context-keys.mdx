@@ -142,6 +142,17 @@ Append a custom path to the provider's base URL. Useful for accessing provider-s
 bfCtx.SetValue(schemas.BifrostContextKeyURLPath, "/custom/endpoint")
 ```
 
+### Request Timeout
+
+Override the provider's `default_request_timeout_in_seconds` for one request. Use it for calls that need longer than the provider-wide timeout (reasoning models, image or video generation, cold starts) without building a separate client, or to fail a latency-sensitive call sooner.
+
+```go
+bfCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(15*time.Minute))
+bfCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, 10*time.Minute)
+```
+
+The override is a per-attempt limit, the same as the provider timeout it replaces: an attempt that exceeds it fails as a provider timeout, and Bifrost moves on to the next fallback. The context deadline is separate: it is the budget for the whole request across retries and fallbacks, and it still caps every attempt. A context deadline alone does not lift the provider timeout, so set this key when a request needs longer. For streaming requests the timeout bounds the wait for the response headers; once streaming starts, the stream idle timeout below applies instead.
+
 ### Stream Idle Timeout
 
 Set a per-chunk idle timeout for streaming responses. If no chunk arrives within this duration, the stream is considered stalled and cancelled.
@@ -392,6 +403,7 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeySessionAffinity` | `bool` | Set | Whether the session decides routing for the request (default: true) |
 | `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom headers forwarded to the provider |
 | `BifrostContextKeyURLPath` | `string` | Set | Custom URL path appended to provider base URL |
+| `BifrostContextKeyRequestTimeout` | `time.Duration` | Set | Per-attempt upstream timeout, overriding the provider's `default_request_timeout_in_seconds` |
 | `BifrostContextKeyStreamIdleTimeout` | `time.Duration` | Set | Per-chunk idle timeout for streaming responses |
 | `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Send raw request body directly to provider |
 | `BifrostContextKeySendBackRawRequest` | `bool` | Set | Include raw request in `ExtraFields` |
