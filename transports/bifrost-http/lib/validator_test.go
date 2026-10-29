@@ -4610,6 +4610,41 @@ func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPPerUserAuthTypeNeedsHTTP pins the config.schema.json
+// rule matching the boot check: the per-user auth types are refused on SSE and STDIO
+// clients, and the shared auth types stay allowed there.
+func TestValidateConfigSchema_MCPPerUserAuthTypeNeedsHTTP(t *testing.T) {
+	schema := loadLocalSchema(t)
+	mcpConfig := func(client string) string {
+		return `{"mcp": {"client_configs": [` + client + `]}}`
+	}
+	for _, tc := range []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{"per_user_headers on http", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, false},
+		{"per_user_headers on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, true},
+		{"per_user_oauth on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"per_user_oauth"}`, true},
+		{"token_exchange on http", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","auth_type":"token_exchange","token_exchange":{"audience":"a","use_idp_credentials":true}}`, false},
+		{"token_exchange on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"token_exchange","token_exchange":{"audience":"a","use_idp_credentials":true}}`, true},
+		{"per_user_headers on stdio", `{"name":"local","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"per_user_headers","per_user_header_keys":["x-key"]}`, true},
+		{"oauth on sse", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse","auth_type":"oauth"}`, false},
+		{"headers on stdio", `{"name":"local","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"headers"}`, false},
+		{"sse without auth_type", `{"name":"remote","connection_type":"sse","connection_string":"https://mcp.example.com/sse"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %s to fail schema validation", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %s to pass schema validation, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
 // TestSchemaAuditLogsSigningKeys pins the audit signing-key rules the gateway
 // enforces at startup: a literal key needs 32 characters (an env. reference
 // is resolved later), and several keys need active_key_id, where hmac_key
