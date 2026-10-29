@@ -223,6 +223,12 @@ client:
       neither (for example one made with an API key) creates the client in
       pending_verification; finish it with
       POST /api/mcp/client/{id}/verify-exchange.
+
+      For auth_type "oauth" and "per_user_oauth", the name and endpoint slug
+      are checked before the OAuth flow starts, so a conflict returns 409 at
+      create rather than when the flow is completed, and endpoint_slug is kept
+      for the client the completion creates. OAuth discovery against a private
+      address that mcp_oauth_private_allowlist does not permit returns 400.
     tags:
       - MCP
     requestBody:
@@ -250,6 +256,14 @@ client:
                 - $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: >-
+          Another MCP client already has the name, or an MCP client or Virtual
+          MCP already serves the endpoint slug.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '403':
         description: >-
           The request was not genuinely authenticated (dashboard authentication

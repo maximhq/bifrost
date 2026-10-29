@@ -308,6 +308,9 @@ type ConfigStore interface {
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
+	// MCPEndpointSlugTaken reports whether a Virtual MCP or MCP client already
+	// serves /mcp/<slug>.
+	MCPEndpointSlugTaken(ctx context.Context, slug string) (bool, error)
 	GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error)
 	UpdateMCPClientOAuthConfigID(ctx context.Context, clientID string, oauthConfigID *string) error
 	ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error

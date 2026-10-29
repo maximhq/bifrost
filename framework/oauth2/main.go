@@ -559,8 +559,11 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	defer p.mu.Unlock()
 
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
-	if err != nil || oauthConfig == nil {
-		return fmt.Errorf("oauth config not found: %w", err)
+	if err != nil {
+		return fmt.Errorf("failed to load oauth config: %w", err)
+	}
+	if oauthConfig == nil {
+		return fmt.Errorf("oauth config not found")
 	}
 
 	token, err := p.configStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID)

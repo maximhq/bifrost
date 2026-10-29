@@ -4117,6 +4117,15 @@ const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; 
 ]);
 
 const R2 = "https://r2.mcp-harness.example/mcp";
+const AUTH13 = folder("AUTH-13 Discovery blocked without the allowlist", "Setup: dashboard auth on, admin credentials; no mcp_oauth_private_allowlist; a fleet server auth13 (echo_tool, add_tool) on 127.0.0.1 as an OAuth protected resource with its own authorization server; an OAuth client created on it with oauth_config {}.", [
+  readConfig("AUTH-13"),
+  putConfig("AUTH-13", "setup: no mcp_oauth_private_allowlist", ["cc.mcp_oauth_private_allowlist = [];"], [A.status(200)]),
+  ...asServer("AUTH-13", "auth13"),
+  request("AUTH-13", "create the OAuth client", "POST", "/api/mcp/client", { body: oauthBody("auth13-c", "auth13", "auth13"), asserts: [A.status(400), A.msgStartsWith("Failed to initiate OAuth flow: OAuth discovery failed"), A.msgContains("blocked connection to non-public address 127.0.0.1")] }),
+  mockGet("AUTH-13", "auth13", "no client registered with the authorization server", [A.custom("no registration request reached it", ["pm.expect(pm.response.json().oauth.counters.register || 0, 'body: ' + pm.response.text()).to.equal(0);"])]),
+  restoreConfig("AUTH-13"),
+]);
+
 const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth14 (echo_tool, add_tool) as an OAuth protected resource whose authorization server knows client C1 with secret S1; an OAuth client on it with oauth_config client_id C1, client_secret S1, the authorization server's authorize and token URLs, scopes ["a","b"] and resource ${R2}; consent and callback run so the token request is made.`, [
   ...allowlistOn("AUTH-14"),
   ...asServer("AUTH-14", "auth14", { clients: [{ client_id: "C1", client_secret: "S1" }] }),
@@ -4312,11 +4321,11 @@ const AUTH25 = folder("AUTH-25 Reregister through DCR", `Setup: ${ALLOWLIST_TEXT
   restoreConfig("AUTH-25"),
 ]);
 
-const ADM21 = folder("ADM-21 OAuth on a loopback authorization server follows the private allowlist", "Setup: dashboard auth on, admin credentials; fleet server adm21 as an OAuth protected resource on 127.0.0.1 with dynamic registration. Creates use oauth_config {}: with no mcp_oauth_private_allowlist, with it set to [\"127.0.0.1\"], and with /api/mcp/client whitelisted and no credential. With no allowlist the create returns 500 where 400 is intended, a known issue, so that status check is skipped.", [
+const ADM21 = folder("ADM-21 OAuth on a loopback authorization server follows the private allowlist", "Setup: dashboard auth on, admin credentials; fleet server adm21 as an OAuth protected resource on 127.0.0.1 with dynamic registration. Creates use oauth_config {}: with no mcp_oauth_private_allowlist, with it set to [\"127.0.0.1\"], and with /api/mcp/client whitelisted and no credential.", [
   readConfig("ADM-21"),
   putConfig("ADM-21", "setup: no mcp_oauth_private_allowlist", ["cc.mcp_oauth_private_allowlist = [];"], [A.status(200)]),
   ...asServer("ADM-21", "adm21"),
-  request("ADM-21", "create with no allowlist", "POST", "/api/mcp/client", { body: oauthBody("adm21-a", "adm21a", "adm21"), asserts: [A.skip(A.status(400)), A.msgContains("blocked connection to non-public address")] }),
+  request("ADM-21", "create with no allowlist", "POST", "/api/mcp/client", { body: oauthBody("adm21-a", "adm21a", "adm21"), asserts: [A.status(400), A.msgContains("blocked connection to non-public address")] }),
   putConfig("ADM-21", "setup: mcp_oauth_private_allowlist [\"127.0.0.1\"]", ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];"], [A.status(200)]),
   createOAuth("ADM-21", "create with the allowlist set", oauthBody("adm21-b", "adm21b", "adm21"), "adm21b", [statusIs("pending_oauth")]),
   putConfig("ADM-21", "setup: whitelist /api/mcp/client", ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", "cc.whitelisted_routes = ['/api/mcp/client'];"], [A.status(200)]),
@@ -4363,16 +4372,20 @@ const ADM25 = folder("ADM-25 Callback plus complete activates a shared OAuth cli
   restoreConfig("ADM-25"),
 ]);
 
-const ADM29 = folder("ADM-29 OAuth name conflict appears at completion", `Setup: dashboard auth on, admin credentials; a client named taken_name (HTTP, auth none, on fleet server alpha); ${OAUTH_SERVER_TEXT} (adm29); an OAuth client named taken_name created on it, then consent and callback.`, [
+const ADM29 = folder("ADM-29 OAuth name and slug conflicts appear at create", `Setup: dashboard auth on, admin credentials; a client named taken_name (HTTP, auth none, on fleet server alpha); ${OAUTH_SERVER_TEXT} (adm29); OAuth creates on it named taken_name, then named adm29_o with endpoint_slug taken-name, then named adm29_o with endpoint_slug adm29-custom, which is consented and completed.`, [
   ...allowlistOn("ADM-29"),
   ...freshServer("ADM-29", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-29", httpClient("adm29-t", "taken_name", "alpha"), "setup: create the client taken_name"),
   ...asServer("ADM-29", "adm29"),
-  createOAuth("ADM-29", "create the OAuth client named taken_name", oauthBody("adm29-o", "taken_name", "adm29"), "adm29", [statusIs("pending_oauth")]),
+  request("ADM-29", "create the OAuth client named taken_name", "POST", "/api/mcp/client", { body: oauthBody("adm29-o", "taken_name", "adm29"), asserts: [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")] }),
+  request("ADM-29", "create an OAuth client with endpoint_slug taken-name", "POST", "/api/mcp/client", { body: oauthBody("adm29-o", "adm29_o", "adm29", { endpoint_slug: "taken-name" }), asserts: [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")] }),
+  createOAuth("ADM-29", "create the OAuth client adm29_o with endpoint_slug adm29-custom", oauthBody("adm29-o", "adm29_o", "adm29", { endpoint_slug: "adm29-custom" }), "adm29", [statusIs("pending_oauth")]),
   consentAs("ADM-29", "consent", "adm29", null),
   followCallback("ADM-29", "the callback", "adm29", callbackSuccess()),
-  completeOAuth("ADM-29", "complete", "adm29", [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  completeOAuth("ADM-29", "complete", "adm29", [A.status(200)]),
+  getClient("ADM-29", "adm29-o", "adm29_o has endpoint_slug adm29-custom", [A.custom("endpoint_slug is adm29-custom", ["pm.expect(pm.response.json().clients[0].config.endpoint_slug, 'body: ' + pm.response.text()).to.equal('adm29-custom');"])]),
   request("ADM-29", "there is one taken_name", "GET", "/api/mcp/clients?search=taken_name", { asserts: [A.status(200), A.custom("exactly one client is named taken_name", ["pm.expect(pm.response.json().clients.filter(function (c) { return c.config.name === 'taken_name'; }).length, 'body: ' + pm.response.text()).to.equal(1);"])] }),
+  deleteClient("ADM-29", "adm29-o"),
   deleteClient("ADM-29", "adm29-t"),
   restoreConfig("ADM-29"),
 ]);
@@ -4456,7 +4469,7 @@ const ADM39 = folder("ADM-39 OAuth config status endpoint", `Setup: dashboard au
   restoreConfig("ADM-39"),
 ]);
 
-const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm40); a shared OAuth client on it, connected; and another OAuth client created on it and left pending, as in ADM-23.`, [
+const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm40); a shared OAuth client on it, connected; and another OAuth client created on it and left pending, as in ADM-23; no OAuth config has the id adm40-nope.`, [
   ...allowlistOn("ADM-40"),
   ...connectedO("ADM-40", "adm40"),
   createOAuth("ADM-40", "setup: create the pending OAuth client", oauthBody("adm40-p", "adm40p", "adm40"), "adm40p"),
@@ -4466,6 +4479,7 @@ const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token",
   oauthStatus("ADM-40", "the connected client's status has no token_id", "adm40", "", [A.custom("there is no token_id", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('token_id');"])]),
   getClient("ADM-40", "adm40-o", "GET the connected client: no credential", [A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0].credential == null, 'body: ' + pm.response.text()).to.equal(true);"])]),
   request("ADM-40", "delete the pending OAuth config", "DELETE", "/api/oauth/config/{{adm40p_oc}}", { asserts: [A.status(500), A.msgContains("no token linked to oauth config")] }),
+  request("ADM-40", "delete an unknown OAuth config", "DELETE", "/api/oauth/config/adm40-nope", { asserts: [A.status(404), A.msgEquals("oauth config not found")] }),
   deleteClient("ADM-40", "adm40-o"),
   restoreConfig("ADM-40"),
 ]);
@@ -7633,7 +7647,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),

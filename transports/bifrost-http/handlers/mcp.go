@@ -126,6 +126,34 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/client/{id}/verify-exchange", lib.ChainMiddlewares(h.verifyMCPClientExchange, middlewares...))
 }
 
+// refuseTakenMCPClientNameOrSlug answers 409 when an endpoint already serves the
+// slug the client would get, or a client already has its name: the checks the
+// row insert makes. OAuth creates call it before the flow starts, so a conflict
+// is reported at create instead of after consent. It reports whether it answered.
+func (h *MCPHandler) refuseTakenMCPClientNameOrSlug(ctx *fasthttp.RequestCtx, name, endpointSlug string) bool {
+	base := endpointSlug
+	if base == "" {
+		base = name
+	}
+	taken, err := h.store.ConfigStore.MCPEndpointSlugTaken(ctx, configstore.Slugify(base))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to check the endpoint slug: %v", err))
+		return true
+	}
+	if taken {
+		SendError(ctx, fasthttp.StatusConflict, "An MCP endpoint with this slug already exists")
+		return true
+	}
+	if _, err := h.store.ConfigStore.GetMCPClientByName(ctx, name); err == nil {
+		SendError(ctx, fasthttp.StatusConflict, "An MCP client with this name already exists")
+		return true
+	} else if !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to check the client name: %v", err))
+		return true
+	}
+	return false
+}
+
 // runOAuthBootstrap kicks off the shared-OAuth flow for an MCP client and
 // returns the OAuth provider's authorize URL.
 //
@@ -952,9 +980,11 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 // InitiateOAuthFlow. Credentials are *SecretVar on both sides, so env./vault.
 // reference metadata passes through intact.
 // oauthBootstrapErrorStatus is the status for a failed OAuth bootstrap: 400 for a request the caller
-// must change, 500 otherwise.
+// must change, such as discovery refused because the target is a private address the private
+// allowlist does not permit, and 500 otherwise.
 func oauthBootstrapErrorStatus(err error) int {
-	if errors.Is(err, oauth2.ErrClientMetadataDocumentWithClientID) || errors.Is(err, oauth2.ErrClientMetadataDocumentUnavailable) {
+	var blocked *network.PrivateTargetNotAllowedError
+	if errors.Is(err, oauth2.ErrClientMetadataDocumentWithClientID) || errors.Is(err, oauth2.ErrClientMetadataDocumentUnavailable) || errors.As(err, &blocked) {
 		return fasthttp.StatusBadRequest
 	}
 	return fasthttp.StatusInternalServerError
@@ -2837,6 +2867,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
 			return
 		}
+		if h.refuseTakenMCPClientNameOrSlug(ctx, req.Name, req.EndpointSlug) {
+			return
+		}
 
 		flowInitiation, err := h.runOAuthBootstrap(ctx, req.OauthConfig, req.ConnectionString.GetValue(), req.RequirePublicTarget)
 		if err != nil {
@@ -2852,6 +2885,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		pendingConfig := schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
@@ -2922,6 +2956,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			// Note: The InitiateOAuthFlow will check if registration_endpoint is available
 			// and return a clear error if dynamic registration is not supported
 		}
+		if h.refuseTakenMCPClientNameOrSlug(ctx, req.Name, req.EndpointSlug) {
+			return
+		}
 
 		// Kick off the shared OAuth flow. See runOAuthBootstrap for the
 		// rationale on the helper split. ServerURL is the MCP server URL
@@ -2938,6 +2975,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		pendingConfig := schemas.MCPClientConfig{
 			ID:                     req.ClientID,
 			Name:                   req.Name,
+			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
 			IsPingAvailable:        req.IsPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
