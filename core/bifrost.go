@@ -6086,6 +6086,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// declared deadline. See armRequestTimeout's doc comment.
 	stopRequestTimeout, _ := armRequestTimeout(ctx)
 	defer stopRequestTimeout()
+	defer func() { bifrostErr = asRequestTimeoutError(ctx, bifrostErr) }()
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
 	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
@@ -6330,6 +6331,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// (success: stop only once the caller has fully drained the stream) or
 	// calls stopRequestTimeout directly (error: nothing to wrap).
 	stopRequestTimeout, requestTimeoutArmed := armRequestTimeout(ctx)
+	defer func() { bifrostErr = asRequestTimeoutError(ctx, bifrostErr) }()
 	if ownedCtx != nil {
 		// Unlike handleRequest, this returns while the caller is still
 		// draining the stream, so the derived context cannot be released on

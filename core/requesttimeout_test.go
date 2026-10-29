@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -991,4 +992,65 @@ func TestShouldTryFallbacks_StopsOnceRequestTimeoutFired(t *testing.T) {
 	if bifrost.shouldTryFallbacks(nil, req, primaryErr) != true {
 		t.Fatal("a nil ctx must keep the existing fallback decision")
 	}
+}
+
+// TestAsRequestTimeoutError covers how a request that failed is reported once
+// its declared deadline has fired.
+func TestAsRequestTimeoutError(t *testing.T) {
+	newErr := func(status int, errType *string, msg string) *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  &status,
+			Error:       &schemas.ErrorField{Type: errType, Message: msg},
+			ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenAI, Latency: 1234},
+		}
+	}
+	fired := func() *schemas.BifrostContext {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+		cancel()
+		return ctx
+	}
+	requireTimeout := func(t *testing.T, got *schemas.BifrostError, wantMsg string) {
+		t.Helper()
+		if got.StatusCode == nil || *got.StatusCode != 504 {
+			t.Fatalf("expected 504, got %v", got.StatusCode)
+		}
+		if got.Error == nil || got.Error.Type == nil || *got.Error.Type != schemas.RequestTimedOut {
+			t.Fatalf("expected RequestTimedOut, got %+v", got.Error)
+		}
+		if got.ExtraFields.Provider != schemas.OpenAI || got.ExtraFields.Latency != 1234 {
+			t.Fatalf("the attempt's extra fields were not kept: %+v", got.ExtraFields)
+		}
+		if !strings.Contains(got.Error.Message, wantMsg) {
+			t.Fatalf("expected the attempt's message %q in %q", wantMsg, got.Error.Message)
+		}
+	}
+
+	t.Run("provider error after the deadline", func(t *testing.T) {
+		requireTimeout(t, asRequestTimeoutError(fired(), newErr(500, nil, "upstream error")), "upstream error")
+	})
+	t.Run("provider call cut off by the deadline", func(t *testing.T) {
+		cancelled := schemas.RequestCancelled
+		requireTimeout(t, asRequestTimeoutError(fired(), newErr(499, &cancelled, "Request cancelled by context")), "Request cancelled by context")
+	})
+	t.Run("already a timeout", func(t *testing.T) {
+		timedOut := schemas.RequestTimedOut
+		in := newErr(504, &timedOut, "request timed out waiting for provider response")
+		if got := asRequestTimeoutError(fired(), in); got != in {
+			t.Fatalf("an existing timeout error must be returned unchanged, got %+v", got)
+		}
+	})
+	t.Run("deadline not fired", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		in := newErr(500, nil, "upstream error")
+		if got := asRequestTimeoutError(ctx, in); got != in {
+			t.Fatalf("an error before the deadline must be returned unchanged, got %+v", got)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		if got := asRequestTimeoutError(fired(), nil); got != nil {
+			t.Fatalf("a success must never become an error, got %+v", got)
+		}
+	})
 }

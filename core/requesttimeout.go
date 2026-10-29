@@ -58,6 +58,29 @@ func requestTimeoutFired(ctx *schemas.BifrostContext) bool {
 	return fired
 }
 
+// asRequestTimeoutError reports a request that failed after its declared
+// x-bf-request-timeout fired as the timeout it is. Once the deadline fires,
+// whatever the last attempt returned is not the caller's answer: a provider
+// call cut off mid-flight maps the cancellation to 499 RequestCancelled, and an
+// ordinary provider error that lands after the deadline stopped the fallbacks
+// that would otherwise have run. The attempt's extra fields and message are
+// kept for debugging. A success is never rewritten, and neither is an error
+// when the deadline has not fired.
+func asRequestTimeoutError(ctx *schemas.BifrostContext, err *schemas.BifrostError) *schemas.BifrostError {
+	if err == nil || !requestTimeoutFired(ctx) {
+		return err
+	}
+	if err.Error != nil && err.Error.Type != nil && *err.Error.Type == schemas.RequestTimedOut {
+		return err
+	}
+	timeoutErr := newBifrostCtxDoneError(ctx, "before the request finished")
+	timeoutErr.ExtraFields = err.ExtraFields
+	if err.Error != nil && err.Error.Message != "" {
+		timeoutErr.Error.Message += "; last attempt failed: " + err.Error.Message
+	}
+	return timeoutErr
+}
+
 // requestTimeoutArmedKey holds the *requestTimeoutArm live on a ctx.
 type requestTimeoutArmedKey struct{}
 
