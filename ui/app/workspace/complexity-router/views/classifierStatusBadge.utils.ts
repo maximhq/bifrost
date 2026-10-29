@@ -22,14 +22,15 @@ export function semanticWarmupFailureMessage(status: SemanticStatusInfo): string
 }
 
 // Rules only pause when nothing else can name a tier: a saved llm or decision
-// fallback classifies every request while semantic warmup is failing.
+// fallback is tried on every request while semantic warmup is failing, though
+// it can itself fail or name no tier.
 export function semanticWarmupImpactMessage(status: SemanticStatusInfo, fallback: SemanticFallback): string {
 	if (status.serving_previous) {
 		return "The previous classifier is still routing requests. Your latest phrase or embedding changes will become active after warmup succeeds.";
 	}
 	if (fallback !== "none") {
 		const classifier = fallback === "llm" ? "the LLM classifier" : "the decision model";
-		return `Until the classifier is ready, ${classifier} fallback assigns each request's complexity tier, so complexity-tier rules keep routing. Other routing rules continue normally.`;
+		return `Until the classifier is ready, ${classifier} fallback classifies each request instead. Complexity-tier rules match only when it returns a tier. Other routing rules continue normally.`;
 	}
 	return "Complexity-tier rules are paused until the classifier is ready. Other routing rules continue normally.";
 }

@@ -27,9 +27,10 @@ describe("semantic warmup status copy", () => {
 		expect(semanticWarmupImpactMessage(failedStatus({ serving_previous: false }), "none")).toContain("rules are paused");
 	});
 
-	it("does not claim rules are paused while a fallback assigns tiers", () => {
+	it("does not claim rules are paused while a fallback is tried, nor that it always names a tier", () => {
 		const llm = semanticWarmupImpactMessage(failedStatus({ serving_previous: false }), "llm");
 		expect(llm).toContain("the LLM classifier fallback");
+		expect(llm).toContain("only when it returns a tier");
 		expect(llm).not.toContain("paused");
 		expect(semanticWarmupImpactMessage(failedStatus({ serving_previous: false }), "decision")).toContain("the decision model fallback");
 		expect(semanticWarmupImpactMessage(failedStatus({ serving_previous: true }), "llm")).toContain("previous classifier is still routing");
