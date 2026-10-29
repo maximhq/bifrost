@@ -452,3 +452,84 @@ func TestUpdateClient_PingEditReachesTheRunningChecker(t *testing.T) {
 	require.NoError(t, m.UpdateClient(config.ID, &edited))
 	assert.Equal(t, int32(0), checkNow(), "the next check sends no ping")
 }
+
+// TestReconnectClient_FailedReconnectChecksAgainSoon: a manual reconnect that
+// fails keeps the client's old, still working connection and marks it
+// unstable, and the checker moves onto the unstable cadence: the next check
+// runs within UnstableConnectionCheckInterval, finds the old connection
+// working and marks the client healthy. It used to wait out the full steady
+// interval, ten minutes by default, still showing the failed reconnect. The
+// client is capped at 2025-06-18 so its requests carry a session the upstream
+// can tell apart from a new connection's.
+func TestReconnectClient_FailedReconnectChecksAgainSoon(t *testing.T) {
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("failed-reconnect", "1.0.0", server.WithToolCapabilities(true)))
+	var refuseNewConnections atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if refuseNewConnections.Load() && r.Header.Get("Mcp-Session-Id") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:                     "failed-reconnect",
+		Name:                   "failed_reconnect",
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		AuthType:               schemas.MCPAuthTypeNone,
+		NeedsSessionStickiness: schemas.Ptr(true),
+		MaxProtocolVersion:     "2025-06-18",
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+
+	refuseNewConnections.Store(true)
+	require.Error(t, m.ReconnectClient(config.ID))
+	state, ok := snapshotAddClientState(m, config.ID)
+	require.True(t, ok)
+	require.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	require.NotNil(t, state.LastFailure)
+	require.Equal(t, schemas.MCPConnectionFailureStageConnect, state.LastFailure.Stage)
+
+	assert.Eventually(t, func() bool {
+		state, _ := snapshotAddClientState(m, config.ID)
+		return state.State == schemas.MCPConnectionStateHealthy
+	}, UnstableConnectionCheckInterval+5*time.Second, 100*time.Millisecond, "the next check runs on the unstable cadence and finds the old connection working")
+}
+
+// TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence: a dropped
+// SSE stream marks the client unstable and moves its checker off the steady
+// cadence, so the reconnect the next check starts comes within
+// UnstableConnectionCheckInterval rather than a full steady interval later.
+func TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence(t *testing.T) {
+	ts := httptest.NewServer(server.NewSSEServer(server.NewMCPServer("sse-lost", "1.0.0", server.WithToolCapabilities(true))))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := &schemas.MCPClientConfig{
+		ID:               "sse-lost",
+		Name:             "sse_lost",
+		ConnectionType:   schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar(ts.URL + "/sse"),
+		AuthType:         schemas.MCPAuthTypeNone,
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	m.checkerManager.mu.RLock()
+	checker := m.checkerManager.checkers[config.ID]
+	m.checkerManager.mu.RUnlock()
+	require.NotNil(t, checker)
+	onSteady := func() bool {
+		checker.mu.Lock()
+		defer checker.mu.Unlock()
+		return checker.onSteadyCadence
+	}
+	require.True(t, onSteady(), "a healthy client's checker starts on the steady cadence")
+
+	state, _ := snapshotAddClientState(m, config.ID)
+	m.handleSSEConnectionLost(config.ID, config.Name, state.ConnGeneration, errors.New("stream dropped"))
+	state, _ = snapshotAddClientState(m, config.ID)
+	require.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	assert.False(t, onSteady(), "the checker is on the unstable cadence")
+}

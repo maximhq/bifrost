@@ -240,6 +240,22 @@ func (c *ClientConnectionChecker) checkLoop() {
 	}
 }
 
+// Hasten moves a timer armed on the steady cadence onto the unstable one, for a
+// client something other than this checker just marked unstable: a failed
+// reconnect, or a dropped SSE stream. The next check otherwise waited out the
+// full steady interval, the tool sync interval, with the client showing a
+// failure nothing was checking. A timer already on the unstable cadence is
+// left alone.
+func (c *ClientConnectionChecker) Hasten() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.isRunning || c.timer == nil || !c.onSteadyCadence {
+		return
+	}
+	c.timer.Reset(UnstableConnectionCheckInterval)
+	c.onSteadyCadence = false
+}
+
 // Kick asks for a check now, ahead of the timer. Kicks that arrive while one is pending collapse
 // into it, and a kick during a running check queues exactly one more.
 func (c *ClientConnectionChecker) Kick() {
@@ -694,6 +710,17 @@ func (m *ConnectionCheckerManager) StartChecking(checker *ClientConnectionChecke
 	m.mu.Unlock()
 
 	checker.Start()
+}
+
+// Hasten moves clientID's running checker onto the unstable cadence (see
+// ClientConnectionChecker.Hasten). A client without a running checker is left alone.
+func (m *ConnectionCheckerManager) Hasten(clientID string) {
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.Hasten()
+	}
 }
 
 // Kick asks clientID's checker for a check now. A client without a running checker is left alone.
