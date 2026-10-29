@@ -1136,6 +1136,10 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				if request.Params != nil {
 					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
 				}
+				// Streaming only: Vertex rejects streamFunctionCallArguments on generateContent.
+				if len(reqBody.Tools) > 0 {
+					gemini.ApplyStreamFunctionCallArguments(reqBody, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, request.Model))
+				}
 				return reqBody, nil
 			},
 		)
@@ -1685,6 +1689,10 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				stripVertexGeminiUnsupportedFields(reqBody)
 				if request.Params != nil {
 					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
+				// Streaming only: Vertex rejects streamFunctionCallArguments on generateContent.
+				if len(reqBody.Tools) > 0 {
+					gemini.ApplyStreamFunctionCallArguments(reqBody, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, request.Model))
 				}
 				return reqBody, nil
 			},

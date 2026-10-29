@@ -570,3 +570,214 @@ func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
 	assert.Contains(t, response, "[image/png")
 	assert.Contains(t, response, "[audio/mp3")
 }
+
+// TestToBifrostChatCompletionStream_StreamedFunctionCallArguments pins the chat side of
+// Vertex streamFunctionCallArguments: a function call arriving as partialArgs leaves must
+// reach the client as OpenAI tool_call argument deltas while the call is still being
+// generated, and the deltas for each call must concatenate to its arguments.
+//
+// Per call it asserts: one stable index, the id and name on the first delta only (with
+// the thought signature embedded the same way as for a complete call), argument text that
+// parses as exactly the value the leaves describe (so no leaf text is dropped, repeated or
+// reordered), and argument text emitted no later than the chunk carrying the first leaf
+// (well before the call ends). It also pins that no nameless tool call is invented for the
+// empty functionCall end marker and that finish_reason is tool_calls.
+func TestToBifrostChatCompletionStream_StreamedFunctionCallArguments(t *testing.T) {
+	for _, fixture := range gemini.StreamFunctionCallArgsFixtures() {
+		t.Run(fixture, func(t *testing.T) {
+			chunks := gemini.LoadStreamFunctionCallArgsFixture(t, fixture)
+			expected := gemini.ExpectedStreamedCalls(t, chunks)
+			require.NotEmpty(t, expected)
+
+			type gotCall struct {
+				id, name        string
+				args            strings.Builder
+				deltas          int
+				firstArgsChunk  int
+				lastDeltaChunk  int
+				reasoningSigned bool
+			}
+			calls := map[uint16]*gotCall{}
+			var order []uint16
+			var finishReason string
+			state := gemini.NewGeminiStreamState()
+			for i, chunk := range chunks {
+				responses, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
+				require.Nil(t, bifrostErr)
+				for _, resp := range responses {
+					require.Len(t, resp.Choices, 1)
+					choice := resp.Choices[0]
+					if choice.FinishReason != nil {
+						finishReason = *choice.FinishReason
+					}
+					delta := choice.ChatStreamResponseChoice.Delta
+					for _, tc := range delta.ToolCalls {
+						c, seen := calls[tc.Index]
+						if !seen {
+							require.NotNil(t, tc.ID, "first delta of tool call %d carries no id", tc.Index)
+							require.NotNil(t, tc.Function.Name, "first delta of tool call %d carries no name", tc.Index)
+							require.NotEmpty(t, *tc.Function.Name, "a nameless tool call was emitted (empty functionCall end marker?)")
+							c = &gotCall{id: *tc.ID, name: *tc.Function.Name, firstArgsChunk: -1}
+							calls[tc.Index] = c
+							order = append(order, tc.Index)
+						} else {
+							assert.Nil(t, tc.ID, "tool call %d repeats its id after the first delta", tc.Index)
+							assert.Nil(t, tc.Function.Name, "tool call %d repeats its name after the first delta", tc.Index)
+						}
+						if tc.Function.Arguments != "" {
+							c.args.WriteString(tc.Function.Arguments)
+							c.deltas++
+							c.lastDeltaChunk = i
+							if c.firstArgsChunk < 0 {
+								c.firstArgsChunk = i
+							}
+						}
+					}
+				}
+				// An encrypted reasoning detail with ID tool_call_<base id> carries the signature
+				// the next turn needs; match it to the call whose id it prefixes.
+				for _, resp := range responses {
+					for _, detail := range resp.Choices[0].ChatStreamResponseChoice.Delta.ReasoningDetails {
+						if detail.ID == nil || detail.Signature == nil {
+							continue
+						}
+						base := strings.TrimPrefix(*detail.ID, "tool_call_")
+						for _, c := range calls {
+							if strings.HasPrefix(c.id, base+"_ts_") {
+								c.reasoningSigned = true
+							}
+						}
+					}
+				}
+			}
+
+			require.Len(t, order, len(expected), "tool call count")
+			for n, idx := range order {
+				want := expected[n]
+				got := calls[idx]
+				assert.Equal(t, uint16(n), idx, "tool call indices must be 0,1,2... in call order")
+				assert.Equal(t, want.Name, got.name)
+				assert.True(t, strings.HasPrefix(got.id, want.ID), "id %q does not start with Vertex id %q", got.id, want.ID)
+				if len(want.Signature) > 0 {
+					assert.Contains(t, got.id, "_ts_", "thought signature not embedded in the call id")
+					assert.True(t, got.reasoningSigned, "thought signature not emitted as an encrypted reasoning detail")
+				}
+				assert.Equal(t, want.Args, gemini.DecodeArgs(t, got.args.String()), "call %d (%s): concatenated arguments %s", n, want.Name, got.args.String())
+				if want.Streamed && want.FirstLeafChunk >= 0 {
+					assert.LessOrEqual(t, got.firstArgsChunk, want.FirstLeafChunk, "call %d: argument text held back past the chunk carrying the first leaf", n)
+					if want.EndChunk > want.FirstLeafChunk {
+						assert.Greater(t, got.deltas, 1, "call %d: arguments arrived in one burst", n)
+					}
+				}
+			}
+			assert.Equal(t, "tool_calls", finishReason)
+		})
+	}
+}
+
+// TestToBifrostChatCompletionStream_CompleteFunctionCallUnchanged pins that a call Vertex
+// sends complete (no streamFunctionCallArguments) still produces exactly one tool call
+// delta carrying the raw args bytes, as before streamed calls were supported.
+func TestToBifrostChatCompletionStream_CompleteFunctionCallUnchanged(t *testing.T) {
+	chunk := &gemini.GenerateContentResponse{
+		ResponseID: "complete",
+		Candidates: []*gemini.Candidate{{
+			FinishReason: gemini.FinishReasonStop,
+			Content: &gemini.Content{Role: "model", Parts: []*gemini.Part{
+				{FunctionCall: &gemini.FunctionCall{Name: "get_weather", ID: "w1", Args: []byte(`{"city":"Paris","days":3}`)}},
+				{FunctionCall: &gemini.FunctionCall{Name: "noop"}},
+			}},
+		}},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 3},
+	}
+	responses, bifrostErr, isLast := chunk.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+	require.Nil(t, bifrostErr)
+	require.True(t, isLast)
+	require.Len(t, responses, 1)
+	toolCalls := responses[0].Choices[0].ChatStreamResponseChoice.Delta.ToolCalls
+	require.Len(t, toolCalls, 2)
+	assert.Equal(t, uint16(0), toolCalls[0].Index)
+	assert.Equal(t, "w1", *toolCalls[0].ID)
+	assert.Equal(t, `{"city":"Paris","days":3}`, toolCalls[0].Function.Arguments)
+	assert.Equal(t, uint16(1), toolCalls[1].Index)
+	assert.Equal(t, "noop", *toolCalls[1].ID)
+	assert.Equal(t, "", toolCalls[1].Function.Arguments)
+}
+
+// TestToBifrostChatCompletionStream_StreamedCallEndings pins how a call Vertex is streaming
+// as partialArgs ends when its own end marker never comes. A clean end (STOP, or other
+// content starting) completes the JSON; a truncated one (MAX_TOKENS) leaves the arguments
+// exactly as far as they got, like OpenAI does, so a client cannot mistake a cut-off Write
+// for a complete one. Content after the call closes it, so later stray leaves are dropped.
+func TestToBifrostChatCompletionStream_StreamedCallEndings(t *testing.T) {
+	yes := true
+	str := func(s string) *string { return &s }
+	start := func(leaves ...*gemini.PartialArg) *gemini.Part {
+		return &gemini.Part{FunctionCall: &gemini.FunctionCall{Name: "write", ID: "c1", PartialArgs: leaves, WillContinue: &yes}}
+	}
+	chunk := func(finish gemini.FinishReason, parts ...*gemini.Part) *gemini.GenerateContentResponse {
+		resp := &gemini.GenerateContentResponse{Candidates: []*gemini.Candidate{{FinishReason: finish, Content: &gemini.Content{Role: "model", Parts: parts}}}}
+		if finish != "" {
+			resp.UsageMetadata = &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 5}
+		}
+		return resp
+	}
+	tests := []struct {
+		name       string
+		chunks     []*gemini.GenerateContentResponse
+		wantArgs   string
+		wantFinish string
+	}{
+		{
+			name: "MAX_TOKENS leaves the arguments truncated",
+			chunks: []*gemini.GenerateContentResponse{
+				chunk("", start(&gemini.PartialArg{JSONPath: "$.path", StringValue: str("/etc/x")}, &gemini.PartialArg{JSONPath: "$.content", StringValue: str("half of the fi"), WillContinue: &yes})),
+				chunk(gemini.FinishReasonMaxTokens, &gemini.Part{Text: ""}),
+			},
+			wantArgs:   `{"path":"/etc/x","content":"half of the fi`,
+			wantFinish: "length",
+		},
+		{
+			name: "STOP completes a call still open",
+			chunks: []*gemini.GenerateContentResponse{
+				chunk("", start(&gemini.PartialArg{JSONPath: "$.content", StringValue: str("all"), WillContinue: &yes})),
+				chunk(gemini.FinishReasonStop, &gemini.Part{Text: ""}),
+			},
+			wantArgs:   `{"content":"all"}`,
+			wantFinish: "tool_calls",
+		},
+		{
+			name: "text after the call closes it and later leaves are dropped",
+			chunks: []*gemini.GenerateContentResponse{
+				chunk("", start(&gemini.PartialArg{JSONPath: "$.a", StringValue: str("x"), WillContinue: &yes})),
+				chunk("", &gemini.Part{Text: "done."}),
+				chunk("", &gemini.Part{FunctionCall: &gemini.FunctionCall{PartialArgs: []*gemini.PartialArg{{JSONPath: "$.b", NumberValue: []byte("1")}}}}),
+				chunk(gemini.FinishReasonStop, &gemini.Part{Text: ""}),
+			},
+			wantArgs:   `{"a":"x"}`,
+			wantFinish: "tool_calls",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := gemini.NewGeminiStreamState()
+			var args strings.Builder
+			finish := ""
+			for _, c := range tt.chunks {
+				responses, bifrostErr, _ := c.ToBifrostChatCompletionStream(state)
+				require.Nil(t, bifrostErr)
+				for _, resp := range responses {
+					for _, tc := range resp.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls {
+						require.Equal(t, uint16(0), tc.Index)
+						args.WriteString(tc.Function.Arguments)
+					}
+					if resp.Choices[0].FinishReason != nil {
+						finish = *resp.Choices[0].FinishReason
+					}
+				}
+			}
+			assert.Equal(t, tt.wantArgs, args.String())
+			assert.Equal(t, tt.wantFinish, finish)
+		})
+	}
+}

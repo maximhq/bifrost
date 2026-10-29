@@ -1,0 +1,24 @@
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": "Planning the write.","thought": true},{"text": "Writing now."},{"functionCall": {"name": "write","id": "c1","partialArgs": [{"jsonPath": "$.body","stringValue": "He said \"hi\" and","willContinue": true}],"willContinue": true},"thoughtSignature": "c2lnLW9uZQ=="}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.body","stringValue": " left C:\\tmp\\x\n\ttab","willContinue": true}],"willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.body","stringValue": " 中文 \ud83d\ude80 \u0001 </script>","willContinue": true}],"willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.body","stringValue": ""}],"willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.n","numberValue": 0.1},{"jsonPath": "$.big","numberValue": 12345678901234567890},{"jsonPath": "$.neg","numberValue": -3e-7},{"jsonPath": "$.ok","boolValue": false},{"jsonPath": "$.nothing","nullValue": null}],"willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.rows[0].cells[0]","stringValue": "a"},{"jsonPath": "$.rows[0].cells[1]","numberValue": 2},{"jsonPath": "$.rows[1].cells[]"},{"jsonPath": "$.rows[2]{}"},{"jsonPath": "$.cfg{}"},{"jsonPath": "$['odd.key']","stringValue": "dotted"}],"willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.z","boolValue": true}]}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "noop","id": "c2","partialArgs": [{"jsonPath": "$.x","numberValue": 1}]}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "ping","id": "c3","willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "tail","id": "c4","partialArgs": [{"jsonPath": "$.msg","stringValue": "cut ","willContinue": true}],"willContinue": true}}]}}],"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 10,"candidatesTokenCount": 20,"totalTokenCount": 30},"modelVersion": "gemini-4-argon","responseId": "hand-1"}
+

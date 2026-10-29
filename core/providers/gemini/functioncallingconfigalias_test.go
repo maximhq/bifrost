@@ -77,3 +77,30 @@ func TestToolConfig_AcceptsFullySnakeCasePayload(t *testing.T) {
 	assert.Equal(t, []string{"get_weather"}, cfg.FunctionCallingConfig.AllowedFunctionNames,
 		"nested allowed_function_names dropped even though the outer alias resolved")
 }
+
+// TestFunctionCallingConfig_StreamFunctionCallArgumentsRoundTrips pins the typed GenAI
+// surface for Vertex streamFunctionCallArguments: both spellings decode, an explicit false
+// survives (it is the caller's opt-out), and the field re-encodes under its camelCase name.
+func TestFunctionCallingConfig_StreamFunctionCallArgumentsRoundTrips(t *testing.T) {
+	for _, body := range []string{
+		`{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`,
+		`{"function_calling_config":{"mode":"AUTO","stream_function_call_arguments":false}}`,
+	} {
+		var cfg ToolConfig
+		require.NoError(t, json.Unmarshal([]byte(body), &cfg))
+		require.NotNil(t, cfg.FunctionCallingConfig)
+		require.NotNil(t, cfg.FunctionCallingConfig.StreamFunctionCallArguments, "dropped from %s", body)
+		assert.False(t, *cfg.FunctionCallingConfig.StreamFunctionCallArguments)
+
+		out, err := json.Marshal(cfg)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`, string(out))
+	}
+
+	var absent FunctionCallingConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"mode":"ANY"}`), &absent))
+	assert.Nil(t, absent.StreamFunctionCallArguments)
+	out, err := json.Marshal(absent)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"mode":"ANY"}`, string(out), "an unset flag must not appear on the wire")
+}

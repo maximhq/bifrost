@@ -64,6 +64,23 @@ func defaultCanDisableReasoning(model string) bool {
 	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
 }
 
+// DefaultStreamFunctionCallArguments reports whether Bifrost asks the upstream to stream
+// function call arguments (toolConfig.functionCallingConfig.streamFunctionCallArguments)
+// when the caller did not say. Without it Gemini 3+ on Vertex holds a call until its last
+// argument is generated and then sends the whole call in one part, so a long argument (a
+// Write tool's content, a reply tool's message) reaches the client as one burst after
+// seconds to minutes of silence. Clients on the neutral routes cannot ask for it (OpenAI's
+// shape has no slot), so the gateway supplies it, as it does eager_input_streaming for
+// Claude on Vertex and Bedrock. Vertex documents the flag for Gemini 3 and later on
+// streamGenerateContent except Gemini 3.1 Flash-Lite, and rejects it on generateContent;
+// the Gemini API does not document it.
+func DefaultStreamFunctionCallArguments(provider schemas.ModelProvider, model string) bool {
+	if provider != schemas.Vertex || !isGemini3Plus(model) {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(model), "gemini-3.1-flash-lite")
+}
+
 // defaultEffortControl is the thinkingLevel surface for Gemini 3+, taken from
 // the per-model rung table below. nil for models that take a budget instead,
 // which is what tells callers to convert an effort into thinkingBudget.
@@ -1984,6 +2001,73 @@ func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage,
 	}
 	usage.OutputTokensDetails.NumSearchQueries = count
 	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
+}
+
+// streamFunctionCallArgumentsExtraParamKey carries a caller's explicit
+// streamFunctionCallArguments through the neutral request (from the typed GenAI ingress, or
+// as an extra param on /v1 routes) to the Gemini request builders.
+const streamFunctionCallArgumentsExtraParamKey = "stream_function_call_arguments"
+
+// takeStreamFunctionCallArgumentsParam moves an explicit stream_function_call_arguments
+// extra param onto req, removing it from req.ExtraParams so passthrough never sends it as
+// an unknown top-level field. It is applied by ApplyStreamFunctionCallArguments on
+// streaming requests only.
+func takeStreamFunctionCallArgumentsParam(req *GeminiGenerationRequest, extraParams map[string]interface{}) {
+	value, ok := extraParams[streamFunctionCallArgumentsExtraParamKey]
+	if !ok {
+		return
+	}
+	delete(req.ExtraParams, streamFunctionCallArgumentsExtraParamKey)
+	if enabled, ok := schemas.SafeExtractBoolPointer(value); ok && enabled != nil {
+		req.streamFunctionCallArguments = enabled
+	}
+}
+
+// ApplyStreamFunctionCallArguments sets toolConfig.functionCallingConfig.
+// streamFunctionCallArguments on a request that is about to go to streamGenerateContent.
+// Call it from streaming request builders only: Vertex rejects the flag on
+// generateContent. The caller's explicit value wins (an explicit false is written only
+// where the default would have set true); otherwise DefaultStreamFunctionCallArguments
+// decides. The flag is only written when the request
+// declares functions (Vertex rejects a functionCallingConfig without declarations) and
+// does not turn calling off (mode NONE). Requests it does not apply to pay a length check
+// and a provider comparison, plus a model-name check on Vertex; none of them allocates.
+func ApplyStreamFunctionCallArguments(req *GeminiGenerationRequest, provider schemas.ModelProvider, model string) {
+	if req == nil || len(req.Tools) == 0 {
+		return
+	}
+	// An explicit true is sent as asked. An explicit false only matters where the default
+	// would have turned the flag on; elsewhere the request is left as it was.
+	enabled := req.streamFunctionCallArguments
+	if enabled == nil || !*enabled {
+		if !DefaultStreamFunctionCallArguments(provider, model) {
+			return
+		}
+		if enabled == nil {
+			enabled = schemas.Ptr(true)
+		}
+	}
+	hasDeclarations := false
+	for i := range req.Tools {
+		if len(req.Tools[i].FunctionDeclarations) > 0 {
+			hasDeclarations = true
+			break
+		}
+	}
+	if !hasDeclarations {
+		return
+	}
+	if req.ToolConfig == nil {
+		req.ToolConfig = &ToolConfig{}
+	}
+	if req.ToolConfig.FunctionCallingConfig == nil {
+		req.ToolConfig.FunctionCallingConfig = &FunctionCallingConfig{}
+	}
+	config := req.ToolConfig.FunctionCallingConfig
+	if config.Mode == FunctionCallingConfigModeNone {
+		return
+	}
+	config.StreamFunctionCallArguments = enabled
 }
 
 // applyServerSideToolInvocations opts the request into Gemini's tool combination mode,

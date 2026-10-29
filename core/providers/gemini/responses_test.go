@@ -2236,3 +2236,234 @@ func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestGeminiResponsesStreamStreamedFunctionCallArguments pins the Responses side of Vertex
+// streamFunctionCallArguments. For a call that arrives as partialArgs leaves, the
+// function_call_arguments.delta events must leave the converter with the chunk that carried
+// the text (not as a synthetic burst once the call is complete), and
+// function_call_arguments.done, output_item.done and response.completed must all carry the
+// concatenation of those deltas, which must parse as the value the leaves describe. The
+// GenAI egress (typed /genai on Vertex) must still rebuild one complete functionCall per
+// call with its thoughtSignature, so the next turn replays it.
+func TestGeminiResponsesStreamStreamedFunctionCallArguments(t *testing.T) {
+	for _, fixture := range StreamFunctionCallArgsFixtures() {
+		t.Run(fixture, func(t *testing.T) {
+			chunks := LoadStreamFunctionCallArgsFixture(t, fixture)
+			expected := ExpectedStreamedCalls(t, chunks)
+
+			type gotCall struct {
+				itemID, name   string
+				deltas         strings.Builder
+				deltaCount     int
+				firstDelta     int
+				doneChunk      int
+				doneArgs       *string
+				itemDoneArgs   *string
+				addedArguments string
+			}
+			byIndex := map[int]*gotCall{}
+			var order []int
+			var completed *schemas.BifrostResponsesResponse
+			var allEvents []*schemas.BifrostResponsesStreamResponse
+
+			state := acquireGeminiResponsesStreamState()
+			defer releaseGeminiResponsesStreamState(state)
+			seq := 0
+			for i, chunk := range chunks {
+				events, bErr := chunk.ToBifrostResponsesStream(seq, state)
+				require.Nil(t, bErr)
+				seq += len(events)
+				allEvents = append(allEvents, events...)
+				for _, ev := range events {
+					if ev.Type == schemas.ResponsesStreamResponseTypeCompleted || ev.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+						completed = ev.Response
+					}
+					if ev.OutputIndex == nil {
+						continue
+					}
+					idx := *ev.OutputIndex
+					switch ev.Type {
+					case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+						if ev.Item == nil || ev.Item.Type == nil || *ev.Item.Type != schemas.ResponsesMessageTypeFunctionCall {
+							continue
+						}
+						require.NotContains(t, byIndex, idx, "output index %d reused", idx)
+						c := &gotCall{itemID: *ev.ItemID, name: *ev.Item.ResponsesToolMessage.Name, firstDelta: -1, doneChunk: -1}
+						c.addedArguments = *ev.Item.ResponsesToolMessage.Arguments
+						require.NotEmpty(t, c.name, "function_call item without a name")
+						byIndex[idx] = c
+						order = append(order, idx)
+					case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+						c := byIndex[idx]
+						require.NotNil(t, c, "delta for an output index with no function_call item")
+						require.Nil(t, c.doneArgs, "delta after function_call_arguments.done")
+						assert.Equal(t, c.itemID, *ev.ItemID)
+						c.deltas.WriteString(*ev.Delta)
+						c.deltaCount++
+						if c.firstDelta < 0 {
+							c.firstDelta = i
+						}
+					case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+						c := byIndex[idx]
+						require.NotNil(t, c)
+						require.Nil(t, c.doneArgs, "function_call_arguments.done emitted twice")
+						c.doneArgs = ev.Arguments
+						c.doneChunk = i
+					case schemas.ResponsesStreamResponseTypeOutputItemDone:
+						if c := byIndex[idx]; c != nil {
+							require.Nil(t, c.itemDoneArgs, "output_item.done emitted twice")
+							c.itemDoneArgs = ev.Item.ResponsesToolMessage.Arguments
+						}
+					}
+				}
+			}
+
+			require.Len(t, order, len(expected), "function_call item count")
+			require.NotNil(t, completed, "no terminal response event")
+			var completedArgs []string
+			for _, item := range completed.Output {
+				if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall {
+					completedArgs = append(completedArgs, *item.ResponsesToolMessage.Arguments)
+				}
+			}
+			require.Len(t, completedArgs, len(expected), "response.completed output function_call count")
+
+			for n, idx := range order {
+				want, got := expected[n], byIndex[idx]
+				assert.Equal(t, want.Name, got.name)
+				assert.Equal(t, "", got.addedArguments, "output_item.added must open with empty arguments")
+				require.NotNil(t, got.doneArgs, "call %d: no function_call_arguments.done", n)
+				require.NotNil(t, got.itemDoneArgs, "call %d: no output_item.done", n)
+				assert.Equal(t, got.deltas.String(), *got.doneArgs, "call %d: done arguments differ from the concatenated deltas", n)
+				assert.Equal(t, *got.doneArgs, *got.itemDoneArgs, "call %d: output_item.done arguments differ from done", n)
+				assert.Equal(t, *got.doneArgs, completedArgs[n], "call %d: response.completed arguments differ from done", n)
+				assert.Equal(t, want.Args, DecodeArgs(t, *got.doneArgs), "call %d (%s)", n, want.Name)
+				if want.Streamed {
+					assert.Equal(t, want.EndChunk, got.doneChunk, "call %d: done must close the call when Vertex ends it", n)
+					if want.FirstLeafChunk >= 0 {
+						assert.LessOrEqual(t, got.firstDelta, want.FirstLeafChunk, "call %d: argument deltas held back past the chunk carrying the first leaf", n)
+						if want.EndChunk > want.FirstLeafChunk {
+							assert.Less(t, got.firstDelta, got.doneChunk, "call %d: deltas emitted as a burst at completion", n)
+						}
+					}
+				}
+			}
+
+			// GenAI egress: one complete functionCall per call, signature restored.
+			out := NewBifrostToGeminiStreamState()
+			var genaiCalls []*Part
+			for _, ev := range allEvents {
+				g := ToGeminiResponsesStreamResponse(ev, out)
+				if g == nil || len(g.Candidates) == 0 || g.Candidates[0].Content == nil {
+					continue
+				}
+				for _, p := range g.Candidates[0].Content.Parts {
+					if p.FunctionCall != nil {
+						genaiCalls = append(genaiCalls, p)
+					}
+				}
+			}
+			require.Len(t, genaiCalls, len(expected), "genai functionCall parts")
+			for n, p := range genaiCalls {
+				assert.Equal(t, expected[n].Name, p.FunctionCall.Name)
+				assert.Empty(t, p.FunctionCall.PartialArgs)
+				assert.Equal(t, expected[n].Args, DecodeArgs(t, string(p.FunctionCall.Args)), "genai call %d args", n)
+				assert.Equal(t, expected[n].Signature, p.ThoughtSignature, "genai call %d thoughtSignature", n)
+			}
+		})
+	}
+}
+
+// TestGeminiResponsesStreamStreamedCallEndings is the Responses side of
+// TestToBifrostChatCompletionStream_StreamedCallEndings: a truncated call keeps its
+// arguments as far as they got and its item is incomplete, a clean end completes the
+// JSON, and content after the call closes its item before the next item opens.
+func TestGeminiResponsesStreamStreamedCallEndings(t *testing.T) {
+	yes := true
+	str := func(s string) *string { return &s }
+	start := func(leaves ...*PartialArg) *Part {
+		return &Part{FunctionCall: &FunctionCall{Name: "write", ID: "c1", PartialArgs: leaves, WillContinue: &yes}}
+	}
+	chunk := func(finish FinishReason, parts ...*Part) *GenerateContentResponse {
+		resp := &GenerateContentResponse{Candidates: []*Candidate{{FinishReason: finish, Content: &Content{Role: "model", Parts: parts}}}}
+		if finish != "" {
+			resp.UsageMetadata = &GenerateContentResponseUsageMetadata{TotalTokenCount: 5}
+		}
+		return resp
+	}
+	tests := []struct {
+		name         string
+		chunks       []*GenerateContentResponse
+		wantArgs     string
+		wantStatus   string
+		wantTerminal schemas.ResponsesStreamResponseType
+	}{
+		{
+			name: "MAX_TOKENS",
+			chunks: []*GenerateContentResponse{
+				chunk("", start(&PartialArg{JSONPath: "$.path", StringValue: str("/etc/x")}, &PartialArg{JSONPath: "$.content", StringValue: str("half of the fi"), WillContinue: &yes})),
+				chunk(FinishReasonMaxTokens, &Part{Text: ""}),
+			},
+			wantArgs: `{"path":"/etc/x","content":"half of the fi`, wantStatus: "incomplete", wantTerminal: schemas.ResponsesStreamResponseTypeIncomplete,
+		},
+		{
+			name: "STOP",
+			chunks: []*GenerateContentResponse{
+				chunk("", start(&PartialArg{JSONPath: "$.content", StringValue: str("all"), WillContinue: &yes})),
+				chunk(FinishReasonStop, &Part{Text: ""}),
+			},
+			wantArgs: `{"content":"all"}`, wantStatus: "completed", wantTerminal: schemas.ResponsesStreamResponseTypeCompleted,
+		},
+		{
+			name: "text after the call",
+			chunks: []*GenerateContentResponse{
+				chunk("", start(&PartialArg{JSONPath: "$.a", StringValue: str("x"), WillContinue: &yes})),
+				chunk("", &Part{Text: "done."}),
+				chunk("", &Part{FunctionCall: &FunctionCall{PartialArgs: []*PartialArg{{JSONPath: "$.b", NumberValue: json.RawMessage("1")}}}}),
+				chunk(FinishReasonStop, &Part{Text: ""}),
+			},
+			wantArgs: `{"a":"x"}`, wantStatus: "completed", wantTerminal: schemas.ResponsesStreamResponseTypeCompleted,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := acquireGeminiResponsesStreamState()
+			defer releaseGeminiResponsesStreamState(state)
+			var events []*schemas.BifrostResponsesStreamResponse
+			for _, c := range tt.chunks {
+				out, bErr := c.ToBifrostResponsesStream(len(events), state)
+				require.Nil(t, bErr)
+				events = append(events, out...)
+			}
+			var deltas, done, itemStatus, itemArgs string
+			callClosedAt, messageOpenedAt := -1, -1
+			var terminal schemas.ResponsesStreamResponseType
+			for i, ev := range events {
+				switch ev.Type {
+				case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+					deltas += *ev.Delta
+				case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+					done = *ev.Arguments
+				case schemas.ResponsesStreamResponseTypeOutputItemDone:
+					if ev.Item.Type != nil && *ev.Item.Type == schemas.ResponsesMessageTypeFunctionCall {
+						itemStatus, itemArgs, callClosedAt = *ev.Item.Status, *ev.Item.ResponsesToolMessage.Arguments, i
+					}
+				case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+					if ev.Item.Type != nil && *ev.Item.Type == schemas.ResponsesMessageTypeMessage && messageOpenedAt < 0 {
+						messageOpenedAt = i
+					}
+				case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
+					terminal = ev.Type
+				}
+			}
+			assert.Equal(t, tt.wantArgs, deltas)
+			assert.Equal(t, deltas, done)
+			assert.Equal(t, done, itemArgs)
+			assert.Equal(t, tt.wantStatus, itemStatus)
+			assert.Equal(t, tt.wantTerminal, terminal)
+			if messageOpenedAt >= 0 {
+				assert.Less(t, callClosedAt, messageOpenedAt, "the function_call item must close before the message item opens")
+			}
+		})
+	}
+}

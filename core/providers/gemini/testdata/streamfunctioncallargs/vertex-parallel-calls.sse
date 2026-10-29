@@ -1,0 +1,34 @@
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": "I will now check the current weather conditions for both Paris and Tokyo"}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": " by calling the weather tool for each city."}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "get_weather","id": "Q3aEocOd","willContinue": true},"thoughtSignature": "AY89a18pJlPAakLEurF//U1WKJWHqOXGPg4sDb2WPT6rbJCDxPRHV8qPPBY1ErgmO+S5GOQe9wLdeV6vl6bFAZt8klz2+Up0ByWStUFRceo7eDeuCQ=="}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.city","stringValue": "Paris","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.city","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.reason","stringValue": "I am retrieving the current weather forecast for Paris to provide accurate temperature and atmospheric conditions for travelers or residents planning their daily activities in the French","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.reason","stringValue": " capital today.","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.reason","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "get_weather","id": "aw3rCSZN","willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.city","stringValue": "Tokyo","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.city","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.reason","stringValue": "I am checking the latest weather updates in Tokyo so that anyone interested in the Japanese capital can know whether to expect rain, sunshine, or clouds","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.reason","stringValue": " during their upcoming schedule.","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.reason","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 137,"candidatesTokenCount": 135,"totalTokenCount": 272,"trafficType": "ON_DEMAND","promptTokensDetails": [{"modality": "TEXT","tokenCount": 137}],"candidatesTokensDetails": [{"modality": "TEXT","tokenCount": 135}]},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:59:55.544433Z","responseId": "u8TiarGdIfeSl7oP7-igUQ"}
+

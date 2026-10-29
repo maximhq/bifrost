@@ -1866,3 +1866,281 @@ func TestVertexListModelsAPIKeyOnlyKeyListsConfiguration(t *testing.T) {
 		t.Errorf("an API-key-only key called Model Garden %d times", n)
 	}
 }
+
+// TestVertexGeminiStreamFunctionCallArgumentsOnTheWire pins when Bifrost asks Vertex to
+// stream function call arguments (toolConfig.functionCallingConfig.
+// streamFunctionCallArguments). Without it Gemini 3+ holds a call until its last argument
+// is generated, so a long argument reaches the client as one burst. The flag is sent on
+// streamGenerateContent for Gemini 3+ (except 3.1 Flash-Lite) when the request declares
+// functions, from every route that reaches the Vertex Gemini stream builders; it is never
+// sent on generateContent (Vertex answers 400 "streaming function call is not supported in
+// unary API"); a caller's explicit value wins; and every request it does not apply to is
+// byte-for-byte what the converters produced before.
+func TestVertexGeminiStreamFunctionCallArgumentsOnTheWire(t *testing.T) {
+	const geminiResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	const anthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	type sent struct{ path, body string }
+	var mu sync.Mutex
+	var requests []sent
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		requests = append(requests, sent{r.URL.Path, string(body)})
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + geminiResponse + "\n\n"))
+		case strings.HasSuffix(r.URL.Path, ":streamRawPredict"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+		case strings.Contains(r.URL.Path, "/publishers/anthropic/"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(anthropicResponse))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(geminiResponse))
+		}
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	drain := func(stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+		if bifrostErr != nil {
+			return bifrostErr
+		}
+		for {
+			select {
+			case _, ok := <-stream:
+				if !ok {
+					return nil
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not finish")
+			}
+		}
+	}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	const writeTool = `{"type":"function","function":{"name":"write","description":"Write a file","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}}`
+	const writeResponsesTool = `{"type":"function","name":"write","description":"Write a file","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}`
+	chatTools := func() []schemas.ChatTool {
+		var tool schemas.ChatTool
+		if err := json.Unmarshal([]byte(writeTool), &tool); err != nil {
+			t.Fatalf("chat tool: %v", err)
+		}
+		return []schemas.ChatTool{tool}
+	}
+	responsesTools := func(raw ...string) []schemas.ResponsesTool {
+		var tools []schemas.ResponsesTool
+		for _, r := range raw {
+			var tool schemas.ResponsesTool
+			if err := json.Unmarshal([]byte(r), &tool); err != nil {
+				t.Fatalf("responses tool: %v", err)
+			}
+			tools = append(tools, tool)
+		}
+		return tools
+	}
+	chat := func(model string, params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("write it")}}},
+			Params:   params,
+		}
+	}
+	responses := func(model string, params *schemas.ResponsesParameters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("write it")}}},
+			Params:   params,
+		}
+	}
+	genai := func(body string) *schemas.BifrostResponsesRequest {
+		var in gemini.GeminiGenerationRequest
+		if err := in.UnmarshalJSON([]byte(body)); err != nil {
+			t.Fatalf("genai body: %v", err)
+		}
+		return in.ToBifrostResponsesRequest(newCtx())
+	}
+	genaiBody := func(model, toolConfig string) string {
+		return `{"model":"vertex/` + model + `","contents":[{"role":"user","parts":[{"text":"write it"}]}],` +
+			`"tools":[{"functionDeclarations":[{"name":"write","parameters":{"type":"OBJECT","properties":{"content":{"type":"STRING"}}}}]}]` + toolConfig + `}`
+	}
+	anthropicIngress := func() *schemas.BifrostResponsesRequest {
+		var req anthropic.AnthropicMessageRequest
+		if err := json.Unmarshal([]byte(`{"model":"vertex/gemini-4-argon","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"write it"}],`+
+			`"tools":[{"name":"write","description":"Write a file","input_schema":{"type":"object","properties":{"content":{"type":"string"}}}}]}`), &req); err != nil {
+			t.Fatalf("anthropic body: %v", err)
+		}
+		return req.ToBifrostResponsesRequest(newCtx())
+	}
+	// What the stream builders sent before this change: the converter output, stripped
+	// and marshaled exactly as the closures do, with no flag step.
+	legacyChatBody := func(req *schemas.BifrostChatRequest) string {
+		body, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(newCtx(), req, geminiImageURLSchemes...)
+		if err != nil {
+			t.Fatalf("convert: %v", err)
+		}
+		stripVertexGeminiUnsupportedFields(body)
+		raw, err := providerUtils.MarshalProviderRequest(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return string(raw)
+	}
+	legacyResponsesBody := func(req *schemas.BifrostResponsesRequest) string {
+		body, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(newCtx(), req, geminiImageURLSchemes...)
+		if err != nil {
+			t.Fatalf("convert: %v", err)
+		}
+		stripVertexGeminiUnsupportedFields(body)
+		raw, err := providerUtils.MarshalProviderRequest(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return string(stripVertexGeminiUnsupportedFieldsRaw(raw))
+	}
+	passthroughCtx := func() *schemas.BifrostContext {
+		ctx := newCtx()
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		return ctx
+	}
+	const flagPath = "toolConfig.functionCallingConfig.streamFunctionCallArguments"
+	none := &schemas.ChatToolChoice{ChatToolChoiceStr: new("none")}
+	required := &schemas.ChatToolChoice{ChatToolChoiceStr: new("required")}
+
+	for _, tc := range []struct {
+		name     string
+		call     func() *schemas.BifrostError
+		wantPath string
+		wantFlag string // raw JSON of the flag; "" means absent
+		wantMode string // raw JSON of functionCallingConfig.mode; "" means absent
+		legacy   func() string
+	}{
+		{"/v1/chat/completions stream gemini-3.8-flash", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, chat("gemini-3.8-flash", &schemas.ChatParameters{Tools: chatTools()})))
+		}, ":streamGenerateContent", "true", "", nil},
+		{"/v1/chat/completions stream keeps tool_choice required", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, chat("gemini-4-argon", &schemas.ChatParameters{Tools: chatTools(), ToolChoice: required})))
+		}, ":streamGenerateContent", "true", `"ANY"`, nil},
+		{"/v1/responses stream gemini-4-argon", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, responses("gemini-4-argon", &schemas.ResponsesParameters{Tools: responsesTools(writeResponsesTool)})))
+		}, ":streamGenerateContent", "true", "", nil},
+		{"/anthropic stream to Vertex Gemini", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, anthropicIngress()))
+		}, ":streamGenerateContent", "true", "", nil},
+		{"/genai stream", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-3.8-flash", ""))))
+		}, ":streamGenerateContent", "true", "", nil},
+		{"/genai stream explicit false is kept", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-3.8-flash", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`))))
+		}, ":streamGenerateContent", "false", `"AUTO"`, nil},
+		{"/genai stream explicit snake_case true reaches a model outside the default", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-2.5-pro", `,"tool_config":{"function_calling_config":{"stream_function_call_arguments":true}}`))))
+		}, ":streamGenerateContent", "true", `"AUTO"`, nil},
+		{"/v1/chat/completions stream extra param false is kept and not forwarded", func() *schemas.BifrostError {
+			params := &schemas.ChatParameters{Tools: chatTools(), ExtraParams: map[string]interface{}{"stream_function_call_arguments": false}}
+			return drain(provider.ChatCompletionStream(passthroughCtx(), noHooks, nil, key, chat("gemini-3.8-flash", params)))
+		}, ":streamGenerateContent", "false", "", nil},
+
+		// Unchanged: unary calls, even with an explicit opt-in.
+		{"/v1/chat/completions unary", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), key, chat("gemini-3.8-flash", &schemas.ChatParameters{Tools: chatTools()}))
+			return e
+		}, ":generateContent", "", "", nil},
+		{"/v1/responses unary", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), key, responses("gemini-4-argon", &schemas.ResponsesParameters{Tools: responsesTools(writeResponsesTool)}))
+			return e
+		}, ":generateContent", "", "", nil},
+		{"/genai unary explicit true is not sent", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), key, genai(genaiBody("gemini-3.8-flash", `,"toolConfig":{"functionCallingConfig":{"streamFunctionCallArguments":true}}`)))
+			return e
+		}, ":generateContent", "", `"AUTO"`, nil},
+
+		// Unchanged byte for byte: streams the default does not cover.
+		{"stream on Gemini 2.5", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, chat("gemini-2.5-flash", &schemas.ChatParameters{Tools: chatTools()})))
+		}, ":streamGenerateContent", "", "", func() string {
+			return legacyChatBody(chat("gemini-2.5-flash", &schemas.ChatParameters{Tools: chatTools()}))
+		}},
+		{"responses stream on Gemini 3.1 Flash-Lite (documented unsupported)", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, responses("gemini-3.1-flash-lite", &schemas.ResponsesParameters{Tools: responsesTools(writeResponsesTool)})))
+		}, ":streamGenerateContent", "", "", func() string {
+			return legacyResponsesBody(responses("gemini-3.1-flash-lite", &schemas.ResponsesParameters{Tools: responsesTools(writeResponsesTool)}))
+		}},
+		{"/genai stream explicit false on Gemini 2.5 (nothing to opt out of)", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-2.5-pro", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`))))
+		}, ":streamGenerateContent", "", `"AUTO"`, func() string {
+			return legacyResponsesBody(genai(genaiBody("gemini-2.5-pro", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`)))
+		}},
+		{"stream without tools", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, chat("gemini-3.8-flash", nil)))
+		}, ":streamGenerateContent", "", "", func() string { return legacyChatBody(chat("gemini-3.8-flash", nil)) }},
+		{"stream with tool_choice none", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, chat("gemini-3.8-flash", &schemas.ChatParameters{Tools: chatTools(), ToolChoice: none})))
+		}, ":streamGenerateContent", "", `"NONE"`, func() string {
+			return legacyChatBody(chat("gemini-3.8-flash", &schemas.ChatParameters{Tools: chatTools(), ToolChoice: none}))
+		}},
+		{"stream with only a web_search tool (no declarations)", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, responses("gemini-3.8-flash", &schemas.ResponsesParameters{Tools: responsesTools(`{"type":"web_search"}`)})))
+		}, ":streamGenerateContent", "", "", func() string {
+			return legacyResponsesBody(responses("gemini-3.8-flash", &schemas.ResponsesParameters{Tools: responsesTools(`{"type":"web_search"}`)}))
+		}},
+		{"Claude on Vertex stream", func() *schemas.BifrostError {
+			req := chat("claude-sonnet-4-6", &schemas.ChatParameters{Tools: chatTools()})
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, key, req))
+		}, ":streamRawPredict", "", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			requests = nil
+			mu.Unlock()
+			if bifrostErr := tc.call(); bifrostErr != nil {
+				t.Fatalf("call failed: %s", bifrostErr.GetErrorString())
+			}
+			mu.Lock()
+			got := requests
+			mu.Unlock()
+			if len(got) != 1 || !strings.HasSuffix(got[0].path, tc.wantPath) {
+				t.Fatalf("upstream requests = %+v, want one to *%s", got, tc.wantPath)
+			}
+			body := got[0].body
+			if raw := gjson.Get(body, flagPath).Raw; raw != tc.wantFlag {
+				t.Fatalf("%s = %q, want %q; body %s", flagPath, raw, tc.wantFlag, body)
+			}
+			if raw := gjson.Get(body, "toolConfig.functionCallingConfig.mode").Raw; raw != tc.wantMode {
+				t.Fatalf("functionCallingConfig.mode = %q, want %q; body %s", raw, tc.wantMode, body)
+			}
+			if strings.Contains(body, "stream_function_call_arguments") || (tc.wantFlag == "" && strings.Contains(body, "streamFunctionCallArguments")) {
+				t.Fatalf("flag leaked into the body: %s", body)
+			}
+			if tc.legacy != nil {
+				if want := tc.legacy(); body != want {
+					t.Fatalf("body changed for a request the flag does not apply to\n got %s\nwant %s", body, want)
+				}
+			}
+		})
+	}
+}

@@ -112,6 +112,8 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 					geminiReq.Labels = labelMap
 				}
 			}
+
+			takeStreamFunctionCallArgumentsParam(geminiReq, bifrostReq.Params.ExtraParams)
 		}
 	}
 	// Convert chat completion messages to Gemini format.
@@ -386,6 +388,80 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 type GeminiStreamState struct {
 	nextToolCallIndex int
 	hadToolCalls      bool // true if any tool calls were seen in this stream
+
+	// The call Vertex is streaming as partialArgs (streamFunctionCallArguments); Vertex
+	// streams one call at a time, so one writer serves the whole stream.
+	streamedCall      geminiPartialArgsWriter
+	streamedCallOpen  bool
+	streamedCallIndex uint16
+	argsBuf           []byte // scratch for one chunk's argument text
+}
+
+// startStreamedCall opens the streamed call fc starts at tool call index idx and returns
+// the argument text its first part carries ("" when the part only names the call).
+func (state *GeminiStreamState) startStreamedCall(fc *FunctionCall, idx uint16) string {
+	state.streamedCallOpen = true
+	state.streamedCallIndex = idx
+	state.argsBuf = state.streamedCall.appendPartialArgs(state.argsBuf[:0], fc.PartialArgs)
+	if fc.streamEnds() {
+		state.argsBuf = state.streamedCall.appendClose(state.argsBuf)
+		state.streamedCallOpen = false
+	}
+	return string(state.argsBuf)
+}
+
+// continueStreamedCall turns a continuation part of the open streamed call into a tool call
+// delta carrying only the index and the new argument text. ok is false when no call is
+// open (a stray end marker) or the part adds no text.
+func (state *GeminiStreamState) continueStreamedCall(fc *FunctionCall) (schemas.ChatAssistantMessageToolCall, bool) {
+	if !state.streamedCallOpen {
+		return schemas.ChatAssistantMessageToolCall{}, false
+	}
+	state.argsBuf = state.streamedCall.appendPartialArgs(state.argsBuf[:0], fc.PartialArgs)
+	if fc.streamEnds() {
+		state.argsBuf = state.streamedCall.appendClose(state.argsBuf)
+		state.streamedCallOpen = false
+	}
+	return state.streamedCallDelta()
+}
+
+// closeStreamedCall ends the open streamed call, if any, when the stream moves on without
+// Vertex's end marker. complete is true when the call is finished (another call or other
+// content starts, or the candidate stops cleanly) and its JSON is closed; false when the
+// candidate was cut off (MAX_TOKENS and the like), which leaves the arguments as far as
+// they got, as OpenAI does, so a truncated call never reads as a complete one.
+func (state *GeminiStreamState) closeStreamedCall(complete bool) (schemas.ChatAssistantMessageToolCall, bool) {
+	if !state.streamedCallOpen {
+		return schemas.ChatAssistantMessageToolCall{}, false
+	}
+	state.streamedCallOpen = false
+	if !complete {
+		state.streamedCall.reset()
+		return schemas.ChatAssistantMessageToolCall{}, false
+	}
+	state.argsBuf = state.streamedCall.appendClose(state.argsBuf[:0])
+	return state.streamedCallDelta()
+}
+
+func (state *GeminiStreamState) streamedCallDelta() (schemas.ChatAssistantMessageToolCall, bool) {
+	if len(state.argsBuf) == 0 {
+		return schemas.ChatAssistantMessageToolCall{}, false
+	}
+	return schemas.ChatAssistantMessageToolCall{
+		Index:    state.streamedCallIndex,
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: string(state.argsBuf)},
+	}, true
+}
+
+// appendToolCallArgumentsDelta appends an index-and-arguments-only delta, folding it into
+// the previous entry when that one is for the same call, so a chunk never lists one call
+// twice.
+func appendToolCallArgumentsDelta(toolCalls []schemas.ChatAssistantMessageToolCall, tc schemas.ChatAssistantMessageToolCall) []schemas.ChatAssistantMessageToolCall {
+	if n := len(toolCalls); n > 0 && toolCalls[n-1].Index == tc.Index {
+		toolCalls[n-1].Function.Arguments += tc.Function.Arguments
+		return toolCalls
+	}
+	return append(toolCalls, tc)
 }
 
 // NewGeminiStreamState returns initialised stream state for one streaming response.
@@ -573,6 +649,11 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		var reasoningDetails []schemas.ChatReasoningDetails
 
 		for _, part := range candidate.Content.Parts {
+			if part.endsStreamedCall() {
+				if tc, ok := state.closeStreamedCall(true); ok {
+					toolCalls = appendToolCallArgumentsDelta(toolCalls, tc)
+				}
+			}
 			switch {
 			case part.Text != "" && part.Thought:
 				// Thought/reasoning content - add to reasoning details
@@ -587,6 +668,18 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 				textContent += part.Text
 
 			case part.FunctionCall != nil:
+				// More of a call Vertex is streaming as partialArgs, or its empty end marker.
+				if part.FunctionCall.isStreamContinuation() {
+					if tc, ok := state.continueStreamedCall(part.FunctionCall); ok {
+						toolCalls = appendToolCallArgumentsDelta(toolCalls, tc)
+					}
+					break
+				}
+				// A new call ends any streamed one still open.
+				if tc, ok := state.closeStreamedCall(true); ok {
+					toolCalls = appendToolCallArgumentsDelta(toolCalls, tc)
+				}
+
 				// Function call
 				jsonArgs := ""
 				if len(part.FunctionCall.Args) > 0 {
@@ -607,6 +700,9 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 
 				toolCallIdx := state.nextToolCallIndex
 				state.nextToolCallIndex++
+				if part.FunctionCall.isStreamStart() {
+					jsonArgs = state.startStreamedCall(part.FunctionCall, uint16(toolCallIdx))
+				}
 
 				toolCall := schemas.ChatAssistantMessageToolCall{
 					Index: uint16(toolCallIdx),
@@ -701,6 +797,14 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		if len(toolCalls) > 0 {
 			delta.ToolCalls = toolCalls
 			state.hadToolCalls = true
+		}
+	}
+
+	// A streamed call still open when the candidate finishes: complete on a clean stop,
+	// left truncated otherwise.
+	if candidate.FinishReason != "" {
+		if tc, ok := state.closeStreamedCall(candidate.FinishReason == FinishReasonStop); ok {
+			delta.ToolCalls = appendToolCallArgumentsDelta(delta.ToolCalls, tc)
 		}
 	}
 

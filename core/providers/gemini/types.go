@@ -141,6 +141,8 @@ type GeminiGenerationRequest struct {
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
+
+	streamFunctionCallArguments *bool // caller's explicit streamFunctionCallArguments; see ApplyStreamFunctionCallArguments
 }
 
 // UnmarshalJSON handles both camelCase and snake_case.
@@ -302,6 +304,8 @@ type FunctionCallingConfig struct {
 	// match [FunctionDeclaration.Name]. With mode set to ANY, model will predict a function
 	// call from the set of function names provided.
 	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+	// Optional. Vertex streamGenerateContent only, Gemini 3+: stream call arguments as FunctionCall.PartialArgs.
+	StreamFunctionCallArguments *bool `json:"streamFunctionCallArguments,omitempty"`
 }
 
 // UnmarshalJSON handles both camelCase and snake_case.
@@ -316,7 +320,8 @@ func (f *FunctionCallingConfig) UnmarshalJSON(data []byte) error {
 	type Alias FunctionCallingConfig
 	aux := &struct {
 		*Alias
-		AllowedFunctionNamesSnake []string `json:"allowed_function_names,omitempty"`
+		AllowedFunctionNamesSnake        []string `json:"allowed_function_names,omitempty"`
+		StreamFunctionCallArgumentsSnake *bool    `json:"stream_function_call_arguments,omitempty"`
 	}{
 		Alias: (*Alias)(f),
 	}
@@ -328,6 +333,9 @@ func (f *FunctionCallingConfig) UnmarshalJSON(data []byte) error {
 	// Use snake_case only where camelCase was absent.
 	if f.AllowedFunctionNames == nil && aux.AllowedFunctionNamesSnake != nil {
 		f.AllowedFunctionNames = aux.AllowedFunctionNamesSnake
+	}
+	if f.StreamFunctionCallArguments == nil && aux.StreamFunctionCallArgumentsSnake != nil {
+		f.StreamFunctionCallArguments = aux.StreamFunctionCallArgumentsSnake
 	}
 
 	return nil
@@ -2262,6 +2270,25 @@ type FunctionCall struct {
 	Args json.RawMessage `json:"args,omitempty"`
 	// Required. The name of the function to call. Matches [FunctionDeclaration.Name].
 	Name string `json:"name,omitempty"`
+	// Streamed arguments (streamFunctionCallArguments), one entry per JSON leaf; see partialargs.go.
+	PartialArgs []*PartialArg `json:"partialArgs,omitempty"`
+	// Streamed calls only: true while more partialArgs for this call follow.
+	WillContinue *bool `json:"willContinue,omitempty"`
+}
+
+// PartialArg is one streamed leaf of a function call's arguments, addressed by a JSONPath
+// such as "$.items[0].name". A path ending in "[]" or "{}" names an array or object
+// container rather than a leaf; Vertex sends it for empty containers and after the last
+// child of a non-empty one. Exactly one value field is set on a leaf. NumberValue and
+// NullValue keep the raw JSON literal so a number round-trips verbatim and an explicit
+// null is distinguishable from an absent field.
+type PartialArg struct {
+	JSONPath     string          `json:"jsonPath,omitempty"`
+	StringValue  *string         `json:"stringValue,omitempty"`
+	NumberValue  json.RawMessage `json:"numberValue,omitempty"`
+	BoolValue    *bool           `json:"boolValue,omitempty"`
+	NullValue    json.RawMessage `json:"nullValue,omitempty"`
+	WillContinue *bool           `json:"willContinue,omitempty"` // string leaves only: more text for this path follows
 }
 
 // FunctionResponse represents a function response.

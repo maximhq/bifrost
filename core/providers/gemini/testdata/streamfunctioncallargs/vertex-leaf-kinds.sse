@@ -1,0 +1,50 @@
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"name": "record","id": "7EKBTXez","partialArgs": [{"jsonPath": "$.count","numberValue": 42.5},{"jsonPath": "$.done","boolValue": true}],"willContinue": true},"thoughtSignature": "AY89a1/VlH2goEyO9aJTvplfY6OiU7FcxvUZ3c6ZzRO5AIdCw833kujt8/t1NWQid6RX1auMZPFN1t51X8F5mlpcNRDwOerKsAQXaAinCzvq5NWwGA=="}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.empty[]"}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.items[0].k","stringValue": "x","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.items[0].k","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.items[0].v","numberValue": 1}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.items[1].k","stringValue": "y","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.items[1].k","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.items[1].v","numberValue": 2}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.meta.author.age","numberValue": 7}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.meta.author.name","stringValue": "Ann","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.meta.author.name","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.meta.author{}"},{"jsonPath": "$.meta.extra{}"},{"jsonPath": "$.note","nullValue": null}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[0]","stringValue": "a","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[0]","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[1]","stringValue": "b","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[1]","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[2]","stringValue": "c","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[2]","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.tags[]"}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.title","stringValue": "我们在星空中探索未知的世界，使用 \" 符号和 \\ 路径来记录数据。\n🚀 火箭升空的那","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.title","stringValue": "一刻，所有的梦想都随之腾飞。\n未来的路还很长，但我们已经做好了出发的准备，去迎接新的","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.title","stringValue": "挑战。","willContinue": true}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"partialArgs": [{"jsonPath": "$.title","stringValue": ""}],"willContinue": true}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {}}]}}],"usageMetadata": {"trafficType": "ON_DEMAND"},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": ""}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 368,"candidatesTokenCount": 145,"totalTokenCount": 513,"trafficType": "ON_DEMAND","promptTokensDetails": [{"modality": "TEXT","tokenCount": 368}],"candidatesTokensDetails": [{"modality": "TEXT","tokenCount": 145}]},"modelVersion": "gemini-4-argon","createTime": "2026-10-29T03:58:13.160473Z","responseId": "VcTiatnlCe6lotQP-dKV2QY"}
+
