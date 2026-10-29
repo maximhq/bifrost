@@ -11,7 +11,7 @@ icon: "user-shield"
 
 If a single shared admin token is fine, use [OAuth 2.0](./oauth) instead.
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is only valid for **HTTP** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 <Note>
 This page covers **upstream** per-user OAuth — Bifrost holding a token *for* an upstream MCP service on behalf of each end-user, resolved **lazily** on the first tool call that needs it. Identity is asserted by the caller via headers (or upstream SSO).
@@ -39,7 +39,7 @@ You can run the admin verification either from the **Web UI** during create, or 
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Per-User OAuth 2.0**
 5. Fill in the OAuth fields:
    - **Client ID** (optional — leave blank for Dynamic Client Registration)

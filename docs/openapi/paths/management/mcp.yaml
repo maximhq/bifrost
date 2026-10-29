@@ -229,6 +229,11 @@ client:
       create rather than when the flow is completed, and endpoint_slug is kept
       for the client the completion creates. OAuth discovery against a private
       address that mcp_oauth_private_allowlist does not permit returns 400.
+
+      auth_type must be one of the MCPAuthType values; any other value returns
+      400. per_user_oauth, per_user_headers and token_exchange need
+      connection_type "http", because each call opens its own connection, so
+      they return 400 on "sse" and "stdio". An omitted auth_type is "headers".
     tags:
       - MCP
     requestBody:

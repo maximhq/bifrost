@@ -13,7 +13,7 @@ icon: "user-pen"
 
 Use this when the upstream MCP server authenticates with per-user API keys, signed tokens, or any other static-shape credential — but does **not** offer OAuth (which would call for [Per-User OAuth](./per-user-oauth)).
 
-This auth type is only valid for **HTTP** and **SSE** connections.
+This auth type is only valid for **HTTP** connections. It is refused on an SSE or STDIO client, because each call opens its own connection: the API answers 400, and a `config.json` client is skipped at boot with an error naming it.
 
 | | Headers (`headers`) | Per-User Headers (`per_user_headers`) |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ The admin configures the MCP client once, declaring the schema (header names) en
 
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
-3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
+3. Pick **HTTP** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Per-User Headers**
 5. Fill in **Required Headers** — comma-separated list of header names each caller must supply (e.g. `X-API-Key, X-Tenant-ID`). Values are submitted per-user — never stored on this MCP config.
 6. (Optional) Fill in **Static Headers** — admin-set headers that accompany every per-user request (e.g. a fixed tenant ID). These are visible to plugins; the per-user values aren't.

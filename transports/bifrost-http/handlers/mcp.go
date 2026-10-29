@@ -2390,6 +2390,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid connection_type %q: must be one of http, sse, stdio, openapi", req.ConnectionType))
 		return
 	}
+	// auth_type is checked next, for the same reason: an unknown value reaches the
+	// connect path, fails there and is rolled back as a 500. auth_type and
+	// connection_type cannot change on update, so create is the one place to refuse
+	// them. An omitted auth_type becomes the headers the store saves it as.
+	authType, err := lib.ResolveMCPClientAuthType(schemas.MCPAuthType(req.AuthType), schemas.MCPConnectionType(req.ConnectionType))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	req.AuthType = string(authType)
 	isOpenAPIClient := req.ConnectionType == string(schemas.MCPConnectionTypeOpenAPI)
 
 	// Both gates run before anything else: registering a client is what makes

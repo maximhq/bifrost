@@ -3684,6 +3684,86 @@ func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *t
 	assert.Equal(t, "stored valid document", cfg.MCPConfig.ClientConfigs[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
 }
 
+// mcpClientNames lists the names of configs, in order.
+func mcpClientNames(configs []*schemas.MCPClientConfig) []string {
+	names := make([]string, 0, len(configs))
+	for _, c := range configs {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// TestLoadMCPConfig_RefusesAuthTypesCreateRefuses pins that config.json gets the
+// create API's answer on auth_type: an unknown auth_type, and a per-user one on SSE
+// or STDIO, are skipped and not stored, while the client beside them loads.
+func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "bogus_auth", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: "bogus"},
+		{Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"}},
+		{Name: "oauth_on_stdio", ConnectionType: schemas.MCPConnectionTypeSTDIO, StdioConfig: &schemas.MCPStdioConfig{Command: "true"}, AuthType: schemas.MCPAuthTypePerUserOauth},
+		{Name: "plain_http", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: schemas.MCPAuthTypeNone},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.MCPConfig.ClientConfigs), "the runtime")
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(store.mcpConfigsCreated), "the store")
+}
+
+// TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders pins that a config.json client
+// without an auth_type loads as headers, the value the store saves and later boots
+// read back, so it connects the same way on its first boot as on every boot after.
+func TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "no_auth_type", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp")},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, cfg.MCPConfig.ClientConfigs[0].AuthType, "the runtime")
+	require.Len(t, store.mcpConfigsCreated, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, store.mcpConfigsCreated[0].AuthType, "the store")
+}
+
+// TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient: a stored client whose
+// config.json declaration is now refused for its auth_type is kept with its stored
+// configuration, the way an unparsable OpenAPI declaration keeps it, instead of being
+// pruned as missing from the file.
+func TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient(t *testing.T) {
+	initTestLogger()
+	stored := &schemas.MCPClientConfig{
+		ID: "sse-db", Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
+	}
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}
+	cfg := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
+			ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
+		}}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(store.mcpConfig.ClientConfigs), "the stored client must not be pruned")
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(cfg.MCPConfig.ClientConfigs))
+}
+
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
 func TestLoadConfig_Governance_Merge(t *testing.T) {
 	// Setup DB governance config
