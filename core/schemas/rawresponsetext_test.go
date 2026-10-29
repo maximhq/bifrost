@@ -2,12 +2,14 @@ package schemas
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Frames follow the OpenAI chat.completion.chunk wire shape, including the fields a rewrite must preserve.
@@ -536,6 +538,199 @@ func TestTextCompletionConversionKeepsRawResponseFormat(t *testing.T) {
 	synced, err := SyncRawResponseText(text.ExtraFields.RawResponse, text.ExtraFields.RawResponseFormat, text, &redacted)
 	require.NoError(t, err)
 	assert.Contains(t, synced, `"content":"mail [EMAIL-1]"`)
+}
+
+// redactTestReplacements is the replacement map the RedactRawResponseText tests apply.
+var redactTestReplacements = map[string]string{"alex@example.com": "[EMAIL-1]"}
+
+// redactTestRaw fills each frame template's %s with the matching text as a JSON string and joins the frames with
+// blank lines, as the stream accumulator stores a stream's raw payloads.
+func redactTestRaw(t testing.TB, templates []string, texts []string) string {
+	t.Helper()
+	frames := make([]string, len(templates))
+	for index, template := range templates {
+		text, err := Marshal(texts[index])
+		require.NoError(t, err)
+		frames[index] = fmt.Sprintf(template, text)
+	}
+	return strings.Join(frames, "\n\n")
+}
+
+// TestRedactRawResponseTextJoinsValuesSplitAcrossFrames verifies each format's streamed text and tool arguments are
+// joined across frames, with the replacement written into the frame that completes the match.
+func TestRedactRawResponseTextJoinsValuesSplitAcrossFrames(t *testing.T) {
+	text := []string{"mail alex@", "example.com today"}
+	redactedText := []string{"mail ", "[EMAIL-1] today"}
+	arguments := []string{`{"to":"alex@`, `example.com"}`}
+	redactedArguments := []string{`{"to":"`, `[EMAIL-1]"}`}
+	twice := func(template string) []string { return []string{template, template} }
+
+	cases := map[string]struct {
+		format RawResponseFormat
+		frames []string
+		texts  []string
+		want   []string
+	}{
+		"openai chat content": {
+			format: RawResponseFormatOpenAIChatCompletionChunk,
+			frames: twice(`{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":%s},"finish_reason":null}]}`),
+			texts:  text, want: redactedText,
+		},
+		"openai chat tool arguments": {
+			format: RawResponseFormatOpenAIChatCompletionChunk,
+			frames: twice(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%s}}]}}]}`),
+			texts:  arguments, want: redactedArguments,
+		},
+		"openai-compatible content blocks": {
+			format: RawResponseFormatOpenAIChatCompletionChunk,
+			frames: twice(`{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":%s}]}}]}`),
+			texts:  text, want: redactedText,
+		},
+		"openai text completion": {
+			format: RawResponseFormatOpenAITextCompletionChunk,
+			frames: twice(`{"choices":[{"index":0,"text":%s}]}`),
+			texts:  text, want: redactedText,
+		},
+		"openai responses text": {
+			format: RawResponseFormatOpenAIResponsesStreamEvent,
+			frames: twice(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":%s}`),
+			texts:  text, want: redactedText,
+		},
+		"openai responses arguments": {
+			format: RawResponseFormatOpenAIResponsesStreamEvent,
+			frames: twice(`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":%s}`),
+			texts:  arguments, want: redactedArguments,
+		},
+		"anthropic text": {
+			format: RawResponseFormatAnthropicMessagesStreamEvent,
+			frames: twice(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%s}}`),
+			texts:  text, want: redactedText,
+		},
+		"anthropic tool input": {
+			format: RawResponseFormatAnthropicMessagesStreamEvent,
+			frames: twice(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":%s}}`),
+			texts:  arguments, want: redactedArguments,
+		},
+		"bedrock text": {
+			format: RawResponseFormatBedrockConverseStreamEvent,
+			frames: twice(`{"contentBlockIndex":0,"delta":{"text":%s},"p":"abc"}`),
+			texts:  text, want: redactedText,
+		},
+		"bedrock tool input": {
+			format: RawResponseFormatBedrockConverseStreamEvent,
+			frames: twice(`{"contentBlockIndex":1,"delta":{"toolUse":{"input":%s}},"p":"ab"}`),
+			texts:  arguments, want: redactedArguments,
+		},
+		"cohere text": {
+			format: RawResponseFormatCohereChatStreamEvent,
+			frames: twice(`{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":%s}}}}`),
+			texts:  text, want: redactedText,
+		},
+		"cohere tool arguments": {
+			format: RawResponseFormatCohereChatStreamEvent,
+			frames: twice(`{"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":%s}}}}}`),
+			texts:  arguments, want: redactedArguments,
+		},
+		"gemini text with an omitted zero index": {
+			format: RawResponseFormatGeminiStreamChunk,
+			frames: []string{
+				`{"candidates":[{"content":{"role":"model","parts":[{"text":%s}]}}]}`,
+				`{"candidates":[{"content":{"role":"model","parts":[{"text":%s}]},"index":0}]}`,
+			},
+			texts: text, want: redactedText,
+		},
+		"replicate output": {
+			format: RawResponseFormatReplicateStreamEvent,
+			frames: twice(`{"Data":%s,"Event":"output","ID":""}`),
+			texts:  text, want: redactedText,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw := redactTestRaw(t, tc.frames, tc.texts)
+
+			redacted := RedactRawResponseText(raw, tc.format, redactTestReplacements)
+
+			assert.Equal(t, redactTestRaw(t, tc.frames, tc.want), redacted)
+		})
+	}
+}
+
+// TestRedactRawResponseTextKeepsStreamedValuesApart verifies pieces join only within their own value: parallel tool
+// calls stay separate even when their frames interleave, and reasoning text is left alone.
+func TestRedactRawResponseTextKeepsStreamedValuesApart(t *testing.T) {
+	reasoning := `{"choices":[{"index":0,"delta":{"reasoning":%s}}]}`
+	firstCall := `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":%s}}]}}]}`
+	secondCall := `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":%s}}]}}]}`
+	frames := []string{reasoning, reasoning, secondCall, firstCall, secondCall, firstCall}
+	raw := redactTestRaw(t, frames, []string{"check alex@", "example.com first", `{"url":"https://`, `{"to":"alex@`, `example.com/docs"}`, `example.com"}`})
+
+	redacted := RedactRawResponseText(raw, RawResponseFormatOpenAIChatCompletionChunk, redactTestReplacements)
+
+	want := redactTestRaw(t, frames, []string{"check alex@", "example.com first", `{"url":"https://`, `{"to":"`, `example.com/docs"}`, `[EMAIL-1]"}`})
+	assert.Equal(t, want, redacted)
+}
+
+// TestRedactRawResponseTextMatchesApplyLiteralReplacements verifies a streamed value's redacted pieces join to exactly
+// what ApplyLiteralReplacements makes of the whole value, including where keys overlap.
+func TestRedactRawResponseTextMatchesApplyLiteralReplacements(t *testing.T) {
+	replacements := map[string]string{"Alex Rivera": "[NAME-1]", "Alex": "[NAME-2]", "alex@example.com": "[EMAIL-1]", "bcd": "[X]", "ab": "[Y]"}
+	texts := []string{"Alex Ri", "vera, alex@exa", "mple.com and Alex a", "bcd."}
+	frame := `{"Data":%s,"Event":"output","ID":""}`
+	raw := redactTestRaw(t, []string{frame, frame, frame, frame}, texts)
+
+	redacted := RedactRawResponseText(raw, RawResponseFormatReplicateStreamEvent, replacements)
+
+	var joined strings.Builder
+	gjson.ForEachLine(redacted, func(frame gjson.Result) bool {
+		joined.WriteString(frame.Get("Data").String())
+		return true
+	})
+	assert.Equal(t, ApplyLiteralReplacements(strings.Join(texts, ""), replacements), joined.String())
+	assert.Equal(t, "[NAME-1], [EMAIL-1] and [NAME-2] a[X].", joined.String())
+}
+
+// TestRedactRawResponseTextLeavesUnsupportedRawUnchanged verifies raw is returned as it was when the format streams no
+// text, nothing matches, or raw is not a sequence of JSON objects.
+func TestRedactRawResponseTextLeavesUnsupportedRawUnchanged(t *testing.T) {
+	template := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%s}}`
+	split := redactTestRaw(t, []string{template, template}, []string{"mail alex@", "example.com today"})
+
+	cases := map[string]struct {
+		raw    string
+		format RawResponseFormat
+	}{
+		"undeclared format":   {raw: split},
+		"nothing matches":     {raw: redactTestRaw(t, []string{template, template}, []string{"mail alex", " today"}), format: RawResponseFormatAnthropicMessagesStreamEvent},
+		"truncated preview":   {raw: split[:len(split)-4], format: RawResponseFormatAnthropicMessagesStreamEvent},
+		"non-object frame":    {raw: split + "\n\n" + `"upstream error"`, format: RawResponseFormatAnthropicMessagesStreamEvent},
+		"text between frames": {raw: "event: content_block_delta\ndata: " + split, format: RawResponseFormatAnthropicMessagesStreamEvent},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.raw, RedactRawResponseText(tc.raw, tc.format, redactTestReplacements))
+		})
+	}
+}
+
+// BenchmarkRedactRawResponseText measures redacting a 1,000-frame Anthropic stream raw with one value split across two
+// frames, the shape a long streamed answer leaves in a log.
+func BenchmarkRedactRawResponseText(b *testing.B) {
+	template := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":%s}}`
+	templates := make([]string, 1000)
+	texts := make([]string, 1000)
+	for index := range texts {
+		templates[index] = template
+		texts[index] = "part " + strconv.Itoa(index) + " of a long streamed answer. "
+	}
+	texts[500], texts[501] = "reach alex@", "example.com today. "
+	raw := redactTestRaw(b, templates, texts)
+
+	b.SetBytes(int64(len(raw)))
+	b.ReportAllocs()
+	for b.Loop() {
+		RedactRawResponseText(raw, RawResponseFormatAnthropicMessagesStreamEvent, redactTestReplacements)
+	}
 }
 
 // BenchmarkSyncRawResponseText measures mirroring one emptied streamed delta into the chunk's raw frame. The

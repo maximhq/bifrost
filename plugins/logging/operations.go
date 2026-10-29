@@ -491,6 +491,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			// Raw response
 			if streamResponse.Data.RawResponse != nil {
 				entry.RawResponse = *streamResponse.Data.RawResponse
+				entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 			}
 		}
 	}

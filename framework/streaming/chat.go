@@ -547,6 +547,10 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 					rawBuilder.WriteString("\n\n")
 				}
 				rawBuilder.WriteString(*chunk.RawResponse)
+				// Every frame comes from one provider stream, so the first declared format describes them all.
+				if data.RawResponseFormat == "" {
+					data.RawResponseFormat = chunk.RawResponseFormat
+				}
 			}
 		}
 		if rawBuilder.Len() > 0 {
@@ -600,6 +604,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.TextCompletionResponse.ExtraFields.RawResponseFormat
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
@@ -630,6 +635,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.ChatResponse.ExtraFields.RawResponseFormat
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {

@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -723,4 +724,308 @@ func rawJSONPath(segments []string) string {
 // rawJSONPathKey escapes one object key for a GJSON/SJSON path, matching the request-side raw rewriter.
 func rawJSONPathKey(key string) string {
 	return strings.ReplaceAll(gjson.Escape(key), ":", `\:`)
+}
+
+// rawStreamedValue identifies one value a format streams in pieces across frames, such as a choice's content, a
+// content block, or a tool call's arguments. kind names the field, and index and inner hold the raw JSON indexes
+// that tell its instances apart.
+type rawStreamedValue struct {
+	kind  string
+	index string
+	inner string
+}
+
+// rawStreamedPiece is one raw string field carrying part of a streamed value: token is the field's JSON string as
+// it appears at offset start in the stored raw, and text is its decoded value.
+type rawStreamedPiece struct {
+	start int
+	token string
+	text  string
+}
+
+// rawStreamedPieces holds the pieces of each streamed value in a raw, each value's in raw order.
+type rawStreamedPieces map[rawStreamedValue][]rawStreamedPiece
+
+// rawTextMatch is one span of a streamed value's joined text that a literal replacement replaces.
+type rawTextMatch struct {
+	start       int
+	end         int
+	replacement string
+}
+
+// rawStreamedTextFields lists, for each format, how to find the frame fields that stream answer text and tool-call
+// arguments in pieces. Reasoning and signature deltas are not collected, since redaction leaves reasoning text alone.
+var rawStreamedTextFields = map[RawResponseFormat]func(frame gjson.Result, pieces rawStreamedPieces){
+	RawResponseFormatOpenAIChatCompletionChunk:    openAIChatStreamedText,
+	RawResponseFormatOpenAITextCompletionChunk:    openAITextStreamedText,
+	RawResponseFormatOpenAIResponsesStreamEvent:   openAIResponsesStreamedText,
+	RawResponseFormatAnthropicMessagesStreamEvent: anthropicStreamedText,
+	RawResponseFormatBedrockConverseStreamEvent:   bedrockStreamedText,
+	RawResponseFormatCohereChatStreamEvent:        cohereStreamedText,
+	RawResponseFormatGeminiStreamChunk:            geminiStreamedText,
+	RawResponseFormatReplicateStreamEvent:         replicateStreamedText,
+}
+
+// RedactRawResponseText applies literal replacements to the text a declared format streams in pieces, so a value
+// split across the frames of a stored stream raw (the stream's chunk payloads joined in order) is replaced like a
+// whole one. The pieces of each streamed value, such as a choice's content, a content block, or a tool call's
+// arguments, are joined and matched the way ApplyLiteralReplacements matches them. Each replacement is written into
+// the piece holding the matched text's last byte, the matched text leaves the pieces before it, and text outside a
+// match stays where it was.
+//
+// Only those streamed fields change: whole values elsewhere in a frame, such as accumulated text on a closing event,
+// are left to the caller's own literal replacement. raw is returned unchanged when the format streams no text,
+// nothing matches, or raw is not a sequence of whitespace-separated JSON objects, such as a truncated preview. Every
+// byte outside the rewritten fields is preserved.
+func RedactRawResponseText(raw string, format RawResponseFormat, replacements map[string]string) string {
+	streamedText := rawStreamedTextFields[format]
+	if streamedText == nil || len(replacements) == 0 {
+		return raw
+	}
+	pieces, ok := collectStreamedPieces(raw, streamedText)
+	if !ok {
+		return raw
+	}
+	keys := literalReplacementOrder(replacements)
+	var edits []rawStreamedPiece
+	for _, valuePieces := range pieces {
+		edits = redactStreamedValue(valuePieces, keys, replacements, edits)
+	}
+	if len(edits) == 0 {
+		return raw
+	}
+	return spliceStreamedPieces(raw, edits)
+}
+
+// collectStreamedPieces gathers the streamed-text pieces of every frame in raw. It reports false when raw is not a
+// sequence of whitespace-separated JSON objects or a piece is not where its frame located it.
+func collectStreamedPieces(raw string, streamedText func(frame gjson.Result, pieces rawStreamedPieces)) (rawStreamedPieces, bool) {
+	pieces := make(rawStreamedPieces)
+	end, ok := 0, true
+	gjson.ForEachLine(raw, func(frame gjson.Result) bool {
+		ok = frame.IsObject() && frame.Index >= end && strings.TrimSpace(raw[end:frame.Index]) == "" && gjson.Valid(frame.Raw)
+		if ok {
+			streamedText(frame, pieces)
+			end = frame.Index + len(frame.Raw)
+		}
+		return ok
+	})
+	if !ok || strings.TrimSpace(raw[end:]) != "" {
+		return nil, false
+	}
+	for _, valuePieces := range pieces {
+		for _, piece := range valuePieces {
+			// gjson reports an unknown offset as 0, where a field inside a frame never sits.
+			if piece.start <= 0 || piece.start+len(piece.token) > len(raw) || raw[piece.start:piece.start+len(piece.token)] != piece.token {
+				return nil, false
+			}
+		}
+	}
+	return pieces, true
+}
+
+// add records field as the next piece of value when it is a JSON string.
+func (pieces rawStreamedPieces) add(value rawStreamedValue, field gjson.Result) {
+	if field.Type == gjson.String {
+		pieces[value] = append(pieces[value], rawStreamedPiece{start: field.Index, token: field.Raw, text: field.Str})
+	}
+}
+
+// redactStreamedValue joins the pieces of one streamed value, finds the spans the replacements replace, and appends
+// every piece whose text changes, carrying its new text, to edits. A replacement goes into the piece holding its
+// match's last byte, and the matched text leaves every piece it covers.
+func redactStreamedValue(pieces []rawStreamedPiece, keys []string, replacements map[string]string, edits []rawStreamedPiece) []rawStreamedPiece {
+	size := 0
+	for _, piece := range pieces {
+		size += len(piece.text)
+	}
+	var joined strings.Builder
+	joined.Grow(size)
+	for _, piece := range pieces {
+		joined.WriteString(piece.text)
+	}
+	matches := literalReplacementMatches(joined.String(), keys, replacements)
+	if len(matches) == 0 {
+		return edits
+	}
+	offset := 0
+	for _, piece := range pieces {
+		start, end := offset, offset+len(piece.text)
+		offset = end
+		if start == end {
+			continue
+		}
+		var text strings.Builder
+		cursor, touched := start, false
+		for _, match := range matches {
+			if match.end <= start || match.start >= end {
+				continue
+			}
+			if match.start > cursor {
+				text.WriteString(piece.text[cursor-start : match.start-start])
+			}
+			if match.end <= end {
+				text.WriteString(match.replacement)
+			}
+			cursor = min(match.end, end)
+			touched = true
+		}
+		if !touched {
+			continue
+		}
+		text.WriteString(piece.text[cursor-start:])
+		piece.text = text.String()
+		edits = append(edits, piece)
+	}
+	return edits
+}
+
+// literalReplacementMatches returns, in text order, the spans ApplyLiteralReplacements replaces in text: each key, in
+// keys order, takes every occurrence from left to right that does not overlap a span an earlier key already took.
+func literalReplacementMatches(text string, keys []string, replacements map[string]string) []rawTextMatch {
+	var matches []rawTextMatch
+	for _, key := range keys {
+		for from := 0; ; {
+			at := strings.Index(text[from:], key)
+			if at < 0 {
+				break
+			}
+			start, end := from+at, from+at+len(key)
+			if slices.ContainsFunc(matches, func(match rawTextMatch) bool { return match.start < end && start < match.end }) {
+				from = start + 1
+				continue
+			}
+			matches = append(matches, rawTextMatch{start: start, end: end, replacement: replacements[key]})
+			from = end
+		}
+	}
+	slices.SortFunc(matches, func(a, b rawTextMatch) int { return a.start - b.start })
+	return matches
+}
+
+// spliceStreamedPieces writes each edited piece's text over its JSON string in raw and copies every other byte as it
+// was. Text is encoded without HTML escaping, as provider frames write it. raw is returned unchanged if a text cannot
+// be encoded.
+func spliceStreamedPieces(raw string, edits []rawStreamedPiece) string {
+	slices.SortFunc(edits, func(a, b rawStreamedPiece) int { return a.start - b.start })
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	var out strings.Builder
+	out.Grow(len(raw))
+	cursor := 0
+	for _, edit := range edits {
+		encoded.Reset()
+		if err := encoder.Encode(edit.text); err != nil {
+			return raw
+		}
+		encoded.Truncate(encoded.Len() - 1) // Encode ends each value with a newline.
+		out.WriteString(raw[cursor:edit.start])
+		out.Write(encoded.Bytes())
+		cursor = edit.start + len(edit.token)
+	}
+	out.WriteString(raw[cursor:])
+	return out.String()
+}
+
+// rawStreamIndex returns the raw JSON index at path in object, reading a missing one as 0, since some providers omit
+// a zero index, so frames of one value must not split on whether they wrote it.
+func rawStreamIndex(object gjson.Result, path string) string {
+	if index := object.Get(path).Raw; index != "" {
+		return index
+	}
+	return "0"
+}
+
+// openAIChatStreamedText collects each choice's content, or the text blocks some OpenAI-compatible providers stream it
+// as, and each tool call's arguments.
+func openAIChatStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	frame.Get("choices").ForEach(func(_, choice gjson.Result) bool {
+		content := rawStreamedValue{kind: "content", index: rawStreamIndex(choice, "index")}
+		if blocks := choice.Get("delta.content"); blocks.IsArray() {
+			blocks.ForEach(func(_, block gjson.Result) bool {
+				if block.Get("type").String() == "text" {
+					pieces.add(content, block.Get("text"))
+				}
+				return true
+			})
+		} else {
+			pieces.add(content, blocks)
+		}
+		choice.Get("delta.tool_calls").ForEach(func(_, call gjson.Result) bool {
+			pieces.add(rawStreamedValue{kind: "arguments", index: content.index, inner: rawStreamIndex(call, "index")}, call.Get("function.arguments"))
+			return true
+		})
+		return true
+	})
+}
+
+// openAITextStreamedText collects each choice's text.
+func openAITextStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	frame.Get("choices").ForEach(func(_, choice gjson.Result) bool {
+		pieces.add(rawStreamedValue{kind: "text", index: rawStreamIndex(choice, "index")}, choice.Get("text"))
+		return true
+	})
+}
+
+// openAIResponsesStreamedText collects the output_text deltas of each content part and the function or custom tool
+// call input deltas of each output item.
+func openAIResponsesStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	switch eventType := frame.Get("type").String(); eventType {
+	case "response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+		value := rawStreamedValue{kind: eventType, index: rawStreamIndex(frame, "output_index"), inner: rawStreamIndex(frame, "content_index")}
+		pieces.add(value, frame.Get("delta"))
+	}
+}
+
+// anthropicStreamedText collects the text and tool-input JSON deltas of each content block.
+func anthropicStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	if frame.Get("type").String() != "content_block_delta" {
+		return
+	}
+	block := rawStreamedValue{kind: "block", index: rawStreamIndex(frame, "index")}
+	switch frame.Get("delta.type").String() {
+	case "text_delta":
+		pieces.add(block, frame.Get("delta.text"))
+	case "input_json_delta":
+		pieces.add(block, frame.Get("delta.partial_json"))
+	}
+}
+
+// bedrockStreamedText collects the text and tool-input deltas of each content block.
+func bedrockStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	block := rawStreamedValue{kind: "block", index: rawStreamIndex(frame, "contentBlockIndex")}
+	pieces.add(block, frame.Get("delta.text"))
+	pieces.add(block, frame.Get("delta.toolUse.input"))
+}
+
+// cohereStreamedText collects the content and tool-call argument deltas at each index, and the tool plan, which a
+// Responses stream shows as answer text.
+func cohereStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	index := rawStreamIndex(frame, "index")
+	pieces.add(rawStreamedValue{kind: "content", index: index}, frame.Get("delta.message.content.text"))
+	pieces.add(rawStreamedValue{kind: "arguments", index: index}, frame.Get("delta.message.tool_calls.function.arguments"))
+	pieces.add(rawStreamedValue{kind: "tool_plan"}, frame.Get("delta.message.tool_plan"))
+}
+
+// geminiStreamedText collects the non-thought text parts of each candidate. Function-call arguments arrive whole, as
+// JSON objects, so they need no joining.
+func geminiStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	frame.Get("candidates").ForEach(func(_, candidate gjson.Result) bool {
+		text := rawStreamedValue{kind: "text", index: rawStreamIndex(candidate, "index")}
+		candidate.Get("content.parts").ForEach(func(_, part gjson.Result) bool {
+			if !part.Get("thought").Bool() {
+				pieces.add(text, part.Get("text"))
+			}
+			return true
+		})
+		return true
+	})
+}
+
+// replicateStreamedText collects the Data of each output event.
+func replicateStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	if frame.Get("Event").String() == "output" {
+		pieces.add(rawStreamedValue{kind: "output"}, frame.Get("Data"))
+	}
 }

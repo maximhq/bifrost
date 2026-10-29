@@ -126,6 +126,39 @@ func TestAccumulatedChatStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testin
 	}
 }
 
+// TestAccumulatedChatStreamKeepsRawResponseFormat verifies the joined raw keeps the format its chunks declared, so a
+// chunk without a declaration (a synthetic tail) does not clear it.
+func TestAccumulatedChatStreamKeepsRawResponseFormat(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-raw-format")
+
+	declared := newChatChunkResponse(0, "Hello", nil, nil)
+	declared.ChatResponse.ExtraFields.RawResponse = `{"choices":[{"index":0,"delta":{"content":"Hello"}}]}`
+	declared.ChatResponse.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
+	if _, err := accumulator.processChatStreamingResponse(ctx, declared, nil); err != nil {
+		t.Fatalf("declared chunk: %v", err)
+	}
+	tail := newChatChunkResponse(1, "", bifrost.Ptr("stop"), nil)
+	tail.ChatResponse.ExtraFields.RawResponse = `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, tail, nil)
+	if err != nil {
+		t.Fatalf("tail chunk: %v", err)
+	}
+
+	if processed == nil || processed.Data == nil || processed.Data.RawResponse == nil {
+		t.Fatal("expected accumulated raw response on final chunk")
+	}
+	if want := `{"choices":[{"index":0,"delta":{"content":"Hello"}}]}` + "\n\n" + `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`; *processed.Data.RawResponse != want {
+		t.Fatalf("accumulated raw = %q, want %q", *processed.Data.RawResponse, want)
+	}
+	if processed.Data.RawResponseFormat != schemas.RawResponseFormatOpenAIChatCompletionChunk {
+		t.Fatalf("accumulated raw format = %q, want %q", processed.Data.RawResponseFormat, schemas.RawResponseFormatOpenAIChatCompletionChunk)
+	}
+}
+
 // TestResponsesStreamingFinalChunkNoDeadlock tests Responses streaming doesn't deadlock
 func TestResponsesStreamingFinalChunkNoDeadlock(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
