@@ -504,3 +504,82 @@ func TestStripCompactionItemSummary_AllocationScaling(t *testing.T) {
 		stripCompactionItemSummary(body, itemsByLen[len(body)])
 	})
 }
+
+func TestStripCompactionItemSummary_NoCompaction(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		data  string
+		items []schemas.ResponsesMessage
+	}{
+		{"empty", `[]`, nil},
+		{"nil metadata", `[{"role":"user","content":"hello"}]`, nil},
+		{"image with nil type", ` [ {"role":"user", "content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]} ] `, []schemas.ResponsesMessage{{}}},
+		{"reasoning summary", `[{"type":"reasoning","summary":[]}]`, []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(tc.data)
+			if got := stripCompactionItemSummary(data, tc.items); string(got) != tc.data || string(data) != tc.data {
+				t.Fatal("input or output JSON bytes changed")
+			}
+			if allocs := testing.AllocsPerRun(100, func() {
+				if len(stripCompactionItemSummary(data, tc.items)) != len(data) {
+					t.Fatal("output length changed")
+				}
+			}); allocs != 0 {
+				t.Fatalf("expected no allocations without compaction, got %g", allocs)
+			}
+		})
+	}
+}
+
+func TestStripCompactionItemSummary_CompactionAfterReasoning(t *testing.T) {
+	const input = `[{"type":"reasoning","summary":[]},{"type":"compaction","summary":null,"encrypted_content":"encrypted"}]`
+	data := []byte(input)
+	items := []schemas.ResponsesMessage{
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning)},
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeCompaction)},
+	}
+	want := `[{"type":"reasoning","summary":[]},{"type":"compaction","encrypted_content":"encrypted"}]`
+	if got := stripCompactionItemSummary(data, items); string(got) != want || string(data) != input {
+		t.Fatalf("summary cleanup changed: got %s, input %s", got, data)
+	}
+}
+
+func BenchmarkOpenAIResponsesRequestMarshalImages(b *testing.B) {
+	image := "data:image/png;base64," + strings.Repeat("A", 64<<10)
+	blocks := make([]schemas.ResponsesMessageContentBlock, 16)
+	for i := range blocks {
+		blocks[i] = schemas.ResponsesMessageContentBlock{
+			Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+			ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &image},
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		compaction bool
+	}{
+		{"no-compaction", false},
+		{"with-compaction", true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			items := []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+			}}
+			if tc.compaction {
+				items = append(items, schemas.ResponsesMessage{
+					Type:               schemas.Ptr(schemas.ResponsesMessageTypeCompaction),
+					ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("encrypted")},
+				})
+			}
+			req := &OpenAIResponsesRequest{Model: "test-model", Stream: schemas.Ptr(true), Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: items}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := sonic.ConfigStd.Marshal(req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
