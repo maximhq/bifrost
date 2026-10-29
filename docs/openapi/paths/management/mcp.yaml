@@ -611,6 +611,7 @@ client-initiate-verification:
 client-reauthorize:
   post:
     operationId: reauthorizeMCPClient
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**
@@ -680,6 +681,7 @@ client-reauthorize:
 client-reregister:
   post:
     operationId: reregisterMCPClient
+    x-bifrost-destructive: true
     summary: Reauthorize an MCP client against a newly registered OAuth client
     description: |
       Registers a replacement OAuth client (RFC 7591 Dynamic Client

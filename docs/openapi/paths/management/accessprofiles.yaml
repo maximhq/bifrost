@@ -295,6 +295,7 @@ access-profiles-activate:
 access-profiles-deactivate:
   put:
     operationId: deactivateAccessProfile
+    x-bifrost-destructive: true
     x-mint:
       metadata:
         tag: Enterprise
@@ -393,6 +394,7 @@ access-profiles-clone:
 access-profiles-propagate:
   post:
     operationId: propagateAccessProfile
+    x-bifrost-destructive: true
     x-mint:
       metadata:
         tag: Enterprise
