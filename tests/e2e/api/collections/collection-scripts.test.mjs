@@ -824,9 +824,10 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
       const ref = redactionUrlFields.has(`${type}.${field}`) ? redactionUrlRef : redactionRef;
       assert.strictEqual(fixture.key[property][field], ref, `${type}.${field}`);
     }
-    if (structBody(type).includes("*BedrockEndpoints")) {
-      for (const field of secretFields("BedrockEndpoints")) {
-        assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
+    const endpoints = structBody(type).match(/\*(\w+Endpoints)\s+`json:"endpoints[,"]/);
+    if (endpoints) {
+      for (const field of secretFields(endpoints[1])) {
+        assert.strictEqual(fixture.key[property].endpoints?.[field], redactionRef, `${type}.endpoints.${field}`);
       }
     }
   }
