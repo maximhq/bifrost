@@ -95,7 +95,7 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443

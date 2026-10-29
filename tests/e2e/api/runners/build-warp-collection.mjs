@@ -374,7 +374,16 @@ const FOLDERS = [
         id: "topics-people",
         name: "Declines to count the people behind a topic",
         ask: "How many different users asked about the largest topic?",
-        expect: { ...ONE_LIST_TOPICS, answerAll: [FEATURE_LINK], answerNone: ["\\b\\d+ (different |distinct |unique )?(users|people)\\b"] },
+        // The prompt has Warp answer what the data shows first - a query_usage_by
+        // user ranking with topic_ids counts users with a request in the topic -
+        // then decline the people count. Users are not people.
+        expect: {
+          toolsAll: ["list_topics"],
+          toolsOnly: ["describe_filter_space", "list_topics", "query_usage_by"],
+          maxToolCalls: 3,
+          answerAll: [FEATURE_LINK],
+          answerNone: ["\\b\\d+ (different |distinct |unique )?people\\b"],
+        },
       },
     ],
   },

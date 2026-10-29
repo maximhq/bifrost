@@ -9,8 +9,9 @@ set -euo pipefail
 # Node binary links against) are all missing. Each component is skipped when it
 # is already present, so on a full runner image this is a no-op.
 #
-# Runs after harden-runner like every other step. Callers allowlist
-# ports.ubuntu.com:80, plus download.docker.com:443 when they ask for `docker`;
+# Runs after harden-runner like every other step. apt-sources-https.sh moves the
+# Ubuntu sources to HTTPS before the first apt-get update, so callers allowlist
+# ports.ubuntu.com:443, plus download.docker.com:443 when they ask for `docker`;
 # check-egress-allowlist.sh enforces both. Docker's apt repo is trusted only
 # through a key whose primary fingerprint matches DOCKER_KEY_FINGERPRINT, and
 # apt then verifies every package against that key.
@@ -23,6 +24,8 @@ set -euo pipefail
 
 DOCKER_KEY_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
 OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
+# ${BASH_SOURCE%/*}, not dirname: the installer test runs with a minimal PATH.
+APT_SOURCES_HTTPS="${BASH_SOURCE%/*}/apt-sources-https.sh"
 
 if [[ $# -eq 0 ]]; then
   echo "Usage: $0 <node|docker|build|jq|gh>..." >&2
@@ -30,6 +33,16 @@ if [[ $# -eq 0 ]]; then
 fi
 
 has() { command -v "$1" >/dev/null 2>&1; }
+
+# Both install paths call apt-get update; the sources switch to HTTPS once, before the first.
+sources_https=0
+apt_update() {
+  if [[ $sources_https -eq 0 ]]; then
+    "$BASH" "$APT_SOURCES_HTTPS"
+    sources_https=1
+  fi
+  sudo apt-get update
+}
 
 packages=()
 want_docker=0
@@ -53,7 +66,7 @@ done
 
 if [[ ${#packages[@]} -gt 0 ]]; then
   echo "Installing from Ubuntu: ${packages[*]}"
-  sudo apt-get update
+  apt_update
   sudo apt-get install -y --no-install-recommends "${packages[@]}"
 fi
 
@@ -75,7 +88,7 @@ if [[ $want_docker -eq 1 ]]; then
   sudo install -D -m 0644 "$KEY" /etc/apt/keyrings/docker.asc
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${codename} stable" \
     | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-  sudo apt-get update
+  apt_update
   sudo apt-get install -y --no-install-recommends \
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
