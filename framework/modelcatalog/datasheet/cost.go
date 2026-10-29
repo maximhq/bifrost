@@ -1685,17 +1685,19 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 // imageQuality: "low", "medium", "high", "standard", "auto" use quality-specific rates when available; other values use base/size-tier rates.
 func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, imageQuality string, tier serviceTier) float64 {
 	// Try token-based pricing first
-	var outputTextTokens, outputImageTokens int
-	if imageUsage.OutputTokensDetails != nil {
-		outputImageTokens = imageUsage.OutputTokensDetails.ImageTokens
-		outputTextTokens = imageUsage.OutputTokensDetails.TextTokens
+	var outputTextTokens, outputImageTokens, reasoningTokens int
+	if d := imageUsage.OutputTokensDetails; d != nil {
+		outputImageTokens, outputTextTokens, reasoningTokens = d.ImageTokens, d.TextTokens, d.ReasoningTokens
+	}
+	switch {
+	case outputImageTokens > 0 || outputTextTokens > 0:
 		// Output the details leave unattributed bills at the text rate, and never less than the reported
 		// thinking tokens: Gemini can report a candidatesTokenCount below its own IMAGE detail
-		if outputImageTokens > 0 || outputTextTokens > 0 {
-			outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, imageUsage.OutputTokensDetails.ReasoningTokens, 0)
-		}
-	} else {
-		outputImageTokens = imageUsage.OutputTokens
+		outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, reasoningTokens, 0)
+	case imageUsage.OutputTokensDetails == nil || reasoningTokens > 0:
+		// No modality breakdown: output is image tokens, except reported thinking, which bills as text
+		outputTextTokens = min(reasoningTokens, imageUsage.OutputTokens)
+		outputImageTokens = imageUsage.OutputTokens - outputTextTokens
 	}
 
 	// Same as the input side: a row with no token rate falls through to pixel/image rates.

@@ -2131,6 +2131,34 @@ func TestComputeImageCost_ReasoningTokensBillWhenOutputBelowImageDetail(t *testi
 	assert.InDelta(t, 0.068316, cost, 1e-12)
 }
 
+func TestComputeImageCost_ReasoningOnlyDetailsKeepTokenPricing(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+		OutputCostPerImage:      bifrost.Ptr(0.045),
+	}
+	// Gemini usage with thoughtsTokenCount but no candidatesTokensDetails: 1120 candidates + 300 thoughts
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1420,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ReasoningTokens: 300},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 300*0.000003, not the 0.045 per-image fallback
+	assert.InDelta(t, 0.0681, cost, 1e-12)
+}
+
+func TestComputeImageCost_ImageCountOnlyDetailsKeepPerImagePricing(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+		OutputCostPerImage:      bifrost.Ptr(0.045),
+	}
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1120,
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2},
+	}
+	assert.InDelta(t, 0.09, computeImageCostTotal(&p, usage, "", "", serviceTier{}), 1e-12)
+}
+
 func TestComputeImageCost_ReasoningTokensNotDoubleCounted(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		OutputCostPerToken:      bifrost.Ptr(0.000003),
