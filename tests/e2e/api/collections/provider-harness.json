@@ -298482,6 +298482,169 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Gemini chat completions seed reaches generationConfig (gemini seed) (PR #9275)",
+      "description": "A seed on a /v1/chat/completions request to Gemini was dropped by the converter, so output was never reproducible. The first two cases read the outgoing request through x-bf-send-back-raw-request and pin generationConfig.seed, including seed 0 (a falsy value that must not be omitted). The third pins that a seed outside the int32 range Gemini accepts is a 400 from the gateway, not a 5xx.",
+      "item": [
+        {
+          "name": "297.1 gemini/gemini-2.5-flash chat seed reaches generationConfig.seed (gemini seed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"seed\": 42\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __b = pm.response.json() || {};",
+                  "var rr = (__b.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+                  "if (rr) {",
+                  "  var gc = rr.generationConfig || {};",
+                  "  var dropped = (__b.extra_fields || {}).dropped_compat_plugin_params || [];",
+                  "  pm.test('seed 42 is on the Gemini wire, or reported as dropped by compat', function () {",
+                  "    if (dropped.indexOf('seed') !== -1) {",
+                  "      pm.expect(gc.seed, 'reported dropped but on the wire: ' + JSON.stringify(rr).slice(0, 600)).to.equal(undefined);",
+                  "      return;",
+                  "    }",
+                  "    pm.expect(gc.seed, JSON.stringify(rr).slice(0, 600)).to.equal(42);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "297.2 gemini/gemini-2.5-flash chat seed 0 is kept in generationConfig.seed (gemini seed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"seed\": 0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __b = pm.response.json() || {};",
+                  "var rr = (__b.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+                  "if (rr) {",
+                  "  var gc = rr.generationConfig || {};",
+                  "  var dropped = (__b.extra_fields || {}).dropped_compat_plugin_params || [];",
+                  "  pm.test('seed 0 is on the Gemini wire, or reported as dropped by compat', function () {",
+                  "    if (dropped.indexOf('seed') !== -1) {",
+                  "      pm.expect(gc.seed, 'reported dropped but on the wire: ' + JSON.stringify(rr).slice(0, 600)).to.equal(undefined);",
+                  "      return;",
+                  "    }",
+                  "    pm.expect(gc.seed, JSON.stringify(rr).slice(0, 600)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "297.3 [EXPECT-400] gemini/gemini-2.5-flash chat seed above int32 is a client error (gemini seed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"seed\": 2147483648\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seed outside int32 is refused as a client error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'want 400: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  pm.expect(pm.response.text(), 'error should name the seed: ' + pm.response.text().slice(0, 400)).to.include('seed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
