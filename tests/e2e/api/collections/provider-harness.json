@@ -298482,6 +298482,272 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Empty text document fidelity (empty text document) (#8849 / PR #9290)",
+      "description": "Issue #8849: on /anthropic/v1/messages a document whose text source is the empty string (\"data\": \"\") reached Anthropic as {\"source\":{\"type\":\"\"}} and the whole request 400ed with \"Input tag '' found using 'type'\". The request round-trips Anthropic -> Responses -> Anthropic; the egress converters (ConvertResponsesFileBlockToAnthropic / ConvertToAnthropicDocumentBlock) only handled non-empty file_data and fell through with an empty source.\n\nThe same round trip also split one user turn into one message per block, invented a \"document.txt\" title for untitled documents, and sent the OpenRouter fallback file_data \"\" (not a data URL).\n\nCases: (1) the issue request on the Anthropic route to Anthropic - one user message, text source with data \"\", no invented title; (2) /v1/responses and (3) /v1/chat/completions with the Bifrost file_type extension (file_data \"\" + file_type text/plain) - the neutral-route shape that reaches the same egress (a plain OpenAI client sends \"data:text/plain;base64,\", which already decoded correctly); (4) the issue request to OpenRouter - one input item, the empty document as \"data:text/plain;base64,\" with a filename defaulted at OpenAI egress.\n\nAll cases read the upstream body from extra_fields.raw_request (x-bf-send-back-raw-request).",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 anthropic messages: empty text document keeps its source in one user turn, no invented title - empty text document - #8849",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('empty text document reaches Anthropic as a text source with data \"\"', function () {",
+                  "  var raw = rawRequest();",
+                  "  var source = raw.messages[0].content[1].source;",
+                  "  pm.expect(source.type, 'source.type lost (Input tag \\'\\' ...): ' + JSON.stringify(source)).to.equal('text');",
+                  "  pm.expect(source.data, 'empty data dropped: ' + JSON.stringify(source)).to.equal('');",
+                  "});",
+                  "pm.test('user turn stays one message with all four blocks', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(raw.messages.length, 'user turn was split: ' + JSON.stringify(raw.messages).slice(0, 600)).to.equal(1);",
+                  "  pm.expect(raw.messages[0].content.length).to.equal(4);",
+                  "  pm.expect(raw.messages[0].content[2].source.data).to.equal('   ');",
+                  "  pm.expect(raw.messages[0].content[3].text).to.equal('Say ok.');",
+                  "});",
+                  "pm.test('untitled documents gain no title', function () {",
+                  "  var raw = rawRequest();",
+                  "  raw.messages[0].content.slice(0, 3).forEach(function (b, i) { pm.expect(b.title, 'document ' + i + ' got title ' + b.title).to.equal(undefined); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"Some text.\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"   \"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 responses: empty text/plain input_file reaches Anthropic as a text source - empty text document - #8849",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('empty text document reaches Anthropic as a text source with data \"\"', function () {",
+                  "  var raw = rawRequest();",
+                  "  var source = raw.messages[0].content[0].source;",
+                  "  pm.expect(source.type, 'source.type lost (Input tag \\'\\' ...): ' + JSON.stringify(source)).to.equal('text');",
+                  "  pm.expect(source.data, 'empty data dropped: ' + JSON.stringify(source)).to.equal('');",
+                  "});",
+                  "pm.test('the file and the question share one user message', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(raw.messages.length, JSON.stringify(raw.messages).slice(0, 600)).to.equal(1);",
+                  "  pm.expect(raw.messages[0].content.length).to.equal(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_data\": \"\",\n          \"file_type\": \"text/plain\",\n          \"filename\": \"empty.txt\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 chat completions: empty text/plain file reaches Anthropic as a text source - empty text document - #8849",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('empty text document reaches Anthropic as a text source with data \"\"', function () {",
+                  "  var raw = rawRequest();",
+                  "  var source = raw.messages[0].content[0].source;",
+                  "  pm.expect(source.type, 'source.type lost (Input tag \\'\\' ...): ' + JSON.stringify(source)).to.equal('text');",
+                  "  pm.expect(source.data, 'empty data dropped: ' + JSON.stringify(source)).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"file_data\": \"\",\n            \"file_type\": \"text/plain\",\n            \"filename\": \"empty.txt\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/anthropic/claude-sonnet-5 anthropic messages: empty text document goes out as a data URL in one input item - empty text document - #8849",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "pm.test('user turn is one input item with every block', function () {",
+                  "  var raw = rawRequest();",
+                  "  pm.expect(raw.input.length, 'user turn was split: ' + JSON.stringify(raw.input).slice(0, 600)).to.equal(1);",
+                  "  pm.expect(raw.input[0].content.length).to.equal(4);",
+                  "});",
+                  "pm.test('empty document is a parseable data URL with a filename', function () {",
+                  "  var file = rawRequest().input[0].content[1];",
+                  "  pm.expect(file.type).to.equal('input_file');",
+                  "  pm.expect(file.file_data, 'file_data must be a data URL, not \"\": ' + JSON.stringify(file)).to.equal('data:text/plain;base64,');",
+                  "  pm.expect(file.filename, 'OpenAI-shaped surfaces need a filename beside file_data').to.equal('document.txt');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"Some text.\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"\"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"text\",\n            \"media_type\": \"text/plain\",\n            \"data\": \"   \"\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
