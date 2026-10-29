@@ -7543,6 +7543,9 @@ func executeRequestWithRetries[T any](
 			stage := "before retry dispatch"
 			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
 				backoff := calculateBackoff(attempts-1, config)
+				if requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+					backoff = passthroughRetryDelay(backoff, bifrostError)
+				}
 				logger.Debug("sleeping for %s before retry", backoff)
 				ctxEnded = waitRetryBackoff(ctx, backoff)
 				stage = "during retry backoff"
@@ -7689,11 +7692,19 @@ func executeRequestWithRetries[T any](
 
 		result, bifrostError = requestHandler(currentKey)
 
+		// Passthrough's raw HTTP 429 is a response, not a BifrostError.
+		// Retry only before the last attempt; otherwise return original status, bytes and headers.
+		if bifrostError == nil && requestType == schemas.PassthroughRequest && attempts < config.NetworkConfig.MaxRetries {
+			if response, ok := any(result).(*schemas.BifrostResponse); ok && response != nil {
+				bifrostError = passthrough429RetryError(response.PassthroughResponse)
+			}
+		}
+
 		// Detect errors carried inside HTTP 200 streams before returning success.
 		// Checked after requestHandler so the key's resolved alias decides the
 		// model family.
 		attemptAbort := providerUtils.AttemptAbortFromContext(ctx)
-		checkPreamble := isStreamRequest && streamHoldsStartupEvents(ctx, providerKey, model)
+		checkPreamble := isStreamRequest && requestType != schemas.PassthroughStreamRequest && streamHoldsStartupEvents(ctx, providerKey, model)
 		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
@@ -7708,7 +7719,16 @@ func executeRequestWithRetries[T any](
 						ctx, requestID, streamChan, azure.IsStreamPreamble,
 					)
 				} else {
-					checkedStream, drainDone, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
+					var firstChunkRetry func(*schemas.BifrostStreamChunk) *schemas.BifrostError
+					if requestType == schemas.PassthroughStreamRequest && attempts < config.NetworkConfig.MaxRetries {
+						firstChunkRetry = func(chunk *schemas.BifrostStreamChunk) *schemas.BifrostError {
+							if chunk == nil {
+								return nil
+							}
+							return passthrough429RetryError(chunk.BifrostPassthroughResponse)
+						}
+					}
+					checkedStream, drainDone, firstChunkErr = providerUtils.CheckFirstStreamChunkForError(ctx, streamChan, firstChunkRetry)
 				}
 				if firstChunkErr != nil {
 					<-drainDone

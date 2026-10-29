@@ -477,6 +477,7 @@ func drainInBackground(stream chan *schemas.BifrostStreamChunk) <-chan struct{} 
 func CheckFirstStreamChunkForError(
 	ctx context.Context,
 	stream chan *schemas.BifrostStreamChunk,
+	firstChunkRetry ...func(*schemas.BifrostStreamChunk) *schemas.BifrostError,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
 	if stream == nil {
 		done := make(chan struct{})
@@ -527,6 +528,14 @@ func CheckFirstStreamChunkForError(
 	if !abort.Disarm() {
 		// The deadline fired while this chunk was in flight.
 		return nil, drainInBackground(stream), NewFirstTokenTimeoutError(abort.Timeout())
+	}
+
+	// A rejected first HTTP 429 is a retry signal only if no bytes have
+	// committed. Drain the former attempt, never expose its chunks.
+	if len(firstChunkRetry) > 0 && firstChunkRetry[0] != nil {
+		if retryErr := firstChunkRetry[0](firstChunk); retryErr != nil {
+			return nil, drainInBackground(stream), retryErr
+		}
 	}
 
 	// First chunk is valid data — wrap channel to re-inject it. A commit marker means a
