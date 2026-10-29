@@ -16,6 +16,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestKimchi runs the shared live scenario suite against the Kimchi API. It is skipped when
+// KIMCHI_API_KEY is not set.
 func TestKimchi(t *testing.T) {
 	t.Parallel()
 	if strings.TrimSpace(os.Getenv("KIMCHI_API_KEY")) == "" {
@@ -145,6 +147,8 @@ func passThroughPostHook(_ *schemas.BifrostContext, result *schemas.BifrostRespo
 
 const chatBody = `{"id":"c1","object":"chat.completion","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok","reasoning_content":"thinking"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"completion_tokens_details":{"reasoning_tokens":1}}}`
 
+// TestKimchiDefaultBaseURL checks that the constructor fills in Kimchi's base URL when the
+// config leaves it empty.
 func TestKimchiDefaultBaseURL(t *testing.T) {
 	config := &schemas.ProviderConfig{}
 	if _, err := kimchi.NewKimchiProvider(config, bifrost.NewNoOpLogger()); err != nil {
@@ -243,6 +247,8 @@ func TestKimchiRequestPaths(t *testing.T) {
 	}
 }
 
+// TestKimchiChatMapsReasoningContent checks that reasoning_content in a non-streaming chat
+// response is mapped to the message's Reasoning field.
 func TestKimchiChatMapsReasoningContent(t *testing.T) {
 	provider, _ := newMockKimchi(t, map[string]http.HandlerFunc{
 		"POST /v1/chat/completions": jsonResponse(chatBody),
@@ -359,6 +365,8 @@ func TestKimchiListModelsCarriesContextWindow(t *testing.T) {
 	}
 }
 
+// TestKimchiTextCompletionUnsupported checks that text completions return unsupported_operation
+// without calling the upstream API, because Kimchi does not serve /v1/completions.
 func TestKimchiTextCompletionUnsupported(t *testing.T) {
 	provider, captured := newMockKimchi(t, nil)
 	prompt := "hi"
