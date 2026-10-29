@@ -360,7 +360,7 @@ Bound the total duration of a single request or stream, end to end. Arms once pe
 
 Independent of any per-chunk stream-idle timeout: setting one does not imply or stretch the other. A caller who wants both a total budget and a tighter idle tolerance sets both headers. A caller who only sets `x-bf-request-timeout` keeps the server's configured stream idle timeout. A caller who only sets `x-bf-stream-idle-timeout` has no total deadline, because an unset `x-bf-request-timeout` arms no timer.
 
-Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds). Header values are clamped to 30 minutes. Go SDK callers that set `BifrostContextKeyRequestTimeout` directly are not clamped.
+Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds). Header values are clamped to 30 minutes. Go SDK callers that set `BifrostContextKeyRequestTimeout` directly are not clamped. Read on HTTP requests only: WebSocket Responses sessions (`/v1/responses` over WebSocket) do not read this header.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -405,7 +405,7 @@ Override the per-chunk idle timeout for a single request's stream: if no data ar
 
 Independent of the total request/stream deadline (`x-bf-request-timeout`): setting one does not imply or stretch the other. A caller who wants both a total budget and a looser idle tolerance sets both headers. A caller who sets only `x-bf-stream-idle-timeout` has no total deadline, because an unset `x-bf-request-timeout` arms no timer. A caller who sets only `x-bf-request-timeout` keeps the server's configured stream idle timeout.
 
-Accepts duration strings (`"30s"`, `"9m"`, `"1h"`) or plain numbers (treated as seconds). Clamped to 30 minutes.
+Accepts duration strings (`"30s"`, `"9m"`, `"1h"`) or plain numbers (treated as seconds). Clamped to 30 minutes. Read on HTTP requests only: WebSocket Responses sessions (`/v1/responses` over WebSocket) do not read this header.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
