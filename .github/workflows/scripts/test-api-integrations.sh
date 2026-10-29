@@ -184,7 +184,7 @@ echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &
 BIFROST_PID=$!
 
-MAX_WAIT=60
+MAX_WAIT=180
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do
   if grep -q "successfully started bifrost" "$SERVER_LOG" 2>/dev/null; then

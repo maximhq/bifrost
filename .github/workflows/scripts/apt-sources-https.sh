@@ -17,6 +17,12 @@ set -euo pipefail
 #   http://[azure.]ports.ubuntu.com  -> https://ports.ubuntu.com   (arm64)
 #   http://archive|security.ubuntu.com -> https:// on the same host
 #
+# Some amd64 images point ubuntu.sources at `mirror+file:/etc/apt/apt-mirrors.txt`
+# instead of a URL. That list puts http://azure.archive.ubuntu.com first and
+# https://archive.ubuntu.com after it, so the Azure line is deleted rather than
+# rewritten (a rewrite would only duplicate the archive entry). Left in, apt
+# tries :80 first, harden-runner drops it, and every fetch stalls on a timeout.
+#
 # Any other http:// source on an ubuntu.com host is an error rather than a
 # silent pass: it would reach for :80, which the allowlists no longer carry, and
 # fail as an opaque mirror timeout. check-egress-allowlist.sh requires the
@@ -32,7 +38,8 @@ files=()
 for f in "$APT_ROOT/sources.list" "$APT_ROOT"/sources.list.d/*.list "$APT_ROOT"/sources.list.d/*.sources; do
   [[ -f "$f" ]] && files+=("$f")
 done
-if [[ ${#files[@]} -eq 0 ]]; then
+mirrors="$APT_ROOT/apt-mirrors.txt"
+if [[ ${#files[@]} -eq 0 && ! -f "$mirrors" ]]; then
   echo "apt-sources-https: no apt sources under $APT_ROOT"
   exit 0
 fi
@@ -41,6 +48,14 @@ fi
 # and BSD sed, and `cp` onto the existing file keeps its owner and mode.
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
+
+if [[ -f "$mirrors" ]]; then
+  sed -E '/^[[:space:]]*http:\/\/azure\.archive\.ubuntu\.com([\/[:space:]]|$)/d' "$mirrors" > "$tmp"
+  if ! cmp -s "$tmp" "$mirrors"; then
+    ${APT_SUDO:+$APT_SUDO} cp "$tmp" "$mirrors"
+    echo "apt-sources-https: dropped the Azure http mirror from $mirrors"
+  fi
+fi
 for f in "${files[@]}"; do
   sed -E \
     -e 's#http://azure\.archive\.ubuntu\.com([/[:space:]]|$)#https://archive.ubuntu.com\1#g' \
@@ -52,6 +67,8 @@ for f in "${files[@]}"; do
     echo "apt-sources-https: switched $f to https"
   fi
 done
+
+[[ -f "$mirrors" ]] && files+=("$mirrors")
 
 # Comment lines are skipped: stock sources.list carries "http://help.ubuntu.com"
 # links in comments that apt never fetches.
