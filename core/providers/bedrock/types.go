@@ -20,17 +20,11 @@ func (r *BedrockInvokeChatRequest) MarshalJSON() ([]byte, error) {
 	if r == nil || r.OpenAIChatRequest == nil {
 		return []byte("null"), nil
 	}
-	body, err := providerUtils.MarshalSorted(r.OpenAIChatRequest)
+	body, err := providerUtils.MarshalProviderRequest(r.OpenAIChatRequest)
 	if err != nil {
 		return nil, err
 	}
-	for _, field := range []string{"model", "stream", "stream_options"} {
-		body, err = providerUtils.DeleteJSONField(body, field)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return body, nil
+	return providerUtils.DeleteJSONField(body, "model")
 }
 
 // DefaultBedrockRegion is the default region for Bedrock

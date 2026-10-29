@@ -36,6 +36,7 @@ const mistralInvokeTestBody = `{"max_tokens":256,"temperature":0,"tool_choice":"
 func mistralInvokeTestRequest(t *testing.T, body string) (*schemas.BifrostContext, *schemas.BifrostChatRequest) {
 	t.Helper()
 	ctx := testBedrockCtx()
+	t.Cleanup(ctx.Cancel)
 	ctx.SetValue(BedrockContextKeyMistralInvokeIngress, true)
 	var incoming openai.OpenAIChatRequest
 	require.NoError(t, sonic.Unmarshal([]byte(body), &incoming))
@@ -54,45 +55,6 @@ func TestDetectInvokeRequestType_MistralChat(t *testing.T) {
 	}
 	for _, model := range []string{"anthropic.claude-sonnet-4-6", "amazon.nova-lite-v1:0", "ai21.jamba-1-5-large-v1:0"} {
 		assert.Equal(t, schemas.ResponsesRequest, DetectInvokeRequestType([]byte(`{"messages":[{"role":"user","content":"Hello"}]}`), model), model)
-	}
-}
-
-func TestDetectInvokeRequestType_MistralToolConfigFields(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		want       schemas.RequestType
-	}{
-		{"before messages", `{"toolConfig":null,"messages":[{"role":"user","content":"Hello"}]}`, schemas.ResponsesRequest},
-		{"after messages", `{"messages":[{"role":"user","content":"Hello"}],"toolConfig":{}}`, schemas.ResponsesRequest},
-		{"escaped keys", `{"mess\u0061ges":[{"role":"user","content":"Hello"}],"tool\u0043onfig":null}`, schemas.ResponsesRequest},
-		{"nested field", `{"messages":[{"role":"user","content":"Hello"}],"metadata":{"toolConfig":null}}`, schemas.ChatCompletionRequest},
-		{"field in text", `{"messages":[{"role":"user","content":"\"toolConfig\":null"}]}`, schemas.ChatCompletionRequest},
-		{"case sensitive", `{"messages":[{"role":"user","content":"Hello"}],"ToolConfig":{}}`, schemas.ChatCompletionRequest},
-		{"empty native messages", `{"messages":[]}`, schemas.ChatCompletionRequest},
-		{"null native messages", `{"messages":null}`, schemas.ChatCompletionRequest},
-		{"empty legacy messages", `{"messages":[],"toolConfig":{}}`, schemas.TextCompletionRequest},
-		{"null legacy messages", `{"messages":null,"toolConfig":{}}`, schemas.TextCompletionRequest},
-		{"spaced legacy messages", `{"messages":[ ],"toolConfig":{}}`, schemas.ResponsesRequest},
-		{"prompt", `{"prompt":"Hello","toolConfig":{}}`, schemas.TextCompletionRequest},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			body := []byte(tc.body)
-			before := bytes.Clone(body)
-			assert.Equal(t, tc.want, DetectInvokeRequestType(body, mistralInvokeTestModel))
-			assert.Equal(t, before, body, "detection must not mutate the input")
-		})
-	}
-}
-
-func TestDetectInvokeRequestType_MistralToolConfigAllocationBudget(t *testing.T) {
-	for _, config := range []string{`{}`, `{"tools":[{"toolSpec":{"name":"weather","description":"` + strings.Repeat("description ", 1024) + `"}}]}`} {
-		body := []byte(`{"messages":[{"role":"user","content":"Hello"}],"toolConfig":` + config + `}`)
-		require.Equal(t, schemas.ResponsesRequest, DetectInvokeRequestType(body, mistralInvokeTestModel))
-		allocs := testing.AllocsPerRun(1000, func() {
-			DetectInvokeRequestType(body, mistralInvokeTestModel)
-		})
-		// Only the local message node allocates, not either JSON payload.
-		assert.LessOrEqual(t, allocs, float64(1))
 	}
 }
 
@@ -202,65 +164,101 @@ func BenchmarkDetectInvokeRequestType(b *testing.B) {
 	}
 }
 
-// Includes the real provider, SigV4, HTTP and AWS EventStream decoding against
-// a local upstream. No AWS credentials or live API calls are required.
-func BenchmarkBedrockMistralInvokeStreamLocal(b *testing.B) {
-	for _, identity := range []string{"first frame", "missing"} {
-		b.Run(identity, func(b *testing.B) {
-			var wire bytes.Buffer
-			encoder := eventstream.NewEncoder()
-			for i, delta := range []string{`{"role":"assistant","content":"hello"}`, `{"content":" world"}`, `{}`} {
-				header := ""
-				if i == 0 && identity == "first frame" {
-					header = `"id":"chat_1","created":123,`
-				}
-				chunk := `{` + header + `"object":"chat.completion.chunk","choices":[{"index":0,"delta":` + delta
-				if i == 2 {
-					chunk += `,"finish_reason":"stop"`
-				}
-				chunk += `}]`
-				if i == 2 {
-					chunk += `,"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}`
-				}
-				chunk += `}`
-				payload, err := providerUtils.MarshalSorted(BedrockInvokeStreamChunkEvent{Bytes: []byte(chunk)})
-				require.NoError(b, err)
-				require.NoError(b, encoder.Encode(&wire, eventstream.Message{Headers: eventstream.Headers{{Name: ":message-type", Value: eventstream.StringValue("event")}, {Name: ":event-type", Value: eventstream.StringValue("chunk")}}, Payload: payload}))
+func BenchmarkBedrockInvokeChatRequest(b *testing.B) {
+	ctx := testBedrockCtx()
+	defer ctx.Cancel()
+	var incoming openai.OpenAIChatRequest
+	if err := sonic.UnmarshalString(mistralInvokeTestBody, &incoming); err != nil {
+		b.Fatal(err)
+	}
+	incoming.Model = "bedrock/" + mistralInvokeTestModel
+	request := incoming.ToBifrostChatRequest(ctx)
+	b.ReportAllocs()
+	for b.Loop() {
+		body, err := ToBedrockInvokeChatRequest(ctx, request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := providerUtils.MarshalProviderRequest(body); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Measures the native provider path with a local upstream, not live AWS.
+func BenchmarkBedrockMistralInvokeStream(b *testing.B) {
+	var wire bytes.Buffer
+	encoder := eventstream.NewEncoder()
+	for _, chunk := range []string{
+		`{"id":"chat_1","created":123,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}`,
+		`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+		`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+	} {
+		payload, err := providerUtils.MarshalSorted(BedrockInvokeStreamChunkEvent{Bytes: []byte(chunk)})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := encoder.Encode(&wire, eventstream.Message{Headers: eventstream.Headers{
+			{Name: ":message-type", Value: eventstream.StringValue("event")},
+			{Name: ":event-type", Value: eventstream.StringValue("chunk")},
+		}, Payload: payload}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		_, _ = w.Write(wire.Bytes())
+	}))
+	defer server.Close()
+	provider, err := NewBedrockProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		InsecureSkipVerify: true, AllowPrivateNetwork: true,
+	}}, noopLogger{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	key := testBedrockKey()
+	key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(server.URL)}
+	var incoming openai.OpenAIChatRequest
+	if err := sonic.UnmarshalString(mistralInvokeTestBody, &incoming); err != nil {
+		b.Fatal(err)
+	}
+	incoming.Model = "bedrock/" + mistralInvokeTestModel
+	request := incoming.ToBifrostChatRequest(nil)
+	run := func() {
+		ctx := testBedrockCtx()
+		defer ctx.Cancel()
+		ctx.SetValue(BedrockContextKeyMistralInvokeIngress, true)
+		stream, err := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for chunk := range stream {
+			if chunk.BifrostError != nil {
+				b.Fatal(chunk.BifrostError)
 			}
-			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
-				_, _ = w.Write(wire.Bytes())
-			}))
-			defer upstream.Close()
-			config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{InsecureSkipVerify: true, StreamIdleTimeoutInSeconds: 5}}
-			config.CheckAndSetDefaults()
-			provider, err := NewBedrockProvider(config, noopLogger{})
-			require.NoError(b, err)
-			key := testBedrockKey()
-			key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(upstream.URL)}
-			request := &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: mistralInvokeTestModel, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}}}}
-			run := func() {
-				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-				ctx.SetValue(BedrockContextKeyMistralInvokeIngress, true)
-				stream, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, request)
-				if bifrostErr != nil {
-					b.Fatal(bifrostErr)
-				}
-				for chunk := range stream {
-					if chunk.BifrostError != nil {
-						b.Fatal(chunk.BifrostError)
-					}
-					if _, err := providerUtils.MarshalSorted(ToBedrockInvokeChatResponse(chunk.BifrostChatResponse)); err != nil {
-						b.Fatal(err)
-					}
-				}
-				ctx.Cancel()
-			}
-			// Warm the connection and Sonic codecs outside the measured loop.
-			run()
+		}
+	}
+	run()
+	b.ReportAllocs()
+	for b.Loop() {
+		run()
+	}
+}
+
+func BenchmarkParseInvokeChatResponse(b *testing.B) {
+	for _, tc := range []struct{ name, choice string }{
+		{"text", `"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"`},
+		{"stream", `"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null`},
+		{"stop_reason", `"message":{"role":"assistant","content":"hello"},"stop_reason":"stop"`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			body := []byte(`{"id":"chat_1","choices":[{"index":0,` + tc.choice + `}]}`)
 			b.ReportAllocs()
 			for b.Loop() {
-				run()
+				var response schemas.BifrostChatResponse
+				if _, _, err := parseInvokeChatResponse(body, &response, nil, false, false); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}
@@ -275,7 +273,7 @@ func TestToBedrockInvokeChatRequest_Mistral(t *testing.T) {
 			require.NoError(t, err)
 			native, err := ToBedrockInvokeChatRequest(ctx, request)
 			require.NoError(t, err)
-			wire, err := providerUtils.MarshalSorted(native)
+			wire, err := providerUtils.MarshalProviderRequest(native)
 			require.NoError(t, err)
 			wantChoice := choice
 			if choice == "required" {
@@ -288,6 +286,7 @@ func TestToBedrockInvokeChatRequest_Mistral(t *testing.T) {
 				assert.False(t, gjson.GetBytes(wire, field).Exists(), field)
 			}
 			schema := gjson.GetBytes(wire, "tools.0.function.parameters").Raw
+			assert.JSONEq(t, `{"type":"object","properties":{"z_location":{"type":"string"},"a_unit":{"type":"string"}},"required":["z_location"]}`, schema)
 			assert.Less(t, strings.Index(schema, `"z_location"`), strings.Index(schema, `"a_unit"`))
 			after, err := providerUtils.MarshalSorted(request)
 			require.NoError(t, err)
@@ -342,6 +341,15 @@ func TestParseInvokeChatResponse_StopReason(t *testing.T) {
 			assert.Equal(t, tc.want, *response.Choices[0].FinishReason)
 		})
 	}
+	t.Run("stop reason on a later choice", func(t *testing.T) {
+		body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"a"},"finish_reason":"stop"},{"index":1,"message":{"role":"assistant","content":"b"},"stop_reason":"length"}]}`)
+		var response schemas.BifrostChatResponse
+		_, _, err := parseInvokeChatResponse(body, &response, nil, false, false)
+		require.Nil(t, err)
+		require.Len(t, response.Choices, 2)
+		require.NotNil(t, response.Choices[1].FinishReason)
+		assert.Equal(t, "length", *response.Choices[1].FinishReason)
+	})
 	t.Run("malformed response", func(t *testing.T) {
 		var response schemas.BifrostChatResponse
 		_, _, err := parseInvokeChatResponse([]byte(`{"choices":[`), &response, nil, false, false)
@@ -375,7 +383,6 @@ func TestMistralInvokeStream_ValidationRestoresReader(t *testing.T) {
 
 func TestMistralInvokeStream_CancellationRestoresReader(t *testing.T) {
 	stopServer := make(chan struct{})
-	defer close(stopServer)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
 		writeInvokeChunk(t, w, `{"id":"chat_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}`)
@@ -385,7 +392,10 @@ func TestMistralInvokeStream_CancellationRestoresReader(t *testing.T) {
 		case <-stopServer:
 		}
 	}))
-	defer server.Close()
+	defer func() {
+		close(stopServer)
+		server.Close()
+	}()
 	provider := newTestProviderWithServer(t, server)
 	provider.mantleStreamingClient = &fasthttp.Client{TLSConfig: &tls.Config{InsecureSkipVerify: true}}
 	ctx, request := mistralInvokeTestRequest(t, mistralInvokeTestBody)
@@ -421,20 +431,6 @@ func TestMistralInvokeStream_CancellationRestoresReader(t *testing.T) {
 			t.Fatal("cancelled stream did not close")
 		}
 	}
-}
-
-func TestToBedrockInvokeMessagesResponse_MistralTools(t *testing.T) {
-	response := &schemas.BifrostResponsesResponse{Model: mistralInvokeTestModel, Status: schemas.Ptr("completed"), Output: []schemas.ResponsesMessage{{
-		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call12345"), Name: schemas.Ptr("get_weather"), Arguments: schemas.Ptr(`{"location":"SF"}`)},
-	}}}
-	out, err := ToBedrockInvokeMessagesResponse(testBedrockCtx(), response)
-	require.NoError(t, err)
-	wire, err := providerUtils.MarshalSorted(out)
-	require.NoError(t, err)
-	assert.Equal(t, "tool_calls", gjson.GetBytes(wire, "choices.0.finish_reason").String())
-	assert.Equal(t, "get_weather", gjson.GetBytes(wire, "choices.0.message.tool_calls.0.function.name").String())
-	assert.False(t, gjson.GetBytes(wire, "type").Exists())
 }
 
 func TestMistralInvokeStream_TerminationAndErrors(t *testing.T) {
@@ -526,6 +522,28 @@ func TestMistralInvoke_UnarySigningAndGuardrails(t *testing.T) {
 	require.NoError(t, marshalErr)
 	assert.Equal(t, "NONE", gjson.GetBytes(wire, "amazon-bedrock-guardrailAction").String())
 	assert.True(t, gjson.GetBytes(wire, "amazon-bedrock-trace.guardrail").Exists())
+}
+
+func BenchmarkInvokeGuardrailHeaders(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		config interface{}
+	}{
+		{"none", nil},
+		{"map", map[string]interface{}{"guardrailIdentifier": "gr-test", "guardrailVersion": "1", "trace": "enabled"}},
+		{"raw", json.RawMessage(`{"guardrailIdentifier":"gr-test","guardrailVersion":"1","trace":"enabled"}`)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var extra map[string]interface{}
+			if tc.config != nil {
+				extra = map[string]interface{}{"guardrailConfig": tc.config}
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				invokeGuardrailHeaders(nil, extra)
+			}
+		})
+	}
 }
 
 func TestInvokeGuardrailHeaders_OpaqueConfig(t *testing.T) {

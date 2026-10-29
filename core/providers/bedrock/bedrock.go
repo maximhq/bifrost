@@ -1341,40 +1341,70 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
-	if ctx.Value(BedrockContextKeyMistralInvokeIngress) == true && schemas.IsMistralModelFamily(ctx, request.Model) {
-		return provider.invokeMistralChatCompletion(ctx, key, request)
+	nativeInvoke := ctx.Value(BedrockContextKeyMistralInvokeIngress) == true && schemas.IsMistralModelFamily(ctx, request.Model)
+	if !nativeInvoke {
+		surface := provider.resolveSurface(ctx, key, request.Model)
+		if surface.isMantle() {
+			return provider.mantleChatCompletions(ctx, key, request)
+		}
+		if runtimeServesOpenAIAPI(ctx, key, surface, request.Model, schemas.BedrockAPIChatCompletions) {
+			return provider.runtimeChatCompletions(ctx, key, request)
+		}
+		if chatUsesAnthropicInvokePath(ctx, request) {
+			return provider.invokeAnthropicChatCompletion(ctx, key, request)
+		}
 	}
 
-	surface := provider.resolveSurface(ctx, key, request.Model)
-	if surface.isMantle() {
-		return provider.mantleChatCompletions(ctx, key, request)
-	}
-	if runtimeServesOpenAIAPI(ctx, key, surface, request.Model, schemas.BedrockAPIChatCompletions) {
-		return provider.runtimeChatCompletions(ctx, key, request)
-	}
-	if chatUsesAnthropicInvokePath(ctx, request) {
-		return provider.invokeAnthropicChatCompletion(ctx, key, request)
-	}
-
-	// Use Bedrock Converse API for all other models
+	// Share request execution; only the Invoke body, action, and response codec differ.
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			if nativeInvoke {
+				return ToBedrockInvokeChatRequest(ctx, request)
+			}
 			return ToBedrockChatCompletionRequest(ctx, request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	path, _ := provider.getModelPathAndRegion(ctx, "converse", request.Model, key)
+	action := "converse"
+	extraHeaders := provider.networkConfig.ExtraHeaders
+	if nativeInvoke {
+		action = bedrockInvokeAction
+		extraHeaders = invokeGuardrailHeaders(extraHeaders, chatExtraParams(request))
+	}
+	path, _ := provider.getModelPathAndRegion(ctx, action, request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key, request.Model, extraHeaders)
 	if providerResponseHeaders != nil {
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	if nativeInvoke {
+		response := &schemas.BifrostChatResponse{}
+		parseTracer, parseHandle := providerUtils.StartResponseParseSpan(ctx)
+		rawRequest, rawResponse, bifrostErr := parseInvokeChatResponse(responseBody, response, jsonData,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if parseTracer != nil {
+			if bifrostErr != nil {
+				parseTracer.EndSpan(parseHandle, schemas.SpanStatusError, bifrostErr.Error.Message)
+			} else {
+				parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+			}
+		}
+		if bifrostErr != nil {
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		response.ExtraFields = schemas.BifrostResponseExtraFields{
+			Latency: latency.Milliseconds(), ProviderResponseHeaders: providerResponseHeaders,
+			RawRequest: rawRequest, RawResponse: rawResponse,
+		}
+		return response, nil
 	}
 
 	// Parse Bedrock Converse API response
@@ -4658,8 +4688,11 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // of the guardrailConfig body field that invokeBuildConfig strips. Without them the request
 // runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
 func invokeGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
-	out := withGuardrailHeaders(base, extraParams)
 	config, _ := extraParamObject(extraParams["guardrailConfig"])
+	if config == nil {
+		return base
+	}
+	out := withGuardrailHeaders(base, map[string]any{"guardrailConfig": config})
 	traceHeader := out[guardrailTraceHeader]
 	if trace, _ := config["trace"].(string); trace != "" && traceHeader.GetValue() == trace {
 		// out may still be the shared provider headers, so write to a copy.
@@ -4788,40 +4821,6 @@ func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.Bif
 	)
 }
 
-func (provider *BedrockProvider) invokeMistralChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	body, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
-		return ToBedrockInvokeChatRequest(ctx, request)
-	})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	path, _ := provider.getModelPathAndRegion(ctx, bedrockInvokeAction, request.Model, key)
-	responseBody, latency, headers, bifrostErr := provider.completeRequest(ctx, body, path, key, request.Model,
-		invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, chatExtraParams(request)))
-	if headers != nil {
-		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
-	}
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-	response := &schemas.BifrostChatResponse{}
-	pt, ph := providerUtils.StartResponseParseSpan(ctx)
-	rawRequest, rawResponse, bifrostErr := parseInvokeChatResponse(responseBody, response, body,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-	if pt != nil {
-		if bifrostErr != nil {
-			pt.EndSpan(ph, schemas.SpanStatusError, bifrostErr.Error.Message)
-		} else {
-			pt.EndSpan(ph, schemas.SpanStatusOk, "")
-		}
-	}
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-	response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds(), ProviderResponseHeaders: headers, RawRequest: rawRequest, RawResponse: rawResponse}
-	return response, nil
-}
-
 func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.BifrostContext, hooks schemas.PostHookRunner, finalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
 	previousFactory := ctx.Value(schemas.BifrostContextKeySSEReaderFactory)
@@ -4832,13 +4831,13 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 			finalizer(parent)
 		}
 	}
-	// Only the latest guardrail outcome is retained by this stream's callbacks,
-	// never in context or a process-wide cache. It is released with the stream.
-	var outcome map[string]interface{}
-	// Native chunks may carry identity only on the first frame. Keep it stable
-	// before the shared chat loop captures it for the synthetic terminal chunk.
-	var streamID, streamModel string
-	var streamCreated int
+	// Shared only by this stream's callbacks. Retain identity and the latest
+	// guardrail outcome, not chunk content or accumulated responses.
+	var state struct {
+		id, model string
+		created   int
+		outcome   map[string]interface{}
+	}
 	headers := provider.invokeStreamHeaders(chatExtraParams(request))
 	headers["Accept"] = *schemas.NewSecretVar(bedrockInvokeStreamAccept)
 	stream, err := openai.HandleOpenAIChatCompletionStreaming(ctx, provider.mantleStreamingClient, requestURL, request,
@@ -4852,29 +4851,25 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 			if err != nil {
 				return rq, rs, err
 			}
-			if streamID == "" {
-				streamID = response.ID
-				if streamID == "" {
-					streamID = uuid.NewString()
+			if state.id == "" {
+				state.id = response.ID
+				if state.id == "" {
+					state.id = uuid.NewString()
+				}
+				state.created = response.Created
+				if state.created == 0 {
+					state.created = int(time.Now().Unix())
+				}
+				state.model = response.Model
+				if state.model == "" {
+					_, state.model = parseBedrockRegionAndModel(request.Model)
 				}
 			}
-			if streamCreated == 0 {
-				streamCreated = response.Created
-				if streamCreated == 0 {
-					streamCreated = int(time.Now().Unix())
-				}
-			}
-			if streamModel == "" {
-				streamModel = response.Model
-				if streamModel == "" {
-					_, streamModel = parseBedrockRegionAndModel(request.Model)
-				}
-			}
-			response.ID, response.Created, response.Model = streamID, streamCreated, streamModel
+			response.ID, response.Created, response.Model = state.id, state.created, state.model
 			if len(response.ExtraParams) > 0 {
-				outcome = response.ExtraParams
+				state.outcome = response.ExtraParams
 			}
-			return rq, rs, err
+			return rq, rs, nil
 		},
 		func(response *fasthttp.Response) *schemas.BifrostError {
 			headers := http.Header{}
@@ -4882,8 +4877,8 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 			return parseBedrockHTTPError(response.StatusCode(), headers, response.Body())
 		}, nil,
 		func(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
-			if response.Usage != nil && len(outcome) > 0 {
-				response.ExtraParams = outcome
+			if response.Usage != nil && len(state.outcome) > 0 {
+				response.ExtraParams = state.outcome
 			}
 			return response
 		}, provider.invokeSigner(ctx, key, requestURL, bedrockInvokeStreamAccept, region), provider.logger, finish)

@@ -312,16 +312,10 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 			decodedModelID = unescaped
 		}
 	}
-	// Messages → chat/responses path
-	// The node stays local: retain validation, but don't copy message content
-	// just to select a request codec.
+	// Avoid copying messages while selecting the codec. toolConfig retains the
+	// existing Converse compatibility path; native Mistral uses the chat codec.
 	if node, _ := sonic.GetWithOptions(body, ast.SearchOptions{ValidateJSON: true}, "messages"); node.Exists() {
-		// Mistral's native messages/tools already use the OpenAI chat dialect.
-		// Select its codec before the Converse decoder drops tool-call IDs, but
-		// retain the existing Converse path for toolConfig compatibility input.
 		if schemas.IsMistralModel(decodedModelID) {
-			// Only presence is needed here; the selected request codec validates
-			// JSON. Avoid validating or copying a config this detector won't use.
 			toolConfig, _ := sonic.GetWithOptions(body, ast.SearchOptions{}, "toolConfig")
 			if !toolConfig.Exists() {
 				return schemas.ChatCompletionRequest
@@ -1380,10 +1374,11 @@ func ToBedrockInvokeChatRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 	body := openai.ToOpenAIChatRequest(ctx, request)
 	body.MaxTokens = body.MaxCompletionTokens
 	body.MaxCompletionTokens = nil
+	body.Stream, body.StreamOptions = nil, nil
 	if body.ToolChoice != nil && body.ToolChoice.ChatToolChoiceStr != nil && *body.ToolChoice.ChatToolChoiceStr == "required" {
 		body.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("any")}
 	}
-	if len(body.ExtraParams) > 0 {
+	if _, ok := body.ExtraParams["guardrailConfig"]; ok {
 		body.ExtraParams = maps.Clone(body.ExtraParams)
 		// Guardrails are named by headers on Invoke, unlike Converse's body field.
 		delete(body.ExtraParams, "guardrailConfig")
@@ -1411,8 +1406,8 @@ func parseInvokeChatResponse(body []byte, response *schemas.BifrostChatResponse,
 			}
 		}
 	}
-	// Accept the documented stop_reason spelling as well as finish_reason.
-	if gjson.GetBytes(body, "choices.0.stop_reason").Type == gjson.String {
+	// Bedrock also documents stop_reason. Avoid extra decoding on finish_reason frames.
+	if bytes.Contains(body, []byte(`"stop_reason"`)) {
 		for i := range response.Choices {
 			if response.Choices[i].FinishReason == nil {
 				if reason := gjson.GetBytes(body, fmt.Sprintf("choices.%d.stop_reason", i)); reason.Type == gjson.String {
