@@ -687,7 +687,7 @@ const fleetTeardown = (id) => {
 };
 const MCP_ACCEPT = { key: "Accept", value: "application/json, text/event-stream" };
 const rpc = (id, title, message, opts = {}) => request(id, title, "POST", opts.path || "/mcp", {
-  noAuth: true, raw: typeof message === "string" ? message : JSON.stringify(message), headers: opts.headers || [MCP_ACCEPT], asserts: opts.asserts || [], noAccept: opts.noAccept,
+  noAuth: true, raw: typeof message === "string" ? message : JSON.stringify(message), headers: opts.headers || [MCP_ACCEPT], asserts: opts.asserts || [], noAccept: opts.noAccept, pre: opts.pre || [],
 });
 const rpcResultEquals = (v) => A.custom(`result is ${lit(v)}`, ["var b = pm.response.json();", `pm.expect(b.result, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
 const rpcError = (code, message) => A.custom(`error.code ${code}${message ? ", message " + lit(message) : ""}`, [
@@ -6349,6 +6349,37 @@ const AUTH39 = folder("AUTH-39 No-token caller on every surface", `Setup: ${PU_T
 
 const FAIL19_TEXT = "echo is broken upstream";
 const FAIL19_TIMEOUT = "Error executing tool alpha-slow_tool: tool execution failed: MCP tool call timed out after 2s";
+// pollMcpInstructions re-sends initialize to /mcp, 200ms apart for up to about 2s, until its instructions equal want;
+// /mcp resyncs from a background goroutine after a refresh.
+const pollMcpInstructions = (want) => [
+  "var left = 10;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/mcp', method: 'POST', header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' }, body: { mode: 'raw', raw: ${lit(JSON.stringify(init("2025-03-26")))} } }, function (err, res) {`,
+  "    var r = !err && res.code === 200 ? res.json().result : null;",
+  `    if ((r && r.instructions === ${lit(want)}) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 200);",
+  "  });",
+  "}",
+  "poll();",
+];
+const SET26_BOTH = (v) => block("alpha", v) + "\n\n" + block("beta", v);
+const SET26 = folder("SET-26 refresh-tools re-reads a sticky client's instructions", `Setup: alpha (echo, add) and beta (echo) each send instructions "v1"; client alpha is HTTP, auth none, needs_session_stickiness true; client beta is SSE on /s/beta/sse with auth headers X-Key: k1; both tools_to_execute ["*"], allow_by_default false. Then both servers send "v2" and each client's tools are refreshed.`, [
+  ...freshServer("SET-26", "alpha", ["echo", "add"]),
+  ...freshServer("SET-26", "beta", ["echo"]),
+  setInstructions("SET-26", "alpha", "v1", "\"v1\""),
+  setInstructions("SET-26", "beta", "v1", "\"v1\""),
+  createClient("SET-26", httpClient("set-26-alpha", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha, sticky"),
+  createClient("SET-26", sseClient("set-26-beta", "beta", "beta", { auth_type: "headers", headers: { "X-Key": "k1" }, tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta over SSE"),
+  initialize("SET-26", "setup: /mcp serves v1 from both", [instructionsEqual(SET26_BOTH("v1"), "v1 from alpha and beta")]),
+  setInstructions("SET-26", "alpha", "v2", "\"v2\""),
+  setInstructions("SET-26", "beta", "v2", "\"v2\""),
+  request("SET-26", "refresh-tools on alpha", "POST", "/api/mcp/client/set-26-alpha/refresh-tools", { asserts: [A.status(200)] }),
+  request("SET-26", "refresh-tools on beta", "POST", "/api/mcp/client/set-26-beta/refresh-tools", { asserts: [A.status(200)] }),
+  initialize("SET-26", "/mcp now serves v2 from both", [instructionsEqual(SET26_BOTH("v2"), "v2 from alpha and beta")], { pre: pollMcpInstructions(SET26_BOTH("v2")) }),
+  deleteClient("SET-26", "set-26-alpha"),
+  deleteClient("SET-26", "set-26-beta"),
+]);
+
 const FAIL25_MSG = "forbidden: this caller may not use echo_tool";
 const FAIL25 = folder("FAIL-25 A tool's own \"forbidden\" error is not an auth failure", `Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute ["*"], healthy; then alpha fails every tools/call with a JSON-RPC error "${FAIL25_MSG}". Counts are read 3s after the call, so a reconnect it started would show.`, [
   ...setClient("FAIL-25", { needs_session_stickiness: true }),
@@ -7791,7 +7822,7 @@ const collection = {
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
