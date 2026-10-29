@@ -1410,8 +1410,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		outputIndex := 0
 		contentIndex := 0
 
-		// Accumulate raw responses for debugging
-		var rawResponseChunks []interface{}
 		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
@@ -1429,12 +1427,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading stream: %v", readErr)
 					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr)
-
-					// Include accumulated raw responses in error
-					if sendBackRawResponse && len(rawResponseChunks) > 0 {
-						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-					}
-
 					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
@@ -1453,10 +1445,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 				case "output":
 					// Text chunk received
 					if currentEvent.Data != "" {
-						// Accumulate raw response if enabled
-						if sendBackRawResponse {
-							rawResponseChunks = append(rawResponseChunks, currentEvent)
-						}
 
 						// Emit lifecycle events on first content
 						if !hasEmittedCreated {
@@ -1574,6 +1562,13 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 								ChunkIndex: sequenceNumber,
 							},
 						}
+						// Each output event rides on the delta carrying its text, as on the chat and text streams.
+						if sendBackRawResponse {
+							if eventJSON, err := providerUtils.MarshalSorted(currentEvent); err == nil {
+								deltaResp.ExtraFields.RawResponse = string(eventJSON)
+								deltaResp.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
+							}
+						}
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
 							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, deltaResp, nil, nil, nil),
 							responseChan, postHookSpanFinalizer)
@@ -1581,11 +1576,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						hasReceivedContent = true
 					}
 				case "done":
-					// Accumulate done event in raw responses if enabled
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-					}
-
 					// Stream completed
 					if hasReceivedContent {
 						// response.output_text.done
@@ -1684,9 +1674,12 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						providerUtils.ParseAndSetRawRequest(&completedResp.ExtraFields, jsonData)
 					}
 
-					// Set raw response if enabled
-					if sendBackRawResponse && len(rawResponseChunks) > 0 {
-						completedResp.ExtraFields.RawResponse = rawResponseChunks
+					// The done event rides on the completed response; output events already rode on their deltas.
+					if sendBackRawResponse {
+						if eventJSON, err := providerUtils.MarshalSorted(currentEvent); err == nil {
+							completedResp.ExtraFields.RawResponse = string(eventJSON)
+							completedResp.ExtraFields.RawResponseFormat = schemas.RawResponseFormatReplicateStreamEvent
+						}
 					}
 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1696,11 +1689,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 					resp.CloseBodyStream()
 					return
 				case "error":
-					// Accumulate error event in raw responses if enabled
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-					}
-
 					// Handle error
 					errorMsg := "stream error"
 					if currentEvent.Data != "" {
@@ -1710,9 +1698,9 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						errorMsg,
 						fmt.Errorf("stream error: %s", errorMsg))
 
-					// Include accumulated raw responses in error
-					if sendBackRawResponse && len(rawResponseChunks) > 0 {
-						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+					// The error event is the stream's last raw payload; earlier events already rode on their deltas.
+					if sendBackRawResponse {
+						bifrostErr.ExtraFields.RawResponse = []interface{}{currentEvent}
 					}
 
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

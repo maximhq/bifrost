@@ -1326,22 +1326,30 @@ func HandleGeminiResponsesStream(
 }
 
 // geminiResponsesRawAttachment picks the response that carries one Gemini stream chunk's raw payload: its only
-// output_text.delta, so the raw text travels with the normalized text it backs, or else the last response. The
-// payload's format is declared unless the chunk's text is spread over several deltas, which one payload cannot
-// mirror per delta.
+// output_text.delta, so the raw text travels with the normalized text it backs, or else the last response, which
+// for a chunk holding one function call is its output_item.done (or the completed response) with the whole
+// arguments. The payload's format is declared only when that response carries all of the chunk's text and
+// arguments; a chunk spreading them over several responses keeps it undeclared, since one payload cannot mirror
+// each of them.
 func geminiResponsesRawAttachment(responses []*schemas.BifrostResponsesStreamResponse) (int, schemas.RawResponseFormat) {
-	textIdx, textDeltas := -1, 0
+	textIdx, textDeltas, functionCalls := -1, 0, 0
 	for i, response := range responses {
-		if response != nil && response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta {
+		if response == nil {
+			continue
+		}
+		switch response.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
 			textIdx = i
 			textDeltas++
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			functionCalls++
 		}
 	}
-	switch textDeltas {
-	case 0:
-		return len(responses) - 1, schemas.RawResponseFormatGeminiStreamChunk
-	case 1:
+	switch {
+	case textDeltas == 1 && functionCalls == 0:
 		return textIdx, schemas.RawResponseFormatGeminiStreamChunk
+	case textDeltas == 0 && functionCalls <= 1:
+		return len(responses) - 1, schemas.RawResponseFormatGeminiStreamChunk
 	default:
 		return len(responses) - 1, ""
 	}
