@@ -1383,6 +1383,50 @@ func stampVirtualKeyMetadata(ctx *schemas.BifrostContext, virtualKey *configstor
 		return
 	}
 	ctx.SetValue(VirtualKeyMetadataContextKey, maps.Clone(virtualKey.Metadata))
+	stampVirtualKeyDimensions(ctx, virtualKey.Metadata)
+}
+
+// stampVirtualKeyDimensions adds the key's metadata to the request's dimensions, where metrics and
+// connectors read x-bf-dim-* labels: the context, the trace and the root span, the same three places
+// the transport puts header dimensions. The key's value wins over a header of the same name. "path"
+// and "method" are skipped, as for headers, since they name the root span's http attributes.
+func stampVirtualKeyDimensions(ctx *schemas.BifrostContext, metadata map[string]string) {
+	// May be the stored key's shared map: everything below copies it, never keeps it.
+	added := metadata
+	_, hasPath := metadata["path"]
+	_, hasMethod := metadata["method"]
+	if hasPath || hasMethod {
+		added = maps.Clone(metadata)
+		delete(added, "path")
+		delete(added, "method")
+		if len(added) == 0 {
+			return
+		}
+	}
+	existing, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	dims := make(map[string]string, len(existing)+len(added))
+	maps.Copy(dims, existing)
+	maps.Copy(dims, added)
+	// A new map: other readers of the request may hold the previous one.
+	ctx.SetValue(schemas.BifrostContextKeyDimensions, dims)
+
+	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if tracer == nil || traceID == "" {
+		return
+	}
+	tracer.MergeTraceDimensions(traceID, added)
+	root := tracer.SpanFromHandle(tracer.GetSpanHandleByID(traceID, nil))
+	for key, value := range added {
+		// Never replace an attribute Bifrost set on the root span (the content-logging flag, http.*,
+		// identity); only a header dimension's value, which the key's value overrides.
+		if current, set := root.GetAttribute(key); set {
+			if header, isHeader := existing[key]; !isHeader || current != header {
+				continue
+			}
+		}
+		root.SetAttribute(key, value)
+	}
 }
 
 // recordVirtualKeyIdentity completes the request's identity with what the presented key resolved to:
