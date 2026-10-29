@@ -64,14 +64,13 @@ await test("strict-egress cleanup removes every rule that was installed, even af
   const end = lines.findIndex((l, i) => i > start && /# Prove the rule bites/.test(l));
   assert.ok(start >= 0 && end > start, "strict-egress insert block not found");
   const inserts = lines.slice(start, end).join("\n");
-  const preamble = lines.slice(0, lines.findIndex((l) => /^cleanup\(\) \{/.test(l))).filter((l) => /^[A-Z0-9_]+=/.test(l)).join("\n");
+  const preamble = lines.slice(0, lines.findIndex((l) => /^cleanup\(\) \{/.test(l))).filter((l) => /^(STRICT_RULE_V[46]_ADDED|EGRESS_GROUP)=/.test(l)).join("\n");
   const script = `set -euo pipefail
-LOG="$1"
-EGRESS_GROUP=bifrost-egress
 harness_stop_gateway() { :; }
 proxy_stop() { :; }
 sudo() { echo "$*" >> "$LOG"; case "$*" in "ip6tables -I"*) return 1 ;; esac; }
 ${preamble}
+LOG="$1"
 ${cleanup[0]}
 trap cleanup EXIT
 ${inserts}
