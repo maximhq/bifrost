@@ -45,11 +45,11 @@ type ElevenlabsAlignment struct {
 }
 
 type ElevenlabsVoiceSettings struct {
-	Stability       float64 `json:"stability"`         // 0-1, default 0.5
-	UseSpeakerBoost bool    `json:"use_speaker_boost"` // default true
-	SimilarityBoost float64 `json:"similarity_boost"`  // 0-1, default 0.75
-	Style           float64 `json:"style"`             // default 0
-	Speed           float64 `json:"speed"`             // default 1
+	Stability       *float64 `json:"stability,omitempty"`         // 0-1, default 0.5
+	UseSpeakerBoost *bool    `json:"use_speaker_boost,omitempty"` // default true
+	SimilarityBoost *float64 `json:"similarity_boost,omitempty"`  // 0-1, default 0.75
+	Style           *float64 `json:"style,omitempty"`             // default 0
+	Speed           *float64 `json:"speed,omitempty"`             // default 1
 }
 
 type ElevenlabsPronunciationDictionaryLocator struct {
