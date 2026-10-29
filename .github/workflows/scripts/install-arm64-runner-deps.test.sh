@@ -11,9 +11,13 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin" "$WORK/base"
 
 # Only these real tools are visible, so the host's own jq/gcc/docker cannot leak in.
-for tool in awk bash cat grep mktemp rm seq; do ln -s "$(command -v "$tool")" "$WORK/base/$tool"; done
+for tool in awk bash cat cmp cp grep mktemp rm sed seq; do ln -s "$(command -v "$tool")" "$WORK/base/$tool"; done
 
 printf 'VERSION_CODENAME=jammy\n' > "$WORK/os-release"
+# apt-sources-https.sh rewrites this fixture instead of /etc/apt, unprivileged so
+# the sudo stub does not swallow the copy.
+mkdir -p "$WORK/apt"
+reset_apt() { printf 'deb http://ports.ubuntu.com/ubuntu-ports jammy main\n' > "$WORK/apt/sources.list"; }
 GOOD_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
 cat > "$WORK/base/sudo" <<'EOF'
@@ -61,7 +65,9 @@ cat > "$WORK/present" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$WORK/base/"* "$WORK/docker-full" "$WORK/docker-bare" "$WORK/present"
+# Only the stubs: $WORK/base also links to real tools, and GNU chmod follows a
+# link into a root-owned binary, so a glob fails for a non-root runner user.
+chmod +x "$WORK/base/"{sudo,ldconfig,curl,gpg,dpkg} "$WORK/docker-full" "$WORK/docker-bare" "$WORK/present"
 
 passed=0
 # run <case-name> <tools on PATH> -- <components>...
@@ -77,7 +83,8 @@ run() {
   done
   export TEST_LOG="$WORK/log"
   : > "$TEST_LOG"
-  PATH="$WORK/bin:$WORK/base" OS_RELEASE="$WORK/os-release" \
+  reset_apt
+  PATH="$WORK/bin:$WORK/base" OS_RELEASE="$WORK/os-release" APT_ROOT="$WORK/apt" APT_SUDO="" \
     "$BASH" "$SCRIPT_DIR/install-arm64-runner-deps.sh" "$@" > "$WORK/out" 2>&1
 }
 fail() { cat "$WORK/out" "$TEST_LOG" >&2; echo "FAIL: $1" >&2; exit 1; }
@@ -86,12 +93,14 @@ ok() { echo "ok - $1"; passed=$((passed + 1)); }
 export TEST_HAS_LIBATOMIC=1 TEST_KEY_PRIMARIES="$GOOD_FPR"
 run "docker jq gh make gcc g++" node docker build jq gh || fail "full image errored"
 [[ ! -s "$TEST_LOG" ]] || fail "full image still called sudo"
+grep -qx "deb http://ports.ubuntu.com/ubuntu-ports jammy main" "$WORK/apt/sources.list" || fail "full image still rewrote apt sources"
 ok "a full runner image installs nothing"
 
 export TEST_HAS_LIBATOMIC=0
 run "" node || fail "node errored"
 grep -qx "sudo apt-get install -y --no-install-recommends libatomic1" "$TEST_LOG" || fail "node did not install exactly libatomic1"
-ok "node installs libatomic1 when ldconfig lacks it"
+grep -qx "deb https://ports.ubuntu.com/ubuntu-ports jammy main" "$WORK/apt/sources.list" || fail "apt sources not switched to https before apt-get update"
+ok "node installs libatomic1 when ldconfig lacks it, after moving apt to https"
 
 run "make gcc" build jq gh || fail "build errored"
 grep -qx "sudo apt-get install -y --no-install-recommends make gcc g++ libc6-dev jq gh" "$TEST_LOG" || fail "build/jq/gh package list wrong"

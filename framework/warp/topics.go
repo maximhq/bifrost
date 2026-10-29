@@ -853,7 +853,7 @@ func listTopicsTool() Tool {
 			"The window defaults to the last 7 days; filters narrow it to a team, customer, user, virtual key, model, provider, app, status or session, like the other tools. " +
 			"Each topic carries requests, share, distinct sessions, errors, cost, tokens, average latency, a trend block against the period of equal length before the window (has_previous_period, requests_trend, tokens_trend, cost_trend), when it was first seen (new_in_window marks one that appeared inside the window), " +
 			"and example_links that each open one example request. With interval, each topic also carries its series, bucket by bucket. " +
-			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it; the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
+			"With group_by theme, the answer is the themes the topics are grouped into - broad subjects such as Billing over the topics Refund Requests and Invoice Questions - each with the same counts added up over its topics, and the topics inside it by name, requests, share and link (group_by topic carries a topic's full counts); the call for 'what broad areas', 'what kinds of things', or a deployment with too many topics to list. " +
 			"Requests, shares and sessions count requests and sessions, not people: every model call is one request, so a five-turn chat is five.",
 		schemaJSON: `{
   "type": "object",
@@ -912,9 +912,12 @@ func listTopicsTool() Tool {
 				narrowed.TopicIDs = []string{id}
 				return logsViewLink(&narrowed)
 			}
+			// The example ids already travel inside example_links; sending both
+			// cost a fifth of every row against MaxToolResultBytes.
 			linkTopics := func(topics []Topic) {
 				for index := range topics {
 					topics[index].Link = linkTo(topics[index].ID)
+					topics[index].SampleLogIDs = nil
 				}
 			}
 			linkTopics(list.Topics)
@@ -931,7 +934,14 @@ func listTopicsTool() Tool {
 				"scope":              scopeNote(filters, deps.scope),
 			}
 			if query.ByTheme {
-				out["themes"] = list.Themes
+				themes := make([]listedTheme, len(list.Themes))
+				for index, theme := range list.Themes {
+					themes[index] = listedTheme{TopicTheme: theme, Topics: make([]listedThemeTopic, len(theme.Topics))}
+					for inner, topic := range theme.Topics {
+						themes[index].Topics[inner] = listedThemeTopic{ID: topic.ID, Label: topic.Label, Requests: topic.Requests, Share: topic.Share, New: topic.New, Link: topic.Link}
+					}
+				}
+				out["themes"] = themes
 				out["returned"] = len(list.Themes)
 				out["total_themes"] = list.MatchedThemes
 				out["ungrouped_topics"] = list.Ungrouped
@@ -960,9 +970,65 @@ func listTopicsTool() Tool {
 				out["cannot_answer"] = "Not available yet: how many people asked about a topic (sessions are sessions, not people; a query_usage_by user ranking with topic_ids counts the users with a request in it). " +
 					"Asked for that, answer what the topics do show, then say it is not available yet."
 			}
+			fitTopicResult(out)
 			return out, nil
 		},
 	}
+}
+
+// listedTheme is a theme as list_topics answers it: the theme's own counts,
+// with the topics inside it named, sized and linked. Every inner topic in full
+// multiplied a deployment's topics into the answer and pushed it past
+// MaxToolResultBytes; group_by topic carries each topic's full counts.
+type listedTheme struct {
+	TopicTheme
+	Topics []listedThemeTopic `json:"topics"`
+}
+
+// listedThemeTopic is one topic inside a listedTheme.
+type listedThemeTopic struct {
+	ID       string  `json:"id"`
+	Label    string  `json:"label"`
+	Requests int64   `json:"requests"`
+	Share    float64 `json:"share"`
+	New      bool    `json:"new_in_window,omitempty"`
+	Link     string  `json:"link,omitempty"`
+}
+
+// fitTopicResult drops the smallest rows of a list_topics answer until it fits
+// MaxToolResultBytes, and says how many it dropped. Over budget,
+// boundToolResult discards the whole answer and the model retries at ever
+// smaller limits, so a long tail cut here is one call instead of several.
+// Ungrouped topics go before themes: the themes are the grouped answer.
+func fitTopicResult(out map[string]any) {
+	dropped := 0
+	for {
+		encoded, err := sonic.MarshalString(out)
+		if err != nil || len(encoded) <= MaxToolResultBytes {
+			break
+		}
+		if topics, ok := out["topics"].([]Topic); ok && len(topics) > 1 {
+			out["topics"] = topics[:len(topics)-1]
+		} else if ungrouped, ok := out["ungrouped_topics"].([]Topic); ok && len(ungrouped) > 0 {
+			out["ungrouped_topics"] = ungrouped[:len(ungrouped)-1]
+		} else if themes, ok := out["themes"].([]listedTheme); ok && len(themes) > 1 {
+			out["themes"] = themes[:len(themes)-1]
+		} else {
+			break
+		}
+		dropped++
+	}
+	if dropped == 0 {
+		return
+	}
+	if topics, ok := out["topics"].([]Topic); ok {
+		out["returned"] = len(topics)
+	}
+	if themes, ok := out["themes"].([]listedTheme); ok {
+		out["returned"] = len(themes)
+	}
+	out["trimmed"] = fmt.Sprintf("%d of the smallest rows did not fit in one answer and were left out; returned counts what is here. "+
+		"Answer from these, and say more exist; narrow the window or filters to see the rest.", dropped)
 }
 
 // RegisterTopics binds the clustering, discovery and upkeep jobs to the shared
