@@ -199,17 +199,20 @@ func TestModelCaps_ToolNameMaxLength(t *testing.T) {
 // lets a row decide while an absent or empty row hands the caller's fallback back.
 func TestModelCaps_ToolSchemaRestrictions(t *testing.T) {
 	var row ModelCapabilities
-	require.NoError(t, json.Unmarshal([]byte(`{"supports_regex_lookaround":false,"supports_regex_nul_escape":true,"supported_schema_formats":["date-time","uuid"]}`), &row))
+	require.NoError(t, json.Unmarshal([]byte(`{"supports_regex_lookaround":false,"supports_regex_nul_escape":true,"supports_schema_pattern":false,"supported_schema_formats":["date-time","uuid"]}`), &row))
 	model := "model-with-schema-row"
 	setCapabilityOverride(t, model, row)
 	caps := ResolveModelCaps(Bedrock, model)
 	assert.False(t, caps.SupportsRegexLookaround(true))
 	assert.True(t, caps.SupportsRegexNULEscape(false))
+	assert.False(t, caps.SupportsSchemaPattern(true))
 	assert.Equal(t, []string{"date-time", "uuid"}, caps.SupportedSchemaFormats([]string{"email"}))
 
 	absent := ResolveModelCaps(Bedrock, "no-row")
 	assert.True(t, absent.SupportsRegexLookaround(true))
 	assert.False(t, absent.SupportsRegexNULEscape(false))
+	assert.True(t, absent.SupportsSchemaPattern(true))
+	assert.False(t, absent.SupportsSchemaPattern(false))
 	assert.Equal(t, []string{"email"}, absent.SupportedSchemaFormats([]string{"email"}))
 	assert.Nil(t, absent.SupportedSchemaFormats(nil))
 

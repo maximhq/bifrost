@@ -12,6 +12,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // TestToOpenAIDecisionRequestSendsOnlyText pins how the Typesafe-only parts of
@@ -408,6 +409,7 @@ func TestOpenAIDecisionRequestRejectsWhatOpenAIDoesNotDefine(t *testing.T) {
 		"null input":   {`{"model":"m","input":null,"questions":[` + predicate + `]}`, "input is required"},
 		"object input": {`{"model":"m","input":{"ticket":"refund"},"questions":[` + predicate + `]}`, "string or a list of messages"},
 		"no questions": {`{"model":"m","input":"s"}`, "questions are required"},
+		"instructions": {`{"model":"m","input":"s","questions":[{"type":"predicate","instructions":{"goal":"tone"}}]}`, "question 0 instructions must be text or a list of"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var request OpenAIDecisionRequest
@@ -418,8 +420,86 @@ func TestOpenAIDecisionRequestRejectsWhatOpenAIDoesNotDefine(t *testing.T) {
 		})
 	}
 
-	var structured OpenAIDecisionRequest
-	assert.Error(t, json.Unmarshal([]byte(`{"model":"m","input":"s","questions":[{"type":"predicate","instructions":{"goal":"tone"}}]}`), &structured), "OpenAI's instructions are text")
+}
+
+// TestOpenAIDecisionConversationReachesOpenAI pins the reported failure end to
+// end: a conversation received on the /openai/v1/decisions route, with
+// function and custom tool calls and their outputs (text, and text with an
+// image), an assistant message with a phase, output text, and a refusal, and
+// JSON and cached parts, reaches OpenAI's /v1/decisions as the client sent it.
+// Before, every tool item lost its call_id and OpenAI answered "Missing
+// required parameter: 'input[1].call_id'". A message's id and status, which
+// OpenAI's message does not define, are left out, as they always were, and the
+// prompt-cache settings are typed, so they reach OpenAI without the
+// passthrough flag. The payload is synthetic.
+func TestOpenAIDecisionConversationReachesOpenAI(t *testing.T) {
+	const sent = `[
+		{"role":"developer","content":"Judge the assistant's last turn."},
+		{"role":"user","content":[{"type":"input_text","text":"Refund my duplicate charge.","prompt_cache_breakpoint":{"mode":"explicit"}},{"type":"input_json","data":{"order":{"charges":[49,49]}}}]},
+		{"type":"function_call","call_id":"call_1","name":"lookup_order","arguments":"{\"id\":\"A-1\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"two charges of 49"},
+		{"type":"custom_tool_call","call_id":"call_2","name":"render_receipt","input":"order A-1"},
+		{"type":"custom_tool_call_output","call_id":"call_2","output":[{"type":"input_text","text":"receipt"},{"type":"input_image","image_url":"https://example.com/receipt.png"}]},
+		{"type":"message","id":"msg_1","status":"completed","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Refunded one charge."},{"type":"refusal","refusal":"I cannot refund both."}]}
+	]`
+	want := strings.Replace(sent, `"id":"msg_1","status":"completed",`, "", 1)
+
+	var upstream []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-6-luna","answers":[{"type":"predicate","name":"resolved","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":0,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	var request OpenAIDecisionRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"model": "gpt-6-luna",
+		"input": `+sent+`,
+		"questions": [{"type": "predicate", "name": "resolved", "instructions": "Did the assistant resolve the request?"}],
+		"prompt_cache_key": "tenant-1",
+		"prompt_cache_options": {"mode": "explicit", "ttl": "30m"}
+	}`), &request))
+	assert.Empty(t, request.ExtraParams, "the prompt-cache settings are typed, not extensions")
+	converted, err := request.ToBifrostDecisionRequest()
+	require.NoError(t, err)
+	converted.Provider = schemas.OpenAI
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	resp, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("test-key")}, converted)
+	require.Nil(t, bifrostErr)
+	require.Len(t, resp.Answers, 1)
+
+	assert.JSONEq(t, want, gjson.GetBytes(upstream, "input").Raw)
+	assert.Equal(t, "tenant-1", gjson.GetBytes(upstream, "prompt_cache_key").String())
+	assert.JSONEq(t, `{"mode":"explicit","ttl":"30m"}`, gjson.GetBytes(upstream, "prompt_cache_options").Raw)
+}
+
+// TestToOpenAIDecisionRequestInstructionParts pins how instructions written
+// as a list of parts reach OpenAI: as parts, with a predicate's criteria as a
+// final text part, since OpenAI's question has no criteria. A structured
+// instruction that is not a list of parts, such as a Typesafe one, is still
+// sent as JSON text. The caller's question is not modified.
+func TestToOpenAIDecisionRequestInstructionParts(t *testing.T) {
+	var questions []schemas.DecisionQuestion
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+		{"type":"predicate","name":"with_criteria","instructions":[{"type":"input_text","text":"Is B a variant of A?"},{"type":"input_image","image_url":"https://example.com/b.jpg"}],"criteria":{"true":"resized","false":"different photo"}},
+		{"type":"predicate","name":"parts_only","instructions":[{"type":"input_text","text":"Is B a variant of A?"},{"type":"input_json","data":{"sku":"A-1"}}]},
+		{"type":"predicate","name":"typesafe_list","instructions":["detect","duplicate charges"]}
+	]`), &questions))
+	native, err := ToOpenAIDecisionRequest(&schemas.BifrostDecisionRequest{Model: "gpt-6-luna", Input: schemas.DecisionInput{Text: schemas.Ptr("A is attached.")}, Questions: questions})
+	require.NoError(t, err)
+	body, err := json.Marshal(native)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[
+		{"type":"predicate","name":"with_criteria","instructions":[
+			{"type":"input_text","text":"Is B a variant of A?"},
+			{"type":"input_image","image_url":"https://example.com/b.jpg"},
+			{"type":"input_text","text":"Meaning (answer: meaning): true=resized, false=different photo"}]},
+		{"type":"predicate","name":"parts_only","instructions":[{"type":"input_text","text":"Is B a variant of A?"},{"type":"input_json","data":{"sku":"A-1"}}]},
+		{"type":"predicate","name":"typesafe_list","instructions":"[\"detect\",\"duplicate charges\"]"}
+	]`, gjson.GetBytes(body, "questions").Raw)
+	assert.Len(t, questions[0].Instructions.Structured, 2, "the caller's instructions are not modified")
 }
 
 // TestToOpenAIDecisionResponse pins the route's response: the normalized

@@ -217,7 +217,8 @@
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
-                  "mcp/auth/token-exchange"
+                  "mcp/auth/token-exchange",
+                  "mcp/auth/cross-app-access"
                 ]
               },
               "mcp/sessions",
@@ -245,6 +246,20 @@
               "features/agent-gateway/push-notifications",
               "features/agent-gateway/connectors",
               "features/agent-gateway/troubleshooting"
+            ]
+          },
+          {
+            "group": "Relays",
+            "icon": "waypoints",
+            "pages": [
+              "relays/overview",
+              "relays/configuration",
+              "relays/routes",
+              "relays/pricing",
+              "relays/access",
+              "relays/streaming",
+              "relays/logs",
+              "relays/troubleshooting"
             ]
           },
           {
@@ -1275,7 +1290,8 @@
                   "GET /api/models",
                   "GET /api/models/details",
                   "GET /api/models/parameters",
-                  "GET /api/models/base"
+                  "GET /api/models/base",
+                  "GET /api/models/newest"
                 ]
               },
               {
@@ -1372,6 +1388,33 @@
                   "DELETE /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
                   "GET /agents/a2a/{name}/rest/extendedAgentCard",
                   "POST /agents/a2a/{name}/push/callback"
+                ]
+              },
+              {
+                "group": "Relays",
+                "expanded": false,
+                "pages": [
+                  "GET /api/relays",
+                  "POST /api/relays",
+                  "GET /api/relays/{name}",
+                  "PUT /api/relays/{name}",
+                  "DELETE /api/relays/{name}",
+                  "POST /api/relays/usage-preview",
+                  "POST /api/relays/openapi-spec",
+                  "GET /api/relays/{name}/access-profiles",
+                  "GET /api/relay-logs",
+                  "DELETE /api/relay-logs",
+                  "GET /api/relay-logs/{id}",
+                  "GET /api/relay-logs/stats",
+                  "GET /api/relay-logs/filterdata",
+                  "GET /api/relay-logs/histogram",
+                  "GET /api/relay-logs/top-endpoints",
+                  "GET /relay/{endpoint}/{path}",
+                  "POST /relay/{endpoint}/{path}",
+                  "PUT /relay/{endpoint}/{path}",
+                  "PATCH /relay/{endpoint}/{path}",
+                  "DELETE /relay/{endpoint}/{path}",
+                  "HEAD /relay/{endpoint}/{path}"
                 ]
               },
               {

@@ -32,6 +32,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Azure,
 	schemas.Bedrock,
 	schemas.BedrockMantle,
+	schemas.SageMaker,
 	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
@@ -77,14 +78,17 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
-// is set only for Claude Code OAuth passthrough, where the caller's token is the upstream
-// credential — and only the Anthropic provider forwards it.
-func isKeySkippingAllowed(baseProvider schemas.ModelProvider) bool {
-	return baseProvider == schemas.Anthropic
+// is set where the caller's OAuth token is the upstream credential: Claude Code on Anthropic, and
+// ChatGPT/Codex tokens on OpenAI passthrough, which pins its provider so no fallback inherits it.
+func isKeySkippingAllowed(baseProvider schemas.ModelProvider, requestType schemas.RequestType) bool {
+	if baseProvider == schemas.Anthropic {
+		return true
+	}
+	return baseProvider == schemas.OpenAI && (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest)
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
@@ -148,6 +152,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// BedrockMantleKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockMantleKeyConfig == nil {
 			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
+		}
+	case schemas.SageMaker:
+		// SageMakerKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.SageMakerKeyConfig == nil {
+			key.SageMakerKeyConfig = &schemas.SageMakerKeyConfig{}
 		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {
@@ -405,6 +414,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
+	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
 	// Provider response headers belong to the provider that produced them.
 	// If a fallback attempt fails pre-flight (no HTTP request issued), the
 	// previous provider's headers would otherwise survive on the context and
@@ -448,6 +458,12 @@ func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[str
 //     raw or streamed body instead of marshaling the internal request, route
 //     it to the caller's endpoint path instead of the internal request's own,
 //     and forward the caller's headers on a call the caller doesn't own.
+//   - Inbound-dialect witness: the surface an Anthropic Messages caller sent
+//     natively (their own thinking mode and sampling scalars), recorded at
+//     ingress so the Anthropic egress can rebuild what the neutral request
+//     shape cannot carry. Inherited, it would answer a plugin's own Sonnet 5.5
+//     request with the caller's parameters rather than the ones that request
+//     actually carries.
 //
 // Deliberately not cleared: tracing/observability keys (the sub-request
 // should stay tied to the caller's trace) and
@@ -478,6 +494,15 @@ func extraHeaderSpanAttribute(name string, values []string) (any, bool) {
 }
 
 func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
+	// This write is load-bearing for every ClearValue below it, not just for the
+	// witness it parks. ClearValue shadows a parent's value through this context's
+	// OWN value map, and NewBifrostContext leaves that map unallocated until
+	// something is written; on a fresh derived context every ClearValue is
+	// therefore a no-op and the caller's values - their direct key, api-key id and
+	// extra headers among them - stay visible to the sub-request. SetValue
+	// allocates the map, so it has to come first. The egress type assertion treats
+	// the nil it parks here as no witness at all.
+	ctx.SetValue(schemas.BifrostContextKeyAnthropicNativeRequestSurface, nil)
 	// Key routing.
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 	ctx.ClearValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID)

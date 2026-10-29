@@ -1,4 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -69,9 +70,44 @@ export const secretVarSchema = Object.assign(_secretVarBase, {
 });
 
 // Helper to check if a secretVar field has a value or secret reference
-function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
+export function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
 	return !!v.value?.trim() || !!v.ref?.trim();
+}
+
+// Message for private_key_jwt settings saved without the key they configure.
+export const PRIVATE_KEY_REQUIRED_MESSAGE = "A private key is required for private_key_jwt";
+
+// Message for a send method chosen without the secret it sends.
+export const SECRET_REQUIRED_FOR_METHOD_MESSAGE = "A client secret is required to choose how it is sent";
+
+// The id_jag upstream-authentication fields the form checks below read.
+interface IDJAGUpstreamAuthFields {
+	profile?: string;
+	resource_auth_mode?: string;
+	resource_client_secret?: { value?: string; ref?: string };
+	resource_client_auth_method?: string;
+	resource_private_key?: { value?: string; ref?: string };
+	resource_key_id?: string;
+	resource_signing_algorithm?: string;
+	resource_assertion_audience?: string;
+}
+
+// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
+// store a public client, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
+	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
+	return (
+		te.resource_auth_mode === "private_key" ||
+		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
+	);
+}
+
+// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
+// has none. The payload would drop the method and store a public client, which the server refuses.
+export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
+	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
 }
 
 // Azure key config schema
@@ -83,6 +119,8 @@ export const azureKeyConfigSchema = z
 		client_secret: secretVarSchema.optional(),
 		tenant_id: secretVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
+		use_speech_endpoints: z.boolean().optional(),
+		use_voice_live_endpoints: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.endpoint), {
 		message: "Endpoint is required",
@@ -286,6 +324,41 @@ export const bedrockMantleKeyConfigSchema = z
 		},
 	);
 
+// SageMaker key config schema: AWS credentials Bifrost mints the endpoint bearer token from,
+// or a pre-minted token in the key value (api_key auth).
+export const sageMakerKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["iam_role", "explicit", "api_key"]).optional(),
+		access_key: secretVarSchema.optional(),
+		secret_key: secretVarSchema.optional(),
+		session_token: secretVarSchema.optional(),
+		region: secretVarSchema.optional(),
+		role_arn: secretVarSchema.optional(),
+		external_id: secretVarSchema.optional(),
+		session_name: secretVarSchema.optional(),
+		endpoints: z.object({ runtime: secretVarSchema.optional() }).optional(),
+	})
+	.refine((data) => isSecretVarSet(data.region), {
+		message: "Region is required",
+		path: ["region"],
+	})
+	.refine(
+		(data) => {
+			if (data._auth_type === "explicit") {
+				return isSecretVarSet(data.access_key) && isSecretVarSet(data.secret_key);
+			}
+			const hasAccessKey = isSecretVarSet(data.access_key);
+			const hasSecretKey = isSecretVarSet(data.secret_key);
+			// Default-chain path: both keys empty is valid, but a lone session token cannot mint a token.
+			if (!hasAccessKey && !hasSecretKey) return !isSecretVarSet(data.session_token);
+			return hasAccessKey && hasSecretKey;
+		},
+		{
+			message: "Both Access Key and Secret Key are required for explicit credentials",
+			path: ["access_key"],
+		},
+	);
+
 // VLLM key config schema
 export const vllmKeyConfigSchema = z
 	.object({
@@ -320,6 +393,42 @@ const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | 
 	if (value.startsWith("env.") || value.startsWith("vault.")) return false;
 	return isRedacted(value);
 };
+
+// The id_jag fields resourceCredentialResendRequired compares.
+interface IDJAGResourceTarget {
+	audience?: string;
+	resource_token_endpoint?: string;
+	resource_assertion_audience?: string;
+	resource_client_secret?: { value?: string; ref?: string; type?: string };
+	resource_private_key?: { value?: string; ref?: string; type?: string };
+}
+
+// RESOURCE_CREDENTIAL_RESEND_MESSAGE explains why a saved secret or key must be typed again.
+export const RESOURCE_CREDENTIAL_RESEND_MESSAGE =
+	"Re-enter it: the audience, upstream token endpoint or assertion audience changed, so the saved value is not sent to the new target";
+
+// resourceCredentialResendRequired mirrors the server's rule: an edit that changes where the
+// upstream credential is sent (the audience it is discovered from, the token endpoint, or the
+// client assertion's audience) must carry a saved literal secret or key again rather than its
+// mask. It returns the field to re-enter, or undefined when the edit can be saved as is.
+export function resourceCredentialResendRequired(
+	saved: IDJAGResourceTarget | undefined,
+	edited: IDJAGResourceTarget | undefined,
+): "resource_client_secret" | "resource_private_key" | undefined {
+	if (!saved || !edited) return undefined;
+	const same = (a?: string, b?: string) => (a ?? "").trim() === (b ?? "").trim();
+	const targetChanged =
+		!same(saved.audience, edited.audience) ||
+		!same(saved.resource_token_endpoint, edited.resource_token_endpoint) ||
+		!same(saved.resource_assertion_audience, edited.resource_assertion_audience);
+	if (!targetChanged) return undefined;
+	// A credential kept as an env or vault reference is resent as the reference, which the server
+	// accepts; only a saved literal, shown masked, has to be typed again.
+	const savedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
+	if (savedLiteral(edited.resource_client_secret)) return "resource_client_secret";
+	if (savedLiteral(edited.resource_private_key)) return "resource_private_key";
+	return undefined;
+}
 
 // oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
 // It is the check the outer key schema uses to decide whether an empty key value is fine.
@@ -383,14 +492,14 @@ const literalURLCarriesForbiddenParts = (v: { value?: string; ref?: string; type
 	const u = parseLiteralURL(v);
 	return !!u && (u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== "");
 };
-const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const raw = (v?.value ?? "").trim();
+// hasHTTPSOrLoopbackScheme accepts https URLs, and plain http only on a loopback host, for local
+// testing. Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+// The server re-checks every URL and refuses private targets when it connects; this only lets the
+// form reject a value the server would refuse.
+const hasHTTPSOrLoopbackScheme = (raw: string): boolean => {
 	try {
-		const u = new URL(raw);
-		if (u.protocol === "https:") return true;
-		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const u = new URL(raw.trim());
+		if (u.protocol === "https:") return u.hostname !== "";
 		const host = u.hostname.toLowerCase();
 		return (
 			u.protocol === "http:" &&
@@ -399,6 +508,26 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	} catch {
 		return false;
 	}
+};
+
+// isHTTPSOrLoopbackURL is hasHTTPSOrLoopbackScheme for the id_jag URLs, which the server also
+// refuses when they carry credentials or a fragment.
+export const isHTTPSOrLoopbackURL = (raw: string): boolean => {
+	try {
+		const u = new URL(raw.trim());
+		if (u.username !== "" || u.password !== "" || u.hash !== "") return false;
+	} catch {
+		return false;
+	}
+	return hasHTTPSOrLoopbackScheme(raw);
+};
+
+// isLiteralHTTPSOrLoopbackURL checks only the scheme: the OAuth token URL's credentials, query and
+// fragment are reported separately, pointing at extra_params.
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
@@ -564,6 +693,8 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
 	// Vertex overrides
@@ -623,6 +754,7 @@ export const modelProviderKeySchema = z
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		bedrock_mantle_key_config: bedrockMantleKeyConfigSchema.optional(),
+		sagemaker_key_config: sageMakerKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
@@ -672,6 +804,14 @@ export const modelProviderKeySchema = z
 			// a top-level API key when the user explicitly chose the api_key auth method.
 			if (data.bedrock_mantle_key_config) {
 				if (data.bedrock_mantle_key_config._auth_type === "api_key") {
+					return isSecretVarSet(data.value);
+				}
+				return true;
+			}
+			// SageMaker mints a bearer token from AWS credentials; a key value (a pre-minted
+			// token) is only required when the user chose the api_key auth method.
+			if (data.sagemaker_key_config) {
+				if (data.sagemaker_key_config._auth_type === "api_key") {
 					return isSecretVarSet(data.value);
 				}
 				return true;
@@ -1732,8 +1872,11 @@ export const mcpClientUpdateSchema = z
 				},
 				{ message: "Duplicate tool names are not allowed" },
 			),
+		prompts_to_expose: z.array(z.string()).optional(), // ["*"] = all, [] = none
+		resources_to_expose: z.array(z.string()).optional(), // ["*"] = all, [] = none
 		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
+		max_protocol_version: z.union([z.literal(""), z.enum(MCP_MAX_PROTOCOL_VERSIONS)]).optional(), // "" = use global
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z
@@ -1765,6 +1908,7 @@ export const mcpClientUpdateSchema = z
 					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
 				scopes: z.array(z.string()).optional(),
 				resource: z.string().optional(),
+				use_client_metadata_document: z.boolean().optional(),
 			})
 			.optional(),
 		token_exchange: z
@@ -1780,6 +1924,42 @@ export const mcpClientUpdateSchema = z
 						message: "Authorization Server URL must start with http:// or https://",
 					}),
 				scopes: z.array(z.string()).optional(),
+				profile: z.enum(["", "id_jag"]).optional(),
+				resource: z.string().optional(),
+				resource_token_endpoint: z.string().optional(),
+				resource_client_id: secretVarSchema.optional(),
+				resource_client_secret: secretVarSchema.optional(),
+				resource_client_auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				resource_private_key: secretVarSchema.optional(),
+				resource_key_id: z.string().optional(),
+				resource_signing_algorithm: z.string().optional(),
+				resource_auth_mode: z.enum(["secret", "private_key"]).optional(),
+				resource_assertion_audience: z.string().optional(),
+			})
+			// The id_jag fields are hidden for the direct profile, so they are checked only
+			// with it selected: a value left behind must not block Save with no visible error.
+			.superRefine((te, ctx) => {
+				if (te.profile !== "id_jag") return;
+				const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+				if (!isSecretVarSet(te.resource_client_id)) {
+					issue("resource_client_id", "Client ID at the upstream server is required for Cross App Access");
+				}
+				if (te.resource_token_endpoint && !isHTTPSOrLoopbackURL(te.resource_token_endpoint)) {
+					issue("resource_token_endpoint", "Token endpoint must be an https URL (http is allowed only for localhost)");
+				}
+				const audience = te.resource_assertion_audience?.trim();
+				if (audience && !isHTTPSOrLoopbackURL(audience)) {
+					issue("resource_assertion_audience", "Assertion audience must be an https URL (http is allowed only for localhost)");
+				}
+				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
+					issue("resource_private_key", "Use either a client secret or a private key at the upstream server, not both");
+				}
+				if (hasPrivateKeySettingsWithoutKey(te)) {
+					issue("resource_private_key", PRIVATE_KEY_REQUIRED_MESSAGE);
+				}
+				if (hasSendMethodWithoutSecret(te)) {
+					issue("resource_client_secret", SECRET_REQUIRED_FOR_METHOD_MESSAGE);
+				}
 			})
 			.optional(),
 		tls_config: z
@@ -1977,3 +2157,291 @@ export const rssFeedFormSchema = z.object({
 });
 
 export type RSSFeedFormSchema = z.infer<typeof rssFeedFormSchema>;
+
+// ---------------------------------------------------------------------------
+// Relays (/workspace/relays). Mirrors
+// core/schemas/relay.go; the backend validates the same rules.
+// ---------------------------------------------------------------------------
+
+const endpointGjsonPath = z.string().trim().optional();
+
+// A usage mapping: where usage is read (gjson paths) and how a call is priced. The endpoint-level
+// mapping must name a path for a positive rate; a route's override may inherit it, which the backend
+// checks, so routes use the base object.
+export const relayUsageBaseSchema = z.object({
+	model_path: endpointGjsonPath,
+	model_source: z.enum(["body", "query"]).nullish(),
+	input_tokens_path: endpointGjsonPath,
+	output_tokens_path: endpointGjsonPath,
+	total_tokens_path: endpointGjsonPath,
+	cost_path: endpointGjsonPath,
+	// Cleared fields hold null, not undefined: react-hook-form shows a field's loaded value again when
+	// it is set to undefined, so an emptied price would snap back. null and "" are dropped on save.
+	cost_per_request: z.number().min(0, "Cost per request must not be negative").nullish(),
+	units_path: endpointGjsonPath,
+	units_source: z.enum(["response", "request"]).nullish(),
+	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).nullish(),
+	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").nullish(),
+	units_block_size: z.number().positive("Block size must be above zero").nullish(),
+	units_minimum: z.number().min(0, "Minimum units must not be negative").nullish(),
+});
+
+/** A route is billable by default only for POST, so the flag is stored only when it differs. */
+export function routeBillableByDefault(method: string): boolean {
+	return method.toUpperCase() === "POST";
+}
+
+export type RelayUsageForm = z.infer<typeof relayUsageBaseSchema>;
+
+type UsageRule = {
+	units_path?: string | null;
+	units_measure?: string | null;
+	cost_per_unit?: number | null;
+};
+
+/**
+ * Mirrors RelayUsageConfig.validate in core/schemas/relay.go: a positive per-unit rate needs a units
+ * path unless the measure reads the whole body. On a route, the rate, path and measure it leaves
+ * empty come from the relay (base), so the check runs on the merged values as the backend's does.
+ */
+export function relayUsageUnitsPathError(usage: UsageRule | undefined, base?: UsageRule): string | undefined {
+	const pick = <K extends keyof UsageRule>(k: K) => {
+		const own = usage?.[k];
+		return own === undefined || own === null || own === "" ? base?.[k] : own;
+	};
+	const rate = pick("cost_per_unit");
+	const measure = pick("units_measure");
+	const path = (pick("units_path") ?? "").toString().trim();
+	if (typeof rate === "number" && rate > 0 && measure !== "body_bytes" && measure !== "body_chars" && !path) {
+		return base
+			? "Units path is required: this route charges per unit and neither it nor the relay names a path"
+			: "Units path is required unless the measure reads the whole body";
+	}
+	return undefined;
+}
+
+export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) => {
+	const message = relayUsageUnitsPathError(usage);
+	if (message) ctx.addIssue({ code: "custom", message, path: ["units_path"] });
+});
+
+// The relay route import's URL source. The gateway fetches it, so only an absolute http(s) URL is sent;
+// anything else is refused on the field rather than as a fetch error.
+export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, "Enter an absolute http(s) URL");
+
+// Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
+const relayGlob = z
+	.string()
+	.trim()
+	.min(1, "Path is required")
+	.refine((p) => p.startsWith("/"), "Path must start with /")
+	.refine((p) => !p.slice(1).split("/").slice(0, -1).includes("**"), "** is only allowed as the last segment");
+
+export const relayAuthSchema = z
+	.object({
+		type: z.enum(["bearer", "header", "query", "basic", "aws_sigv4", "none"]),
+		header_name: z.string().trim().optional(),
+		query_param: z.string().trim().optional(),
+		value_prefix: z.string().optional(),
+		aws: z.object({ service: z.string().trim().optional() }).optional(),
+	})
+	.superRefine((auth, ctx) => {
+		if (auth.type === "header" && !auth.header_name) {
+			ctx.addIssue({ code: "custom", message: "Header name is required for header auth", path: ["header_name"] });
+		}
+		if (auth.type === "query" && !auth.query_param) {
+			ctx.addIssue({ code: "custom", message: "Query parameter is required for query auth", path: ["query_param"] });
+		}
+		if (auth.type === "aws_sigv4") {
+			const service = auth.aws?.service ?? "";
+			if (!service) ctx.addIssue({ code: "custom", message: "AWS service is required for SigV4 auth", path: ["aws", "service"] });
+			else if (!/^[a-z0-9-]+$/.test(service))
+				ctx.addIssue({ code: "custom", message: "AWS service must match [a-z0-9-]+", path: ["aws", "service"] });
+		}
+	});
+
+// A route's header matchers are edited as name/value pairs; a fully blank row is dropped on save,
+// a half-filled one is an error so a strict route is never silently widened.
+export const relayHeaderPairSchema = z
+	.object({
+		name: z
+			.string()
+			.trim()
+			.refine((n) => !/[\s:/]/.test(n), "Header name must not contain spaces, colons or slashes"),
+		value: z.string().trim(),
+	})
+	.superRefine((pair, ctx) => {
+		if (pair.name && !pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a value glob", path: ["value"] });
+		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a header name", path: ["name"] });
+	});
+
+// A route's async job block is set through config.json or the API; the form carries it untouched.
+export const relayJobSchema = z.object({
+	id_path: z.string().trim().min(1, "Enter where the start reply carries the job id"),
+	poll: z.object({
+		method: z.string().optional(),
+		path: z
+			.string()
+			.trim()
+			.min(1, "Enter the poll path")
+			.refine((p) => p.startsWith("/"), "Enter a rooted path such as /jobs/{{job.id}}"),
+		headers: z.record(z.string(), z.string()).optional(),
+		body: z.string().optional(),
+		content_type: z.string().optional(),
+	}),
+	status_path: z.string().trim().min(1, "Enter where the poll reply carries the status"),
+	succeeded: z.array(z.string()).min(1, "Enter at least one succeeded status"),
+	failed: z.array(z.string()).optional(),
+	interval_seconds: z.number().int().min(1, "At least 1 second").optional(),
+	timeout_seconds: z.number().int().min(1, "At least 1 second").optional(),
+	usage: relayUsageBaseSchema.optional(),
+});
+
+export const relayRouteFormSchema = z.object({
+	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
+	path: relayGlob,
+	headers: z.array(relayHeaderPairSchema).superRefine((pairs, ctx) => {
+		const seen = new Set<string>();
+		pairs.forEach((pair, i) => {
+			const name = pair.name.trim().toLowerCase();
+			if (!name) return;
+			if (seen.has(name)) ctx.addIssue({ code: "custom", message: "This header is already matched on this route", path: [i, "name"] });
+			seen.add(name);
+		});
+	}),
+	enabled: z.boolean().optional(),
+	billable: z.boolean().optional(),
+	stream: z.boolean().optional(),
+	usage: relayUsageBaseSchema.optional(),
+	job: relayJobSchema.optional(),
+});
+
+// The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
+// and vault references round-trip, and a redacted value sent back keeps the stored secret.
+export const relayNetworkFormSchema = z.object({
+	timeout_seconds: z.number().int().min(0).optional(),
+	stream_idle_timeout_in_seconds: z.number().int().min(0).optional(),
+	max_conns_per_host: z.number().int().min(0).optional(),
+	insecure_skip_verify: z.boolean().optional(),
+	ca_cert_pem: z.string().optional(),
+});
+
+export const relayFormSchema = z
+	.object({
+		name: z
+			.string()
+			.trim()
+			.regex(/^[A-Za-z0-9._-]{1,64}$/, "Use 1-64 letters, digits, dots, dashes or underscores")
+			.refine((n) => n !== "." && n !== "..", "A relay cannot be named . or .."),
+		description: z.string().optional(),
+		base_url: z
+			.string()
+			.trim()
+			.refine((u) => {
+				try {
+					const parsed = new URL(u);
+					return (
+						(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+						!parsed.search &&
+						!parsed.hash &&
+						!parsed.username &&
+						!parsed.password
+					);
+				} catch {
+					return false;
+				}
+			}, "Enter an absolute http(s) URL without a query, fragment or user info"),
+		auth: relayAuthSchema,
+		credential_value: _secretVarBase.optional(),
+		aws: z
+			.object({
+				access_key: _secretVarBase.optional(),
+				secret_key: _secretVarBase.optional(),
+				session_token: _secretVarBase.optional(),
+				region: _secretVarBase.optional(),
+				role_arn: _secretVarBase.optional(),
+				external_id: _secretVarBase.optional(),
+				session_name: _secretVarBase.optional(),
+			})
+			.optional(),
+		extra_headers: z.array(z.object({ name: z.string().trim(), value: _secretVarBase })).superRefine((pairs, ctx) => {
+			// One value per header: a second row with the same name (any case) would replace the first.
+			// A half-filled row is refused rather than silently dropped on save; a blank row is skipped.
+			const seen = new Set<string>();
+			pairs.forEach((pair, i) => {
+				const name = pair.name.trim().toLowerCase();
+				const hasValue = isSecretVarSet(pair.value);
+				if (name && !hasValue) ctx.addIssue({ code: "custom", message: "Enter a value for this header", path: [i, "value"] });
+				if (!name && hasValue) ctx.addIssue({ code: "custom", message: "Enter a header name", path: [i, "name"] });
+				if (!name) return;
+				if (seen.has(name)) ctx.addIssue({ code: "custom", message: "This header is already set", path: [i, "name"] });
+				seen.add(name);
+			});
+		}),
+		network: relayNetworkFormSchema,
+		// "inherit" sends no proxy config (the global proxy applies); "none" is an explicit direct connection.
+		proxy: z.object({
+			type: z.enum(["inherit", "none", "http", "socks5", "environment"]),
+			url: _secretVarBase.optional(),
+			username: _secretVarBase.optional(),
+			password: _secretVarBase.optional(),
+			ca_cert_pem: _secretVarBase.optional(),
+		}),
+		usage: relayUsageSchema,
+		streaming: z.object({
+			// Validated as a whole so the message lands on streaming.paths, where the form shows it.
+			// Blank lines are skipped: they are dropped on blur and on save.
+			paths: z.array(z.string()).superRefine((paths, ctx) => {
+				paths.forEach((p, i) => {
+					if (!p.trim()) return;
+					const parsed = relayGlob.safeParse(p);
+					if (!parsed.success)
+						ctx.addIssue({ code: "custom", message: `Line ${i + 1}: ${parsed.error.issues[0]?.message ?? "invalid path"}` });
+				});
+			}),
+		}),
+		routes: z.array(relayRouteFormSchema),
+		skip_route_check: z.boolean(),
+		ignore_upstream_cost: z.boolean(),
+	})
+	.superRefine((form, ctx) => {
+		const type = form.auth.type;
+		if (type === "aws_sigv4") {
+			if (!isSecretVarSet(form.aws?.region))
+				ctx.addIssue({ code: "custom", message: "Region is required for SigV4", path: ["aws", "region"] });
+		} else if (type !== "none" && !isSecretVarSet(form.credential_value)) {
+			ctx.addIssue({ code: "custom", message: "The credential is required for this auth type", path: ["credential_value"] });
+		}
+		if ((form.proxy.type === "http" || form.proxy.type === "socks5") && !isSecretVarSet(form.proxy.url)) {
+			ctx.addIssue({ code: "custom", message: "Proxy URL is required", path: ["proxy", "url"] });
+		}
+		// The backend checks every route against the relay pricing it inherits, so a relay edit that
+		// leaves a per-unit route without a units path is refused; say which route on the relay field.
+		// A route that is not billed is never priced, and its hidden override is not saved.
+		const broken = form.routes.find(
+			(r) => (r.billable ?? routeBillableByDefault(r.method)) && r.usage && relayUsageUnitsPathError(r.usage, form.usage),
+		);
+		if (broken && !relayUsageUnitsPathError(form.usage)) {
+			ctx.addIssue({
+				code: "custom",
+				message: `Units path is required: route ${broken.method} ${broken.path} charges per unit and inherits it from the relay`,
+				path: ["usage", "units_path"],
+			});
+		}
+	});
+
+export type RelayFormValues = z.infer<typeof relayFormSchema>;
+
+// The sample call the Test tab sends to the usage preview; the path mirrors the relay's own guard.
+export const relayPreviewSampleSchema = z.object({
+	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
+	path: z
+		.string()
+		.trim()
+		.min(1, "Path is required")
+		.refine(
+			(p) => p.startsWith("/") && !p.startsWith("//") && !p.includes("://") && !p.includes("\\"),
+			"Enter a rooted path such as /v1/search",
+		),
+	status_code: z.number().int().min(100, "Status must be between 100 and 599").max(599, "Status must be between 100 and 599"),
+});

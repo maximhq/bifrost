@@ -31,10 +31,12 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Video Generation | ✅            | -         | `/openai/v1/videos`             |
 | Context Compaction | ✅          | -         | `/openai/v1/responses/compact`  |
 | Decisions        | ✅            | -         | `/openai/v1/decisions` (`gpt-6-luna`), `/providers/microsoft/v1/systemone` (`Microsoft-Decision-1`) |
+| GPT Live         | -             | ✅        | `/openai/v1/live/sessions`      |
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
-| Speech (TTS)     | ❌            | ❌        | -                               |
+| Speech (TTS)     | ✅            | ✅        | `/openai/v1/audio/speech`, or `/tts/cognitiveservices/v1` for [Azure AI Speech](#11-azure-ai-speech) |
+| Transcription    | ✅            | -         | `/openai/deployments/{model}/audio/transcriptions`, or `/speechtotext/transcriptions:transcribe` for [Azure AI Speech](#11-azure-ai-speech) |
 
 <Note>
   **Azure-specific**: Batch operations and Text Completions are not supported by
@@ -475,6 +477,8 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `client_secret` | No       | -                                                  | Entra ID client secret (Service Principal auth) |
 | `tenant_id`     | No       | -                                                  | Entra ID tenant ID (Service Principal auth)     |
 | `scopes`        | No       | `["https://cognitiveservices.azure.com/.default"]` | OAuth scopes for token requests                 |
+| `use_speech_endpoints` | No | `false` | Send speech and transcription requests to [Azure AI Speech](#11-azure-ai-speech) |
+| `use_voice_live_endpoints` | No | `false` | Send realtime WebSocket sessions to [Azure Voice Live](#12-azure-voice-live) |
 
 **Key-level fields:**
 
@@ -626,6 +630,8 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 - `client_secret` - Azure Entra ID client secret (optional, for Service Principal auth)
 - `tenant_id` - Azure Entra ID tenant ID (optional, for Service Principal auth)
 - `scopes` - OAuth scopes for token requests (default: `["https://cognitiveservices.azure.com/.default"]`)
+- `use_speech_endpoints` - Send speech and transcription requests to Azure AI Speech (optional, default `false`; an alias can override it)
+- `use_voice_live_endpoints` - Send realtime WebSocket sessions to Azure Voice Live (optional, default `false`; an alias can override it)
 - `aliases` - Map of model names to Azure deployment IDs (optional, set at key level)
 - `allowed_models` - List of allowed models to use from this key (optional)
 
@@ -1065,6 +1071,143 @@ Bifrost calls `POST {endpoint}/providers/microsoft/v1/systemone`, which uses Typ
 Bifrost does not otherwise gate decisions on Azure by model name: a deployment that serves neither endpoint returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `gpt-6-luna` and `Microsoft-Decision-1` are still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `Microsoft-Decision-1` as its classifier.
 
 A decision is priced from the model catalog: at the model's decision rates where it lists them, otherwise at its chat rates. A model the catalog does not list is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
+
+---
+
+# 11. Azure AI Speech
+
+`use_speech_endpoints` sends speech and transcription requests to [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) instead of an Azure OpenAI deployment, on the same key and endpoint. Set it in `azure_key_config` to route every audio request on the key, or on an alias to route one model. An alias value wins over the key's in both directions. Other requests on the key, such as chat, still go to Azure OpenAI.
+
+The endpoint must be a Foundry (AI Services) resource or a Speech resource with a custom domain. Both `*.openai.azure.com` and `*.cognitiveservices.azure.com` work.
+
+An API key is sent as `Ocp-Apim-Subscription-Key`. Entra ID and managed identity send a bearer token, as for every other Azure call. A key with an explicit `models` list must list the alias names it serves.
+
+```json
+{
+  "name": "azure-key",
+  "value": "env.AZURE_API_KEY",
+  "models": ["*"],
+  "azure_key_config": { "endpoint": "env.AZURE_ENDPOINT" },
+  "aliases": {
+    "mai-voice": { "model_id": "MAI-Voice-2.1-Flash", "use_speech_endpoints": true },
+    "fast-stt": { "model_id": "fast-transcription", "use_speech_endpoints": true }
+  }
+}
+```
+
+The model ID, which is the alias `model_id` or the requested model on a key with `use_speech_endpoints`, picks the voice or transcription mode.
+
+## Text to speech
+
+**Endpoint**: `POST /v1/audio/speech`, sent to `{endpoint}/tts/cognitiveservices/v1` as SSML
+
+| Model ID | Voice sent to Azure |
+| --- | --- |
+| `neural` | `voice` as is, such as `en-US-JennyNeural` |
+| A voice suffix, such as `DragonHDLatestNeural` or `MAI-Voice-2.1-Flash` | `{voice}:{suffix}`, such as `en-US-Harper:MAI-Voice-2.1-Flash` |
+
+A voice that already contains `:` is sent as is. OpenAI voice names such as `alloy` are not Azure voices and get a `400`.
+
+| Parameter | Azure SSML |
+| --- | --- |
+| `input` | Escaped voice text. An input that starts with `<speak` is sent as the whole SSML document. |
+| `speed` | `<prosody rate="{speed}">` |
+| `language_code` | `xml:lang` on `<speak>`, `en-US` when not set |
+| `style`, `styledegree`, `role` | `<mstts:express-as>` |
+| `response_format` | `mp3` (default), `opus`, `wav` and `pcm` map to 24 kHz formats; `aac` and `flac` fall back to mp3; any other value is sent as the `X-Microsoft-OutputFormat` name |
+| `instructions` | Dropped |
+
+`stream_format: "sse"` streams the audio as Azure synthesizes it. `usage.input_chars` counts characters as Azure bills them: the whole SSML except the `<speak>` and `<voice>` tags, with each Chinese character counted twice. Markup Bifrost adds, such as `<prosody>`, is billed.
+
+```bash
+curl http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/mai-voice",
+    "voice": "en-US-Harper",
+    "input": "Your order shipped.",
+    "speed": 1.2
+  }' --output speech.mp3
+```
+
+## Speech to text
+
+**Endpoint**: `POST /v1/audio/transcriptions`, sent to `{endpoint}/speechtotext/transcriptions:transcribe?api-version=2025-10-15` as an `audio` part and a JSON `definition`
+
+| Model ID | Azure mode |
+| --- | --- |
+| `fast-transcription` | Fast transcription |
+| `llm-speech` | LLM Speech (`enhancedMode.task`) |
+| Any other, such as `MAI-Transcribe-2` | `enhancedMode.model` set to the model ID |
+
+LLM Speech and MAI-Transcribe are available only in [some regions](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/regions?tabs=llmspeech); other regions answer `400` with `Enhanced mode is currently not supported yet.`
+
+| Field | Azure definition |
+| --- | --- |
+| `language` | `locales`. `fast-transcription` needs a full locale such as `en-US`; a bare code such as `en` is dropped and Azure detects the language. |
+| `prompt` | `enhancedMode.prompt` on `llm-speech`; dropped otherwise |
+| `target_language` | `llm-speech` translates into it |
+| `response_format: "verbose_json"` | `modelOptions.timestamps: "word"` on MAI-Transcribe |
+| `response_format: "diarized_json"`, `diarization`, `max_speakers` | `diarization` |
+| `channels`, `phrases` | `channels`, `phraseList.phrases`. Pass a comma-separated value in a multipart form. |
+| `profanity_filter_mode`, `transcribe_style` | `profanityFilterMode`, `modelOptions.transcribeStyle` |
+
+The response carries `text`, `duration`, `language`, `segments` (speaker-labelled when diarized) and `words`. `usage.seconds` is the duration rounded up to the second, which is what Azure meters.
+
+```bash
+curl http://localhost:8080/v1/audio/transcriptions \
+  -F model=azure/fast-stt \
+  -F file=@call.wav \
+  -F language=en-US \
+  -F diarization=true
+```
+
+Until the model catalog lists rates for these model IDs, Bifrost reports their cost as $0 while Azure still bills the usage; add a [pricing override](/providers/custom-pricing) to track it.
+
+---
+
+# 12. Azure Voice Live
+
+`use_voice_live_endpoints` sends realtime WebSocket sessions to [Azure Voice Live](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/voice-live) instead of Azure OpenAI, on the same key and endpoint. Set it in `azure_key_config` for every realtime session on the key, or on an alias for one model. An alias value wins over the key's in both directions. Other requests on the key still go to Azure OpenAI.
+
+**Endpoint**: `/v1/realtime` (WebSocket), sent to `{endpoint}/voice-live/realtime?api-version=2026-04-10&model={model ID}` with the key's API key or Entra token. An alias `api_version` replaces the default version.
+
+```json
+"aliases": {
+  "gpt-realtime-vl": { "model_id": "gpt-realtime", "use_voice_live_endpoints": true }
+}
+```
+
+The model ID is a Voice Live model such as `gpt-realtime`, `gpt-4.1` or `phi4-mm-realtime`, which needs no deployment. Connect to `ws://localhost:8080/v1/realtime?model=azure/gpt-realtime-vl`. Events pass through as Voice Live sends them, including object voices such as `{"name": "en-US-Ava:DragonHDLatestNeural", "type": "azure-standard"}`, `azure_semantic_vad`, noise suppression, word timestamps, visemes and `session.avatar.connect`.
+
+- WebRTC (`/v1/realtime/calls`) and client secrets (`/v1/realtime/client_secrets`) answer `400`: Voice Live signals WebRTC over its own WebSocket and reports usage on the browser's data channel.
+- A realtime `intent` answers `400`.
+- Turns are priced at the Azure OpenAI rates for the same model name until the model catalog lists Voice Live rates.
+
+---
+
+# 13. GPT Live
+
+Azure serves [GPT-Live](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/gpt-live) on OpenAI's wire protocol, so a session's events, delegation, billing and log row are the same as on OpenAI. Open the session on `/v1/live/sessions` (a WebSocket, or a `POST` with an SDP offer for WebRTC) with the `azure/` prefix on the voice model:
+
+```json
+{
+  "type": "session.start",
+  "session": {
+    "model": "azure/gpt-live-1",
+    "delegation": { "type": "responses", "responses": { "model": "gpt-5.5" } }
+  }
+}
+```
+
+A voice model without a prefix runs on Azure when the request comes from the Azure OpenAI SDK, and on OpenAI otherwise on `/openai/v1/live/sessions`, the same provider the session's attach and content routes default to.
+
+Bifrost connects to `{endpoint}/openai/v1/live/sessions` with the key's API key or Entra ID token. Both `session.model` and `delegation.responses.model` are deployment names on Azure, and Bifrost maps each through the key's aliases. Azure runs the backend on the voice deployment's resource, so one key must serve both models, and the key's `endpoint` is used even when an alias sets its own.
+
+- **Sidebands**: `/v1/live/sessions/{session_id}/attach` and `/openai/v1/live/sessions/{session_id}/attach` take `?provider=azure` or the `x-model-provider: azure` header, and the Azure OpenAI SDK's user agent selects Azure too. Without any of these, the route uses OpenAI when OpenAI is configured.
+- **Browser permissions**: Azure rejects `session.client` on WebRTC create, so Bifrost drops it upstream and applies `allowed_client_events` and `allowed_server_events` itself on the browser's data channel. A browser event outside the list gets OpenAI's `event_not_allowed` error and never reaches Azure. Sidebands are not restricted.
+- **Recordings**: `/v1/live/sessions/{session_id}/content` answers `400 unsupported_operation`. Azure does not store GPT-Live sessions yet and rejects `session.store`.
+- **Pricing overrides** match the deployment name Bifrost sends, not the alias.
 
 ---
 

@@ -307,7 +307,8 @@ provider-keys:
       digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
-      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and
+      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,
+      sagemaker_key_config.endpoints.runtime, and
       aliases.<name>.endpoint.
     tags:
       - Providers
@@ -433,7 +434,8 @@ provider-key-by-id:
       digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
-      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and
+      bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,
+      sagemaker_key_config.endpoints.runtime, and
       aliases.<name>.endpoint.
     tags:
       - Providers
@@ -608,7 +610,7 @@ models:
           default: 5
       - name: unfiltered
         in: query
-        description: If true, return all models including those filtered out by provider-level restrictions
+        description: If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows
         schema:
           type: boolean
           default: false
@@ -670,7 +672,7 @@ models-details:
           default: 20
       - name: unfiltered
         in: query
-        description: If true, return all models including those filtered out by provider-level restrictions
+        description: If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows
         schema:
           type: boolean
           default: false
@@ -775,5 +777,82 @@ models-base:
             schema:
               type: object
               additionalProperties: true
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-newest:
+  get:
+    operationId: listNewestModels
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List newest models per provider
+    description: |
+      Returns each requested provider's newest models, ordered by the creation
+      time the provider last reported in its model list. Times come from the
+      cached model catalog; providers are not polled. Times are compared only
+      within one provider. Models without a time come last, and deprecated
+      models are left out. A virtual key on the request scopes the listing the
+      same way it scopes `GET /api/models`.
+    tags:
+      - Providers
+    parameters:
+      - name: providers
+        in: query
+        required: true
+        description: Comma-separated providers, in the order they are returned
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Models per provider
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 3
+      - name: keys
+        in: query
+        description: Comma-separated provider key IDs to filter models accessible by those keys
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - models
+              properties:
+                models:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - provider
+                      - created
+                    properties:
+                      name:
+                        type: string
+                      provider:
+                        type: string
+                      created:
+                        type: integer
+                        format: int64
+                        description: Provider-reported creation time in Unix seconds, or 0 when none
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'

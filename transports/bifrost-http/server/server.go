@@ -18,9 +18,11 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	"github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -162,11 +164,11 @@ type ServerCallbacks interface {
 	UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int, codeModeLimits *schemas.MCPCodeModeLimits) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
-	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error)
+	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error)
 	// VerifyHeadersConnection verifies an MCP server using user-supplied header values and discovers tools.
-	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error)
-	// SetClientTools updates the tool map and server instructions for an existing client.
-	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
+	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error)
+	// SetClientDiscovery installs discovery on an existing client.
+	SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery)
 	// RequiresPerCallConnection reports whether config resolves to a
 	// per-call connection (true) or a persistent shared one (false), taking
 	// auth type, connection type, and needs_session_stickiness into account
@@ -185,7 +187,9 @@ type ServerCallbacks interface {
 	EnableMCPClient(ctx context.Context, id string) error
 	// EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access
 	// token backed by the given token row ID after a database write that
-	// bypassed the OAuth provider's own write paths.
+	// bypassed the OAuth provider's own write paths. The server also forwards
+	// the provider's own write evictions here, since those reach only this
+	// process.
 	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
 	// EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
 	// access token bound to the given MCP client after a client-level
@@ -194,7 +198,9 @@ type ServerCallbacks interface {
 	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
 	// EvictMCPHeaderCredentialCacheByID drops the cached per-user MCP header
 	// credential backed by the given credential row ID after a database
-	// write that bypassed the headers provider's own write paths.
+	// write that bypassed the headers provider's own write paths. The server
+	// also forwards the provider's own write evictions here, since those
+	// reach only this process.
 	EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string)
 	// EvictMCPHeaderCredentialCacheByMCPClient drops every cached per-user
 	// MCP header credential bound to the given MCP client after a
@@ -230,6 +236,8 @@ type MCPLogRedactionMappingResolverProvider interface {
 type BifrostHTTPServer struct {
 	Ctx    *schemas.BifrostContext
 	cancel context.CancelFunc
+
+	mcpDiscoveries mcpDiscoveryWriter // see PersistMCPClientDiscovery
 
 	Version   string
 	UIContent embed.FS
@@ -286,6 +294,9 @@ type BifrostHTTPServer struct {
 	// is available, otherwise left nil (user-mode requests fall back to the
 	// global server).
 	OAuth2IdentityResolver handlers.OAuth2IdentityResolver
+	// OAuth2Extensions adds grant types and discovery metadata to Bifrost's OAuth2
+	// authorization server. Nil means none; set before RegisterAPIRoutes.
+	OAuth2Extensions handlers.OAuth2Extensions
 	// AgentGatewayIdentityResolver validates pre-authenticated Authorization
 	// credentials for A2A HTTP and gRPC ingress. Optional; OSS leaves it nil.
 	AgentGatewayIdentityResolver handlers.AgentGatewayIdentityResolver
@@ -336,7 +347,13 @@ type BifrostHTTPServer struct {
 	agentGatewayCloseOnce sync.Once
 	// agentGatewayManager backs the gRPC binding, which needs the manager
 	// directly rather than through the HTTP handler.
-	agentGatewayManager    *agent.Manager
+	agentGatewayManager *agent.Manager
+	// relays serves /relay/{name}/{path}; built by InitializeRelays together with RelaysHandler,
+	// the management handler a clustered server replays relay changes through.
+	relays                 *relay.Manager
+	RelaysHandler          *handlers.RelaysHandler
+	endpointSweeperCancel  context.CancelFunc
+	endpointSweeperMu      sync.Mutex // serializes sweeper restarts from concurrent plugin reloads
 	agentGatewayGRPCServer *handlers.AgentGatewayGRPCServer
 }
 
@@ -484,30 +501,82 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	return nil
 }
 
-// PersistMCPClientTools writes a freshly (re)discovered tool set to the DB
-// via ConfigStore's targeted column update. core/mcp has no DB access of its
-// own; this is registered as the MCP manager's tools-change callback so
-// every discovery path — connect/reconnect, per-call discovery, and the
-// periodic checker's own refresh — persists uniformly. Best-effort: a
-// failure here is logged, not propagated, since this runs from a callback
-// with no caller to return an error to — the next discovery event (or the
-// periodic checker's own retry) tries again.
-func (s *BifrostHTTPServer) PersistMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) {
-	if s.Config == nil || s.Config.ConfigStore == nil {
-		return
+// mcpDiscoveryRetryBackoff is the wait before retrying a failed discovery write: 1s doubling to 1m.
+var mcpDiscoveryRetryBackoff = func(attempt int) time.Duration {
+	return min(time.Second<<min(attempt-1, 6), time.Minute)
+}
+
+// mcpDiscoveryWriter saves each MCP client's newest discovery, one write at a time per client. The
+// manager records a discovery's hash before it is saved, so a failed write is retried here: an
+// identical later discovery would not ask again.
+type mcpDiscoveryWriter struct {
+	mu      sync.Mutex
+	pending map[string]*schemas.MCPDiscovery // newest unsaved discovery per client, dropped once written
+	running map[string]bool                  // clients with a write loop
+}
+
+// enqueue makes discovery clientID's next write, replacing an unwritten older one, and starts the
+// client's write loop if none is running.
+func (w *mcpDiscoveryWriter) enqueue(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery, write func(context.Context, string, *schemas.MCPDiscovery) error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.pending == nil {
+		w.pending, w.running = map[string]*schemas.MCPDiscovery{}, map[string]bool{}
 	}
-	if err := s.Config.ConfigStore.UpdateMCPClientTools(ctx, clientID, tools, toolNameMapping, instructions); err != nil {
-		logger.Error(fmt.Sprintf("Failed to persist discovered tools for MCP client %s: %v", clientID, err))
+	w.pending[clientID] = discovery
+	if !w.running[clientID] {
+		w.running[clientID] = true
+		go w.drain(ctx, clientID, write)
 	}
 }
 
-// SyncMCPServersAfterToolsChange re-syncs Bifrost's own hosted MCP server(s)
-// so a freshly (re)discovered tool list is immediately visible via /mcp.
-// SetClientTools (below) already does this for handler-driven updates
-// (verify-headers, complete-oauth, admin-repair) — this is the same resync,
-// reachable from the tools-change callback so periodic-checker refreshes and
-// sticky reconnects get it too, not just one-time admin actions. Best-effort,
-// same reasoning as PersistMCPClientTools.
+// drain writes clientID's pending discoveries until none is left, retrying a failure with backoff
+// unless the client is gone or ctx ends.
+func (w *mcpDiscoveryWriter) drain(ctx context.Context, clientID string, write func(context.Context, string, *schemas.MCPDiscovery) error) {
+	for attempt := 0; ; {
+		w.mu.Lock()
+		discovery, ok := w.pending[clientID]
+		if !ok || ctx.Err() != nil {
+			delete(w.pending, clientID)
+			delete(w.running, clientID)
+			w.mu.Unlock()
+			return
+		}
+		delete(w.pending, clientID)
+		w.mu.Unlock()
+
+		err := write(ctx, clientID, discovery)
+		if err == nil || errors.Is(err, configstore.ErrNotFound) {
+			attempt = 0
+			continue
+		}
+		attempt++
+		logger.Error(fmt.Sprintf("Failed to persist discovery for MCP client %s (attempt %d, retrying): %v", clientID, attempt, err))
+		w.mu.Lock()
+		if _, newer := w.pending[clientID]; !newer {
+			w.pending[clientID] = discovery
+		}
+		w.mu.Unlock()
+		select {
+		case <-ctx.Done():
+		case <-time.After(mcpDiscoveryRetryBackoff(attempt)):
+		}
+	}
+}
+
+// PersistMCPClientDiscovery is the MCP manager's discovery-change callback: it queues the discovery's
+// columns for the DB without blocking. Writes per client are serialized, newest wins, and a failed
+// write is retried until it lands, the client is deleted or ctx ends.
+func (s *BifrostHTTPServer) PersistMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	store := s.Config.ConfigStore
+	s.mcpDiscoveries.enqueue(ctx, clientID, discovery, store.UpdateMCPClientDiscovery)
+}
+
+// SyncMCPServersAfterToolsChange re-syncs the hosted /mcp server after a discovery change, so
+// checker refreshes and reconnects show up there like handler-driven updates. Best-effort.
 func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, clientID string) {
 	if s.MCPServerHandler == nil {
 		return
@@ -572,20 +641,19 @@ func (s *BifrostHTTPServer) EnableMCPClient(ctx context.Context, id string) erro
 
 // VerifyHeadersConnection delegates to the Bifrost client to verify an MCP
 // server with caller-supplied header values and discover its tools.
-func (s *BifrostHTTPServer) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (s *BifrostHTTPServer) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error) {
 	return s.Client.VerifyHeadersConnection(ctx, config, userHeaders)
 }
 
 // VerifyPerUserOAuthConnection delegates to the Bifrost client to verify an MCP
 // server using a temporary access token and discover available tools.
-func (s *BifrostHTTPServer) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (s *BifrostHTTPServer) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error) {
 	return s.Client.VerifyPerUserOAuthConnection(ctx, config, accessToken)
 }
 
-// SetClientTools delegates to the Bifrost client to update tool map for an existing MCP client,
-// then re-syncs the MCP server so the new tools are immediately visible via /mcp.
-func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) {
-	s.Client.SetClientTools(clientID, tools, toolNameMapping, instructions)
+// SetClientDiscovery installs discovery on an existing MCP client and re-syncs /mcp.
+func (s *BifrostHTTPServer) SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery) {
+	s.Client.SetClientDiscovery(clientID, discovery)
 	if err := s.MCPServerHandler.SyncMCPServer(context.Background()); err != nil {
 		logger.Warn("failed to sync MCP servers after setting client tools: %v", err)
 	}
@@ -622,6 +690,38 @@ func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.
 func (s *BifrostHTTPServer) GetMCPServerInstructions(ctx context.Context) string {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	return s.Client.GetMCPServerInstructions(bifrostCtx)
+}
+
+var _ handlers.MCPResourcesAndPromptsServer = (*BifrostHTTPServer)(nil)
+
+// GetAvailableMCPPrompts lists the upstream prompts visible to ctx.
+func (s *BifrostHTTPServer) GetAvailableMCPPrompts(ctx context.Context) []mcp.Prompt {
+	return s.Client.GetAvailableMCPPrompts(schemas.NewBifrostContext(ctx, schemas.NoDeadline))
+}
+
+// GetAvailableMCPResources lists the upstream resources visible to ctx.
+func (s *BifrostHTTPServer) GetAvailableMCPResources(ctx context.Context) []mcp.Resource {
+	return s.Client.GetAvailableMCPResources(schemas.NewBifrostContext(ctx, schemas.NoDeadline))
+}
+
+// GetAvailableMCPResourceTemplates lists the upstream resource templates visible to ctx.
+func (s *BifrostHTTPServer) GetAvailableMCPResourceTemplates(ctx context.Context) []mcp.ResourceTemplate {
+	return s.Client.GetAvailableMCPResourceTemplates(schemas.NewBifrostContext(ctx, schemas.NoDeadline))
+}
+
+// GetMCPPrompt fetches a prompt from the upstream that owns it.
+func (s *BifrostHTTPServer) GetMCPPrompt(ctx context.Context, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError) {
+	return s.Client.GetMCPPrompt(schemas.NewBifrostContext(ctx, schemas.NoDeadline), name, arguments)
+}
+
+// ReadMCPResource reads a resource from the upstream that owns it.
+func (s *BifrostHTTPServer) ReadMCPResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError) {
+	return s.Client.ReadMCPResource(schemas.NewBifrostContext(ctx, schemas.NoDeadline), uri)
+}
+
+// CompleteMCPArgument completes an argument from the upstream that owns the reference.
+func (s *BifrostHTTPServer) CompleteMCPArgument(ctx context.Context, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError) {
+	return s.Client.CompleteMCPArgument(schemas.NewBifrostContext(ctx, schemas.NoDeadline), params)
 }
 
 // markPluginDisabled marks a plugin as disabled in the plugin status
@@ -1626,6 +1726,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
 			MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
 			A2APlugins:         s.Config.GetLoadedA2APlugins(),
+			RelayPlugins:       s.Config.GetLoadedRelayPlugins(),
 			MCPConfig:          mcpConfig,
 			Logger:             logger,
 		})
@@ -1653,6 +1754,12 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		}
 		if err := s.Client.UpdateMCPToolSyncInterval(syncInterval); err != nil {
 			logger.Warn("failed to sync MCP tool sync interval during client config reload: %v", err)
+		}
+		if s.Config.MCPConfig != nil {
+			s.Config.MCPConfig.MaxProtocolVersion = s.Config.ClientConfig.MCPMaxProtocolVersion
+		}
+		if err := s.Client.UpdateMCPMaxProtocolVersion(s.Config.ClientConfig.MCPMaxProtocolVersion); err != nil {
+			logger.Warn("failed to sync MCP max protocol version during client config reload: %v", err)
 		}
 	}
 	return nil
@@ -2359,6 +2466,7 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 	if err := s.Config.SetGlobalProxyConfig(config); err != nil {
 		return err
 	}
+	s.rebuildRelays(ctx)
 	if config == nil {
 		logger.Info("proxy configuration removed")
 		return nil
@@ -2779,6 +2887,9 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
+	if s.relays != nil {
+		handlers.NewRelayGatewayHandler(s.relays, s.Config, logger).RegisterRoutes(s.Router, middlewares...)
+	}
 	if s.AgentGatewayHandler != nil {
 		protocolMiddlewares := append([]schemas.BifrostHTTPMiddleware{}, middlewares...)
 		validator, _ := s.virtualKeyCache().(handlers.AgentGatewayVirtualKeyValidator)
@@ -2828,6 +2939,25 @@ func (s *BifrostHTTPServer) notificationPublisher() schemas.NotificationPublishe
 			return nil, nil
 		}
 		return publish(ctx, input)
+	}
+}
+
+// staleMCPOAuthDropper is what dropStaleMCPOAuthState needs from the server.
+type staleMCPOAuthDropper interface {
+	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
+	CloseAndMarkNeedsReauth(ctx context.Context, id string) error
+}
+
+// dropStaleMCPOAuthState drops an MCP client's cached tokens and shared connection after the OAuth
+// provider rotated its credentials. It goes through callbacks so enterprise peers drop theirs too, and
+// finishes before the sign-in it rotated for starts: a late drop would close that sign-in's connection.
+func dropStaleMCPOAuthState(callbacks staleMCPOAuthDropper) func(ctx context.Context, mcpClientID string) {
+	return func(ctx context.Context, mcpClientID string) {
+		ctx = context.WithoutCancel(ctx)
+		callbacks.EvictOauthTokenCacheByMCPClient(ctx, mcpClientID)
+		if err := callbacks.CloseAndMarkNeedsReauth(ctx, mcpClientID); err != nil && !errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+			logger.Warn("failed to close MCP client %s's connection after its OAuth credentials rotated: %v", mcpClientID, err)
+		}
 	}
 }
 
@@ -2962,6 +3092,25 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
 	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks)
+	// The headers provider evicts a credential it writes only from this
+	// process's cache. Forward those evictions to callbacks so a deployment
+	// that overrides EvictMCPHeaderCredentialCacheByID reaches every process,
+	// off the write path so a slow listener never delays the write.
+	if s.Config.MCPHeadersProvider != nil {
+		s.Config.MCPHeadersProvider.SetOnCredentialWritten(func(ctx context.Context, credentialID string) {
+			go callbacks.EvictMCPHeaderCredentialCacheByID(context.WithoutCancel(ctx), credentialID)
+		})
+	}
+	// Same for token rows the OAuth provider writes. Off the write path
+	// matters more here: the hook also fires inside refreshes that other
+	// callers are waiting on.
+	if s.Config.OAuthProvider != nil {
+		s.Config.OAuthProvider.SetOnTokenWritten(func(ctx context.Context, tokenID string) {
+			go callbacks.EvictOauthTokenCacheByID(context.WithoutCancel(ctx), tokenID)
+		})
+		// A rotation the provider makes itself drops what the update API drops after its own, inline as there.
+		s.Config.OAuthProvider.SetCredentialsRotatedHook(dropStaleMCPOAuthState(callbacks))
+	}
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
@@ -2973,9 +3122,16 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.AgentGatewayHandler != nil {
 		s.AgentGatewayHandler.RegisterManagementRoutes(s.Router, middlewares...)
 	}
+	if s.RelaysHandler != nil {
+		s.RelaysHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	// Going ahead with API handlers
 	oauth2DiscoveryHandler := handlers.NewOAuth2DiscoveryHandler(s.Config)
 	oauth2IssuanceHandler := handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	if s.OAuth2Extensions != nil {
+		oauth2DiscoveryHandler.SetExtensions(s.OAuth2Extensions)
+		oauth2IssuanceHandler.SetExtensions(s.OAuth2Extensions)
+	}
 	oauth2SessionsHandler := handlers.NewOAuth2SessionsHandler(s.Config)
 	oauth2ConsentHandler := handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
 
@@ -3385,6 +3541,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
 		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
 		A2APlugins:         s.Config.GetLoadedA2APlugins(),
+		RelayPlugins:       s.Config.GetLoadedRelayPlugins(),
 		MCPConfig:          mcpConfig,
 		OAuth2Provider:     s.Config.OAuthProvider,
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
@@ -3520,6 +3677,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Initialize the Agent Gateway once before either management or protocol
 	// routes are registered.
+	s.InitializeRelays(s.Ctx, nil, nil)
 	if err = s.InitializeAgentGateway(s.Ctx, nil, nil); err != nil {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
@@ -3604,8 +3762,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Registered before ConnectConfiguredMCPClients so even the very first
 	// boot dial's discovered tools get persisted, not just later reconnects.
-	s.Client.SetMCPToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) {
-		go s.PersistMCPClientTools(s.Ctx, clientID, tools, toolNameMapping, instructions)
+	s.Client.SetMCPDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
+		s.PersistMCPClientDiscovery(s.Ctx, clientID, discovery)
 		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
 	})
 	// Dial configured MCP clients now that every plugin is registered in the core.

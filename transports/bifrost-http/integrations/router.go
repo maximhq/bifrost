@@ -376,6 +376,12 @@ type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError)
 // It takes a BifrostError and returns the streaming error format expected by the specific integration.
 type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
 
+// StreamCleanupFunc releases per-stream provider state once the transport has
+// finished converting the stream's chunks. It runs from the producer's deferred
+// cleanup, after the chunk loop has drained, so a stream that ends without a
+// terminal frame still reclaims what it opened.
+type StreamCleanupFunc func(ctx *schemas.BifrostContext)
+
 // RequestParser is a function that handles custom request body parsing.
 // It replaces the default JSON parsing when configured (e.g., for multipart/form-data).
 // The parser should populate the provided request object from the fasthttp context.
@@ -467,6 +473,7 @@ type StreamConfig struct {
 	TranscriptionStreamResponseConverter   TranscriptionStreamResponseConverter   // Function to convert BifrostTranscriptionResponse to streaming format
 	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                         StreamErrorConverter                   // Function to convert BifrostError to streaming error format
+	Cleanup                                StreamCleanupFunc                      // Releases per-stream provider state after the chunk loop drains
 	HeartbeatFraming                       lib.SSEHeartbeatFraming                // Wire framing for no-op SSE heartbeat comments
 }
 
@@ -479,6 +486,7 @@ const (
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 	RouteConfigTypeCohere    RouteConfigType = "cohere"
 	RouteConfigTypeTypesafe  RouteConfigType = "typesafe"
+	RouteConfigTypeAzure     RouteConfigType = "azure"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -557,6 +565,8 @@ type PassthroughConfig struct {
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
 	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
+	ModelFreePath func(method, path string) bool // optional: requests that run no model, so model allowlists are skipped
+	PathModel     func(path string) string       // optional: the model a provider-shaped path addresses, used for key selection and governance
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -1303,6 +1313,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			}
 			// Early return skips the common footer — apply routed-identity headers here.
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
+			// Raw bytes are the audio itself, under the Content-Type the PostCallback set.
+			if rawBytes, ok := response.([]byte); ok {
+				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
+				ctx.Response.SetBody(rawBytes)
+				return
+			}
 			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			return
 		} else {
@@ -3003,6 +3019,13 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// leaving traceCompleter and the post-hooks below an uncancelled context.
 			// cancel is idempotent, so the explicit error-path calls still stand.
 			defer cancel()
+			// The chunk loop below has drained by the time this runs, so every queued
+			// chunk is already converted -- the one ordering a stream cleanup needs.
+			// The error path has its own release in ErrorConverter; this is the normal
+			// close, including a stream that ended without a terminal frame.
+			if config.StreamConfig != nil && config.StreamConfig.Cleanup != nil {
+				config.StreamConfig.Cleanup(bifrostCtx)
+			}
 			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
 			// could still be mid-send on it panics ("send on closed channel"). See
 			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
@@ -3641,7 +3664,8 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	case schemas.Anthropic:
 		forward = isAnthropicOAuthBearer(authHeader)
 	case schemas.OpenAI:
-		forward = isJWTBearer(authHeader)
+		// Only the ChatGPT backend takes a caller token, and only one ChatGPT issued; everything else keeps the stored key.
+		forward = upstreamURL == chatGPTUpstreamURL && isChatGPTBearer(authHeader)
 	}
 	if !forward {
 		return
@@ -3660,7 +3684,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
-		case "api-key", "x-api-key", "x-goog-api-key",
+		case "api-key", "x-api-key", "x-goog-api-key", "ocp-apim-subscription-key",
 			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
@@ -3698,6 +3722,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	resolvedModel := extractPassthroughModel(path, bodyModel)
+	if cfg.PathModel != nil {
+		resolvedModel = cfg.PathModel(path)
+	}
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
@@ -3715,6 +3742,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
+	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	}
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{

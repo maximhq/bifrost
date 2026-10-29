@@ -146,6 +146,7 @@ type Key struct {
 	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
 	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
 	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
+	SageMakerKeyConfig     *SageMakerKeyConfig     `json:"sagemaker_key_config,omitempty"`      // AWS SageMaker-specific key configuration
 	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
@@ -199,9 +200,12 @@ func (mf *ModelFamily) IsValid() bool {
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
 // Each field, when non-nil, overrides the corresponding key-level default.
 type AzureAliasCfg struct {
-	APIVersion       *string    `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
-	AnthropicVersion *string    `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
-	Endpoint         *SecretVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
+	APIVersion         *string    `json:"api_version,omitempty"`          // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion   *string    `json:"anthropic_version,omitempty"`    // overrides the anthropic-version header for Claude-on-Azure deployments
+	Endpoint           *SecretVar `json:"endpoint,omitempty"`             // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
+	UseSpeechEndpoints *bool      `json:"use_speech_endpoints,omitempty"` // overrides AzureKeyConfig.UseSpeechEndpoints for this alias
+
+	UseVoiceLiveEndpoints *bool `json:"use_voice_live_endpoints,omitempty"` // overrides AzureKeyConfig.UseVoiceLiveEndpoints for this alias
 }
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
@@ -804,6 +808,10 @@ type AzureKeyConfig struct {
 	ClientSecret *SecretVar `json:"client_secret,omitempty"` // Azure client secret for authentication
 	TenantID     *SecretVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
 	Scopes       []string   `json:"scopes,omitempty"`
+
+	UseSpeechEndpoints bool `json:"use_speech_endpoints,omitempty"` // sends speech and transcription requests to Azure AI Speech instead of Azure OpenAI
+
+	UseVoiceLiveEndpoints bool `json:"use_voice_live_endpoints,omitempty"` // sends realtime sessions to Azure Voice Live instead of Azure OpenAI
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
@@ -998,6 +1006,34 @@ type BedrockMantleKeyConfig struct {
 
 // NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty
 // strings. To use Bedrock Mantle API Key authentication, set Value in the Key struct instead.
+
+// SageMakerKeyConfig holds the AWS credentials and routing options for SageMaker real-time
+// endpoints. Empty AccessKey and SecretKey use the default AWS credential chain.
+type SageMakerKeyConfig struct {
+	AccessKey       SecretVar  `json:"access_key,omitempty"`    // AWS access key used to mint bearer tokens
+	SecretKey       SecretVar  `json:"secret_key,omitempty"`    // AWS secret access key
+	SessionToken    *SecretVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region          *SecretVar `json:"region,omitempty"`        // Endpoint region (required); a model id region prefix overrides it per request
+	RoleARN         *SecretVar `json:"role_arn,omitempty"`      // IAM role for STS AssumeRole
+	ExternalID      *SecretVar `json:"external_id,omitempty"`
+	RoleSessionName *SecretVar `json:"session_name,omitempty"`
+
+	Endpoints *SageMakerEndpoints `json:"endpoints,omitempty"` // Runtime host override (VPC endpoint, FIPS, dual-stack)
+}
+
+// SageMakerEndpoints overrides the SageMaker runtime host.
+type SageMakerEndpoints struct {
+	Runtime *SecretVar `json:"runtime,omitempty"` // e.g. vpce-....runtime.sagemaker.{region}.vpce.amazonaws.com
+}
+
+// Redacted copies the endpoints, preserving a literal host while masking a resolved env/vault
+// value. A nil endpoint configuration stays nil.
+func (e *SageMakerEndpoints) Redacted() *SageMakerEndpoints {
+	if e == nil {
+		return nil
+	}
+	return &SageMakerEndpoints{Runtime: e.Runtime.RedactedIfSecret()}
+}
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,

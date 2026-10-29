@@ -89,7 +89,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-View-As, X-Bifrost-Setup-Token, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name, Last-Event-ID" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -226,6 +226,32 @@ func TestCorsMiddleware_PreflightAllowsSetupTokenHeader(t *testing.T) {
 				if !strings.Contains(allowHeaders, "x-bifrost-setup-token") {
 					t.Errorf("%s: Access-Control-Allow-Headers %q must include X-Bifrost-Setup-Token", origin, allowHeaders)
 				}
+			}
+		})
+	}
+}
+
+// Browser MCP clients send the Streamable HTTP headers on every request after initialize, and on
+// every 2026-07-28 request; a preflight that leaves any out blocks the request in the browser.
+func TestCorsMiddleware_PreflightAllowsMCPTransportHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	requested := []string{"content-type", "mcp-protocol-version", "mcp-session-id", "mcp-method", "mcp-name", "last-event-id", "mcp-param-region"}
+	for _, origins := range [][]string{{"*"}, {"https://inspector.example.com"}} {
+		t.Run(strings.Join(origins, ","), func(t *testing.T) {
+			config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: origins}}
+			for _, origin := range []string{"http://localhost:6274", "https://inspector.example.com"} {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("OPTIONS")
+				ctx.Request.Header.Set("Origin", origin)
+				ctx.Request.Header.Set("Access-Control-Request-Headers", strings.Join(requested, ", "))
+				NewCorsMiddleware(config).Middleware()(func(ctx *fasthttp.RequestCtx) {})(ctx)
+				assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), origin)
+				allowed := strings.Split(strings.ToLower(string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))), ", ")
+				for _, header := range requested {
+					assert.Contains(t, allowed, header, "%s: Access-Control-Allow-Headers", origin)
+				}
+				exposed := strings.Split(strings.ToLower(string(ctx.Response.Header.Peek("Access-Control-Expose-Headers"))), ", ")
+				assert.Contains(t, exposed, "mcp-session-id", "%s: initialize's session id must be readable", origin)
 			}
 		})
 	}
@@ -1415,6 +1441,8 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 		// into a redirect loop in the dashboard.
 		"/api/session/logout",
 		"/api/oauth/callback",
+		// Client ID Metadata Document
+		"/api/oauth/client-metadata.json",
 		"/health",
 	}
 
@@ -2098,7 +2126,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-View-As, X-Bifrost-Setup-Token, MCP-Protocol-Version, Mcp-Session-Id, Mcp-Method, Mcp-Name, Last-Event-ID"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
@@ -2133,14 +2161,45 @@ func TestCorsMiddleware_WildcardHeaders_NonCredentialed(t *testing.T) {
 	handler := middleware(next)
 	handler(ctx)
 
-	// Non-credentialed: wildcard is valid per spec
+	// Non-credentialed: the wildcard is valid per spec, but never covers Authorization, so the
+	// defaults stay listed beside it.
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
-	if actualHeaders != "*" {
-		t.Errorf("Expected Access-Control-Allow-Headers to be *, got %s", actualHeaders)
+	if actualHeaders != corsAllowHeaders(nil)+", *" {
+		t.Errorf("Expected Access-Control-Allow-Headers to be the defaults plus *, got %s", actualHeaders)
 	}
 
 	if !nextCalled {
 		t.Error("Next handler was not called")
+	}
+}
+
+// TestCorsMiddleware_WildcardHeaders_NonCredentialedPreflightAllowsAuthorization pins that a browser
+// client on a wildcard-allowed origin can send a bearer token: the Fetch standard never lets "*"
+// authorize the Authorization request header, so it must be listed explicitly.
+func TestCorsMiddleware_WildcardHeaders_NonCredentialedPreflightAllowsAuthorization(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedHeaders: []string{"*"},
+		},
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodOptions)
+	ctx.Request.Header.Set("Origin", "https://inspector.example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Method", fasthttp.MethodPost)
+	ctx.Request.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	NewCorsMiddleware(config).Middleware()(func(*fasthttp.RequestCtx) {})(ctx)
+
+	allowed := strings.Split(string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")), ", ")
+	if !slices.Contains(allowed, "Authorization") {
+		t.Errorf("Expected Authorization to be listed explicitly, got %v", allowed)
+	}
+	if !slices.Contains(allowed, "*") {
+		t.Errorf("Expected the wildcard to still allow other headers, got %v", allowed)
+	}
+	if len(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != 0 {
+		t.Error("A wildcard-matched origin must not get credentialed CORS")
 	}
 }
 
@@ -5352,5 +5411,100 @@ func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
 	// No traceparent means no parent to rebuild, so a lone tracestate is not stored.
 	if got := run(map[string]string{"tracestate": traceState}); got != "" {
 		t.Errorf("tracestate stored with no traceparent: %q", got)
+	}
+}
+
+// TestLogRequestTargetRedactsAPIKeyQuery pins that a key sent in the query string never reaches the access log,
+// including under a percent-encoded name.
+func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=sk-bf-secret": "/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=REDACTED",
+		"/v1/chat/completions?stream=true":                                  "/v1/chat/completions?stream=true",
+		"/voice-live/realtime?%61pi-key=sk-bf-secret&model=gpt-realtime-vl": "/voice-live/realtime?api-key=REDACTED&model=gpt-realtime-vl",
+		"/azure/voice-live/realtime?api%2Dkey=sk-bf-secret":                 "/azure/voice-live/realtime?api-key=REDACTED",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
+// BenchmarkLogRequestTarget measures the access log target on a request without a query string, the common case.
+func BenchmarkLogRequestTarget(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
+	}
+}
+
+// manyMCPParamHeaders is an Access-Control-Request-Headers value naming n mcp-param- headers.
+func manyMCPParamHeaders(n int) string {
+	names := make([]string, n)
+	for i := range names {
+		names[i] = fmt.Sprintf("mcp-param-p%d", i)
+	}
+	return strings.Join(names, ", ")
+}
+
+// Echoing a preflight's mcp-param- names costs one allocation however many it lists, and a
+// disallowed origin gets no CORS headers.
+func TestCorsMiddleware_MCPParamHeadersAreBounded(t *testing.T) {
+	requested := manyMCPParamHeaders(500)
+	defaults, requestedBytes := corsAllowHeaders(nil), []byte(requested)
+	if got, want := appendMCPParamHeaders(defaults, requestedBytes), defaults+", "+requested; got != want {
+		t.Fatalf("every name must be echoed, in order: got %d bytes, want %d", len(got), len(want))
+	}
+	if allocs := testing.AllocsPerRun(20, func() { _ = appendMCPParamHeaders(defaults, requestedBytes) }); allocs > 1 {
+		t.Fatalf("the list must be built once, not copied per name: %.0f allocs", allocs)
+	}
+	noParams := []byte("content-type, mcp-method")
+	if allocs := testing.AllocsPerRun(20, func() { _ = appendMCPParamHeaders(defaults, noParams) }); allocs != 0 {
+		t.Fatalf("a preflight asking for no mcp-param- names must not allocate: %.0f allocs", allocs)
+	}
+
+	SetLogger(&mockLogger{})
+	handler := NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"https://app.example.com"}}}).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodOptions)
+	ctx.Request.Header.Set("Origin", "https://evil.example.com")
+	ctx.Request.Header.Set("Access-Control-Request-Headers", requested)
+	handler(&ctx)
+	if got := ctx.Response.Header.Peek("Access-Control-Allow-Headers"); len(got) != 0 {
+		t.Fatalf("a disallowed origin must get no CORS headers, got %q", got)
+	}
+}
+
+// BenchmarkCorsMiddleware measures the CORS headers on a cross-origin request, which every route
+// pays, and on an MCP client's preflight.
+func BenchmarkCorsMiddleware(b *testing.B) {
+	SetLogger(&mockLogger{})
+	handler := NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*"}}}).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+	cases := []struct {
+		name    string
+		method  string
+		request string
+	}{
+		{"request", fasthttp.MethodPost, ""},
+		{"preflight-mcp", fasthttp.MethodOptions, "content-type, mcp-protocol-version, mcp-method, mcp-name, mcp-param-region"},
+		{"preflight-many-params", fasthttp.MethodOptions, manyMCPParamHeaders(500)},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.Header.Set("Origin", "https://app.example.com")
+			if tc.request != "" {
+				ctx.Request.Header.Set("Access-Control-Request-Headers", tc.request)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx.Response.Reset()
+				handler(&ctx)
+			}
+		})
 	}
 }

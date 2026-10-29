@@ -17,11 +17,13 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
@@ -3272,6 +3274,161 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 	wg.Wait()
 }
 
+// streamSpanRecorder records each span's parent, start and end, for checking the
+// shape of streaming post-hook spans.
+type streamSpanRecorder struct {
+	schemas.NoOpTracer
+	mu       sync.Mutex
+	spans    map[string]*streamSpanRecord
+	deferred string // the stream's LLM span, as GetDeferredSpanID returns it
+}
+
+type streamSpanRecord struct {
+	name, parent string
+	start, end   time.Time
+	attrs        map[string]any
+}
+
+func (t *streamSpanRecorder) StartSpanID(ctx context.Context, name string, _ schemas.SpanKind) (string, schemas.SpanHandle) {
+	parent, _ := ctx.Value(schemas.BifrostContextKeySpanID).(string)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id := fmt.Sprintf("span-%d", len(t.spans)+1)
+	t.spans[id] = &streamSpanRecord{name: name, parent: parent, start: time.Now(), attrs: map[string]any{}}
+	return id, id
+}
+
+func (t *streamSpanRecorder) StartSpan(ctx context.Context, name string, kind schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	id, h := t.StartSpanID(ctx, name, kind)
+	return context.WithValue(ctx, schemas.BifrostContextKeySpanID, id), h
+}
+
+func (t *streamSpanRecorder) SetAttribute(h schemas.SpanHandle, key string, value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].attrs[key] = value
+}
+
+func (t *streamSpanRecorder) SetSpanStartTime(h schemas.SpanHandle, start time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].start = start
+}
+
+func (t *streamSpanRecorder) EndSpan(h schemas.SpanHandle, _ schemas.SpanStatus, _ string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].end = time.Now()
+}
+
+func (t *streamSpanRecorder) GetDeferredSpanID(_ string) string { return t.deferred }
+
+func (t *streamSpanRecorder) byName(name string) (string, *streamSpanRecord) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id, s := range t.spans {
+		if s.name == name {
+			return id, s
+		}
+	}
+	return "", nil
+}
+
+// slowStreamPlugin takes a fixed time per chunk and, on the final chunk, records a
+// span of its own the way a guardrail writes its result span.
+type slowStreamPlugin struct {
+	fakeRoutingPlugin
+	delay time.Duration
+}
+
+func (p *slowStreamPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	time.Sleep(p.delay)
+	if IsFinalChunk(ctx) {
+		tracer := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		_, h := tracer.StartSpan(ctx, "plugin.slow.output", schemas.SpanKindPlugin)
+		tracer.EndSpan(h, schemas.SpanStatusOk, "")
+	}
+	return resp, bifrostErr, nil
+}
+
+// Streaming post-hook spans are siblings under the LLM span, each as long as its
+// plugin's summed per-chunk time and ending when its final-chunk hook returns. A span
+// the plugin opens mid-stream nests under that post-hook span and inside its window,
+// even when the client is slow to take the final chunk.
+func TestStreamingPostHookSpans_SiblingsWithRealDuration(t *testing.T) {
+	tracer := &streamSpanRecorder{spans: map[string]*streamSpanRecord{}, deferred: "llm"}
+	slow := &slowStreamPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "slow"}, delay: 10 * time.Millisecond}
+	fast := &fakeRoutingPlugin{name: "fast"}
+	p := &PluginPipeline{
+		llmPlugins: []schemas.LLMPlugin{fast, slow},
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     tracer,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(tracer))
+	ctx.SetValue(schemas.BifrostContextKeySpanID, "llm")
+	ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+
+	const chunks = 3
+	for i := 0; i < chunks; i++ {
+		if i == chunks-1 {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		}
+		p.RunPostLLMHooks(ctx, &schemas.BifrostResponse{}, nil, len(p.llmPlugins))
+	}
+	hooksDone := time.Now()
+	time.Sleep(50 * time.Millisecond) // a slow client send of the final chunk, before finalizing
+	p.FinalizeStreamingPostHookSpans(ctx)
+
+	slowID, slowSpan := tracer.byName("plugin.slow.posthook")
+	_, fastSpan := tracer.byName("plugin.fast.posthook")
+	_, output := tracer.byName("plugin.slow.output")
+	if slowSpan == nil || fastSpan == nil || output == nil {
+		t.Fatalf("missing spans: slow=%v fast=%v output=%v", slowSpan, fastSpan, output)
+	}
+	if slowSpan.parent != "llm" || fastSpan.parent != "llm" {
+		t.Errorf("posthook parents = slow:%q fast:%q, want both under the LLM span", slowSpan.parent, fastSpan.parent)
+	}
+	got := slowSpan.end.Sub(slowSpan.start)
+	if want := chunks * slow.delay; got < want || got > want+15*time.Millisecond {
+		t.Errorf("slow posthook span lasts %v, want about %v (its summed hook time)", got, want)
+	}
+	if output.parent != slowID {
+		t.Errorf("output span parent = %q, want the slow posthook span %q", output.parent, slowID)
+	}
+	if slowSpan.end.After(hooksDone) {
+		t.Errorf("slow posthook span ends %v after the hooks, want it to end with its final-chunk hook", slowSpan.end.Sub(hooksDone))
+	}
+	if output.start.Before(slowSpan.start) || output.end.After(slowSpan.end) {
+		t.Errorf("output span [%v, %v] lies outside its parent [%v, %v]", output.start, output.end, slowSpan.start, slowSpan.end)
+	}
+}
+
+// BenchmarkStreamingPostHooks runs one 20-chunk stream's post-hooks across 5 plugins,
+// finalizing and releasing the pipeline as a stream does.
+func BenchmarkStreamingPostHooks(b *testing.B) {
+	plugins := make([]schemas.LLMPlugin, 5)
+	for i := range plugins {
+		plugins[i] = &fakeRoutingPlugin{name: fmt.Sprintf("plugin-%d", i)}
+	}
+	resp := &schemas.BifrostResponse{}
+	logger, tracer := NewDefaultLogger(schemas.LogLevelError), &schemas.NoOpTracer{}
+	p := &PluginPipeline{}
+	b.ReportAllocs()
+	for b.Loop() {
+		p.llmPlugins, p.logger, p.tracer = plugins, logger, tracer
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+		ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+		for range 20 {
+			p.RunPostLLMHooks(ctx, resp, nil, len(plugins))
+		}
+		p.FinalizeStreamingPostHookSpans(ctx)
+		p.resetPluginPipeline()
+	}
+}
+
 // TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
 // a hit returns the single matching key, a miss returns an empty slice
 // (which the caller surfaces as "no key found"), and the input slice must
@@ -3544,9 +3701,9 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 }
 
 // agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
-// the in-process echo tool, and a turn that carries the tool result answers. It records the
-// model of every request it serves.
-func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+// the in-process echo tool, and a turn that carries the tool result answers. Each turn stalls for
+// turnDelay before answering. It records the model of every request it serves.
+func agentLoopServer(t *testing.T, turnDelay time.Duration) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	var models []string
@@ -3559,6 +3716,7 @@ func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
 		mu.Lock()
 		models = append(models, parsed.Model)
 		mu.Unlock()
+		time.Sleep(turnDelay)
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(string(body), `"role":"tool"`) {
 			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
@@ -3614,7 +3772,7 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 // the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
 // routed model.
 func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
-	server, models := agentLoopServer(t)
+	server, models := agentLoopServer(t, 0)
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
 	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
@@ -3659,7 +3817,7 @@ func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
 		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
 	}))
 	t.Cleanup(primary.Close)
-	fallback, models := agentLoopServer(t)
+	fallback, models := agentLoopServer(t, 0)
 
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
@@ -3950,10 +4108,15 @@ func TestShouldContinueWithFallbacksStopsOnNilError(t *testing.T) {
 // Claude Code OAuth key-selection skip applies only when the attempt resolved to Anthropic. A
 // governance routing rule can rewrite provider/model after the transport set the flag, and every
 // non-Anthropic provider authenticates with its own configured key — so it must still get one.
+// OpenAI passthrough is the exception: a ChatGPT token forwarded to the Codex backend is the
+// credential, and a stored API key in its place is refused upstream (api_key_not_supported).
 func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvider(t *testing.T) {
 	account := NewMockAccount()
 	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
 		{ID: "anthropic-key", Name: "anthropic-key", Value: schemas.SecretVar{Val: "sk-ant"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Name: "openai-key", Value: schemas.SecretVar{Val: "sk-openai"}, Models: []string{"*"}, Weight: 1.0},
 	})
 	account.SetKeysForProvider(schemas.Fireworks, []schemas.Key{
 		{ID: "fireworks-key", Name: "fireworks-key", Value: schemas.SecretVar{Val: "fw-key"}, Models: []string{"*"}, Weight: 1.0, UseAnthropicEndpoints: schemas.Ptr(true)},
@@ -3961,13 +4124,17 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
 
 	tests := []struct {
-		name      string
-		provider  schemas.ModelProvider
-		model     string
-		wantKeyID string // "" means the pool must be empty (key selection skipped)
+		name        string
+		requestType schemas.RequestType
+		provider    schemas.ModelProvider
+		model       string
+		wantKeyID   string // "" means the pool must be empty (key selection skipped)
 	}{
-		{"anthropic keeps the skip", schemas.Anthropic, "claude-opus-4-5", ""},
-		{"fireworks selects its own key", schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"anthropic keeps the skip", schemas.ResponsesRequest, schemas.Anthropic, "claude-opus-4-5", ""},
+		{"fireworks selects its own key", schemas.ResponsesRequest, schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"openai passthrough keeps the skip", schemas.PassthroughRequest, schemas.OpenAI, "", ""},
+		{"openai passthrough stream keeps the skip", schemas.PassthroughStreamRequest, schemas.OpenAI, "gpt-5.5", ""},
+		{"openai inference selects its own key", schemas.ResponsesRequest, schemas.OpenAI, "gpt-5.5", "openai-key"},
 	}
 
 	for _, tt := range tests {
@@ -3975,7 +4142,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 
-			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ResponsesRequest, tt.provider, tt.model, tt.provider)
+			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, tt.requestType, tt.provider, tt.model, tt.provider)
 			if err != nil {
 				t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
 			}
@@ -3993,7 +4160,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			}
 			// The regression: without a key, UseAnthropicEndpoints is unreadable and the request
 			// is built with the OpenAI schema, which Fireworks rejects for missing max_tokens.
-			if keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints {
+			if tt.provider == schemas.Fireworks && (keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints) {
 				t.Error("selected key lost UseAnthropicEndpoints")
 			}
 		})
@@ -4155,6 +4322,362 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 	if count != 0 {
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}
+
+// deferredStreamTracer models the tracer's deferred-span store for stream tests: one
+// record per trace ID, as the real TraceStore keys it, counting the chunks recorded
+// against it, plus each span's end count, status, attributes and populated outcome.
+type deferredStreamTracer struct {
+	schemas.NoOpTracer
+	mu      sync.Mutex
+	nextID  int
+	records map[string]*deferredStreamRecord
+	spans   map[string]*deferredStreamSpan
+}
+
+type deferredStreamRecord struct {
+	spanID string
+	chunks int
+}
+
+type deferredStreamSpan struct {
+	kind         schemas.SpanKind
+	ends         int
+	status       schemas.SpanStatus
+	attrs        map[string]any
+	populated    *schemas.BifrostResponse
+	populatedErr *schemas.BifrostError
+}
+
+func newDeferredStreamTracer() *deferredStreamTracer {
+	return &deferredStreamTracer{records: map[string]*deferredStreamRecord{}, spans: map[string]*deferredStreamSpan{}}
+}
+
+func (t *deferredStreamTracer) StartSpanID(_ context.Context, _ string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.nextID++
+	id := fmt.Sprintf("span-%d", t.nextID)
+	t.spans[id] = &deferredStreamSpan{kind: kind, attrs: map[string]any{}}
+	return id, id
+}
+
+func (t *deferredStreamTracer) spanFor(handle schemas.SpanHandle) *deferredStreamSpan {
+	id, _ := handle.(string)
+	return t.spans[id]
+}
+
+func (t *deferredStreamTracer) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		s.attrs[key] = value
+	}
+}
+
+func (t *deferredStreamTracer) PopulateLLMResponseAttributes(_ *schemas.BifrostContext, handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		if resp != nil {
+			s.populated = resp
+		}
+		if err != nil {
+			s.populatedErr = err
+		}
+	}
+}
+
+func (t *deferredStreamTracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, _ string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		s.ends++
+		s.status = status
+	}
+}
+
+func (t *deferredStreamTracer) StoreDeferredSpan(traceID string, handle schemas.SpanHandle) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, _ := handle.(string)
+	t.records[traceID] = &deferredStreamRecord{spanID: id}
+}
+
+func (t *deferredStreamTracer) GetDeferredSpanHandle(traceID string) schemas.SpanHandle {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return r.spanID
+	}
+	return nil
+}
+
+func (t *deferredStreamTracer) GetDeferredSpanID(traceID string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return r.spanID
+	}
+	return ""
+}
+
+func (t *deferredStreamTracer) ClearDeferredSpan(traceID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.records, traceID)
+}
+
+func (t *deferredStreamTracer) AddStreamingChunk(traceID string, _ *schemas.BifrostResponse) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		r.chunks++
+	}
+}
+
+func (t *deferredStreamTracer) GetAccumulatedChunks(traceID string) (*schemas.BifrostResponse, int64, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return nil, 0, r.chunks
+	}
+	return nil, 0, 0
+}
+
+// llmSpans returns the LLM-call and retry-attempt spans in start order.
+func (t *deferredStreamTracer) llmSpans() []*deferredStreamSpan {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []*deferredStreamSpan
+	for i := 1; i <= t.nextID; i++ {
+		if s := t.spans[fmt.Sprintf("span-%d", i)]; s != nil && (s.kind == schemas.SpanKindLLMCall || s.kind == schemas.SpanKindRetry) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (t *deferredStreamTracer) recordCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.records)
+}
+
+func newDeferredStreamContext(tracer *deferredStreamTracer) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	return ctx
+}
+
+// responsesStreamChunks returns two text deltas and a response.completed chunk carrying usage.
+func responsesStreamChunks() []*schemas.BifrostResponse {
+	text := "hi"
+	return []*schemas.BifrostResponse{
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: &text}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: &text}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:     schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}},
+		}},
+	}
+}
+
+func passthroughPostHookRunner(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return resp, err
+}
+
+// onceFinalizer mirrors the core's sync.Once-wrapped per-attempt finalizer.
+func onceFinalizer() func(context.Context) {
+	var once sync.Once
+	return func(context.Context) { once.Do(func() {}) }
+}
+
+// startFakeProviderStream runs chunks through ProcessAndSendResponse and closes the
+// stream with the defers a provider goroutine uses. With hold set, nothing reaches the
+// returned channel until the final chunk has been processed, as when a plugin pauses
+// the stream until its last chunk.
+func startFakeProviderStream(ctx *schemas.BifrostContext, chunks []*schemas.BifrostResponse, hold bool) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	finalizer := onceFinalizer()
+	out := make(chan *schemas.BifrostStreamChunk, len(chunks))
+	sendTo := out
+	if hold {
+		sendTo = make(chan *schemas.BifrostStreamChunk, len(chunks))
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, finalizer)
+		defer providerUtils.CloseStream(ctx, out)
+		for i, chunk := range chunks {
+			if i == len(chunks)-1 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			providerUtils.ProcessAndSendResponse(ctx, passthroughPostHookRunner, chunk, sendTo, finalizer)
+		}
+		if hold {
+			for range chunks {
+				out <- <-sendTo
+			}
+		}
+	}()
+	return out, done
+}
+
+// drainStream reads a stream to its end and returns how many chunks it carried.
+func drainStream(stream chan *schemas.BifrostStreamChunk) int {
+	n := 0
+	for range stream {
+		n++
+	}
+	return n
+}
+
+// A plugin that holds a stream until its final chunk lets the provider goroutine finish
+// the stream before the retry loop has seen its first chunk. The LLM span must still be
+// completed OK with every chunk counted and the terminal chunk as its outcome.
+func TestExecuteRequestWithRetries_StreamSpanCompletesWhenStreamEndsBeforeFirstChunkCheck(t *testing.T) {
+	for _, hold := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hold=%v", hold), func(t *testing.T) {
+			tracer := newDeferredStreamTracer()
+			ctx := newDeferredStreamContext(tracer)
+			chunks := responsesStreamChunks()
+			var done <-chan struct{}
+			handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				var out chan *schemas.BifrostStreamChunk
+				out, done = startFakeProviderStream(ctx, chunks, hold)
+				return out, nil
+			}
+
+			stream, err := executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, time.Millisecond), handler, nil,
+				schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := drainStream(stream); got != len(chunks) {
+				t.Errorf("client received %d chunks, want %d", got, len(chunks))
+			}
+			<-done
+
+			spans := tracer.llmSpans()
+			if len(spans) != 1 {
+				t.Fatalf("got %d LLM spans, want 1", len(spans))
+			}
+			span := spans[0]
+			if span.ends == 0 || span.status != schemas.SpanStatusOk {
+				t.Errorf("LLM span ended %d times with status %q, want ended with %q", span.ends, span.status, schemas.SpanStatusOk)
+			}
+			if got := span.attrs[schemas.AttrTotalChunks]; got != len(chunks) {
+				t.Errorf("%s = %v, want %d", schemas.AttrTotalChunks, got, len(chunks))
+			}
+			if span.populated != chunks[len(chunks)-1] {
+				t.Error("LLM span was not populated from the stream's terminal chunk")
+			}
+			if n := tracer.recordCount(); n != 0 {
+				t.Errorf("%d deferred span records left behind", n)
+			}
+		})
+	}
+}
+
+// The stream span is registered before each attempt's provider starts. A failed
+// attempt's goroutine that is still unwinding when the retry starts must not touch the
+// retry's span; the retry loop owns the failed attempt's outcome.
+func TestExecuteRequestWithRetries_FailedStreamAttemptLeavesRetrySpanAlone(t *testing.T) {
+	tracer := newDeferredStreamTracer()
+	ctx := newDeferredStreamContext(tracer)
+	chunks := responsesStreamChunks()
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	retryStarted := make(chan struct{})
+	firstDone := make(chan struct{})
+	var retryDone <-chan struct{}
+	attempts := 0
+
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		attempts++
+		if attempts == 1 {
+			finalizer := onceFinalizer()
+			out := make(chan *schemas.BifrostStreamChunk, 1)
+			go func() {
+				defer close(firstDone)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, passthroughPostHookRunner,
+					createBifrostError("rate limit exceeded", schemas.Ptr(429), nil, false), out, logger, finalizer)
+				providerUtils.CloseStream(ctx, out)
+				// The dead attempt's last defer runs only once the retry is underway.
+				<-retryStarted
+				providerUtils.EnsureStreamFinalizerCalled(ctx, finalizer)
+			}()
+			return out, nil
+		}
+		close(retryStarted)
+		<-firstDone
+		out, done := startFakeProviderStream(ctx, chunks, true)
+		retryDone = done
+		return out, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, createTestConfig(1, time.Millisecond, time.Millisecond), handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, logger)
+	if err != nil {
+		t.Fatalf("expected the retry to succeed, got %v", err)
+	}
+	drainStream(stream)
+	<-retryDone
+
+	if attempts != 2 {
+		t.Fatalf("got %d attempts, want 2", attempts)
+	}
+	spans := tracer.llmSpans()
+	if len(spans) != 2 {
+		t.Fatalf("got %d LLM/retry spans, want 2", len(spans))
+	}
+	if first := spans[0]; first.ends != 1 || first.status != schemas.SpanStatusError || first.populatedErr == nil {
+		t.Errorf("failed attempt's span ended %d times with %q (error recorded: %v), want ended once %q with its error", first.ends, first.status, first.populatedErr != nil, schemas.SpanStatusError)
+	}
+	retry := spans[1]
+	if retry.ends == 0 || retry.status != schemas.SpanStatusOk || retry.populatedErr != nil {
+		t.Errorf("retry's span ended %d times with %q (error recorded: %v), want ended %q without an error", retry.ends, retry.status, retry.populatedErr != nil, schemas.SpanStatusOk)
+	}
+	if got := retry.attrs[schemas.AttrTotalChunks]; got != len(chunks) {
+		t.Errorf("retry %s = %v, want %d", schemas.AttrTotalChunks, got, len(chunks))
+	}
+	if n := tracer.recordCount(); n != 0 {
+		t.Errorf("%d deferred span records left behind", n)
+	}
+}
+
+// A stream that closes before producing a chunk is the retry loop's empty stream: its
+// span ends OK with no error stamped, as it did before spans were registered up front.
+func TestExecuteRequestWithRetries_EmptyStreamSpanEndsOk(t *testing.T) {
+	tracer := newDeferredStreamTracer()
+	ctx := newDeferredStreamContext(tracer)
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		out := make(chan *schemas.BifrostStreamChunk)
+		providerUtils.CloseStream(ctx, out)
+		providerUtils.EnsureStreamFinalizerCalled(ctx, onceFinalizer())
+		return out, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, time.Millisecond), handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := drainStream(stream); got != 0 {
+		t.Errorf("empty stream carried %d chunks", got)
+	}
+	spans := tracer.llmSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got %d LLM spans, want 1", len(spans))
+	}
+	if span := spans[0]; span.status != schemas.SpanStatusOk || span.populatedErr != nil {
+		t.Errorf("empty stream's span status %q (error recorded: %v), want %q without an error", span.status, span.populatedErr != nil, schemas.SpanStatusOk)
+	}
+	if n := tracer.recordCount(); n != 0 {
+		t.Errorf("%d deferred span records left behind", n)
 	}
 }
 
@@ -4618,6 +5141,102 @@ func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
 	}
 	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, req); out != req {
 		t.Fatal("a chat request for an unrestricted model must be returned as-is")
+	}
+}
+
+// zai.glm-5.3 on Bedrock answers Claude Code's ArtifactData tool with "The task request
+// was rejected by the target" over the `(?:...)` pattern on its top-level collection, so
+// its row drops tool-schema patterns on both dispatch paths. There is no name fallback:
+// GLM-5 and 4.7 accept patterns and keep their exact tool bytes.
+func TestToolSchemaPolicy_DropsPatternsOnlyWhenTheRowSaysSo(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "us.zai.glm-5.3" {
+			return &schemas.ModelCapabilities{SupportsSchemaPattern: new(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	if glm := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5.3")); !glm.DropPattern {
+		t.Fatalf("the glm-5.3 row did not turn pattern dropping on: %+v", glm)
+	}
+	for _, model := range []string{"us.zai.glm-5", "us.zai.glm-4.7", "us.moonshotai.kimi-k3"} {
+		if p := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, model)); p.DropPattern {
+			t.Fatalf("%s must keep its patterns without a row: %+v", model, p)
+		}
+	}
+
+	raw := `{"type":"object","properties":{` +
+		`"collection":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}(?:\\/[A-Za-z0-9_\\-.~:@+]{1,200}){0,14}$"},` +
+		`"doc_id":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}$"}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertDropped := func(t *testing.T, sent *schemas.ToolFunctionParameters) {
+		t.Helper()
+		out, err := json.Marshal(sent)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "pattern") || !strings.Contains(string(out), `"collection"`) {
+			t.Fatalf("patterns reached the provider or the property was lost: %s", out)
+		}
+		if before, _ := json.Marshal(&params); !strings.Contains(string(before), `(?:`) {
+			t.Fatalf("caller's schema was mutated in place: %s", before)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	t.Run("responses", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  new("ArtifactData"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &params},
+			}}},
+		}
+		prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+		if bifrostErr != nil {
+			t.Fatalf("prepare failed: %v", bifrostErr.Error)
+		}
+		assertDropped(t, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+	})
+	t.Run("chat", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+			}}},
+		}
+		assertDropped(t, prepareChatRequest(ctx, nil, schemas.Bedrock, req).Params.Tools[0].Function.Parameters)
+	})
+
+	unrestricted := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.zai.glm-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, unrestricted); out != unrestricted {
+		t.Fatal("a model without the row must be returned as-is")
+	}
+}
+
+// A model with no row (the common case) builds the zero policy; the drop-pattern lookup adds nothing to it.
+func BenchmarkToolSchemaPolicy_NoRow(b *testing.B) {
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5")
+	b.ReportAllocs()
+	for b.Loop() {
+		if !toolSchemaPolicy(caps).IsZero() {
+			b.Fatal("a model with no row must get the zero policy")
+		}
 	}
 }
 
@@ -7904,11 +8523,11 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
 		}()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+			_, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
 		}()
 		wg.Wait()
 		b.Shutdown()
@@ -7924,6 +8543,113 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 	_ = b.AddMCPClient(context.Background(), client("d"))
 	if b.MCPManager != mcp.MCPManagerInterface(injected) {
 		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings: the global cap arrives through MCPConfig
+// and is hot-reloaded on the running manager, like the tool sync interval; without a manager the
+// update is refused, and an unsupported value is refused either way.
+func TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings(t *testing.T) {
+	without, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer without.Shutdown()
+	if err := without.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20250618); err == nil {
+		t.Fatal("without an MCP manager the update must be refused, as UpdateMCPToolSyncInterval is")
+	}
+
+	with, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger(),
+		MCPConfig: &schemas.MCPConfig{MaxProtocolVersion: schemas.MCPProtocolVersion20250618}})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer with.Shutdown()
+	if err := with.UpdateMCPMaxProtocolVersion("latest"); err == nil {
+		t.Fatal("an unsupported version must be refused")
+	}
+	if err := with.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20251125); err != nil {
+		t.Fatalf("updating the running manager's cap: %v", err)
+	}
+}
+
+// TestSetMCPDiscoveryChangeCallback_ReachesLazyManager: the HTTP transport registers its discovery
+// callback at boot, before a deployment with no mcp block has a manager. The manager created lazily
+// for the first client must still fire it, or that client's discoveries are never persisted.
+func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	fired := make(chan string, 4)
+	b.SetMCPDiscoveryChangeCallback(func(clientID, _ string, _ *schemas.MCPDiscovery) { fired <- clientID })
+	b.SetMCPInProcessServerFactory(func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		s := server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false))
+		s.AddTool(mcpgo.NewTool("ping"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("pong"), nil
+		})
+		return s, nil
+	})
+	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID:             "first-id",
+		Name:           "first",
+		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+		ToolsToExecute: schemas.WhiteList{"*"},
+		OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+	}); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	select {
+	case id := <-fired:
+		if id != "first-id" {
+			t.Fatalf("callback fired for %q, want first-id", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lazily created manager never fired the discovery callback registered before it existed")
+	}
+}
+
+// listedToolsManager serves one client whose tool the test holds on to.
+type listedToolsManager struct {
+	mcp.MCPManagerInterface
+	state schemas.MCPClientState
+}
+
+// GetClients returns the held client state as the manager would.
+func (m *listedToolsManager) GetClients() []schemas.MCPClientState {
+	return []schemas.MCPClientState{m.state}
+}
+
+// TestGetMCPClients_ListedToolsAreOwned: a caller that edits a listed tool's annotations, icons or
+// output schema must not change the tool the manager serves.
+func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
+	held := schemas.ChatTool{
+		Type:        schemas.ChatToolTypeFunction,
+		Function:    &schemas.ChatToolFunction{Name: "docs-search"},
+		Annotations: &schemas.MCPToolAnnotations{Title: "Search"},
+		MCP: &schemas.MCPToolMetadata{
+			Icons:        []mcpgo.Icon{{Src: "https://example.com/search.png"}},
+			OutputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+	}
+	manager := &listedToolsManager{state: schemas.MCPClientState{
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"},
+		ToolMap:         map[string]schemas.ChatTool{"docs-search": held},
+	}}
+	b := &Bifrost{MCPManager: manager}
+
+	clients, err := b.GetMCPClients()
+	if err != nil {
+		t.Fatalf("GetMCPClients: %v", err)
+	}
+	listed := clients[0].Tools[0]
+	listed.Annotations.Title = "edited"
+	listed.Icons[0].Src = "edited"
+	listed.OutputSchema[0] = '['
+
+	if held.Annotations.Title != "Search" || held.MCP.Icons[0].Src != "https://example.com/search.png" || string(held.MCP.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("editing a listed tool changed the served one: annotations %q, icon %q, schema %s", held.Annotations.Title, held.MCP.Icons[0].Src, held.MCP.OutputSchema)
 	}
 }
 
@@ -8045,5 +8771,84 @@ func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
 		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
+	}
+}
+
+// recordingEndpointsPlugin records the order its Relays hooks run in and can
+// short-circuit the call in its pre-hook.
+type recordingEndpointsPlugin struct {
+	name  string
+	order *[]string
+	deny  bool
+}
+
+func (p *recordingEndpointsPlugin) GetName() string { return p.name }
+func (p *recordingEndpointsPlugin) Cleanup() error  { return nil }
+func (p *recordingEndpointsPlugin) PreRelayHook(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	*p.order = append(*p.order, "pre:"+p.name)
+	if p.deny {
+		return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "denied"}}}, nil
+	}
+	return req, nil, nil
+}
+func (p *recordingEndpointsPlugin) PostRelayHook(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+	*p.order = append(*p.order, "post:"+p.name)
+	return resp, bErr, nil
+}
+
+func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	bifrost.tracer.Store(&tracerWrapper{tracer: &schemas.NoOpTracer{}})
+	bifrost.llmPlugins.Store(&[]schemas.LLMPlugin{})
+	bifrost.mcpPlugins.Store(&[]schemas.MCPPlugin{})
+	bifrost.a2aPlugins.Store(&[]schemas.A2APlugin{})
+	bifrost.relayPlugins.Store(&[]schemas.RelayPlugin{})
+	bifrost.pluginPipelinePool = sync.Pool{New: func() any { return &PluginPipeline{} }}
+
+	var order []string
+	first := &recordingEndpointsPlugin{name: "governance", order: &order}
+	second := &recordingEndpointsPlugin{name: "logging", order: &order}
+	for _, p := range []*recordingEndpointsPlugin{first, second} {
+		if err := bifrost.ReloadPlugin(p, []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+			t.Fatalf("ReloadPlugin: %v", err)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	pipeline := bifrost.AcquirePluginPipeline()
+	req := &schemas.BifrostRelayRequest{RelayName: "tavily"}
+	_, shortCircuit, ran := pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit != nil {
+		t.Fatalf("unexpected short-circuit")
+	}
+	pipeline.RunRelayPostHooks(ctx, &schemas.BifrostRelayResponse{}, nil, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if got, want := strings.Join(order, ","), "pre:governance,pre:logging,post:logging,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	// A pre-hook short-circuit stops the chain; only the plugins that entered see the post-hook.
+	order = nil
+	first.deny = true
+	pipeline = bifrost.AcquirePluginPipeline()
+	_, shortCircuit, ran = pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit == nil {
+		t.Fatalf("expected a short-circuit")
+	}
+	_, bErr := pipeline.RunRelayPostHooks(ctx, nil, shortCircuit.Error, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if bErr == nil {
+		t.Fatalf("expected the refusal to reach the caller")
+	}
+	if got, want := strings.Join(order, ","), "pre:governance,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	if err := bifrost.RemovePlugin("logging", []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+		t.Fatalf("RemovePlugin: %v", err)
+	}
+	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
+		t.Fatalf("plugins after remove = %d, want 1", n)
 	}
 }

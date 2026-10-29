@@ -40,6 +40,7 @@ type BedrockProvider struct {
 	logger                schemas.Logger                // Logger for provider operations
 	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
 	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
+	realtimeClient        *http.Client                  // HTTP/2-only client for Nova Sonic bidirectional streams (no Timeout)
 	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
@@ -85,77 +86,30 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// Bedrock's runtime client is net/http, so proxy_config has to be applied here
 	// explicitly; ConfigureProxy below only covers the fasthttp Mantle clients. With
 	// no proxy configured, keep proxying from the environment as before.
-	proxy, proxyTLS, err := providerUtils.NetHTTPProxy(config.ProxyConfig)
+	proxy, proxyTLS, proxyHopTLS, err := providerUtils.NetHTTPProxyWithHopTLS(config.ProxyConfig)
 	if err != nil {
 		return nil, err
 	}
-	if proxy == nil {
+	proxyFromConfig := proxy != nil
+	if !proxyFromConfig {
 		proxy = providerUtils.EnvProxyFunc()
 	}
 
-	transport := &http.Transport{
-		Proxy:                 proxy,
-		TLSClientConfig:       proxyTLS,
-		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
-		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
-		IdleConnTimeout:       time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: requestTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     config.NetworkConfig.EnforceHTTP2,
+	transport, err := newBedrockHTTPTransport(config, proxy, proxyFromConfig, proxyTLS, proxyHopTLS, requestTimeout, config.NetworkConfig.EnforceHTTP2)
+	if err != nil {
+		return nil, err
 	}
-
-	// Disable HTTP/2 auto-negotiation when not explicitly enforced.
-	// ForceAttemptHTTP2=false alone does NOT prevent HTTP/2 — Go's http2 package
-	// auto-registers h2 via TLSNextProto in init(). Setting TLSNextProto to an
-	// empty map prevents ALPN negotiation from upgrading connections to h2.
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it needs its own transport unless enforce_http2 is on.
+	realtimeTransport := transport
 	if !config.NetworkConfig.EnforceHTTP2 {
-		transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
-	}
-
-	// Apply TLS settings from NetworkConfig
-	caCertPEM := ""
-	if config.NetworkConfig.CACertPEM != nil {
-		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
-	}
-	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
-		// Layer on top of the proxy's CA, if any, so both are trusted.
-		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-		if proxyTLS != nil {
-			tlsConfig = proxyTLS.Clone()
-		}
-		if config.NetworkConfig.InsecureSkipVerify {
-			tlsConfig.InsecureSkipVerify = true
-		}
-		if caCertPEM != "" {
-			var certPool *x509.CertPool
-			if tlsConfig.RootCAs != nil {
-				certPool = tlsConfig.RootCAs.Clone()
-			} else if certPool, err = x509.SystemCertPool(); err != nil {
-				certPool = x509.NewCertPool()
-			}
-			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
-				return nil, fmt.Errorf("failed to parse CA certificate PEM")
-			}
-			tlsConfig.RootCAs = certPool
-		}
-		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
-		// checked against the merged roots.
-		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
-	}
-
-	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated
-	// PING keepalives so an idle streaming connection isn't closed by an intermediary
-	// (surfaces as "unexpected EOF"). Left off by default; opt in via the interval.
-	if config.NetworkConfig.EnforceHTTP2 && config.NetworkConfig.HTTP2PingIntervalInSeconds > 0 {
-		transport.HTTP2 = &http.HTTP2Config{
-			SendPingTimeout: time.Duration(config.NetworkConfig.HTTP2PingIntervalInSeconds) * time.Second,
+		if realtimeTransport, err = newBedrockHTTPTransport(config, proxy, proxyFromConfig, proxyTLS, proxyHopTLS, requestTimeout, true); err != nil {
+			return nil, err
 		}
 	}
 
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
+	realtimeClient := &http.Client{Transport: realtimeTransport}
 
 	// fasthttp clients for Bedrock Mantle (shared by OpenAI-compatible and native-Anthropic paths).
 	// ReadTimeout is the shared provider request timeout, not an OpenAI-specific value; oversized
@@ -193,6 +147,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		logger:                logger,
 		client:                client,
 		streamingClient:       streamingClient,
+		realtimeClient:        realtimeClient,
 		mantleClient:          mantleFasthttpClient,
 		mantleStreamingClient: mantleStreamingFasthttpClient,
 		networkConfig:         config.NetworkConfig,
@@ -200,6 +155,81 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		sendBackRawRequest:    config.SendBackRawRequest,
 		sendBackRawResponse:   config.SendBackRawResponse,
 	}, nil
+}
+
+// newBedrockHTTPTransport returns an independent transport; enabling HTTP/2 mutates it and its TLS config.
+func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Request) (*url.URL, error), proxyFromConfig bool, proxyTLS, proxyHopTLS *tls.Config, requestTimeout time.Duration, enforceHTTP2 bool) (*http.Transport, error) {
+	transport := &http.Transport{
+		Proxy:                 proxy,
+		TLSClientConfig:       proxyTLS.Clone(), // HTTP/2 setup appends to NextProtos, so never share it
+		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
+		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
+		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
+		IdleConnTimeout:       time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: requestTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     enforceHTTP2,
+	}
+
+	// Disable HTTP/2 auto-negotiation when not explicitly enforced.
+	// ForceAttemptHTTP2=false alone does NOT prevent HTTP/2 — Go's http2 package
+	// auto-registers h2 via TLSNextProto in init(). Setting TLSNextProto to an
+	// empty map prevents ALPN negotiation from upgrading connections to h2.
+	if !enforceHTTP2 {
+		transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	}
+
+	// Apply TLS settings from NetworkConfig
+	caCertPEM := ""
+	if config.NetworkConfig.CACertPEM != nil {
+		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
+	}
+	targetTLS := config.NetworkConfig.InsecureSkipVerify || caCertPEM != ""
+	if targetTLS {
+		// Layer on top of the proxy's CA, if any, so both are trusted.
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if proxyTLS != nil {
+			tlsConfig = proxyTLS.Clone()
+		}
+		if config.NetworkConfig.InsecureSkipVerify {
+			tlsConfig.InsecureSkipVerify = true
+		}
+		if caCertPEM != "" {
+			var certPool *x509.CertPool
+			var err error
+			if tlsConfig.RootCAs != nil {
+				certPool = tlsConfig.RootCAs.Clone()
+			} else if certPool, err = x509.SystemCertPool(); err != nil {
+				certPool = x509.NewCertPool()
+			}
+			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
+				return nil, fmt.Errorf("failed to parse CA certificate PEM")
+			}
+			tlsConfig.RootCAs = certPool
+		}
+		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
+		// checked against the merged roots.
+		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
+	}
+
+	// net/http handshakes with an https:// proxy using TLSClientConfig, which carries the
+	// targets' settings: proxyTLS's no_proxy scope, and network_config's
+	// insecure_skip_verify and CA. A proxy from proxy_config is verified by its own.
+	if proxyFromConfig && (proxyHopTLS != proxyTLS || targetTLS) {
+		providerUtils.DialHTTPSProxyWithHopTLS(transport, proxyHopTLS)
+	}
+
+	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated
+	// PING keepalives so an idle streaming connection isn't closed by an intermediary
+	// (surfaces as "unexpected EOF"). Left off by default; opt in via the interval.
+	if enforceHTTP2 && config.NetworkConfig.HTTP2PingIntervalInSeconds > 0 {
+		transport.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout: time.Duration(config.NetworkConfig.HTTP2PingIntervalInSeconds) * time.Second,
+		}
+	}
+
+	return transport, nil
 }
 
 // GetProviderKey returns the provider identifier for Bedrock.
@@ -625,11 +655,27 @@ func stripHeadersForSigning(header http.Header) []restoredHeader {
 	return restore
 }
 
-func signAWSRequest(
+// SignAWSRequest SigV4-signs req for service in region with the key's AWS credentials (static,
+// assumed role, or the default chain when the key holds none). Other providers that relay to AWS
+// APIs (relays) sign through it so the credential handling lives in one place.
+func SignAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	// A relayed request is signed as the caller sent it: no Content-Type or Accept is invented,
+	// since an S3 PutObject would store the guess as the object's metadata.
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, false)
+}
+
+// signAWSRequest signs a Bedrock request, defaulting Content-Type and Accept to JSON when the
+// caller set neither, which every Bedrock API expects.
+func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, true)
+}
+
+func signAWSRequestWithDefaults(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
+	jsonDefaults bool,
 ) (signErr *schemas.BifrostError) {
 	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
 	// nested "credentials-fetch" span (below) isolates the network portion (STS
@@ -649,29 +695,32 @@ func signAWSRequest(
 		}()
 	}
 
-	var accessKey, secretKey schemas.SecretVar
-	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
-
-	if keyCfg != nil {
-		accessKey = keyCfg.AccessKey
-		secretKey = keyCfg.SecretKey
-		sessionToken = keyCfg.SessionToken
-		roleARN = keyCfg.RoleARN
-		externalID = keyCfg.ExternalID
-		sessionName = keyCfg.RoleSessionName
-	}
-
 	// Set required headers before signing (only if not already set)
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
+	if jsonDefaults {
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/json")
+		}
 	}
 
 	// Calculate SHA256 hash of the request body
 	var bodyHash string
-	if req.Body != nil {
+	if req.Body != nil && req.GetBody != nil {
+		// A body that can be re-read (every request built from a byte slice) is hashed as a stream
+		// and then rewound, so signing a large upload never holds a second copy of it.
+		h := sha256.New()
+		if _, err := io.Copy(h, req.Body); err != nil {
+			return providerUtils.NewBifrostOperationError("error reading request body", err)
+		}
+		body, err := req.GetBody()
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("error rewinding request body", err)
+		}
+		req.Body = body
+		bodyHash = hex.EncodeToString(h.Sum(nil))
+	} else if req.Body != nil {
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("error reading request body", err)
@@ -689,6 +738,49 @@ func signAWSRequest(
 
 	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
 	req.Header.Set("x-amz-content-sha256", bodyHash)
+
+	creds, credErr := ResolveAWSCredentials(ctx, keyCfg, region)
+	if credErr != nil {
+		return credErr
+	}
+
+	return signWithCredentials(ctx, req, creds, bodyHash, service, region)
+}
+
+// signWithCredentials signs req with SigV4 using already resolved credentials. The SDK signs
+// every header still on the request, so the volatile ones are lifted out while it signs.
+func signWithCredentials(ctx context.Context, req *http.Request, creds aws.Credentials, payloadHash, service, region string) *schemas.BifrostError {
+	restoreHeaders := stripHeadersForSigning(req.Header)
+	// S3 rejects a path escaped a second time (an object key holding %20 would be signed as
+	// %2520), so the SDK's own S3 client turns the extra escaping off; a relay signing for s3 does
+	// the same, and every other service keeps the default.
+	signer := v4.NewSigner(func(o *v4.SignerOptions) {
+		o.DisableURIPathEscaping = service == "s3"
+	})
+	err := signer.SignHTTP(ctx, creds, req, payloadHash, service, region, time.Now())
+	for _, h := range restoreHeaders {
+		req.Header[h.name] = h.values
+	}
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to sign request", err)
+	}
+	return nil
+}
+
+// ResolveAWSCredentials resolves the AWS credentials for keyCfg: explicit keys, else the default
+// chain, with an optional STS AssumeRole on top (cached per role and source identity).
+func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
+	var accessKey, secretKey schemas.SecretVar
+	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
+
+	if keyCfg != nil {
+		accessKey = keyCfg.AccessKey
+		secretKey = keyCfg.SecretKey
+		sessionToken = keyCfg.SessionToken
+		roleARN = keyCfg.RoleARN
+		externalID = keyCfg.ExternalID
+		sessionName = keyCfg.RoleSessionName
+	}
 
 	var cfg aws.Config
 	var err error
@@ -716,7 +808,7 @@ func signAWSRequest(
 		)
 	}
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to load aws config", err)
+		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to load aws config", err)
 	}
 
 	if roleARN != nil && roleARN.GetValue() != "" {
@@ -768,13 +860,6 @@ func signAWSRequest(
 		}
 	}
 
-	// The SDK signs every header still on the request, so lift the volatile ones out for
-	// the duration of signing and put them back before the request goes out.
-	restoreHeaders := stripHeadersForSigning(req.Header)
-
-	// Create the AWS signer
-	signer := v4.NewSigner()
-
 	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
 	// network round trip (STS AssumeRole when RoleARN is set, or the default provider
 	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
@@ -789,19 +874,9 @@ func signAWSRequest(
 		}
 	}
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 	}
-
-	// Sign the request with AWS Signature V4
-	err = signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now())
-	for _, h := range restoreHeaders {
-		req.Header[h.name] = h.values
-	}
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to sign request", err)
-	}
-
-	return nil
+	return creds, nil
 }
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.

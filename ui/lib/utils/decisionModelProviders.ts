@@ -64,10 +64,11 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
 // Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
-// (Microsoft-Decision-1), Databricks (ai_decide, System One), OpenAI or a custom provider built
-// on it (their decision models, such as gpt-6-luna), or a custom provider built on
-// the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
-// decisions through chat, so decision-model pickers never offer them.
+// (Microsoft-Decision-1), Databricks (ai_decide, System One), vLLM and SGLang (every
+// model they load), OpenAI or a custom provider built on it (their decision models,
+// such as gpt-6-luna), or a custom provider built on the Typesafe base (Laya, Nimble,
+// Clef). Other providers would only emulate decisions through chat, so decision-model
+// pickers never offer them.
 export function isDecisionProvider(provider: ModelProvider): boolean {
 	return (
 		provider.name === "typesafe" ||
@@ -77,6 +78,8 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "ollama" ||
 		provider.name === "azure" ||
 		provider.name === "databricks" ||
+		provider.name === "vllm" ||
+		provider.name === "sgl" ||
 		isOpenAIDecisionProvider(provider) ||
 		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
@@ -110,6 +113,7 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
 	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
 	if (provider?.name === "ollama") return "";
+	if (provider?.name === "vllm" || provider?.name === "sgl") return "";
 	if (provider?.name === "azure") return AZURE_DECISION_MODEL;
 	if (provider?.name === "databricks") return DATABRICKS_DECISION_MODEL;
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
@@ -117,11 +121,13 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
 }
 
-// listsDecisionModels reports a provider whose catalog mixes decision models with
-// chat models, so a decision-model picker lists only the models the datasheet
-// marks as decision models. Typesafe and self-hosted decision providers serve
-// nothing else, so any model they name is one.
+// listsDecisionModels reports a provider whose picker uses the decisions model
+// listing: a catalog that mixes decision models with chat models lists only the
+// models the datasheet marks as decision models, and vLLM and SGLang list every
+// model they load, since the engine answers decisions for all of them. Typesafe
+// and self-hosted decision providers serve nothing else, so any model they name
+// is one.
 export function listsDecisionModels(provider: ModelProvider | undefined, providerName: string): boolean {
 	if (provider ? isOpenAIDecisionProvider(provider) : providerName === "openai") return true;
-	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks"].includes(providerName);
+	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks", "vllm", "sgl"].includes(providerName);
 }

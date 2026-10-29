@@ -919,6 +919,50 @@ func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 }
 
+// TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy pins that
+// network_config.insecure_skip_verify only reaches targets: net/http would handshake
+// with an https:// proxy using TLSClientConfig, so without the hop dialer the proxy's
+// certificate would go unchecked although proxy_config.skip_tls_verify is off.
+func TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "bedrock-tls")
+	for _, enforceHTTP2 := range []bool{true, false} {
+		recorder.Reset()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				InsecureSkipVerify:             true,
+				EnforceHTTP2:                   enforceHTTP2,
+			},
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar("https://127.0.0.1:" + recorder.Port()),
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		for name, client := range map[string]*http.Client{"client": provider.client, "realtime": provider.realtimeClient} {
+			resp, err := client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+			if err == nil {
+				resp.Body.Close()
+				t.Errorf("enforce_http2=%v %s: an https proxy whose certificate is not trusted was used", enforceHTTP2, name)
+			}
+		}
+		assert.Empty(t, recorder.Seen(), "enforce_http2=%v: the unverified proxy saw traffic", enforceHTTP2)
+
+		// With the proxy's CA in proxy_config, the same proxy is verified and used.
+		config.ProxyConfig.CACertPEM = schemas.NewSecretVar(recorder.CAPEM)
+		trusted, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		resp, err := trusted.client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+		require.NoError(t, err, "enforce_http2=%v: the trusted https proxy was refused", enforceHTTP2)
+		resp.Body.Close()
+		assert.NotEmpty(t, recorder.Seen(), "enforce_http2=%v: the trusted proxy saw no traffic", enforceHTTP2)
+	}
+}
+
 func TestBedrockTransportTLSCACert(t *testing.T) {
 	testCACert := generateTestCACert(t)
 
@@ -979,6 +1023,9 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 	// TLSNextProto should NOT be set when HTTP/2 is enforced, allowing ALPN negotiation
 	assert.Nil(t, transport.TLSNextProto)
+	// Nova Sonic needs HTTP/2, which this transport already speaks, so it shares the pool
+	assert.Same(t, transport, provider.realtimeClient.Transport)
+	assert.Zero(t, provider.realtimeClient.Timeout, "a realtime session outlives the request timeout")
 }
 
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
@@ -999,6 +1046,12 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it gets a transport of its own
+	realtimeTransport, ok := provider.realtimeClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, transport, realtimeTransport)
+	assert.True(t, realtimeTransport.ForceAttemptHTTP2)
+	assert.Nil(t, realtimeTransport.TLSNextProto)
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the

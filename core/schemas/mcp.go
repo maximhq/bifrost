@@ -13,12 +13,14 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -238,6 +240,8 @@ type MCPConfig struct {
 	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
+	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
+	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -510,6 +514,30 @@ type MCPServerInstructions struct {
 	MaxLength int `json:"max_length,omitempty"`
 }
 
+// MCP protocol versions an upstream connection can be capped at.
+const (
+	MCPMaxProtocolVersionAuto  = "auto" // newest version Bifrost supports
+	MCPProtocolVersion20260728 = mcp.ProtocolVersion20260728
+	MCPProtocolVersion20251125 = mcp.ProtocolVersion20251125
+	MCPProtocolVersion20250618 = mcp.ProtocolVersion20250618
+)
+
+// MCPMaxProtocolVersions lists the values a max protocol version can be set to, newest first.
+var MCPMaxProtocolVersions = []string{MCPMaxProtocolVersionAuto, MCPProtocolVersion20260728, MCPProtocolVersion20251125, MCPProtocolVersion20250618}
+
+// IsValidMCPMaxProtocolVersion reports whether v is "" (use the default) or one of MCPMaxProtocolVersions.
+func IsValidMCPMaxProtocolVersion(v string) bool {
+	return v == "" || slices.Contains(MCPMaxProtocolVersions, v)
+}
+
+// ValidateMCPMaxProtocolVersion rejects a value IsValidMCPMaxProtocolVersion does not accept, naming field.
+func ValidateMCPMaxProtocolVersion(field, v string) error {
+	if IsValidMCPMaxProtocolVersion(v) {
+		return nil
+	}
+	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
+}
+
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
 
@@ -544,10 +572,10 @@ type MCPTokenExchangeConfig struct {
 	// clients. Ignored when UseIdPCredentials is true. Supports env./vault.
 	// references.
 	ClientSecret *SecretVar `json:"client_secret,omitempty"`
-	// UseIdPCredentials, when true, performs the exchange using the SSO
-	// login application's own client ID/secret (from the deployment's
-	// configured identity-provider integration) instead of ClientID /
-	// ClientSecret above, which are then ignored. Some providers require
+	// UseIdPCredentials, when true (implied by the id_jag profile), performs
+	// the exchange using the SSO login application's own client ID/secret
+	// (from the deployment's configured identity-provider integration)
+	// instead of ClientID / ClientSecret above, which are then ignored. Some providers require
 	// this: Microsoft Entra ID's on-behalf-of grant only accepts an
 	// assertion whose audience matches the exchanging application, and
 	// Bifrost's own SSO login flow always requests a token self-audienced
@@ -572,6 +600,136 @@ type MCPTokenExchangeConfig struct {
 	// correct for providers with a single tenant-wide token endpoint (Entra,
 	// Auth0).
 	AuthorizationServerURL *string `json:"authorization_server_url,omitempty"`
+
+	// Profile selects how the upstream token is obtained: "" (direct) has the
+	// identity provider issue it; any other value is performed by a
+	// TokenExchangeProfile registered for that name. See IsIDJAG.
+	Profile string `json:"profile,omitempty"`
+	// The fields below configure the id_jag profile.
+	Resource              string     `json:"resource,omitempty"`                // resource indicator sent to the IdP; omitted when empty
+	ResourceTokenEndpoint *string    `json:"resource_token_endpoint,omitempty"` // upstream AS token endpoint; default discovered
+	ResourceClientID      *SecretVar `json:"resource_client_id,omitempty"`      // Bifrost's client at the upstream AS
+	ResourceClientSecret  *SecretVar `json:"resource_client_secret,omitempty"`  // omit for a public client
+	// private_key_jwt at the upstream AS instead of a secret
+	ResourcePrivateKey       *SecretVar `json:"resource_private_key,omitempty"`       // PEM RSA or EC key signing the client assertion
+	ResourceKeyID            string     `json:"resource_key_id,omitempty"`            // kid header of the client assertion
+	ResourceSigningAlgorithm string     `json:"resource_signing_algorithm,omitempty"` // default RS256; see OAuthSigningAlgorithms
+	// Assertion aud; default the upstream token endpoint (Okta, Entra). Set the issuer for servers that require it.
+	ResourceAssertionAudience string `json:"resource_assertion_audience,omitempty"`
+	// How resource_client_secret is sent: client_secret_basic or client_secret_post; empty follows discovery, else Basic.
+	ResourceClientAuthMethod string `json:"resource_client_auth_method,omitempty"`
+}
+
+// Values of MCPTokenExchangeConfig.ResourceClientAuthMethod.
+const (
+	ResourceClientAuthBasic = "client_secret_basic"
+	ResourceClientAuthPost  = "client_secret_post"
+)
+
+// Token-exchange profiles (MCPTokenExchangeConfig.Profile).
+const (
+	TokenExchangeProfileDirect = ""
+	TokenExchangeProfileIDJAG  = "id_jag"
+)
+
+// IsIDJAG reports whether the config uses the Cross App Access (ID-JAG)
+// profile: the identity provider issues an identity assertion for Audience,
+// which the upstream's own authorization server exchanges for its token with
+// the jwt-bearer grant.
+func (c *MCPTokenExchangeConfig) IsIDJAG() bool {
+	return c != nil && c.Profile == TokenExchangeProfileIDJAG
+}
+
+// ExchangesAsSSOApplication reports whether leg one authenticates as the SSO
+// login application. Always true for id_jag: the identity provider accepts the
+// user's sign-in token only from the app it was issued to, so a dedicated
+// exchange application cannot work there.
+func (c *MCPTokenExchangeConfig) ExchangesAsSSOApplication() bool {
+	return c != nil && (c.UseIdPCredentials || c.IsIDJAG())
+}
+
+// ResourceTokenEndpointURL returns the trimmed resource_token_endpoint, or ""
+// when unset.
+func (c *MCPTokenExchangeConfig) ResourceTokenEndpointURL() string {
+	if c == nil || c.ResourceTokenEndpoint == nil {
+		return ""
+	}
+	return strings.TrimSpace(*c.ResourceTokenEndpoint)
+}
+
+// ValidateProfile checks the profile name and the fields the id_jag profile
+// needs. The direct profile's own requirements are validated by callers.
+func (c *MCPTokenExchangeConfig) ValidateProfile() error {
+	if c == nil {
+		return nil
+	}
+	switch c.Profile {
+	case TokenExchangeProfileDirect:
+		return nil
+	case TokenExchangeProfileIDJAG:
+		if strings.TrimSpace(c.ResourceClientID.GetValue()) == "" && !c.ResourceClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.resource_client_id is required for the id_jag profile")
+		}
+		if endpoint := c.ResourceTokenEndpointURL(); endpoint != "" && !IsHTTPSOrLoopbackURL(endpoint) {
+			return fmt.Errorf("token_exchange.resource_token_endpoint must be an https URL")
+		}
+		return c.validateResourceClientAuth()
+	}
+	return fmt.Errorf("token_exchange.profile must be empty or %q", TokenExchangeProfileIDJAG)
+}
+
+// UsesResourcePrivateKey reports whether Bifrost authenticates to the upstream
+// authorization server with private_key_jwt rather than a client secret.
+func (c *MCPTokenExchangeConfig) UsesResourcePrivateKey() bool {
+	return c != nil && (strings.TrimSpace(c.ResourcePrivateKey.GetValue()) != "" || c.ResourcePrivateKey.IsFromSecret())
+}
+
+// validateResourceClientAuth checks the upstream client authentication: a
+// secret or a private key, never both, and key settings only with a key.
+func (c *MCPTokenExchangeConfig) validateResourceClientAuth() error {
+	hasSecret := strings.TrimSpace(c.ResourceClientSecret.GetValue()) != "" || c.ResourceClientSecret.IsFromSecret()
+	if c.UsesResourcePrivateKey() {
+		if hasSecret {
+			return fmt.Errorf("token_exchange: set either resource_client_secret or resource_private_key, not both")
+		}
+		if c.ResourceClientAuthMethod != "" {
+			return fmt.Errorf("token_exchange.resource_client_auth_method applies to resource_client_secret, not resource_private_key")
+		}
+	} else if c.ResourceKeyID != "" || c.ResourceSigningAlgorithm != "" || c.ResourceAssertionAudience != "" {
+		return fmt.Errorf("token_exchange.resource_key_id, resource_signing_algorithm and resource_assertion_audience require resource_private_key")
+	}
+	switch c.ResourceClientAuthMethod {
+	case "", ResourceClientAuthBasic, ResourceClientAuthPost:
+	default:
+		return fmt.Errorf("token_exchange.resource_client_auth_method must be empty, %q or %q", ResourceClientAuthBasic, ResourceClientAuthPost)
+	}
+	if c.ResourceClientAuthMethod != "" && !hasSecret {
+		return fmt.Errorf("token_exchange.resource_client_auth_method requires resource_client_secret")
+	}
+	if aud := strings.TrimSpace(c.ResourceAssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
+		return fmt.Errorf("token_exchange.resource_assertion_audience must be an https URL")
+	}
+	if alg := c.ResourceSigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
+		return fmt.Errorf("token_exchange.resource_signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+	}
+	return nil
+}
+
+// IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
+// loopback host for local testing. It checks only the URL: whether the host may
+// be dialed is decided by the OAuth client's private-target guard.
+func IsHTTPSOrLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		return isLoopbackHost(u.Hostname())
+	}
+	return false
 }
 
 // DiffersFrom reports whether resolved's fields differ from c's, comparing
@@ -609,6 +767,14 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 		resolvedURL = *resolved.AuthorizationServerURL
 	}
 	if existingURL != resolvedURL {
+		return true
+	}
+	if c.Profile != resolved.Profile || c.Resource != resolved.Resource ||
+		!c.ResourceClientID.Equals(resolved.ResourceClientID) || !c.ResourceClientSecret.Equals(resolved.ResourceClientSecret) ||
+		!c.ResourcePrivateKey.Equals(resolved.ResourcePrivateKey) || c.ResourceKeyID != resolved.ResourceKeyID ||
+		c.ResourceSigningAlgorithm != resolved.ResourceSigningAlgorithm ||
+		c.ResourceAssertionAudience != resolved.ResourceAssertionAudience || c.ResourceClientAuthMethod != resolved.ResourceClientAuthMethod ||
+		c.ResourceTokenEndpointURL() != resolved.ResourceTokenEndpointURL() {
 		return true
 	}
 	existingScopes := slices.Clone(c.Scopes)
@@ -669,7 +835,9 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable *bool `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	PromptsToExpose   WhiteList `json:"prompts_to_expose"`           // Prompt names (unprefixed) served through the gateway; nil = all, [] = none
+	ResourcesToExpose WhiteList `json:"resources_to_expose"`         // Resource URIs and URI templates served through the gateway; nil = all, [] = none
+	IsPingAvailable   *bool     `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
 	// NeedsSessionStickiness controls whether this shared client (auth_type
 	// oauth/headers) maintains one persistent connection reused across every
 	// caller (true) or connects fresh per call, same model as the per-user
@@ -686,6 +854,7 @@ type MCPClientConfig struct {
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
 	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
 	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	MaxProtocolVersion     string             `json:"max_protocol_version,omitempty"`    // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest supported)
 	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
 	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
@@ -705,6 +874,10 @@ type MCPClientConfig struct {
 	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
 	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
 	DiscoveredInstructions string `json:"-"`
+	// The upstream's resources, resource templates and prompts, persisted for the same reason.
+	DiscoveredResources         []mcp.Resource         `json:"-"`
+	DiscoveredResourceTemplates []mcp.ResourceTemplate `json:"-"`
+	DiscoveredPrompts           []mcp.Prompt           `json:"-"` // names prefixed like tools
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -1218,7 +1391,23 @@ type MCPClientState struct {
 	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
 	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
 	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	LastDiscoveryHash  string                `json:"-"`                      // Content hash of the last discovery (tools, mapping, instructions, resources, prompts) the change callback fired for; gates it to genuine changes (not serialized)
+
+	Resources         []mcp.Resource         `json:"-"` // As the server lists them
+	ResourceTemplates []mcp.ResourceTemplate `json:"-"` // As the server lists them
+	Prompts           []mcp.Prompt           `json:"-"` // Names prefixed with the client name, like tools
+}
+
+// MCPDiscovery is what an MCP server exposed as of one connection: its tools, instructions,
+// resources and prompts. Tool and prompt names are prefixed with the client name; resource URIs
+// and templates are the server's own.
+type MCPDiscovery struct {
+	Tools             map[string]ChatTool
+	ToolNameMapping   map[string]string // sanitized_name -> original_mcp_name
+	Instructions      string
+	Resources         []mcp.Resource
+	ResourceTemplates []mcp.ResourceTemplate
+	Prompts           []mcp.Prompt
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
@@ -1233,7 +1422,119 @@ type MCPClientConnectionInfo struct {
 // It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
 	Config      *MCPClientConfig      `json:"config"`                 // Tool filtering settings
-	Tools       []ChatToolFunction    `json:"tools"`                  // Available tools
+	Tools       []MCPClientTool       `json:"tools"`                  // Available tools
 	State       MCPConnectionState    `json:"state"`                  // Connection state
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy
+
+	Resources         []mcp.Resource         `json:"resources,omitempty"`
+	ResourceTemplates []mcp.ResourceTemplate `json:"resource_templates,omitempty"`
+	Prompts           []mcp.Prompt           `json:"prompts,omitempty"`
+}
+
+// SetMCPResult keeps the MCP server's own result beside content, the message content Bifrost made from
+// it, so the /mcp gateway can pass the result through unchanged.
+func (m *ChatToolMessage) SetMCPResult(result *mcp.CallToolResult, content *ChatMessageContent) {
+	m.mcpResult = result
+	if content != nil && len(content.ContentBlocks) == 0 && content.ContentStr != nil {
+		m.mcpResultText, m.mcpResultIsText = *content.ContentStr, true
+		return
+	}
+	m.mcpResultContent = toolContentFields(content)
+}
+
+// MCPResult returns the MCP server's own result while content still matches what Bifrost made from it,
+// so a plugin's rewrite (a redaction, say) never leaks the original.
+func (m *ChatToolMessage) MCPResult(content *ChatMessageContent) *mcp.CallToolResult {
+	if m == nil || m.mcpResult == nil {
+		return nil
+	}
+	if m.mcpResultIsText {
+		if content == nil || len(content.ContentBlocks) != 0 || content.ContentStr == nil || *content.ContentStr != m.mcpResultText {
+			return nil
+		}
+		return m.mcpResult
+	}
+	if !slices.Equal(toolContentFields(content), m.mcpResultContent) {
+		return nil
+	}
+	return m.mcpResult
+}
+
+// toolContentFields lists the strings content carries. Copying and comparing unchanged strings copies
+// no data, so this stays cheap for media.
+func toolContentFields(content *ChatMessageContent) []string {
+	if content == nil {
+		return nil
+	}
+	// Presence is recorded apart from the value, so an unset field and a set one never compare equal.
+	value := func(s *string) string {
+		if s == nil {
+			return "0"
+		}
+		return "1" + *s
+	}
+	fields := make([]string, 0, 1+5*len(content.ContentBlocks))
+	fields = append(fields, value(content.ContentStr))
+	for _, block := range content.ContentBlocks {
+		fields = append(fields, string(block.Type), value(block.Text))
+		switch {
+		case block.ImageURLStruct != nil:
+			fields = append(fields, block.ImageURLStruct.URL)
+		case block.InputAudio != nil:
+			fields = append(fields, block.InputAudio.Data, value(block.InputAudio.Format))
+		case block.File != nil:
+			fields = append(fields, value(block.File.FileData), value(block.File.FileURL), value(block.File.Filename), value(block.File.FileType))
+		}
+	}
+	return fields
+}
+
+// MCPClientTool is a tool as an MCP client lists it: its function definition plus what the MCP
+// server declared about it.
+type MCPClientTool struct {
+	ChatToolFunction
+	Title        string              `json:"title,omitempty"`
+	Icons        []mcp.Icon          `json:"icons,omitempty"`
+	OutputSchema json.RawMessage     `json:"output_schema,omitempty"`
+	Annotations  *MCPToolAnnotations `json:"annotations,omitempty"`
+}
+
+// MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
+// Bifrost-internal: never sent to providers.
+type MCPToolMetadata struct {
+	Title        string          `json:"title,omitempty"`
+	Icons        []mcp.Icon      `json:"icons,omitempty"`
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+}
+
+// MCPToolDetails is a discovered tool's annotations and metadata, persisted beside the tool because
+// ChatTool's JSON leaves both out.
+type MCPToolDetails struct {
+	Annotations *MCPToolAnnotations `json:"annotations,omitempty"`
+	Metadata    *MCPToolMetadata    `json:"metadata,omitempty"`
+}
+
+// ToolDetails returns, by name, the annotations and metadata of the tools that carry any.
+func ToolDetails(tools map[string]ChatTool) map[string]MCPToolDetails {
+	var details map[string]MCPToolDetails
+	for name, tool := range tools {
+		if tool.Annotations == nil && tool.MCP == nil {
+			continue
+		}
+		if details == nil {
+			details = make(map[string]MCPToolDetails)
+		}
+		details[name] = MCPToolDetails{Annotations: tool.Annotations, Metadata: tool.MCP}
+	}
+	return details
+}
+
+// ApplyToolDetails sets the annotations and metadata of each named tool in tools.
+func ApplyToolDetails(tools map[string]ChatTool, details map[string]MCPToolDetails) {
+	for name, detail := range details {
+		if tool, ok := tools[name]; ok {
+			tool.Annotations, tool.MCP = detail.Annotations, detail.Metadata
+			tools[name] = tool
+		}
+	}
 }

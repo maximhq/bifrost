@@ -150,6 +150,7 @@ type ComprehensiveTestConfig struct {
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
 	ToolSearchModel          string                     // Model for tool search tests; defaults to claude-sonnet-4-6
+	WebSearchChatModel       string                     // Model for web search via chat completions tests; defaults to ChatModel when empty
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5
 	FastModeModel            string                     // Model for fast mode tests; defaults to claude-opus-4-6
@@ -179,6 +180,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Anthropic,
 		schemas.Bedrock,
 		schemas.BedrockMantle,
+		schemas.SageMaker,
 		schemas.Cohere,
 		schemas.Azure,
 		schemas.Vertex,
@@ -287,7 +289,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "amazon.nova-2-sonic-v1:0"}, // Nova Sonic needs a key without an ARN: realtime streams to the ARN when one is set
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
@@ -306,7 +308,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
+				Models: []string{"cohere.embed-v4:0", "us.stability.stable-image-inpaint-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
@@ -335,6 +337,23 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				// filter so those requests reach the provider's unsupported-operation stub
 				// (the BatchUnsupported/FileUnsupported harness checks), as other non-batch
 				// providers (e.g. Cohere) do.
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.SageMaker:
+		// One key serves the endpoint in SAGEMAKER_ENDPOINT_NAME (the test passes it as the model).
+		// SageMaker has no models endpoint, so ListModels lists the allowlist: name the endpoint.
+		// Bifrost mints the bearer token from these AWS credentials.
+		return []schemas.Key{
+			{
+				Models: []string{getEnvWithDefault("SAGEMAKER_ENDPOINT_NAME", "*")},
+				Weight: 1.0,
+				SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+					AccessKey:    *schemas.NewSecretVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewSecretVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewSecretVar(getEnvWithDefault("SAGEMAKER_REGION", getEnvWithDefault("AWS_REGION", "us-east-1"))),
+				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
@@ -695,6 +714,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
 			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
 			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+			{"VLLM_DECISION_BASE_URL", "VLLM_DECISION_MODEL"},
 		}
 		for _, instance := range secondaryVLLMInstances {
 			url := strings.TrimSpace(os.Getenv(instance.urlEnv))
@@ -789,7 +809,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
-	case schemas.BedrockMantle:
+	case schemas.BedrockMantle, schemas.SageMaker:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

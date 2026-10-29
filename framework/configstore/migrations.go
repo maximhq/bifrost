@@ -572,6 +572,19 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
 	{IDs: []string{"add_passthrough_json_column"}, run: migrationAddPassthroughJSONColumn},
 	{IDs: []string{"add_warp_topic_discovery_min_requests_column"}, run: migrationAddWarpTopicDiscoveryMinRequestsColumn},
+	{IDs: []string{"add_azure_use_speech_endpoints_column"}, run: migrationAddAzureUseSpeechEndpointsColumn},
+	{IDs: []string{"add_azure_use_voice_live_endpoints_column"}, run: migrationAddAzureUseVoiceLiveEndpointsColumn},
+	{IDs: []string{"add_sagemaker_key_columns"}, run: migrationAddSageMakerKeyColumns},
+	{IDs: []string{"widen_oauth2_client_id_columns"}, run: migrationWidenOAuth2ClientIDColumns},
+	{IDs: []string{"add_oauth2_refresh_token_client_display_name_column"}, run: migrationAddOAuth2RefreshTokenClientDisplayNameColumn},
+	{IDs: []string{"add_mcp_max_protocol_version_columns"}, run: migrationAddMCPMaxProtocolVersionColumns},
+	{IDs: []string{"add_mcp_client_discovered_resources_prompts_columns"}, run: migrationAddMCPClientDiscoveredResourcesPromptsColumns},
+	{IDs: []string{"add_mcp_client_expose_lists_columns"}, run: migrationAddMCPClientExposeListsColumns},
+	{IDs: []string{"add_oauth_issuer_binding_columns"}, run: migrationAddOAuthIssuerBindingColumns},
+	{IDs: []string{"add_mcp_client_discovered_tool_details_column"}, run: migrationAddMCPClientDiscoveredToolDetailsColumn},
+	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
+	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
+	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -776,6 +789,35 @@ func migrationAddVideoResolutionPricingColumns(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("add_video_resolution_pricing_columns is non-rollbackable: dropping the resolution-banded video rate columns would permanently delete every custom per-resolution price an operator has set, and the affected models would silently bill at their unbanded rate instead; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddVideoTokenPricingColumn adds output_cost_per_video_token, the
+// per-token video output rate for providers that meter video in tokens
+// (BytePlus Seedance bills on the task's completion_tokens).
+func migrationAddVideoTokenPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_video_token_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "output_cost_per_video_token"); err != nil {
+				return fmt.Errorf("failed to add column output_cost_per_video_token: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_video_token_pricing_column is non-rollbackable: dropping output_cost_per_video_token would permanently delete every custom per-token video price an operator has set, and token-metered video would silently bill at $0; the column is additive and older binaries safely ignore it")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -1186,6 +1228,21 @@ func rssFeedsIconURLColumnMigration(ctx context.Context, logger schemas.Logger, 
 			return fmt.Errorf("%s is non-rollbackable: dropping icon_url would permanently delete every custom feed logo; the column is additive and older binaries ignore it", migrationName)
 		},
 	}
+}
+
+// migrationAddRelaysTables creates the relay table and its virtual-key grant
+// table. Both are additive: older binaries ignore them.
+func migrationAddRelaysTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_relays_tables"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableRelay{}, &tables.TableVirtualKeyRelayGrant{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the relay tables would permanently delete endpoints, their credentials and virtual-key grants", migrationName)
+		},
+	})
 }
 
 func rollbackAgentGatewayTables(*gorm.DB) error {
@@ -15212,6 +15269,12 @@ func ensureIndexConcurrently(tx *gorm.DB, table, name, definition string, unique
 // where), which both Postgres and SQLite support. An empty where builds a full
 // index. The same no-transaction requirement applies on postgres.
 func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where string, unique bool) error {
+	return ensureIndexConcurrentlyUsing(tx, table, name, "", definition, where, unique)
+}
+
+// ensureIndexConcurrentlyUsing is ensurePartialIndexConcurrently with an index access method
+// (USING method, e.g. "hash"); "" is the default btree.
+func ensureIndexConcurrentlyUsing(tx *gorm.DB, table, name, method, definition, where string, unique bool) error {
 	kind := "INDEX"
 	if unique {
 		kind = "UNIQUE INDEX"
@@ -15220,8 +15283,12 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 	if where != "" {
 		predicate = " WHERE " + where
 	}
+	on := table
+	if method != "" {
+		on += " USING " + method
+	}
 	if tx.Dialector.Name() != "postgres" {
-		return tx.Exec(fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
+		return tx.Exec(fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, on, definition, predicate)).Error
 	}
 	qualified, valid, found, err := postgresIndexOnTable(tx, table, name)
 	if err != nil {
@@ -15257,7 +15324,7 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 		if found {
 			stmts = append(stmts, fmt.Sprintf("DROP INDEX IF EXISTS %s", qualified))
 		}
-		stmts = append(stmts, fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate))
+		stmts = append(stmts, fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, on, definition, predicate))
 		return ExecWithBoundedLock(tx, "index "+name, stmts...)
 	}
 	if found {
@@ -15265,7 +15332,7 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 			return fmt.Errorf("drop invalid index %s: %w", qualified, err)
 		}
 	}
-	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
+	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s (%s)%s", kind, name, on, definition, predicate)).Error
 }
 
 // smallTableIndexMaxBytes and smallTableIndexMaxRows decide when an index is
@@ -15690,25 +15757,29 @@ type indexState struct {
 	exists bool
 	unique bool
 	valid  bool
+	method string // Postgres access method ("btree", "hash", ...); "" on SQLite
 }
 
 // describeIndex reports whether index name exists on table, whether it is
-// UNIQUE, and (on Postgres) whether it is valid. SQLite indexes are always valid.
+// UNIQUE, (on Postgres) whether it is valid, and its access method. SQLite
+// indexes are always valid.
 func describeIndex(tx *gorm.DB, table, name string) (indexState, error) {
 	if tx.Dialector.Name() == "postgres" {
 		var row struct {
 			Count  int64
 			Unique bool
 			Valid  bool
+			Method string
 		}
 		err := tx.Raw(`
-			SELECT COUNT(*) AS count, COALESCE(bool_and(pi.indisunique), false) AS "unique", COALESCE(bool_and(pi.indisvalid), false) AS valid
+			SELECT COUNT(*) AS count, COALESCE(bool_and(pi.indisunique), false) AS "unique", COALESCE(bool_and(pi.indisvalid), false) AS valid, COALESCE(MAX(am.amname), '') AS method
 			FROM pg_class pc
 			JOIN pg_index pi ON pi.indrelid = pc.oid
 			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			JOIN pg_am am ON am.oid = ic.relam
 			WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
 		`, table, name).Scan(&row).Error
-		return indexState{exists: row.Count > 0, unique: row.Unique, valid: row.Valid}, err
+		return indexState{exists: row.Count > 0, unique: row.Unique, valid: row.Valid, method: row.Method}, err
 	}
 	var rows []struct {
 		Name   string
@@ -16391,4 +16462,439 @@ func migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddAzureUseSpeechEndpointsColumn adds the azure_use_speech_endpoints column to the key table.
+// Existing keys default to false (NULL), so their audio keeps going to Azure OpenAI.
+func migrationAddAzureUseSpeechEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_azure_use_speech_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "azure_use_speech_endpoints")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_use_speech_endpoints")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddAzureUseVoiceLiveEndpointsColumn adds the azure_use_voice_live_endpoints column to the key table.
+// Existing keys default to false (NULL), so their realtime sessions keep going to Azure OpenAI.
+func migrationAddAzureUseVoiceLiveEndpointsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_azure_use_voice_live_endpoints_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "azure_use_voice_live_endpoints")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "azure_use_voice_live_endpoints")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSageMakerKeyColumns adds the sagemaker_* credential and routing columns to the
+// config_keys table for the sagemaker provider.
+func migrationAddSageMakerKeyColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sagemaker_key_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	cols := []string{
+		"sagemaker_access_key",
+		"sagemaker_secret_key",
+		"sagemaker_session_token",
+		"sagemaker_region",
+		"sagemaker_role_arn",
+		"sagemaker_external_id",
+		"sagemaker_role_session_name",
+		"sagemaker_endpoints_json",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, col := range cols {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range cols {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOAuth2RefreshTokenClientDisplayNameColumn adds oauth2_refresh_tokens.client_display_name,
+// the client_name a grant was consented under. Existing grants keep NULL and list by their client row.
+func migrationAddOAuth2RefreshTokenClientDisplayNameColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_refresh_token_client_display_name_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableOAuth2RefreshToken{}, "client_display_name")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableOAuth2RefreshToken{}, "client_display_name")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationWidenOAuth2ClientIDColumns lets oauth2_authorize_requests.client_id and
+// oauth2_refresh_tokens.client_id hold a Client ID Metadata Document URL of any length: the
+// columns become text and their btree indexes, capped at ~2.7KB per entry, become hash indexes.
+// Postgres-only: SQLite enforces neither bound.
+//
+// Nothing holds a lock for long on a large table: the type change needs no rewrite (varchar to
+// text is binary-coercible) and runs under a bounded lock wait; the hash index is built
+// concurrently beside the old btree, which keeps serving lookups, then swapped in under the name
+// the model declares (were it missing, auto-migration would recreate a btree). It runs outside a
+// transaction, and an interrupted run is finished by the next one.
+func migrationWidenOAuth2ClientIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "widen_oauth2_client_id_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, widenOAuth2ClientIDColumnsMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// widenOAuth2ClientIDColumnsMigration builds the migration applied by
+// migrationWidenOAuth2ClientIDColumns, so tests exercise the same Migrate and Rollback callbacks
+// the upgrade runs.
+func widenOAuth2ClientIDColumnsMigration(ctx context.Context, migrationName string) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			for _, table := range []string{"oauth2_authorize_requests", "oauth2_refresh_tokens"} {
+				if err := widenOAuth2ClientIDColumn(tx, table); err != nil {
+					return fmt.Errorf("failed to widen %s.client_id: %w", table, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: client_id values longer than varchar(255) may already be stored", migrationName)
+		},
+	}
+}
+
+// widenOAuth2ClientIDColumn makes table.client_id text with a hash index; see
+// migrationWidenOAuth2ClientIDColumns.
+func widenOAuth2ClientIDColumn(tx *gorm.DB, table string) error {
+	if !tx.Migrator().HasColumn(table, "client_id") {
+		return nil
+	}
+	if err := ExecWithBoundedLock(tx, table+".client_id", fmt.Sprintf("ALTER TABLE %s ALTER COLUMN client_id TYPE TEXT", table)); err != nil {
+		return err
+	}
+	index := "idx_" + table + "_client_id"
+	building := index + "_hash"
+	final, err := describeIndex(tx, table, index)
+	if err != nil {
+		return fmt.Errorf("inspect index %s: %w", index, err)
+	}
+	if final.exists && final.valid && final.method == "hash" {
+		return dropIndexConcurrently(tx, table, building)
+	}
+	if err := ensureIndexConcurrentlyUsing(tx, table, building, "hash", "client_id", "", false); err != nil {
+		return err
+	}
+	if err := dropIndexConcurrently(tx, table, index); err != nil {
+		return err
+	}
+	qualified, _, found, err := postgresIndexOnTable(tx, table, building)
+	if err != nil || !found {
+		return err
+	}
+	return ExecWithBoundedLock(tx, "index "+index, fmt.Sprintf("ALTER INDEX %s RENAME TO %s", qualified, index))
+}
+
+// migrationAddMCPMaxProtocolVersionColumns adds the global and per-client MCP max protocol version.
+// A deployment that already has MCP clients gets a global cap of 2025-06-18, the version every
+// client negotiated before the setting existed, so upgrading changes nothing until an admin lifts
+// it. A deployment with none starts uncapped.
+func migrationAddMCPMaxProtocolVersionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_max_protocol_version_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{mcpMaxProtocolVersionColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// mcpMaxProtocolVersionColumnsMigration builds the migration applied by
+// migrationAddMCPMaxProtocolVersionColumns, so tests exercise the same callbacks the upgrade runs.
+func mcpMaxProtocolVersionColumnsMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_max_protocol_version"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "max_protocol_version"); err != nil {
+				return err
+			}
+			var existing int64
+			if err := tx.Table("config_mcp_clients").Count(&existing).Error; err != nil {
+				return fmt.Errorf("failed to count MCP clients: %w", err)
+			}
+			if existing == 0 {
+				return nil
+			}
+			return tx.Table("config_client").Where("mcp_max_protocol_version IS NULL OR mcp_max_protocol_version = ''").
+				UpdateColumn("mcp_max_protocol_version", schemas.MCPProtocolVersion20250618).Error
+		},
+		// Dropping the columns would delete every protocol cap an admin configured.
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the columns would delete every configured global and per-server MCP protocol cap; they are additive and older binaries ignore them", migrationName)
+		},
+	}
+}
+
+var mcpClientDiscoveredListColumns = []string{"discovered_resources_json", "discovered_resource_templates_json", "discovered_prompts_json"}
+
+// migrationAddMCPClientDiscoveredResourcesPromptsColumns adds the config_mcp_clients columns that
+// persist an MCP client's discovered resources, resource templates and prompts.
+func migrationAddMCPClientDiscoveredResourcesPromptsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_discovered_resources_prompts_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range mcpClientDiscoveredListColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			for _, column := range mcpClientDiscoveredListColumns {
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPClient{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientExposeListsColumns adds the prompts and resources allow-lists. Existing rows
+// keep them empty, which exposes everything, as before.
+func migrationAddMCPClientExposeListsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_expose_lists_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{mcpClientExposeListsColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// mcpClientExposeListsColumnsMigration builds the migration applied by
+// migrationAddMCPClientExposeListsColumns, so tests exercise the same callbacks the upgrade runs.
+func mcpClientExposeListsColumnsMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range []string{"prompts_to_expose_json", "resources_to_expose_json"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		// Dropping the columns would silently serve everything an admin restricted.
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the allow-lists would expose every prompt and resource they restrict", migrationName)
+		},
+	}
+}
+
+// migrationAddOAuthIssuerBindingColumns adds the issuer columns to oauth configs and flows. Existing
+// rows stay unbound until their next sign-in.
+func migrationAddOAuthIssuerBindingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_issuer_binding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []struct {
+		model   any
+		columns []string
+	}{
+		{&tables.TableOauthConfig{}, []string{"issuer", "iss_parameter_supported", "dynamically_registered"}},
+		{&tables.TableMCPOauthFlow{}, []string{"issuer", "iss_parameter_supported"}},
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, table := range columns {
+				for _, column := range table.columns {
+					if err := addColumnIfNotExists(tx, logger, table.model, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			for _, table := range columns {
+				for _, column := range table.columns {
+					if err := dropColumnIfExists(tx.WithContext(ctx), logger, table.model, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientDiscoveredToolDetailsColumn adds the column that persists discovered tools'
+// annotations, titles, icons and output schemas. Existing rows fill it at their next discovery.
+func migrationAddMCPClientDiscoveredToolDetailsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_discovered_tool_details_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "discovered_tool_details_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPClient{}, "discovered_tool_details_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// voiceLivePricingColumns are the Azure Voice Live rate columns on governance_model_pricing.
+var voiceLivePricingColumns = []string{
+	"input_cost_per_token_voice_live",
+	"output_cost_per_token_voice_live",
+	"cache_read_input_token_cost_voice_live",
+	"input_cost_per_audio_token_voice_live",
+	"output_cost_per_audio_token_voice_live",
+	"input_cost_per_standard_speech_audio_token_voice_live",
+	"output_cost_per_standard_speech_audio_token_voice_live",
+	"input_cost_per_custom_speech_audio_token_voice_live",
+	"output_cost_per_custom_speech_audio_token_voice_live",
+}
+
+// migrationAddVoiceLivePricingColumns adds the Azure Voice Live rate columns.
+func migrationAddVoiceLivePricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_voice_live_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, field := range voiceLivePricingColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackVoiceLivePricingColumns(ctx, tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackVoiceLivePricingColumns is the down path of add_voice_live_pricing_columns: it refuses, since
+// the columns hold operator-set rates.
+func rollbackVoiceLivePricingColumns(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_voice_live_pricing_columns is non-rollbackable: dropping the _voice_live columns would permanently delete every Voice Live rate an operator has set, and Voice Live turns would silently bill at the normal rates; the columns are additive and older binaries safely ignore them")
 }

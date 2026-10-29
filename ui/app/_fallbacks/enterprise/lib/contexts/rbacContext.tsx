@@ -18,6 +18,8 @@ export enum RbacResource {
 	MCPGateway = "MCPGateway",
 	AgentGateway = "AgentGateway",
 	AgentLogs = "AgentLogs",
+	Relays = "Relays",
+	RelayLogs = "RelayLogs",
 	MCPToolGroups = "MCPToolGroups",
 	VirtualMCPs = "VirtualMCPs",
 	MCPLogs = "MCPLogs",
@@ -58,6 +60,7 @@ export enum RbacOperation {
 	Reveal = "Reveal",
 	Download = "Download",
 	CreateStandalone = "CreateStandalone",
+	ViewAs = "ViewAs",
 }
 
 interface RbacContextType {

@@ -21,6 +21,7 @@ export * from "./oauth2ConsentApi";
 export * from "./warpApi";
 export * from "./oauth2SessionsApi";
 export * from "./pluginsApi";
+export * from "./relaysApi";
 export * from "./providersApi";
 export * from "./promptsApi";
 export * from "./sessionApi";
