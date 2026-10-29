@@ -298498,7 +298498,21 @@
                   "pm.test('vk-legacy-budget: create with the removed singular budget is a 400', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
                   "  pm.expect(pm.response.text(), 'error does not point at budgets: ' + pm.response.text()).to.contain('budgets');",
-                  "});"
+                  "});",
+                  "// Pre-fix the create answered 200 and saved a key with no budget; delete that key so a red run leaves nothing behind.",
+                  "var leakedVk = {};",
+                  "try { leakedVk = pm.response.json().virtual_key || {}; } catch (e) { leakedVk = {}; }",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && leakedVk.id) {",
+                  "  var cleanupHeaders = {};",
+                  "  var cleanupToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (cleanupToken) { cleanupHeaders.Authorization = 'Bearer ' + cleanupToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + leakedVk.id, method: 'DELETE', header: cleanupHeaders}, function (err, response) {",
+                  "    pm.test('vk-legacy-budget: the key the refused create should not have made is deleted', function () {",
+                  "      pm.expect(err, 'leaked key ' + leakedVk.id + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'leaked key ' + leakedVk.id + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "  });",
+                  "}"
                 ]
               }
             }
