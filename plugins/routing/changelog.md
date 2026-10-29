@@ -1,1 +1,3 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- fix: complexity classification is skipped when other rule conditions already decide the outcome
+- fix: embeddings fall back to single-text requests when a batch is refused, and warmup failure messages are correct when a fallback is set
+- chore: upgraded core to v1.14.0 and framework to v1.11.0

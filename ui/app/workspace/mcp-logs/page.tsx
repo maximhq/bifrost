@@ -12,7 +12,7 @@ import {
 	useGetMCPLogsStatsQuery,
 	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
-import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
+import { useLazyGetMCPLogByIdQuery, useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
@@ -40,6 +40,9 @@ export default function MCPLogsPage() {
 	const [deleteLogs] = useDeleteMCPLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
 	const [triggerGetLogs] = useLazyGetMCPLogsQuery();
+	const [triggerGetLogById] = useLazyGetMCPLogByIdQuery();
+	const [fetchedLog, setFetchedLog] = useState<MCPToolLogEntry | null>(null);
+	const activeLogFetchId = useRef<string | null>(null);
 
 	// Track if user has manually modified the time range
 	const userModifiedTimeRange = useRef<boolean>(false);
@@ -229,7 +232,34 @@ export default function MCPLogsPage() {
 	const logs = logsData?.logs ?? [];
 	const totalItems = logsData?.pagination?.total_count ?? 0;
 
-	const selectedLog = useMemo(() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null), [selectedLogId, logs]);
+	const selectedLogFromPage = useMemo(
+		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
+		[selectedLogId, logs],
+	);
+
+	// A shared link can name a log outside the current page (older than the
+	// default 1h window, or pushed off the page by newer logs). Fetch it by id
+	// so the sheet still opens.
+	useEffect(() => {
+		if (!selectedLogId || selectedLogFromPage) {
+			setFetchedLog(null);
+			activeLogFetchId.current = null;
+			return;
+		}
+		const fetchId = selectedLogId;
+		activeLogFetchId.current = fetchId;
+		triggerGetLogById(selectedLogId).then((result) => {
+			if (activeLogFetchId.current === fetchId) {
+				if (result.data) {
+					setFetchedLog(result.data);
+				} else if (result.error) {
+					setError(getErrorMessage(result.error));
+				}
+			}
+		});
+	}, [selectedLogId, selectedLogFromPage, triggerGetLogById]);
+
+	const selectedLog = selectedLogFromPage ?? fetchedLog;
 
 	// Set showEmptyState on first response; clear it as soon as logs appear.
 	useEffect(() => {

@@ -400,6 +400,7 @@ const (
 	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)
 	BifrostContextKeyA2AUpstreamTransport                BifrostContextKey = "bifrost-a2a-upstream-transport"                   // string (A2A binding selected for the upstream agent)
 	BifrostContextKeyRealtimeVoice                       BifrostContextKey = "bifrost-realtime-voice"                           // string
+	BifrostContextKeyRealtimePricingSurface              BifrostContextKey = "bifrost-realtime-pricing-surface"                 // PricingSurface (set by the provider when it opens the realtime session)
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
 	BifrostContextKeyRequestQuery                        BifrostContextKey = "bifrost-request-query"                            // map[string]string (request query params with lowercased keys; consumed by governance routing CEL rules)
@@ -2035,6 +2036,12 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 	}
 }
 
+// PricingSurface names the product surface whose price list applies to a request.
+type PricingSurface string
+
+// PricingSurfaceVoiceLive prices an Azure Voice Live turn at the model's _voice_live rates.
+const PricingSurfaceVoiceLive PricingSurface = "voice_live"
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType RequestType `json:"request_type"`
@@ -2042,6 +2049,9 @@ type BifrostResponseExtraFields struct {
 	// exposed to plugins and logs.
 	PricingRequestType RequestType `json:"pricing_request_type,omitempty"`
 	RoutingInfo        RoutingInfo `json:"routing_info"`
+	// PricingSurface selects a model's rates for the product that served the request, without
+	// changing the request type or service tier exposed to plugins and logs.
+	PricingSurface PricingSurface `json:"pricing_surface,omitempty"`
 	// Deprecated: use RoutingInfo.Provider. Still populated for backward
 	// compatibility; new consumers should read from RoutingInfo.
 	Provider ModelProvider `json:"provider,omitempty"`

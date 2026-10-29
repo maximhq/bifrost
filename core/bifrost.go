@@ -253,11 +253,12 @@ type PluginPipeline struct {
 	// access triggers "concurrent map read and map write" panics.
 	streamingMu         sync.Mutex
 	postHookTimings     map[string]*pluginTimingAccumulator // keyed by plugin name
-	postHookPluginOrder []string                            // order in which post-hooks ran (for nested span creation)
+	postHookPluginOrder []string                            // order in which post-hooks first ran
 	chunkCount          int
 
 	// Plugin logging: cached scoped contexts for streaming post-hooks (reused across chunks)
 	streamScopedCtxs map[string]*schemas.BifrostContext
+	streamSpanParent context.Context // parent of this stream's post-hook spans, resolved on first use
 }
 
 // pluginTimingAccumulator accumulates timing information for a plugin across streaming chunks
@@ -265,6 +266,7 @@ type pluginTimingAccumulator struct {
 	totalDuration time.Duration
 	invocations   int
 	errors        int
+	span          schemas.SpanHandle // the plugin's post-hook span, open until the stream is finalized
 }
 
 // tracerWrapper wraps a Tracer to ensure atomic.Value stores consistent types.
@@ -9944,6 +9946,7 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 	// Realtime turns carry StreamStartTime for plugin latency/final-chunk context,
 	// but they are finalized as one completed turn, not chunk-by-chunk stream output.
 	isStreaming := ctx.Value(schemas.BifrostContextKeyStreamStartTime) != nil && requestType != schemas.RealtimeRequest
+	isFinalChunk := isStreaming && IsFinalChunk(ctx)
 	ctx.BlockRestrictedWrites()
 	defer ctx.UnblockRestrictedWrites()
 	var err error
@@ -9952,21 +9955,19 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 		pluginName := plugin.GetName()
 		p.logger.Debug("running post-hook for plugin %s", pluginName)
 		if isStreaming {
-			// For streaming: accumulate timing, don't create individual spans per chunk
-			// Lazily create cached scoped contexts on first chunk (reused across all chunks)
-			if p.streamScopedCtxs == nil {
-				p.streamScopedCtxs = make(map[string]*schemas.BifrostContext, len(p.llmPlugins))
-				for _, pl := range p.llmPlugins {
-					name := pl.GetName()
-					p.streamScopedCtxs[name] = ctx.WithPluginScope(&name)
-				}
+			// For streaming: one span per plugin for the whole stream, timed by accumulation.
+			pluginCtx, ok := p.streamScopedCtxs[pluginName]
+			if !ok {
+				pluginCtx = p.openStreamPostHook(ctx, pluginName)
 			}
-			pluginCtx := p.streamScopedCtxs[pluginName]
 			start := time.Now()
 			resp, bifrostErr, err = plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
 			duration := time.Since(start)
 
 			p.accumulatePluginTiming(pluginName, duration, err != nil)
+			if isFinalChunk {
+				p.endStreamPostHook(pluginName)
+			}
 			if err != nil {
 				p.postHookErrors = append(p.postHookErrors, err)
 				p.logger.Warn("error in PostLLMHook for plugin %s: %v", pluginName, err)
@@ -10558,6 +10559,14 @@ func (p *PluginPipeline) resetPluginPipeline() {
 	// is returned to the pool. logger/tracer are nilled here too so the write
 	// is synchronized with the finalizer's read under the same mutex.
 	p.streamingMu.Lock()
+	// A stream released without reaching its finalizer still ends the spans it opened.
+	if p.tracer != nil {
+		for _, timing := range p.postHookTimings {
+			if timing.span != nil {
+				p.tracer.EndSpan(timing.span, schemas.SpanStatusError, "stream released before finalizing")
+			}
+		}
+	}
 	p.logger = nil
 	p.tracer = nil
 	p.chunkCount = 0
@@ -10575,6 +10584,7 @@ func (p *PluginPipeline) resetPluginPipeline() {
 		scopedCtx.ReleasePluginScope()
 	}
 	p.streamScopedCtxs = nil
+	p.streamSpanParent = nil
 	p.streamingMu.Unlock()
 }
 
@@ -10632,86 +10642,110 @@ func (p *PluginPipeline) accumulatePluginTiming(pluginName string, duration time
 	}
 }
 
-// FinalizeStreamingPostHookSpans creates aggregated spans for each plugin after streaming completes.
-// This should be called once at the end of streaming to create one span per plugin with average timing.
-// Spans are nested to mirror the pre-hook hierarchy (each post-hook is a child of the previous one).
-func (p *PluginPipeline) FinalizeStreamingPostHookSpans(ctx context.Context) {
-	// Snapshot the accumulators under lock so per-chunk writers in the
-	// provider goroutine can't race with the finalizer. Tracer calls below
-	// run unlocked — we don't want to stall chunk writers on span I/O.
-	type snapshotEntry struct {
-		pluginName    string
-		totalDuration time.Duration
-		invocations   int
-		errors        int
+// openStreamPostHook opens pluginName's post-hook span on its first chunk and returns
+// the scoped context its hooks run with for the rest of the stream. Spans the plugin
+// starts nest under that span, as on the non-streaming path, without moving the root
+// context's active span, which other goroutines read while the stream runs.
+func (p *PluginPipeline) openStreamPostHook(ctx *schemas.BifrostContext, pluginName string) *schemas.BifrostContext {
+	if p.streamScopedCtxs == nil {
+		p.streamScopedCtxs = make(map[string]*schemas.BifrostContext, len(p.llmPlugins))
 	}
+	if p.streamSpanParent == nil {
+		// The stream's LLM span when one is registered, else the active span.
+		p.streamSpanParent = ctx
+		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+			if id := p.tracer.GetDeferredSpanID(traceID); id != "" {
+				p.streamSpanParent = context.WithValue(ctx, schemas.BifrostContextKeySpanID, id)
+			}
+		}
+	}
+	spanID, handle := p.tracer.StartSpanID(p.streamSpanParent, pluginSpanNamesFor(pluginName).posthook, schemas.SpanKindPlugin)
+	name := pluginName
+	pluginCtx := ctx.WithPluginScopeSpan(&name, spanID)
+	p.streamScopedCtxs[pluginName] = pluginCtx
+
 	p.streamingMu.Lock()
-	// Capture tracer under the same lock that guards resetPluginPipeline's
-	// writes so the read/write pair on p.tracer is synchronized and the
-	// unlocked tracer calls below use a stable local.
+	if p.postHookTimings == nil {
+		p.postHookTimings = make(map[string]*pluginTimingAccumulator)
+	}
+	if _, ok := p.postHookTimings[pluginName]; !ok {
+		p.postHookTimings[pluginName] = &pluginTimingAccumulator{span: handle}
+		p.postHookPluginOrder = append(p.postHookPluginOrder, pluginName)
+	}
+	p.streamingMu.Unlock()
+	return pluginCtx
+}
+
+// streamPostHookSpan is a plugin's streaming post-hook span taken for ending, with the
+// stream's totals for that plugin.
+type streamPostHookSpan struct {
+	span          schemas.SpanHandle
+	totalDuration time.Duration
+	invocations   int
+	errors        int
+}
+
+// take removes and returns t's open span; the caller holds streamingMu.
+func (t *pluginTimingAccumulator) take() (streamPostHookSpan, bool) {
+	if t == nil || t.span == nil {
+		return streamPostHookSpan{}, false
+	}
+	s := streamPostHookSpan{span: t.span, totalDuration: t.totalDuration, invocations: t.invocations, errors: t.errors}
+	t.span = nil
+	return s, true
+}
+
+// end records the totals and ends the span at end, starting it the summed hook time before.
+func (s streamPostHookSpan) end(tracer schemas.Tracer, end time.Time) {
+	tracer.SetAttribute(s.span, schemas.AttrPluginInvocations, s.invocations)
+	if s.invocations > 0 {
+		tracer.SetAttribute(s.span, schemas.AttrPluginAvgDurationMs, float64(s.totalDuration.Milliseconds())/float64(s.invocations))
+	}
+	tracer.SetAttribute(s.span, schemas.AttrPluginTotalDurationMs, s.totalDuration.Milliseconds())
+	tracer.SetSpanStartTime(s.span, end.Add(-s.totalDuration))
+	if s.errors > 0 {
+		tracer.SetAttribute(s.span, schemas.AttrPluginErrorCount, s.errors)
+		tracer.EndSpan(s.span, schemas.SpanStatusError, "some invocations failed")
+	} else {
+		tracer.EndSpan(s.span, schemas.SpanStatusOk, "")
+	}
+}
+
+// endStreamPostHook ends pluginName's post-hook span as its final-chunk hook returns, so
+// the span closes before the client send and holds the spans that hook opened.
+func (p *PluginPipeline) endStreamPostHook(pluginName string) {
+	p.streamingMu.Lock()
 	tracer := p.tracer
-	if tracer == nil || p.postHookTimings == nil || len(p.postHookPluginOrder) == 0 {
+	s, ok := p.postHookTimings[pluginName].take()
+	p.streamingMu.Unlock()
+	if ok && tracer != nil {
+		s.end(tracer, time.Now())
+	}
+}
+
+// FinalizeStreamingPostHookSpans ends the streaming post-hook spans still open once the
+// stream completes: those of a stream that never ran its hooks on a final chunk. Spans
+// are siblings under the LLM span.
+func (p *PluginPipeline) FinalizeStreamingPostHookSpans(_ context.Context) {
+	// Take the handles under lock so per-chunk writers can't race the finalizer and a
+	// second call ends nothing. Tracer calls run unlocked.
+	p.streamingMu.Lock()
+	tracer := p.tracer
+	if tracer == nil || len(p.postHookPluginOrder) == 0 {
 		p.streamingMu.Unlock()
 		return
 	}
-	snapshot := make([]snapshotEntry, 0, len(p.postHookPluginOrder))
+	open := make([]streamPostHookSpan, 0, len(p.postHookPluginOrder))
 	for _, pluginName := range p.postHookPluginOrder {
-		timing, ok := p.postHookTimings[pluginName]
-		if !ok || timing.invocations == 0 {
-			continue
+		if s, ok := p.postHookTimings[pluginName].take(); ok {
+			open = append(open, s)
 		}
-		snapshot = append(snapshot, snapshotEntry{
-			pluginName:    pluginName,
-			totalDuration: timing.totalDuration,
-			invocations:   timing.invocations,
-			errors:        timing.errors,
-		})
 	}
 	p.streamingMu.Unlock()
 
-	if len(snapshot) == 0 {
-		return
-	}
-
-	// Collect handles and timing info to end spans in reverse order
-	type spanInfo struct {
-		handle    schemas.SpanHandle
-		hasErrors bool
-	}
-	spans := make([]spanInfo, 0, len(snapshot))
-	currentCtx := ctx
-
-	// Start spans in execution order (nested: each is a child of the previous)
-	for _, entry := range snapshot {
-		// Create span as child of the previous span (nested hierarchy)
-		newCtx, handle := tracer.StartSpan(currentCtx, pluginSpanNamesFor(entry.pluginName).posthook, schemas.SpanKindPlugin)
-		if handle == nil {
-			continue
-		}
-
-		// Calculate average duration in milliseconds
-		avgMs := float64(entry.totalDuration.Milliseconds()) / float64(entry.invocations)
-
-		// Set aggregated attributes
-		tracer.SetAttribute(handle, schemas.AttrPluginInvocations, entry.invocations)
-		tracer.SetAttribute(handle, schemas.AttrPluginAvgDurationMs, avgMs)
-		tracer.SetAttribute(handle, schemas.AttrPluginTotalDurationMs, entry.totalDuration.Milliseconds())
-
-		if entry.errors > 0 {
-			tracer.SetAttribute(handle, schemas.AttrPluginErrorCount, entry.errors)
-		}
-
-		spans = append(spans, spanInfo{handle: handle, hasErrors: entry.errors > 0})
-		currentCtx = newCtx
-	}
-
-	// End spans in reverse order (innermost first, like unwinding a call stack)
-	for i := len(spans) - 1; i >= 0; i-- {
-		if spans[i].hasErrors {
-			tracer.EndSpan(spans[i].handle, schemas.SpanStatusError, "some invocations failed")
-		} else {
-			tracer.EndSpan(spans[i].handle, schemas.SpanStatusOk, "")
-		}
+	now := time.Now()
+	for _, s := range open {
+		s.end(tracer, now)
 	}
 }
 

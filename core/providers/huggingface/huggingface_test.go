@@ -25,7 +25,7 @@ func TestHuggingface(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.HuggingFace,
-		ChatModel:            "together/meta-llama/Llama-3.3-70B-Instruct",
+		ChatModel:            "scaleway/meta-llama/Llama-3.3-70B-Instruct", // together dropped Llama-3.3-70B
 		VisionModel:          "novita/meta-llama/Llama-4-Scout-17B-16E-Instruct",
 		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
 		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",

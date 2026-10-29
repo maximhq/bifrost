@@ -43834,7 +43834,7 @@
           {
             "name": "unfiltered",
             "in": "query",
-            "description": "If true, return all models including those filtered out by provider-level restrictions",
+            "description": "If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows",
             "schema": {
               "type": "boolean",
               "default": false
@@ -43953,7 +43953,7 @@
           {
             "name": "unfiltered",
             "in": "query",
-            "description": "If true, return all models including those filtered out by provider-level restrictions",
+            "description": "If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows",
             "schema": {
               "type": "boolean",
               "default": false

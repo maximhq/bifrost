@@ -119,6 +119,49 @@ test.describe('MCP Log Detail Hydration', () => {
     await expect(page.getByText('hydrated-search-term')).toBeVisible()
     await expect(page.getByText('hydrated-result-value')).toBeVisible()
   })
+
+  test('opens the sheet from a selected_log link when that log is not on the loaded page', async ({ mcpLogsPage, page }) => {
+    // The list returns a different log, as it would when the linked log is
+    // older than the default 1h window or has been pushed to a later page.
+    const otherLog = { ...listLog, id: 'mcp-other-e2e', request_id: 'req-mcp-other-e2e', tool_name: 'other_tool' }
+    let detailRequestCount = 0
+
+    await page.route('**/api/mcp-logs**', async (route) => {
+      const pathname = new URL(route.request().url()).pathname
+
+      if (pathname === '/api/mcp-logs/mcp-detail-e2e') {
+        detailRequestCount += 1
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(detailLog) })
+        return
+      }
+
+      if (pathname === '/api/mcp-logs') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            logs: [otherLog],
+            pagination: { limit: 50, offset: 50, sort_by: 'timestamp', order: 'desc', total_count: 51 },
+            stats: { total_executions: 51, success_rate: 100, average_latency: 42, total_cost: 0.001 },
+            has_logs: true,
+          }),
+        })
+        return
+      }
+
+      await route.continue()
+    })
+
+    await page.goto('/workspace/mcp-logs?offset=50&selected_log=mcp-detail-e2e')
+    await expect(mcpLogsPage.logsTable).toBeVisible()
+
+    await expect
+      .poll(() => detailRequestCount, { timeout: 5000, intervals: [100, 200, 500] })
+      .toBeGreaterThan(0)
+    await expect(mcpLogsPage.logDetailSheet).toBeVisible()
+    await expect(mcpLogsPage.logDetailSheet.getByText('hydrated-search-term')).toBeVisible()
+    await expect(mcpLogsPage.logDetailSheet.getByText('hydrated-result-value')).toBeVisible()
+  })
 })
 
 const readLogs = [
