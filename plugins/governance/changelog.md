@@ -1,7 +1,0 @@
-- feat: relay calls are checked against the virtual key's relay grants and charged to its virtual key, team and customer budgets
-- feat: SageMaker passthrough requests are governed
-- feat: MCP prompt and resource reads are governed like tool calls
-- fix: models named in server tools (such as the Anthropic advisor tool's model) are checked against the virtual key's model restrictions
-- fix: virtual keys sent in the Ocp-Apim-Subscription-Key header by Azure AI Speech clients are resolved
-- fix: Databricks key aliases stay unprefixed when a virtual key load balances them
-- chore: upgraded core to v1.14.0 and framework to v1.11.0
