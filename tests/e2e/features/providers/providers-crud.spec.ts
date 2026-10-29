@@ -30,6 +30,7 @@ type SavedOAuthKey = {
     auth_style?: string;
     assertion_lifetime_seconds?: number;
     subject_token_file?: string;
+    subject_token_type?: string;
     request_encoding?: string;
     extra_params?: Record<string, string>;
   } | null;
@@ -753,6 +754,7 @@ test.describe("Providers", () => {
             grant_type: "token_exchange",
             token_url: { value: "https://auth.openai.com/oauth/token" },
             subject_token_file: "/var/run/secrets/openai/token",
+            subject_token_type: "urn:ietf:params:oauth:token-type:id_token",
             request_encoding: "json",
             extra_params: { identity_provider_id: "idp_e2e", service_account_id: "sa_e2e" },
           },
@@ -778,6 +780,7 @@ test.describe("Providers", () => {
       const saved = await fetchOAuthKey(request, providerData.name, keyName);
       expect(saved?.oauth_key_config?.grant_type).toBe("token_exchange");
       expect(saved?.oauth_key_config?.subject_token_file).toBe("/var/run/secrets/openai/token");
+      expect(saved?.oauth_key_config?.subject_token_type).toBe("urn:ietf:params:oauth:token-type:id_token");
       expect(saved?.oauth_key_config?.request_encoding).toBe("json");
       // Values come back masked; both entries must still be there.
       expect(Object.keys(saved?.oauth_key_config?.extra_params ?? {}).sort()).toEqual(["identity_provider_id", "service_account_id"]);
