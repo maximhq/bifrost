@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -815,9 +816,10 @@ type listToolsResult struct {
 // retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
 // without holding locks. Uses exponential backoff retry logic (5 retries, 1-30 seconds)
 // for tool retrieval. Returns the full result so the plugin gate can surface RawToolCount
-// and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
+// and SkippedTools. warned records the invalid tools already warned about (per client).
+// All callers should go through MCPManager.runListToolsWithHooks rather
 // than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
-func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
+func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger, warned *sync.Map) (*listToolsResult, error) {
 	// A server offering only prompts or resources has no tools/list to call.
 	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
 		return &listToolsResult{tools: map[string]schemas.ChatTool{}, toolNameMapping: map[string]string{}}, nil
@@ -857,13 +859,20 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
 	var skipped []schemas.SkippedMCPTool
+	invalid := make(map[string]struct{})
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
 		// Validate the original tool name (with hyphens replaced by underscores for validation only)
 		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
 		if err := validateNormalizedToolName(validationName); err != nil {
-			logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			// The same invalid tools come back on every sync: warn the first time only.
+			invalid[mcpTool.Name] = struct{}{}
+			if _, seen := warned.LoadOrStore(clientName+"\x00"+mcpTool.Name, struct{}{}); seen {
+				logger.Debug("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			} else {
+				logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			}
 			skipped = append(skipped, schemas.SkippedMCPTool{
 				OriginalName: mcpTool.Name,
 				Reason:       err.Error(),
@@ -887,12 +896,32 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
+	// Keep only the invalid tools this sync returned, so names that come and go cannot
+	// grow the record without limit.
+	pruneSkippedToolWarnings(warned, clientName, invalid)
+
 	return &listToolsResult{
 		tools:           tools,
 		toolNameMapping: toolNameMapping,
 		rawCount:        len(toolsResponse.Tools),
 		skipped:         skipped,
 	}, nil
+}
+
+// pruneSkippedToolWarnings deletes the invalid-tool warning records of clientName whose tool
+// name is not in keep. A nil keep deletes all of them.
+func pruneSkippedToolWarnings(warned *sync.Map, clientName string, keep map[string]struct{}) {
+	prefix := clientName + "\x00"
+	warned.Range(func(key, _ any) bool {
+		k, ok := key.(string)
+		if !ok || !strings.HasPrefix(k, prefix) {
+			return true
+		}
+		if _, kept := keep[strings.TrimPrefix(k, prefix)]; !kept {
+			warned.Delete(key)
+		}
+		return true
+	})
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
