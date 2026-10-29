@@ -297854,6 +297854,170 @@
           }
         }
       ]
+    },
+    {
+      "name": "296. Mistral unary reasoning (#9184)",
+      "description": "Non-streaming thinking chunks must become canonical reasoning and text on chat, Responses, and Anthropic routes. Compare each returned field to the original upstream chunks, captured through x-bf-send-back-raw-response. These live cases use reasoning_effort=high on mistral-small-latest.",
+      "item": [
+        {
+          "name": "Mistral unary reasoning chat mistral-small-latest - #9184",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/mistral-small-latest\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17 times 23? Give the final integer.\"}],\"reasoning_effort\":\"high\",\"max_tokens\":1024}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Mistral unary reasoning returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var data = pm.response.json();",
+                  "var upstream = data.extra_fields.raw_response.choices[0].message.content;",
+                  "pm.expect(upstream, 'upstream must provide thinking and text chunks').to.be.an('array');",
+                  "var expectedReasoning = '';",
+                  "var expectedText = '';",
+                  "upstream.forEach(function (block) {",
+                  "  if (block.type === 'thinking') { block.thinking.forEach(function (part) { expectedReasoning += part.text; }); }",
+                  "  if (block.type === 'text') { expectedText += block.text; }",
+                  "});",
+                  "pm.expect(expectedReasoning, 'reasoning_effort=high must expose thinking').to.not.equal('');",
+                  "pm.test('Mistral unary reasoning chat preserves upstream thinking and answer', function () {",
+                  "  pm.expect(data.choices[0].message.reasoning).to.equal(expectedReasoning);",
+                  "  pm.expect(data.choices[0].message.content).to.equal(expectedText);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mistral unary reasoning Responses mistral-small-latest - #9184",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/mistral-small-latest\",\"input\":[{\"role\":\"user\",\"content\":\"What is 17 times 23? Give the final integer.\"}],\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":1024}"
+            },
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Mistral unary reasoning returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var data = pm.response.json();",
+                  "var upstream = data.extra_fields.raw_response.choices[0].message.content;",
+                  "pm.expect(upstream, 'upstream must provide thinking and text chunks').to.be.an('array');",
+                  "var expectedReasoning = '';",
+                  "var expectedText = '';",
+                  "upstream.forEach(function (block) {",
+                  "  if (block.type === 'thinking') { block.thinking.forEach(function (part) { expectedReasoning += part.text; }); }",
+                  "  if (block.type === 'text') { expectedText += block.text; }",
+                  "});",
+                  "pm.expect(expectedReasoning, 'reasoning_effort=high must expose thinking').to.not.equal('');",
+                  "var reasoning = ''; var text = '';",
+                  "data.output.forEach(function (item) {",
+                  "  if (item.type === 'reasoning') { (item.content || []).forEach(function (part) { reasoning += part.text; }); }",
+                  "  if (item.type === 'message') { (item.content || []).forEach(function (part) { text += part.text; }); }",
+                  "});",
+                  "pm.test('Mistral unary reasoning Responses preserves upstream thinking and answer', function () {",
+                  "  pm.expect(reasoning).to.equal(expectedReasoning);",
+                  "  pm.expect(text).to.equal(expectedText);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mistral unary reasoning Anthropic mistral-small-latest - #9184",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/mistral-small-latest\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17 times 23? Give the final integer.\"}],\"thinking\":{\"type\":\"adaptive\"},\"output_config\":{\"effort\":\"high\"},\"max_tokens\":1024}"
+            },
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Mistral unary reasoning returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var data = pm.response.json();",
+                  "var upstream = data.extra_fields.raw_response.choices[0].message.content;",
+                  "pm.expect(upstream, 'upstream must provide thinking and text chunks').to.be.an('array');",
+                  "var expectedReasoning = '';",
+                  "var expectedText = '';",
+                  "upstream.forEach(function (block) {",
+                  "  if (block.type === 'thinking') { block.thinking.forEach(function (part) { expectedReasoning += part.text; }); }",
+                  "  if (block.type === 'text') { expectedText += block.text; }",
+                  "});",
+                  "pm.expect(expectedReasoning, 'reasoning_effort=high must expose thinking').to.not.equal('');",
+                  "var reasoning = ''; var text = '';",
+                  "data.content.forEach(function (block) {",
+                  "  if (block.type === 'thinking') { reasoning += block.thinking; }",
+                  "  if (block.type === 'text') { text += block.text; }",
+                  "});",
+                  "pm.test('Mistral unary reasoning Anthropic preserves upstream thinking and answer', function () {",
+                  "  pm.expect(reasoning).to.equal(expectedReasoning);",
+                  "  pm.expect(text).to.equal(expectedText);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
