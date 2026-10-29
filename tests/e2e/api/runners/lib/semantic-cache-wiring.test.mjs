@@ -3,7 +3,7 @@
 // test runner configured).
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { scwLib, scwLibSource, scwNamespaceSuffix } from "./semantic-cache-wiring.mjs";
+import { scwLib, scwLibSource, scwNamespaceSuffix, verifyRedisExpiry } from "./semantic-cache-wiring.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -11,6 +11,38 @@ function test(name, fn) {
   passed++;
   console.log(`  ok - ${name}`);
 }
+
+test("Redis storage checks require a native TTL that matches expires_at", () => {
+  const existsChecks = [];
+  const runRedis = (ttl, expiresAt = "1793000000", exists = "1", serverSeconds = "1792999700", serverMicros = "0", keys = "ScwDirectrun:id\n") => (...args) => {
+    if (args[0] === "--scan") {
+      assert.deepStrictEqual(args, ["--scan", "--pattern", "Scw*run*:*"]);
+      return keys;
+    }
+    if (args[0] === "PTTL") return ttl;
+    if (args[0] === "HGET") return expiresAt;
+    if (args[0] === "TIME") return serverSeconds + "\n" + serverMicros;
+    if (args[0] === "EXISTS") {
+      existsChecks.push(args[1]);
+      return exists;
+    }
+    throw new Error("unexpected Redis command: " + args.join(" "));
+  };
+  assert.strictEqual(verifyRedisExpiry(runRedis("300000"), "Scw*run*:*"), 1);
+  assert.throws(() => verifyRedisExpiry(runRedis("-2"), "Scw*run*:*"), /no retained cache entries verified/);
+  assert.throws(() => verifyRedisExpiry(runRedis("0", "", "0"), "Scw*run*:*"), /no retained cache entries verified/);
+  assert.throws(() => verifyRedisExpiry(runRedis("10", "1", "1", "1792999700", "0", ""), "Scw*run*:*"), /no retained cache entries verified/);
+  assert.throws(() => verifyRedisExpiry(runRedis("-1"), "Scw*run*:*"), /no native expiry/);
+  assert.throws(() => verifyRedisExpiry(runRedis("ERR unavailable"), "Scw*run*:*"), /no native expiry/);
+  assert.throws(() => verifyRedisExpiry(runRedis("10", "bad"), "Scw*run*:*"), /invalid expires_at/);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000", "1793000000", "1", "1792999690"), "Scw*run*:*"), /differs from expires_at/);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000", "1793000000", "1", "bad"), "Scw*run*:*"), /invalid Redis TIME/);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000", "9223372036854775", "1", "9223372036854774"), "Scw*run*:*"), /differs from expires_at/);
+  existsChecks.length = 0;
+  assert.strictEqual(verifyRedisExpiry(runRedis("300000", "1793000000", "0"), "Scw*run*:*", ["ScwDirectrun:expired"]), 1);
+  assert.deepStrictEqual(existsChecks, ["ScwDirectrun:expired"]);
+  assert.throws(() => verifyRedisExpiry(runRedis("300000"), "Scw*run*:*", ["ScwDirectrun:expired"]), /ScwDirectrun:expired remains after TTL without a matching cache lookup/);
+});
 
 // A Postman sandbox stand-in: one response, collection variables, and the recorded pm.test calls.
 function fakePm({ code = 200, body = "", headers = {}, requestName = "req", vars = {} } = {}) {
@@ -36,6 +68,24 @@ function fakePm({ code = 200, body = "", headers = {}, requestName = "req", vars
   };
   return { pm, store, tests, next: () => next };
 }
+
+test("H1 records an expired key without sending another matching cache request", () => {
+  const collection = JSON.parse(readFileSync(new URL("../../collections/bifrost-semantic-cache-wiring.postman_collection.json", import.meta.url), "utf8"));
+  const step = collection.item.find(folder => folder.name === "H: per-request headers").item.find(item => item.name === "H1 expiry without another cache lookup");
+  assert.strictEqual(step.request.method, "GET");
+  assert.deepStrictEqual(step.request.url.path, ["health"]);
+  const f = fakePm({ body: '{"status":"ok"}', vars: { ns: "run", cid_h1: "id-1", scw_lib: scwLibSource() } });
+  const logs = [];
+  const script = step.event.find(event => event.listen === "test").script.exec.join("\n");
+  new Function("pm", "console", script)(f.pm, { log: value => logs.push(value) });
+  assert.strictEqual(f.tests[0].ok, true, f.tests[0].error);
+  assert.deepStrictEqual(logs, ["SCW_EXPIRED_CACHE_KEY=ScwDirectrun:id-1"]);
+  const bad = fakePm({ code: 500, body: '{"status":"error"}', vars: { ns: "run", cid_h1: "id-1", scw_lib: scwLibSource() } });
+  const failedLogs = [];
+  new Function("pm", "console", script)(bad.pm, { log: value => failedLogs.push(value) });
+  assert.strictEqual(bad.tests[0].ok, false);
+  assert.deepStrictEqual(failedLogs, [], "failed HTTP steps must not record a passing expiry probe");
+});
 
 const JSON_CT = { "content-type": "application/json" };
 const SSE_CT = { "content-type": "text/event-stream" };

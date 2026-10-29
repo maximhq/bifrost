@@ -28,6 +28,25 @@ const (
 	RedisMaxSearchResults = 10000
 )
 
+// A script keeps each hash and its deadline together, including concurrent
+// rewrites. Unlike MULTI/EXEC, a failed HSET must not expire a wrong-type key.
+// Check expiry permission before writing; do not leave an immortal hash on an
+// ACL failure. Legacy Redis has no ACL helper, so check command availability.
+var redisAddWithExpiry = redis.NewScript(`
+if redis.acl_check_cmd then
+    if not redis.acl_check_cmd('EXPIREAT', KEYS[1], ARGV[1]) then
+        return redis.error_reply('NOPERM EXPIREAT not allowed')
+    end
+elseif not redis.call('COMMAND', 'INFO', 'EXPIREAT')[1] then
+    return redis.error_reply('ERR EXPIREAT not available')
+end
+-- Bound unpack's stack usage to 512 field/value pairs per call.
+for first = 2, #ARGV, 1024 do
+    redis.call('HSET', KEYS[1], unpack(ARGV, first, math.min(first + 1023, #ARGV)))
+end
+return redis.call('EXPIREAT', KEYS[1], ARGV[1])
+`)
+
 type RedisConfig struct {
 	// Connection settings
 	Addr     *schemas.SecretVar `json:"addr"`               // Redis server address (host:port) - REQUIRED
@@ -1446,13 +1465,25 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 	return results, nil
 }
 
-// Add stores a new chunk in the Redis vector store.
+// Add stores a new chunk. A non-nil expires_at is an absolute Unix-second
+// deadline, applied to the hash itself as well as stored in its metadata.
 func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id is required")
+	}
+
+	var expiresAt int64
+	rawExpiry, hasExpiry := metadata["expires_at"]
+	hasExpiry = hasExpiry && rawExpiry != nil
+	if hasExpiry {
+		var err error
+		expiresAt, err = redisExpirySeconds(rawExpiry)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Create key with namespace
@@ -1501,12 +1532,64 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 		}
 	}
 
+	if hasExpiry {
+		// Keep normalization off the no-expiry path and leave caller metadata
+		// untouched. Integers are already canonical; floats must not become
+		// scientific notation in the hash.
+		switch rawExpiry.(type) {
+		case string, float64:
+			value := strconv.FormatInt(expiresAt, 10)
+			if isFilterableTag("expires_at", fieldProps) {
+				value = encodeTagValue(value)
+			}
+			fields["expires_at"] = value
+		}
+		args := make([]interface{}, 1, 1+2*len(fields))
+		args[0] = expiresAt
+		for field, value := range fields {
+			args = append(args, field, value)
+		}
+		if err := redisAddWithExpiry.Run(ctx, s.client, []string{key}, args...).Err(); err != nil {
+			return fmt.Errorf("failed to store semantic cache entry with expiry: %w", err)
+		}
+		return nil
+	}
+
 	// Store as hash for efficient native vector search
 	if err := s.client.HSet(ctx, key, fields).Err(); err != nil {
 		return fmt.Errorf("failed to store semantic cache entry: %w", err)
 	}
 
 	return nil
+}
+
+// redisExpirySeconds validates Redis's seconds-to-milliseconds conversion
+// before HSET, since scripts do not roll back runtime errors.
+func redisExpirySeconds(value interface{}) (int64, error) {
+	var seconds int64
+	switch v := value.(type) {
+	case int:
+		seconds = int64(v)
+	case int64:
+		seconds = v
+	case string:
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid expires_at: expected integer Unix seconds: %w", err)
+		}
+		seconds = parsed
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v || v < math.MinInt64/1000 || v > math.MaxInt64/1000 {
+			return 0, fmt.Errorf("invalid expires_at: expected integer Unix seconds in Redis range")
+		}
+		seconds = int64(v)
+	default:
+		return 0, fmt.Errorf("invalid expires_at: expected integer Unix seconds, got %T", value)
+	}
+	if seconds < math.MinInt64/1000 || seconds > math.MaxInt64/1000 {
+		return 0, fmt.Errorf("invalid expires_at: Unix seconds outside Redis range")
+	}
+	return seconds, nil
 }
 
 // Delete deletes a chunk from the Redis vector store.
