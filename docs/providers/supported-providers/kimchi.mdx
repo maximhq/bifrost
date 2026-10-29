@@ -128,7 +128,7 @@ Converted internally to Chat Completions:
 ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
 ```
 
-Same parameter support as Chat Completions. Reasoning from chat responses becomes a `reasoning` output item.
+Same parameter support as Chat Completions. `previous_response_id` and `conversation` are not carried over to the chat request, so send the full conversation history in `input`. Reasoning from chat responses becomes a `reasoning` output item.
 
 ---
 
