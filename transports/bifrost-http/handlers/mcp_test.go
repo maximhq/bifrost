@@ -1982,3 +1982,30 @@ func TestRevokeOAuthConfig_UnknownIDIsNotFound(t *testing.T) {
 	assert.Contains(t, respBody, "oauth config not found")
 	assert.NotContains(t, respBody, "%!w")
 }
+
+// TestAddMCPClient_PerUserHeadersKeepsTLSConfig: a per_user_headers client keeps
+// its tls_config. Verification dials with the config handed to the runtime, so
+// without it a server behind a custom CA failed verification and the client
+// could not be created.
+func TestAddMCPClient_PerUserHeadersKeepsTLSConfig(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	const caPEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
+	body, err := json.Marshal(map[string]any{
+		"name": "acme_tls", "connection_type": "http", "connection_string": "https://127.0.0.1:1/mcp",
+		"auth_type": "per_user_headers", "per_user_header_keys": []string{"X-Api-Key"},
+		"user_headers": map[string]string{"X-Api-Key": "sample-key"}, "tools_to_execute": []string{"*"},
+		"tls_config": map[string]any{"ca_cert_pem": caPEM},
+	})
+	require.NoError(t, err)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	require.NotNil(t, mgr.added[0].TLSConfig, "verification and the runtime see the tls_config")
+	assert.Equal(t, caPEM, mgr.added[0].TLSConfig.CACertPEM.GetValue())
+
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), mgr.added[0].ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TLSConfig, "the stored client keeps the tls_config")
+	assert.Equal(t, caPEM, stored.TLSConfig.CACertPEM.GetValue())
+}

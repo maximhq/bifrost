@@ -2178,6 +2178,25 @@ const AUTH43 = folder("AUTH-43 Header submission", `Setup: as AUTH-42 (${AUTH42_
   deleteClient("AUTH-43", "auth43-c"),
 ]);
 
+const AUTH51_FLOW = "/api/mcp/per-user-headers/flows/{{auth51_h}}";
+const AUTH51 = folder("AUTH-51 per_user_headers over TLS with a custom CA", `Setup: ${KEY_A_TEXT}, reached through the fleet's TLS listener; a per_user_headers client on alpha's https URL with tls_config.ca_cert_pem set to that listener's self-signed certificate, per_user_header_keys ["x-api-key"], sample key-a, tools_to_execute ["*"]; an execute call as session auth51-sess1 opens a header flow.`, [
+  ...alphaKeyA("AUTH-51"),
+  request("AUTH-51", "setup: read the fleet's TLS listener and its certificate", "GET", "/control", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom("the fleet has a TLS listener", [
+    "pm.expect(pm.response.json().tls_url, 'body: ' + pm.response.text()).to.match(/^https:/);",
+  ])], extraTests: [
+    "var b = pm.response.json();",
+    "pm.collectionVariables.set('auth51_tls', b.tls_url);",
+    // Escaped for use inside a JSON string in the create body.
+    "pm.collectionVariables.set('auth51_ca', JSON.stringify(b.tls_cert_pem).slice(1, -1));",
+  ] }),
+  createExpect("AUTH-51", "create with the certificate as ca_cert_pem", perUser("auth51-c", "auth51_c", { ...PER_USER_KEY_A, connection_string: "{{auth51_tls}}/s/alpha/mcp", tls_config: { ca_cert_pem: "{{auth51_ca}}" } }), [A.status(200), messageStarts("MCP client registered. 2 tools discovered.")]),
+  execTool("AUTH-51", "setup: execute as auth51-sess1 opens a header flow", "auth51_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth51_h" })], { session: "auth51-sess1" }),
+  request("AUTH-51", "submit x-api-key key-a", "PUT", AUTH51_FLOW, { body: { headers: { "x-api-key": "key-a" } }, asserts: [A.status(200)] }),
+  execTool("AUTH-51", "execute with the submitted headers", "auth51_c-echo_tool", [A.status(200)], { session: "auth51-sess1" }),
+  mockGet("AUTH-51", "alpha", "the call ran under key-a's identity", [identityCalls("key-a", 1)]),
+  deleteClient("AUTH-51", "auth51-c"),
+]);
+
 const verifyHeaders = (id, title, clientId, userHeaders, asserts) => request(id, title, "POST", `/api/mcp/client/${clientId}/verify-headers`, { body: { user_headers: userHeaders }, asserts });
 const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-41 per_user_headers client on alpha (per_user_header_keys ["x-api-key"], sample key-a); a headers client on alpha; an OpenAPI per_user_headers client from an inline Petstore document.`, [
   ...alphaKeyA("AUTH-45"),
@@ -7728,7 +7747,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86, ADM87]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH46, AUTH48, AUTH49, AUTH50, AUTH51]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
