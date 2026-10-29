@@ -114,6 +114,19 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 // default /v1/models omits.
 const openRouterEmbeddingModelsPath = "/v1/embeddings/models"
 
+// normalizeOpenRouterDisplayNames moves OpenRouter's upstream label from
+// Model.Name (where the wire field `name` decodes) to Model.DisplayName.
+// Model.Name carries datasheet-derived semantics and is left for the catalog
+// enrichment to fill.
+func normalizeOpenRouterDisplayNames(models []schemas.Model) {
+	for i := range models {
+		if models[i].DisplayName == nil && models[i].Name != nil {
+			models[i].DisplayName = models[i].Name
+			models[i].Name = nil
+		}
+	}
+}
+
 // fetchSupplementalModels fetches one of the model catalogs OpenRouter's default
 // /v1/models omits (embedding models, decision models) from path. Best-effort: any
 // failure is logged and swallowed so it never fails the primary ListModels call.
@@ -238,6 +251,12 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			}
 		}
 	}
+
+	// OpenRouter's wire field for the human-readable label is `name`, which
+	// decodes onto Model.Name. Model.Name is datasheet-derived semantics, so
+	// move the upstream label to DisplayName and let the catalog enrichment
+	// fill Name/NormalizedName where the datasheet knows the model.
+	normalizeOpenRouterDisplayNames(openrouterResponse.Data)
 
 	// OpenRouter model IDs in the API response do NOT include the "openrouter/" prefix
 	// (e.g. the API returns "openai/gpt-4", not "openrouter/openai/gpt-4").

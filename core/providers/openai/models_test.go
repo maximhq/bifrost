@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -93,6 +94,117 @@ func TestModelRetrieveResponseShape(t *testing.T) {
 	require.Equal(t, schemas.Ptr("2026-10-23"), response.ShutdownDate)
 }
 
+func TestListModelsMetadataPassthrough(t *testing.T) {
+	t.Parallel()
+
+	// The same model described twice — OpenAI envelope vs top-level array —
+	// must yield identical catalog entries, metadata included.
+	const envelope = `{"object":"list","data":[{` +
+		`"id":"kimi/k3",` +
+		`"display_name":"K3",` +
+		`"context_length":1048576,` +
+		`"max_input_tokens":1040500,` +
+		`"max_output_tokens":131072,` +
+		`"reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["low","high"],"default_effort":"high"},` +
+		`"modalities":{"input":["text","image"],"output":["text"]}}]}`
+	const array = `[{` +
+		`"id":"kimi/k3",` +
+		`"display_name":"K3",` +
+		`"context_length":1048576,` +
+		`"max_input_tokens":1040500,` +
+		`"max_output_tokens":131072,` +
+		`"reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["low","high"],"default_effort":"high"},` +
+		`"modalities":{"input":["text","image"],"output":["text"]}}]`
+
+	for name, body := range map[string]string{"envelope": envelope, "array": array} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			response, bifrostErr := ListModelsByKey(
+				schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				&fasthttp.Client{}, server.URL,
+				schemas.Key{Models: schemas.WhiteList{"*"}},
+				false, nil,
+				schemas.ModelProvider("test"),
+				false, false,
+			)
+
+			require.Nil(t, bifrostErr)
+			require.Len(t, response.Data, 1)
+			entry := response.Data[0]
+			require.Equal(t, "test/kimi/k3", entry.ID)
+			require.Equal(t, schemas.Ptr(1048576), entry.ContextLength)
+			require.Equal(t, schemas.Ptr(1040500), entry.MaxInputTokens)
+			require.Equal(t, schemas.Ptr(131072), entry.MaxOutputTokens)
+			require.Equal(t, schemas.Ptr("K3"), entry.DisplayName)
+			require.Equal(t, &schemas.ModelReasoning{
+				Mandatory:        schemas.Ptr(false),
+				DefaultEnabled:   schemas.Ptr(true),
+				SupportedEfforts: []string{"low", "high"},
+				DefaultEffort:    schemas.Ptr("high"),
+			}, entry.Reasoning)
+			require.Equal(t, &schemas.Architecture{
+				InputModalities:  []string{"text", "image"},
+				OutputModalities: []string{"text"},
+			}, entry.Architecture)
+		})
+	}
+}
+
+func TestListModelsContextWindowAliasPrecedence(t *testing.T) {
+	t.Parallel()
+
+	// Groq-style `context_window` wins over `context_length` when both appear.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"m","context_window":8192,"context_length":4096}]}`))
+	}))
+	defer server.Close()
+
+	response, bifrostErr := ListModelsByKey(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{}, server.URL,
+		schemas.Key{Models: schemas.WhiteList{"*"}},
+		false, nil,
+		schemas.ModelProvider("test"),
+		false, false,
+	)
+
+	require.Nil(t, bifrostErr)
+	require.Len(t, response.Data, 1)
+	require.Equal(t, schemas.Ptr(8192), response.Data[0].ContextLength)
+}
+
+func TestModelRetrieveMetadataPassthrough(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"kimi/k3","display_name":"K3","context_length":1048576,"max_output_tokens":131072,` +
+			`"reasoning":{"supported_efforts":["low","high"]},"modalities":{"input":["text"],"output":["text"]}}`))
+	}))
+	defer server.Close()
+
+	response, bifrostErr := HandleOpenAIModelRetrieveRequest(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{}, server.URL+"/v1/models/kimi/k3",
+		schemas.Key{}, nil,
+		schemas.ModelProvider("test"),
+		false, false,
+	)
+
+	require.Nil(t, bifrostErr)
+	require.Equal(t, "test/kimi/k3", response.ID)
+	require.Equal(t, schemas.Ptr(1048576), response.ContextLength)
+	require.Equal(t, schemas.Ptr(131072), response.MaxOutputTokens)
+	require.Equal(t, schemas.Ptr("K3"), response.DisplayName)
+	require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, response.Reasoning)
+	require.Equal(t, &schemas.Architecture{InputModalities: []string{"text"}, OutputModalities: []string{"text"}}, response.Architecture)
+}
+
 func TestModelRetrieveUpstreamErrorIsPropagated(t *testing.T) {
 	t.Parallel()
 
@@ -117,4 +229,241 @@ func TestModelRetrieveUpstreamErrorIsPropagated(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusNotFound), bifrostErr.StatusCode)
 	require.Contains(t, bifrostErr.Error.Message, "does not exist")
+}
+
+// TestModelReasoningBooleanSpelling pins tolerance for upstreams that report
+// `reasoning` as a boolean capability flag (e.g. putty's /v1/models) instead
+// of the OpenRouter-style object: a boolean entry must not fail the whole
+// response. `true` maps to an empty ModelReasoning (supported, no details),
+// `false` and null stay nil, and object spellings keep passing through.
+func TestModelReasoningBooleanSpelling(t *testing.T) {
+	t.Parallel()
+
+	byID := func(t *testing.T, data []schemas.Model) map[string]schemas.Model {
+		t.Helper()
+		entries := make(map[string]schemas.Model, len(data))
+		for _, entry := range data {
+			entries[entry.ID] = entry
+		}
+		return entries
+	}
+
+	bodies := map[string]string{
+		"envelope": `{"object":"list","data":[` +
+			`{"id":"flag/true","reasoning":true},` +
+			`{"id":"flag/false","reasoning":false},` +
+			`{"id":"flag/null","reasoning":null},` +
+			`{"id":"obj/k3","reasoning":{"supported_efforts":["low","high"]}}]}`,
+		// Top-level-array upstreams (Together and friends) can mix the
+		// `organization` alias with the boolean spelling.
+		"array": `[` +
+			`{"id":"flag/true","organization":"together","reasoning":true},` +
+			`{"id":"flag/false","reasoning":false},` +
+			`{"id":"flag/null","reasoning":null},` +
+			`{"id":"obj/k3","reasoning":{"supported_efforts":["low","high"]}}]`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			response, bifrostErr := ListModelsByKey(
+				schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				&fasthttp.Client{}, server.URL,
+				schemas.Key{Models: schemas.WhiteList{"*"}},
+				false, nil,
+				schemas.ModelProvider("test"),
+				false, false,
+			)
+
+			require.Nil(t, bifrostErr)
+			entries := byID(t, response.Data)
+			require.Len(t, entries, 4)
+			require.Equal(t, &schemas.ModelReasoning{}, entries["test/flag/true"].Reasoning)
+			require.Nil(t, entries["test/flag/false"].Reasoning)
+			require.Nil(t, entries["test/flag/null"].Reasoning)
+			require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, entries["test/obj/k3"].Reasoning)
+			if name == "array" {
+				// The `organization` alias keeps landing on OwnedBy alongside
+				// the tolerated boolean.
+				require.Equal(t, schemas.Ptr("together"), entries["test/flag/true"].OwnedBy)
+			}
+		})
+	}
+
+	t.Run("retrieve", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"id":"flag/true","reasoning":true}`))
+		}))
+		defer server.Close()
+
+		response, bifrostErr := HandleOpenAIModelRetrieveRequest(
+			schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			&fasthttp.Client{}, server.URL+"/v1/models/flag/true",
+			schemas.Key{}, nil,
+			schemas.ModelProvider("test"),
+			false, false,
+		)
+
+		require.Nil(t, bifrostErr)
+		require.Equal(t, "test/flag/true", response.ID)
+		require.Equal(t, &schemas.ModelReasoning{}, response.Reasoning)
+	})
+}
+
+// TestOpenAIModelMetadataRoundTrip pins that the OpenAI-shaped surfaces
+// (/openai drop-in routes) re-emit the metadata the decode path now carries:
+// ToBifrostListModelsResponse then ToOpenAIListModelsResponse (and the
+// retrieve equivalents) must not be lossy for the new fields.
+func TestOpenAIModelMetadataRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	upstream := `{"object":"list","data":[{` +
+		`"id":"kimi/k3",` +
+		`"display_name":"K3",` +
+		`"context_length":1048576,` +
+		`"max_input_tokens":1040500,` +
+		`"max_output_tokens":131072,` +
+		`"reasoning":{"supported_efforts":["low","high"]},` +
+		`"modalities":{"input":["text","image"],"output":["text"]}},` +
+		`{"id":"kimi/k3-noctx","max_input_tokens":131072}]}`
+
+	var decoded OpenAIListModelsResponse
+	require.NoError(t, json.Unmarshal([]byte(upstream), &decoded))
+	require.Len(t, decoded.Data, 2)
+
+	bifrost := decoded.ToBifrostListModelsResponse(
+		schemas.ModelProvider("test"),
+		schemas.WhiteList{"*"},
+		nil,
+		nil,
+		false,
+	)
+	require.Len(t, bifrost.Data, 2)
+
+	openai := ToOpenAIListModelsResponse(bifrost)
+	require.Len(t, openai.Data, 2)
+	roundTrip := openai.Data[0]
+
+	require.Equal(t, "test/kimi/k3", roundTrip.ID)
+	require.Equal(t, schemas.Ptr(1048576), roundTrip.ContextLength)
+	require.Equal(t, schemas.Ptr(1048576), roundTrip.ContextWindow)
+	require.Equal(t, schemas.Ptr(1040500), roundTrip.MaxInputTokens)
+	require.Equal(t, schemas.Ptr(131072), roundTrip.MaxOutputTokens)
+	require.Equal(t, schemas.Ptr("K3"), roundTrip.DisplayName)
+	require.Equal(t, &schemas.ModelReasoning{SupportedEfforts: []string{"low", "high"}}, toSchemasModelReasoning(roundTrip.Reasoning))
+	require.Equal(t, &OpenAIModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}}, roundTrip.Modalities)
+
+	// A model that reports only max_input_tokens keeps the legacy
+	// context_window fallback but must not gain a fabricated context_length.
+	noCtx := openai.Data[1]
+	require.Equal(t, "test/kimi/k3-noctx", noCtx.ID)
+	require.Equal(t, schemas.Ptr(131072), noCtx.ContextWindow)
+	require.Nil(t, noCtx.ContextLength)
+
+	retrieved := ToOpenAIModelRetrieveResponse(&schemas.BifrostModelRetrieveResponse{Model: bifrost.Data[0]})
+	require.Equal(t, "test/kimi/k3", retrieved.ID)
+	require.Equal(t, schemas.Ptr(1048576), retrieved.ContextLength)
+	require.Equal(t, schemas.Ptr("K3"), retrieved.DisplayName)
+	require.Equal(t, &OpenAIModelModalities{Input: []string{"text", "image"}, Output: []string{"text"}}, retrieved.Modalities)
+}
+
+// benchmarkListModelsEnvelope is a representative OpenAI-envelope list-models
+// payload: a mix of bare entries (the OpenAI catalog today) and entries
+// carrying the extended metadata emitted by OpenAI-compatible upstreams.
+var benchmarkListModelsEnvelope = mustJSON(map[string]any{
+	"object": "list",
+	"data": []map[string]any{
+		{"id": "gpt-5.2", "object": "model", "owned_by": "openai", "created": 1761264000},
+		{"id": "gpt-5.2-mini", "object": "model", "owned_by": "openai", "created": 1761264000},
+		{
+			"id":                "kimi/k3",
+			"object":            "model",
+			"created":           1761264000,
+			"display_name":      "K3",
+			"context_length":    1048576,
+			"max_input_tokens":  1040500,
+			"max_output_tokens": 131072,
+			"reasoning": map[string]any{
+				"mandatory": false, "default_enabled": true,
+				"supported_efforts": []string{"low", "high"}, "default_effort": "high",
+			},
+			"modalities": map[string]any{"input": []string{"text", "image"}, "output": []string{"text"}},
+		},
+	},
+})
+
+func mustJSON(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+// BenchmarkOpenAIListModelsParseAndConvert measures decode of an upstream
+// list-models payload plus conversion to the Bifrost catalog shape — the full
+// per-call cost of GET /v1/models on the provider side.
+func BenchmarkOpenAIListModelsParseAndConvert(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var response OpenAIListModelsResponse
+		if err := json.Unmarshal(benchmarkListModelsEnvelope, &response); err != nil {
+			b.Fatal(err)
+		}
+		response.ToBifrostListModelsResponse(
+			schemas.ModelProvider("bench"),
+			schemas.WhiteList{"*"},
+			nil,
+			nil,
+			false,
+		)
+	}
+}
+
+// BenchmarkOpenAIListModelsParse isolates the unmarshal cost.
+func BenchmarkOpenAIListModelsParse(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var response OpenAIListModelsResponse
+		if err := json.Unmarshal(benchmarkListModelsEnvelope, &response); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchmarkListModelsBareEnvelope is a catalog whose upstream emits no
+// extended metadata (plain OpenAI shape) — the common case that must not
+// regress when the decoder learns new fields.
+var benchmarkListModelsBareEnvelope = mustJSON(map[string]any{
+	"object": "list",
+	"data": []map[string]any{
+		{"id": "gpt-5.2", "object": "model", "owned_by": "openai", "created": 1761264000},
+		{"id": "gpt-5.2-mini", "object": "model", "owned_by": "openai", "created": 1761264000},
+	},
+})
+
+// BenchmarkOpenAIListModelsBareParseAndConvert measures the no-metadata path.
+func BenchmarkOpenAIListModelsBareParseAndConvert(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		var response OpenAIListModelsResponse
+		if err := json.Unmarshal(benchmarkListModelsBareEnvelope, &response); err != nil {
+			b.Fatal(err)
+		}
+		response.ToBifrostListModelsResponse(
+			schemas.ModelProvider("bench"),
+			schemas.WhiteList{"*"},
+			nil,
+			nil,
+			false,
+		)
+	}
 }
