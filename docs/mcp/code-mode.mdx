@@ -790,6 +790,7 @@ Error: key "email" not in dict
 
 - Default: 30 seconds per tool call
 - Configure via `tool_execution_timeout` in `tool_manager_config`
+- A client's own `tool_execution_timeout` overrides it for that client's tools, as it does for a direct call
 - Long-running operations are interrupted with timeout error
 
 ---
