@@ -3081,6 +3081,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.BifrostMCP != nil {
 		s.WarpHandler.Service().SetManagementTools(handlers.NewWarpManagementTools(s.BifrostMCP))
 	}
+	if loggingHandler != nil {
+		loggingHandler.SetLogSearch(s.WarpHandler)
+	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware

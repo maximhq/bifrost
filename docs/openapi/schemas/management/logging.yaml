@@ -1990,3 +1990,86 @@ RequestTraceNode:
             type: string
           duration_ms:
             type: number
+
+LogSearchResult:
+  type: object
+  description: Logged conversations matching a search by meaning, best match first
+  required:
+    - rows
+    - returned
+    - threshold
+  properties:
+    rows:
+      type: array
+      items:
+        $ref: '#/LogSearchRow'
+    returned:
+      type: integer
+      description: Number of rows returned
+    threshold:
+      type: number
+      description: The similarity a row had to reach to be returned
+
+LogSearchRow:
+  type: object
+  description: A compact log row with its similarity score and a content preview
+  required:
+    - score
+    - id
+    - timestamp
+    - provider
+    - model
+    - status
+  properties:
+    score:
+      type: number
+      description: Cosine similarity of the row's best-matching phrasing
+    id:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    provider:
+      type: string
+    model:
+      type: string
+    status:
+      type: string
+    latency_ms:
+      type: number
+    input_tokens:
+      type: integer
+    output_tokens:
+      type: integer
+    cost:
+      type: number
+    virtual_key_name:
+      type: string
+    user_id:
+      type: string
+    error_message:
+      type: string
+    error_type:
+      type: string
+    error_code:
+      type: string
+    status_code:
+      type: integer
+    routing_rule:
+      type: string
+    provider_key:
+      type: string
+    alias:
+      type: string
+    complexity_tier:
+      type: string
+    tool_calls:
+      type: array
+      items:
+        type: string
+    content:
+      type: string
+      description: A preview of the request and response content
+    link:
+      type: string
+      description: Dashboard path that opens this log

@@ -1434,6 +1434,7 @@
                 "pages": [
                   "GET /api/logs",
                   "DELETE /api/logs",
+                  "GET /api/logs/search",
                   "GET /api/logs/{id}",
                   "GET /api/logs/sessions/{session_id}",
                   "GET /api/logs/sessions/{session_id}/summary",

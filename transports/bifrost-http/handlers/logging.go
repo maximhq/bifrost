@@ -53,6 +53,9 @@ type LoggingHandler struct {
 	// topics lists Warp's topics for the topics filter dimension. Nil until
 	// SetTopicLister wires it, in which case the dimension is empty.
 	topics warp.TopicLister
+	// logSearch serves GET /api/logs/search. Nil until SetLogSearch wires it,
+	// in which case the route answers 503.
+	logSearch LogSearcher
 }
 
 // SetTopicLister wires the Warp topic reader the topics filter dimension
@@ -103,6 +106,16 @@ func topicFilterData(ctx context.Context, topics warp.TopicLister, limit int, qu
 type SidekiqJobStore interface {
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+}
+
+// LogSearcher is semantic log search, which Warp's log index provides.
+type LogSearcher interface {
+	SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (warp.SemanticSearchResult, error)
+}
+
+// SetLogSearch wires the semantic search GET /api/logs/search serves.
+func (h *LoggingHandler) SetLogSearch(search LogSearcher) {
+	h.logSearch = search
 }
 
 // SetSidekiqBackend wires the sidekiq runner and job store, and registers the
@@ -434,6 +447,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
 	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
 	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogByID), middlewares...))
+	r.GET("/api/logs/search", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.searchLogs), middlewares...))
 	r.GET("/api/logs/{id}/trace", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogTrace), middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsStats), middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsHistogram), middlewares...))
@@ -961,6 +975,49 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 	SendJSON(ctx, result)
 }
+
+// logSearchTimeout bounds one semantic search: its embedding requests and
+// vector searches.
+const logSearchTimeout = time.Minute
+
+// searchLogs finds logged conversations by meaning. Each query parameter is one
+// phrasing; a log scores by its best match across them. The other parameters
+// are the log filters the stats and histogram routes take, plus limit. Matches
+// are reloaded through the log store, so the caller's access scope applies.
+func (h *LoggingHandler) searchLogs(ctx *fasthttp.RequestCtx) {
+	if h.logSearch == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, logSearchUnavailableMsg)
+		return
+	}
+	var queries []string
+	for _, value := range ctx.QueryArgs().PeekMulti("query") {
+		queries = append(queries, string(value))
+	}
+	limit := 0
+	if raw := string(ctx.QueryArgs().Peek("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > warp.MaxLogRows {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", warp.MaxLogRows))
+			return
+		}
+		limit = parsed
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, logSearchTimeout)
+	defer cancel()
+	result, err := h.logSearch.SearchLogs(searchCtx, queries, parseHistogramFilters(ctx), limit)
+	switch {
+	case errors.Is(err, warp.ErrInvalidSearchQuery):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+	case errors.Is(err, warp.ErrUnavailable), errors.Is(err, warp.ErrNoVectorStore):
+		SendError(ctx, fasthttp.StatusServiceUnavailable, logSearchUnavailableMsg)
+	case err != nil:
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("semantic log search failed: %v", err))
+	default:
+		SendJSON(ctx, result)
+	}
+}
+
+const logSearchUnavailableMsg = "semantic log search needs Warp enabled, with an embedding model and its log index set up"
 
 // getLogTrace returns the causal chain behind one request: its retries, every
 // fallback hop in order, and each hop's error, guardrail, cache and latency

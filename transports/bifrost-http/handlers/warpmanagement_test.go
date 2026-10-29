@@ -21,7 +21,7 @@ func loadedWarpManagement(t *testing.T, root fasthttp.RequestHandler, allowWrite
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := NewManagementMCPExecutor(root, 4<<20)
+	exec := NewManagementMCPExecutor(root, 4<<20, 64<<10)
 	t.Cleanup(func() { _ = exec.Close() })
 	m := NewManagementMCP(ManagementMCPOptions{SpecSources: []string{spec}, AllowWrites: allowWrites, ExecClient: exec.Client})
 	if err := m.Load(context.Background()); err != nil {
