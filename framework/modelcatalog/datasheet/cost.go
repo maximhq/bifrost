@@ -1689,15 +1689,21 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if d := imageUsage.OutputTokensDetails; d != nil {
 		outputImageTokens, outputTextTokens, reasoningTokens = d.ImageTokens, d.TextTokens, d.ReasoningTokens
 	}
+	// Thinking billed on top of a pixel or per-image charge, when the row cannot price image tokens
+	reasoningCost := 0.0
 	switch {
 	case outputImageTokens > 0 || outputTextTokens > 0:
 		// Output the details leave unattributed bills at the text rate, and never less than the reported
 		// thinking tokens: Gemini can report a candidatesTokenCount below its own IMAGE detail
 		outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, reasoningTokens, 0)
-	case imageUsage.OutputTokensDetails == nil || reasoningTokens > 0:
+	case imageUsage.OutputTokensDetails == nil:
+		outputImageTokens = imageUsage.OutputTokens
+	case reasoningTokens > 0 && pricing.OutputCostPerImageToken != nil:
 		// No modality breakdown: output is image tokens, except reported thinking, which bills as text
 		outputTextTokens = min(reasoningTokens, imageUsage.OutputTokens)
 		outputImageTokens = imageUsage.OutputTokens - outputTextTokens
+	case reasoningTokens > 0:
+		reasoningCost = float64(min(reasoningTokens, imageUsage.OutputTokens)) * tieredOutputRate(pricing, totalTokens, tier)
 	}
 
 	// Same as the input side: a row with no token rate falls through to pixel/image rates.
@@ -1714,7 +1720,7 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
 			numOutputImages = imageUsage.OutputTokensDetails.NImages
 		}
-		return float64(pixels*numOutputImages) * *pricing.OutputCostPerPixel
+		return reasoningCost + float64(pixels*numOutputImages)**pricing.OutputCostPerPixel
 	}
 
 	// Fall back to per-image count pricing with size-tier selection
@@ -1740,10 +1746,10 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		perImageRate = pricing.OutputCostPerImage
 	}
 	if perImageRate != nil {
-		return float64(numOutputImages) * *perImageRate
+		return reasoningCost + float64(numOutputImages)**perImageRate
 	}
 
-	return 0
+	return reasoningCost
 }
 
 // imageSizeRates holds the per-image output rates for each size threshold:

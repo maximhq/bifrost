@@ -2162,6 +2162,21 @@ func TestComputeImageCost_ReasoningOnlyDetailsKeepTokenPricing(t *testing.T) {
 	assert.InDelta(t, 0.0681, cost, 1e-12)
 }
 
+func TestComputeImageCost_ReasoningWithoutImageTokenRateKeepsPerImageCharge(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken: bifrost.Ptr(0.000003),
+		OutputCostPerImage: bifrost.Ptr(0.045),
+	}
+	// Two images, 1120 candidates, 300 thoughts, and a row with no image-token rate
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1420,
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2, ReasoningTokens: 300},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 2*0.045 + 300*0.000003
+	assert.InDelta(t, 0.0909, cost, 1e-12)
+}
+
 func TestComputeImageCost_ImageCountOnlyDetailsKeepPerImagePricing(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		OutputCostPerImageToken: bifrost.Ptr(0.00006),
