@@ -897,8 +897,22 @@ MCPClientUpdateRequest:
     tls_config:
       type: object
       description: |
-        TLS configuration for HTTP and SSE connections.
-        Not applicable to stdio or inprocess connection types.
+        TLS configuration for HTTP, SSE and OpenAPI connections (for OpenAPI, the HTTP
+        client that calls the API). Not applicable to stdio or inprocess connection types.
+        On an enabled client a change applies at once: a client with a persistent
+        connection reconnects with it, a per-call client uses it from its next call, and
+        an OpenAPI client rebuilds the HTTP client that calls the API.
+        A per-call client with none, headers or oauth auth also refreshes its tool list
+        with it; a per-user client's tool list picks it up at its next periodic check.
+        For headers and none auth the change is first tried against the server, and a
+        failure answers 422 with nothing changed. If applying it to the live client then
+        fails, the change is still stored and the answer is 200 with status
+        partial_success. A client with a persistent connection then keeps serving on its
+        current connection and uses the stored change from its next reconnect; call
+        POST /api/mcp/client/{id}/reconnect to apply it now. The exception is a redial
+        that finds the client's OAuth credential needs re-authorization: the connection
+        is closed and the client moves to needs_reauth until it is reauthorized. A
+        disabled client stores the change and connects with it when it is enabled again.
       properties:
         insecure_skip_verify:
           type: boolean

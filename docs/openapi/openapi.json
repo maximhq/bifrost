@@ -47162,7 +47162,7 @@
                   },
                   "tls_config": {
                     "type": "object",
-                    "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                    "description": "TLS configuration for HTTP, SSE and OpenAPI connections (for OpenAPI, the HTTP\nclient that calls the API). Not applicable to stdio or inprocess connection types.\nOn an enabled client a change applies at once: a client with a persistent\nconnection reconnects with it, a per-call client uses it from its next call, and\nan OpenAPI client rebuilds the HTTP client that calls the API.\nA per-call client with none, headers or oauth auth also refreshes its tool list\nwith it; a per-user client's tool list picks it up at its next periodic check.\nFor headers and none auth the change is first tried against the server, and a\nfailure answers 422 with nothing changed. If applying it to the live client then\nfails, the change is still stored and the answer is 200 with status\npartial_success. A client with a persistent connection then keeps serving on its\ncurrent connection and uses the stored change from its next reconnect; call\nPOST /api/mcp/client/{id}/reconnect to apply it now. The exception is a redial\nthat finds the client's OAuth credential needs re-authorization: the connection\nis closed and the client moves to needs_reauth until it is reauthorized. A\ndisabled client stores the change and connects with it when it is enabled again.\n",
                     "properties": {
                       "insecure_skip_verify": {
                         "type": "boolean",

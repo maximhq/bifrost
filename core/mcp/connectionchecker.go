@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -65,7 +66,9 @@ type ClientConnectionChecker struct {
 	healthyInterval time.Duration
 	timeout         time.Duration
 	logger          schemas.Logger
-	isPingAvailable bool
+	// isPingAvailable is read by every live check and replaced by an
+	// is_ping_available edit, so it is atomic rather than guarded by mu.
+	isPingAvailable atomic.Bool
 
 	mu        sync.Mutex
 	timer     *time.Timer
@@ -100,15 +103,22 @@ func NewClientConnectionChecker(
 	if logger == nil {
 		logger = defaultLogger
 	}
-	return &ClientConnectionChecker{
+	c := &ClientConnectionChecker{
 		manager:         manager,
 		clientID:        clientID,
 		healthyInterval: healthyInterval,
 		timeout:         ConnectionCheckTimeout,
 		logger:          logger,
-		isPingAvailable: isPingAvailable,
 		kick:            make(chan struct{}, 1),
 	}
+	c.isPingAvailable.Store(isPingAvailable)
+	return c
+}
+
+// SetPingAvailable replaces whether the live check pings before listing
+// tools, for an is_ping_available edit. The next check uses it.
+func (c *ClientConnectionChecker) SetPingAvailable(available bool) {
+	c.isPingAvailable.Store(available)
 }
 
 // Start begins the periodic check in a background goroutine. First tick
@@ -403,7 +413,7 @@ func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, c
 // entire point of adding retry coverage here.
 func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clientName string, connGeneration uint64) bool {
 	// 2026-07-28 removed ping; list_tools below is the liveness check there.
-	if c.isPingAvailable && !mcp.IsModernProtocol(conn.ProtocolVersion()) {
+	if c.isPingAvailable.Load() && !mcp.IsModernProtocol(conn.ProtocolVersion()) {
 		pingErr := ExecuteWithRetry(context.Background(), func() error {
 			attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 			defer cancel()
@@ -625,7 +635,7 @@ type ClientIntervalSource struct {
 }
 
 // ApplyGlobalInterval replaces the global steady-state interval and re-times
-// every listed client against it, atomically with respect to RetimeClient.
+// every listed client against it, atomically with respect to ApplyClientConfig.
 // Clients with an explicit per-client override resolve to the same cadence
 // as before, so their checker's no-op check leaves them untouched.
 func (m *ConnectionCheckerManager) ApplyGlobalInterval(interval time.Duration, clients []ClientIntervalSource) {
@@ -638,14 +648,21 @@ func (m *ConnectionCheckerManager) ApplyGlobalInterval(interval time.Duration, c
 	}
 }
 
-// RetimeClient re-times a running checker's steady-state cadence from the
-// client's current config and the current global, serialized against
-// ApplyGlobalInterval. A no-op for a client with no checker registered
-// (disabled, or never started) and for an unchanged cadence.
-func (m *ConnectionCheckerManager) RetimeClient(clientID string, config *schemas.MCPClientConfig) {
+// ApplyClientConfig re-applies the settings a running checker took from the
+// client's config when it was built: its steady-state cadence, resolved
+// against the current global and serialized against ApplyGlobalInterval, and
+// whether its live check pings first. A no-op for a client with no checker
+// registered (disabled, or never started).
+func (m *ConnectionCheckerManager) ApplyClientConfig(clientID string, config *schemas.MCPClientConfig) {
 	m.retimeMu.Lock()
 	defer m.retimeMu.Unlock()
 	m.updateInterval(clientID, ResolveToolSyncInterval(config, m.GetGlobalInterval()))
+	m.mu.RLock()
+	checker, ok := m.checkers[clientID]
+	m.mu.RUnlock()
+	if ok {
+		checker.SetPingAvailable(config.IsPingAvailable == nil || *config.IsPingAvailable)
+	}
 }
 
 func (m *ConnectionCheckerManager) updateInterval(clientID string, interval time.Duration) {
