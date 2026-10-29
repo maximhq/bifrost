@@ -13,6 +13,13 @@
         "connection_string": "http://localhost:3012/sse",
         "tools_to_execute": ["echo", "add", "greet"],
         "tools_to_auto_execute": ["echo", "add", "greet"]
+      },
+      {
+        "name": "slow_mcp",
+        "connection_type": "sse",
+        "connection_string": "http://localhost:3012/sse",
+        "tools_to_execute": ["slow_echo"],
+        "tools_to_auto_execute": ["slow_echo"]
       }
     ]
   },
@@ -240,7 +247,10 @@
             "gemini-3.1-flash-lite",
             "gemini-3.1-flash-lite-preview",
             "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview"
+            "gemini-3-flash-preview",
+            "gemini-4-argon",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5"
           ]
         },
         {
@@ -256,7 +266,9 @@
             "claude-opus-4-8",
             "moonshotai/kimi-k2-thinking-maas",
             "minimaxai/minimax-m2-maas",
-            "claude-fable-5-1"
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5"
           ]
         },
         {
@@ -275,7 +287,8 @@
             "gemini-3.1-flash-lite",
             "gemini-3.1-flash-lite-preview",
             "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview"
+            "gemini-3-flash-preview",
+            "gemini-4-argon"
           ]
         }
       ],
@@ -550,6 +563,16 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": true
+        },
+        {
+          "name": "Azure Speech Key",
+          "value": "env.AZURE_API_KEY",
+          "azure_key_config": {
+            "endpoint": "env.AZURE_ENDPOINT",
+            "use_speech_endpoints": true
+          },
+          "weight": 1,
+          "models": ["regex:neural|Dragon.*Neural|MAI-Voice-.+|fast-transcription|llm-speech|short-audio|MAI-Transcribe-2"]
         }
       ],
       "network_config": {
@@ -569,7 +592,7 @@
           "name": "Databricks PAT",
           "value": "env.DATABRICKS_TOKEN",
           "weight": 1,
-          "models": ["ai_decide"],
+          "models": ["*"],
           "databricks_key_config": {
             "workspace_url": "env.DATABRICKS_WORKSPACE_URL"
           }
@@ -590,7 +613,18 @@
           },
           "weight": 1,
           "models": ["*"],
-          "use_for_batch_api": true
+          "use_for_batch_api": true,
+          "blacklisted_models": ["stability.stable-image-core-v1:1"]
+        },
+        {
+          "name": "Bedrock us-west-2 (Stability)",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "us-west-2"
+          },
+          "weight": 1,
+          "models": ["stability.stable-image-core-v1:1"]
         }
       ],
       "network_config": {
@@ -626,7 +660,8 @@
         {
           "name": "Replicate API Key",
           "value": "env.REPLICATE_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -657,7 +692,8 @@
         {
           "name": "Runway API Key",
           "value": "env.RUNWAY_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -672,7 +708,8 @@
         {
           "name": "Nebius API Key",
           "value": "env.NEBIUS_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -796,6 +833,32 @@
           { "methods": ["GET"], "path": "/v1/models" }
         ]
       }
+    },
+    "openai_injectedslow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "slow_lookup",
+          "mcp_client_name": "slow_mcp",
+          "tool_name": "slow_echo"
+        }
+      ]
     },
     "openai_injectedtools": {
       "send_back_raw_request": true,

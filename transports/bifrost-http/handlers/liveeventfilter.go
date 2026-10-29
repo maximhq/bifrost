@@ -9,7 +9,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const liveServerEventsPath = "session.client.data_channel.allowed_server_events"
+const (
+	liveServerEventsPath = "session.client.data_channel.allowed_server_events"
+	liveClientEventsPath = "session.client.data_channel.allowed_client_events"
+)
 
 type liveServerEventSelector struct {
 	Type          schemas.LiveEventType               `json:"type"`
@@ -125,4 +128,57 @@ func (f *liveWebRTCEventFilter) clientMessage(message []byte) ([]byte, error) {
 		return message, nil
 	}
 	return providerUtils.SetRawJSONField(message, liveServerEventsPath, f.original)
+}
+
+// liveClientEventFilter is the frontend's allowed_client_events. Bifrost enforces it at the browser
+// boundary as OpenAI does, so it still holds for a provider that rejects session.client. A nil
+// filter allows all.
+type liveClientEventFilter struct {
+	allowed map[schemas.LiveEventType]struct{}
+}
+
+// liveWebRTCClientEvents reads the frontend's client event permissions. Omission and "all" allow
+// every event.
+func liveWebRTCClientEvents(body []byte) (*liveClientEventFilter, *schemas.BifrostError) {
+	value := providerUtils.GetJSONField(body, liveClientEventsPath)
+	if !value.Exists() || value.Type == gjson.String && value.Str == "all" {
+		return nil, nil
+	}
+	if !value.IsArray() {
+		return nil, newRealtimeWireBifrostError(400, "invalid_request_error", liveClientEventsPath+` must be "all" or an array of client event types`)
+	}
+	filter := &liveClientEventFilter{allowed: make(map[schemas.LiveEventType]struct{})}
+	for i, entry := range value.Array() {
+		if entry.Type != gjson.String || utf8.RuneCountInString(entry.Str) < 1 || utf8.RuneCountInString(entry.Str) > 256 {
+			return nil, newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("%s entry %d must be a string of 1 to 256 characters", liveClientEventsPath, i))
+		}
+		filter.allowed[schemas.LiveEventType(entry.Str)] = struct{}{}
+	}
+	return filter, nil
+}
+
+// refusal is OpenAI's answer to a frontend event outside the list, or nil when the event is allowed.
+func (f *liveClientEventFilter) refusal(message []byte) []byte {
+	if f == nil {
+		return nil
+	}
+	if _, allowed := f.allowed[schemas.LiveEventTypeOf(message)]; allowed {
+		return nil
+	}
+	refusal := schemas.BifrostLiveEvent{
+		Type: schemas.LiveEventError,
+		Error: &schemas.LiveError{
+			Type:    "invalid_request_error",
+			Code:    new("event_not_allowed"),
+			Message: "This event is not allowed on the frontend data channel.",
+		},
+	}
+	if eventID := providerUtils.GetJSONField(message, "event_id"); eventID.Type == gjson.String && eventID.Str != "" {
+		refusal.Error.ClientEventID = new(eventID.Str)
+	}
+	encoded, err := schemas.Marshal(refusal)
+	if err != nil {
+		return []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"event_not_allowed","message":"This event is not allowed on the frontend data channel."}}`)
+	}
+	return encoded
 }

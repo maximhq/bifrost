@@ -4004,6 +4004,64 @@ func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
 // pricingSyncUpdateColumns regression for the decision rate columns: both
 // values change on the second upsert so a column missing from the list fails
 // here instead of keeping its first value.
+// TestUpsertModelPricesBatch_VoiceLiveColumns_SurviveResync pins the Azure Voice Live rates in
+// pricingSyncUpdateColumns: the next datasheet sync must update them, not keep the first values.
+func TestUpsertModelPricesBatch_VoiceLiveColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model:                            "gpt-realtime",
+		Provider:                         "azure",
+		Mode:                             "responses",
+		InputCostPerTokenVoiceLive:       cost(0.000004),
+		OutputCostPerTokenVoiceLive:      cost(0.000016),
+		CacheReadInputTokenCostVoiceLive: cost(0.0000004),
+		InputCostPerAudioTokenVoiceLive:  cost(0.000032),
+		OutputCostPerAudioTokenVoiceLive: cost(0.000064),
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  cost(0.000017),
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: cost(0.000031),
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    cost(0.00004),
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   cost(0.000055),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].InputCostPerTokenVoiceLive = cost(0.00000066)
+	pricing[0].OutputCostPerTokenVoiceLive = cost(0.00000264)
+	pricing[0].CacheReadInputTokenCostVoiceLive = cost(0.00000033)
+	pricing[0].InputCostPerAudioTokenVoiceLive = cost(0.000011)
+	pricing[0].OutputCostPerAudioTokenVoiceLive = cost(0.000022)
+	pricing[0].InputCostPerStandardSpeechAudioTokenVoiceLive = cost(0.000015)
+	pricing[0].OutputCostPerStandardSpeechAudioTokenVoiceLive = cost(0.000026)
+	pricing[0].InputCostPerCustomSpeechAudioTokenVoiceLive = cost(0.000039)
+	pricing[0].OutputCostPerCustomSpeechAudioTokenVoiceLive = cost(0.00005)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	row := got[0]
+	require.NotNil(t, row.InputCostPerTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerTokenVoiceLive)
+	require.NotNil(t, row.CacheReadInputTokenCostVoiceLive)
+	require.NotNil(t, row.InputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, row.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, row.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.InDelta(t, 0.00000066, *row.InputCostPerTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.00000264, *row.OutputCostPerTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.00000033, *row.CacheReadInputTokenCostVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000011, *row.InputCostPerAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000022, *row.OutputCostPerAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000015, *row.InputCostPerStandardSpeechAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000026, *row.OutputCostPerStandardSpeechAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000039, *row.InputCostPerCustomSpeechAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.00005, *row.OutputCostPerCustomSpeechAudioTokenVoiceLive, 1e-12)
+}
+
 func TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))

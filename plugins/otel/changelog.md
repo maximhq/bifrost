@@ -1,1 +1,2 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- feat: relay spans export with relay name, method and route attributes, and relay metrics
+- chore: upgraded core to v1.14.0 and framework to v1.11.0

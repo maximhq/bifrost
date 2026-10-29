@@ -150,8 +150,7 @@ func TestGenerateEmbeddingsBatchesAndRestoresInputOrder(t *testing.T) {
 func TestGenerateEmbeddingsSignalsUnsupportedBatchShape(t *testing.T) {
 	plugin := &RoutingPlugin{}
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		// This is the shape produced by a single-input-only model such as
-		// Bedrock Titan when it receives multiple texts.
+		// A provider that accepts a batch but answers it with a single vector.
 		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 3), nil
 	})
 
@@ -160,6 +159,52 @@ func TestGenerateEmbeddingsSignalsUnsupportedBatchShape(t *testing.T) {
 	_, _, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"}, requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, complexity.ErrBatchEmbeddingsUnsupported))
+}
+
+// TestGenerateEmbeddingsSignalsRefusedBatch is a regression guard: Bedrock
+// Titan rejects a multi-input request with a 400 before sending it, and warmup
+// aborted instead of retrying one text per call. Only refusals of the request
+// shape qualify; a rate-limited or failing provider must not trigger a fallback
+// that multiplies its calls, and a single input has nothing to fall back to.
+func TestGenerateEmbeddingsSignalsRefusedBatch(t *testing.T) {
+	tests := []struct {
+		name            string
+		statusCode      int
+		texts           []string
+		wantUnsupported bool
+	}{
+		{name: "refused batch", statusCode: 400, texts: []string{"first", "second"}, wantUnsupported: true},
+		{name: "batch too large", statusCode: 413, texts: []string{"first", "second"}, wantUnsupported: true},
+		{name: "unprocessable batch", statusCode: 422, texts: []string{"first", "second"}, wantUnsupported: true},
+		{name: "rate limited batch", statusCode: 429, texts: []string{"first", "second"}, wantUnsupported: false},
+		{name: "failing provider", statusCode: 500, texts: []string{"first", "second"}, wantUnsupported: false},
+		{name: "refused single input", statusCode: 400, texts: []string{"first"}, wantUnsupported: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := &RoutingPlugin{}
+			plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     schemas.Ptr(tt.statusCode),
+					Error:          &schemas.ErrorField{Message: "this model supports exactly one content item per request; got 2"},
+				}
+			})
+
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			_, tokens, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), tt.texts, requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
+			require.Error(t, err)
+			assert.Equal(t, tt.wantUnsupported, errors.Is(err, complexity.ErrBatchEmbeddingsUnsupported))
+			assert.Zero(t, tokens)
+			// The bounded reason still reflects the provider status, so a model
+			// that also refuses single inputs keeps an accurate badge.
+			var failure *semanticEmbeddingFailure
+			require.True(t, errors.As(err, &failure))
+			assert.Equal(t, embeddingProviderFailureReason(&schemas.BifrostError{StatusCode: schemas.Ptr(tt.statusCode)}), failure.SemanticFailureReason())
+		})
+	}
 }
 
 func TestGenerateEmbeddingTimeoutCancelsCall(t *testing.T) {

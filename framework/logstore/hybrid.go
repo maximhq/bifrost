@@ -20,9 +20,11 @@ import (
 )
 
 const (
-	defaultUploadWorkers       = 10
-	defaultUploadQueueSize     = 5000
-	maxContentSummaryBytes     = 2048
+	defaultUploadWorkers   = 10
+	defaultUploadQueueSize = 5000
+	// MaxContentSummaryBytes caps the content_summary column, on write and in
+	// the list query; a summary that long may have been cut mid-message.
+	MaxContentSummaryBytes     = 2048
 	defaultMaxUploadQueueBytes = 1 << 30 // 1 GiB
 )
 
@@ -549,7 +551,7 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
 	}
 	// Bound content summary to prevent large prompts from bloating the DB row.
-	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
+	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, MaxContentSummaryBytes)
 
 	// Serialize last user message before ClearPayload zeros everything.
 	// Attachment payloads (base64 images/files/audio, media URLs) are replaced
