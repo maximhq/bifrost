@@ -805,7 +805,7 @@ func (m *ToolsManager) executeToolInternal(
 		toolCtx,
 		func() error {
 			var err error
-			toolResponse, err = callToolWithin(toolCtx, clientConn, callRequest)
+			toolResponse, err = CallToolWithin(toolCtx, clientConn, callRequest)
 			return err
 		},
 		ToolCallRetryConfig,
@@ -885,13 +885,13 @@ func (m *ToolsManager) executeToolInternal(
 	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, originalMCPToolName, nil
 }
 
-// callToolWithin calls the tool and answers no later than ctx's deadline. A
+// CallToolWithin calls the tool and answers no later than ctx's deadline. A
 // remote transport stops at the deadline itself, but an in-process server runs
 // the handler on the calling goroutine and returns only when the handler does,
 // so the call runs on its own goroutine and a late result is dropped. A result
 // that arrives once the deadline has passed is dropped too: a handler that
 // returns when its context ends has not finished the work in time.
-func callToolWithin(ctx context.Context, conn *client.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func CallToolWithin(ctx context.Context, conn *client.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	type outcome struct {
 		result *mcp.CallToolResult
 		err    error
@@ -1002,7 +1002,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		},
 		func(ctx context.Context, conn *client.Client) error {
 			var err error
-			retryResponse, err = callToolWithin(ctx, conn, callRequest)
+			retryResponse, err = CallToolWithin(ctx, conn, callRequest)
 			return err
 		})
 	if !recovered {
