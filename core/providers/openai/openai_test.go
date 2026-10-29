@@ -700,6 +700,22 @@ func TestStreamingRequestBodyLifetime(t *testing.T) {
 							return stream, pointer
 						}
 						stream, pointer := start()
+						// Chat and text register usage asynchronously; wait before replacing
+						// their handle so cancellation cannot observe a later empty value.
+						// Responses streams do not register a usage handle here.
+						if kind != "responses" {
+							deadline := time.NewTimer(time.Second)
+							defer deadline.Stop()
+							ticker := time.NewTicker(time.Millisecond)
+							defer ticker.Stop()
+							for ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage) == nil {
+								select {
+								case <-deadline.C:
+									t.Fatal("stream did not register accumulated usage")
+								case <-ticker.C:
+								}
+							}
+						}
 						for range 5 {
 							runtime.GC()
 							runtime.Gosched()
