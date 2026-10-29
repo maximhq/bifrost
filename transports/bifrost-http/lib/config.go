@@ -9384,7 +9384,8 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClie
 	// Config with processed env vars
 	if err := c.client.AddMCPClient(ctx, clientConfig); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
-		return fmt.Errorf("failed to connect MCP client: %w", err)
+		// Returned as is: the caller reports it as a failed connect.
+		return err
 	}
 	// Update MCP catalog pricing data for the new client
 	if c.MCPCatalog != nil && c.ConfigStore != nil {
@@ -9448,7 +9449,8 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 					if !errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
 						return fmt.Errorf("failed to edit MCP client: %w", err)
 					}
-					sharedConnectErr = fmt.Errorf("failed to edit MCP client: %w", err)
+					// Not "failed to edit": the edit stands, only the dial failed.
+					sharedConnectErr = err
 				}
 				break
 			}
@@ -9528,8 +9530,10 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 				// the revert still applies there.
 				if !errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
 					c.MCPConfig.ClientConfigs[configIndex].Disabled = oldDisabled
+					return fmt.Errorf("failed to enable MCP client: %w", err)
 				}
-				return fmt.Errorf("failed to enable MCP client: %w", err)
+				// Not "failed to enable": the enable stands, only the dial failed.
+				return err
 			}
 		}
 	}

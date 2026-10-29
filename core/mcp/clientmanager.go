@@ -424,17 +424,27 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 // inflightClientOp tracks one in-flight exclusive operation on a client
 // (reconnect, enable/disable, credential update). Waiters observe completion
 // through the done channel; err carries the operation's final outcome and is
-// only safe to read after done is closed.
+// only safe to read after done is closed. cancel is set only for a connection
+// checker's reconnect, which gives way to any other operation (see
+// beginClientOp).
 type inflightClientOp struct {
-	done chan struct{}
-	err  error
+	done   chan struct{}
+	err    error
+	cancel context.CancelFunc
 }
+
+// checkerReconnectYieldWait bounds how long an operation waits for a cancelled
+// checker reconnect to stop before it gives up and reports the client busy. A
+// cancelled dial returns at once, so the bound only matters if it is stuck.
+const checkerReconnectYieldWait = 5 * time.Second
 
 // beginExclusiveClientOp atomically registers an in-flight exclusive operation
 // for the given client ID. ok is false when another operation already holds the
 // slot, preserving the second-caller-errors contract every guarded entry point
 // relies on. On success the caller must invoke finish exactly once with the
 // operation's final error so waiters parked in AwaitReconnect get the outcome.
+// A connection checker's reconnect is the exception: it is cancelled and this
+// operation goes ahead, so the caller must not hold m.mu (see beginClientOp).
 //
 // A completed op is deliberately left in the map instead of being deleted on
 // finish: deleting immediately would let a caller who was just rejected with
@@ -445,7 +455,18 @@ type inflightClientOp struct {
 // concurrent begin can't be shadowed by another late reader observing the
 // old (already-done) op.
 func (m *MCPManager) beginExclusiveClientOp(id string) (finish func(error), ok bool) {
-	op := &inflightClientOp{done: make(chan struct{})}
+	return m.beginClientOp(id, nil, true)
+}
+
+// beginClientOp is beginExclusiveClientOp with two choices made explicit.
+// cancel registers the operation as a connection checker's reconnect, which
+// never takes the slot from another operation but gives way to one: against an
+// unreachable upstream the checker redials all the time, and an admin edit or
+// disable must not be refused for it. preempt lets this operation cancel such a
+// reconnect and wait for it to stop. The stopping dial takes m.mu, so a caller
+// that holds m.mu passes preempt false.
+func (m *MCPManager) beginClientOp(id string, cancel context.CancelFunc, preempt bool) (finish func(error), ok bool) {
+	op := &inflightClientOp{done: make(chan struct{}), cancel: cancel}
 	for {
 		existing, loaded := m.reconnectingClients.LoadOrStore(id, op)
 		if !loaded {
@@ -463,7 +484,17 @@ func (m *MCPManager) beginExclusiveClientOp(id string) (finish func(error), ok b
 			}
 			// Lost the race to install ours; retry from the top.
 		default:
-			return nil, false
+			if !preempt || existingOp.cancel == nil {
+				return nil, false
+			}
+			// A checker reconnect is in flight: stop it, then take its place
+			// from the top once it has finished.
+			existingOp.cancel()
+			select {
+			case <-existingOp.done:
+			case <-time.After(checkerReconnectYieldWait):
+				return nil, false
+			}
 		}
 	}
 }
@@ -572,7 +603,26 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 		return errReconnectInProgress
 	}
 	defer func() { finish(retErr) }()
+	return m.reconnect(id, m.ctx)
+}
 
+// reconnectFromChecker is ReconnectClient for the connection checker. Any other
+// operation on the client cancels its dial instead of being refused while it
+// runs, and the checker dials again on its next tick.
+func (m *MCPManager) reconnectFromChecker(id string) (retErr error) {
+	dialCtx, cancel := context.WithCancel(m.ctx)
+	defer cancel()
+	finish, ok := m.beginClientOp(id, cancel, false)
+	if !ok {
+		return errReconnectInProgress
+	}
+	defer func() { finish(retErr) }()
+	return m.reconnect(id, dialCtx)
+}
+
+// reconnect dials a registered client again with its stored config, within
+// dialCtx. The caller holds the client's exclusive operation.
+func (m *MCPManager) reconnect(id string, dialCtx context.Context) error {
 	m.mu.Lock()
 	client, ok := m.clientMap[id]
 	if !ok {
@@ -602,11 +652,9 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 
 	// Reconnect using the client's configuration
 	// Retry logic is handled internally by connectToMCPClient
-	if err := m.connectToMCPClient(m.ctx, config); err != nil {
-		return fmt.Errorf("failed to reconnect MCP client %s: %w", id, err)
-	}
-
-	return nil
+	// Returned as is: every caller says what failed and names the client. The
+	// connect plugin hooks run within dialCtx too, so a cancel reaches them.
+	return m.connectToMCPClientWithin(dialCtx, dialCtx, config)
 }
 
 // writeBackDiscovery installs a discovery found over an existing connection (the checker,
@@ -963,8 +1011,10 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// could start a concurrent dial for this ID the instant the placeholder
 	// is published, racing this function's own connect below. config.ID was
 	// just confirmed absent from clientMap under the same lock, so no
-	// exclusive op can already be tracking it — !ok is not expected.
-	finish, ok := m.beginExclusiveClientOp(config.ID)
+	// exclusive op can already be tracking it, so !ok is not expected. It is
+	// taken without pre-empting a checker reconnect: m.mu is held here, and a
+	// stopping dial needs it.
+	finish, ok := m.beginClientOp(config.ID, nil, false)
 	if !ok {
 		delete(m.clientMap, config.ID)
 		m.mu.Unlock()
@@ -1131,7 +1181,9 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		m.mu.Lock()
 		delete(m.clientMap, config.ID)
 		m.mu.Unlock()
-		return fmt.Errorf("failed to connect to MCP client %s: %w", config.Name, err)
+		// Returned as is: the caller says the connect failed, and repeating it
+		// here is how create errors came to read "failed to connect" three times.
+		return err
 	}
 
 	return nil
@@ -1748,11 +1800,9 @@ func (m *MCPManager) DisableClient(id string) (retErr error) {
 // must stay possible so they reconverge rather than wedging on
 // "is not disabled (current state: unstable)".
 //
-// A dial failure during enable is deliberately NOT represented by leaving the
-// entry Unstable-but-enabled: EnableClient parks it back at Disabled state
-// (keeping ExecutionConfig.Disabled=false so the checker keeps retrying and
-// the persisted row stays enabled), precisely so this guard keeps matching
-// and the admin can retry immediately.
+// A dial failure during enable leaves the entry Unstable with
+// ExecutionConfig.Disabled=false. It is enabled and its checker redials it, so
+// this guard does not match it: there is nothing left to enable.
 func isEnableable(clientState *schemas.MCPClientState) bool {
 	if clientState.State == schemas.MCPConnectionStateDisabled {
 		return true
@@ -1920,46 +1970,34 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// The connection failed, but the enable itself stands:
 		// ExecutionConfig.Disabled stays false, so the caller keeps its
-		// persisted disabled=false (see ErrMCPEnableConnectFailed) and the
-		// admin can retry the enable straight away.
+		// persisted disabled=false (see ErrMCPEnableConnectFailed).
 		//
-		// That retry is the only way back up, and it is deliberate rather than
-		// a gap: performCheck stops a checker whose client is Disabled instead
-		// of dialling it, so the one started below does nothing on this path.
-		// It is started for the NeedsReauth case, where performCheck keeps the
-		// timer alive at the relaxed interval so a stalled reauthorize is
-		// eventually picked up by something.
+		// The client stays Unstable, as the failed dial left it, and the
+		// checker started below redials it on the unstable interval, so it
+		// comes up on its own once the upstream does. It is not parked back
+		// at Disabled: the HTTP API calls EnableClient only when the stored
+		// disabled flag flips, and that has already happened, so nothing would
+		// enable it again, its checker would stop instead of dialling, and a
+		// later disable would be refused as already disabled.
 		//
-		// State goes back to Disabled rather than Unstable. Unstable would
-		// wedge the client: isEnableable would stop matching, so every retry
-		// of this same enable is rejected with "is not disabled (current
-		// state: unstable)" — with no way out short of a restart. Disabled is
-		// also the more truthful badge for a client that never came up, and
-		// it keeps the admin's toggle and the state agreeing.
+		// The dial normally moves the state off Disabled before it fails. This
+		// call holds the client's exclusive operation, so no disable can run
+		// meanwhile, and a state still Disabled means the dial failed before
+		// it began: that client is moved to Unstable with the failure too.
 		//
 		// NeedsReauth is preserved: connectToMCPClient already classified
-		// this failure as a dead OAuth2 credential (under its own lock,
-		// above), which is a more specific and more actionable signal than
-		// Disabled. Unlike the Disabled case, this one is deliberately not
-		// re-enableable — isEnableable rejects needs_reauth on both clauses
-		// (the config is un-disabled by now), because retrying the dial with
-		// the same dead credential cannot succeed. The way out is
-		// reauthorization, not another enable.
+		// this failure as a dead OAuth2 credential, a more specific and more
+		// actionable signal, and performCheck keeps that client's checker at
+		// the relaxed interval until it is reauthorized.
 		m.mu.Lock()
-		alreadyDisabled := false
-		if cs, exists := m.clientMap[id]; exists {
-			switch cs.State {
-			case schemas.MCPConnectionStateDisabled:
-				alreadyDisabled = true
-			case schemas.MCPConnectionStateNeedsReauth:
-				// preserve as-is
-			default:
-				cs.State = schemas.MCPConnectionStateDisabled
-			}
+		cs, exists := m.clientMap[id]
+		if exists && cs.State == schemas.MCPConnectionStateDisabled {
+			cs.State = schemas.MCPConnectionStateUnstable
+			recordClientFailure(cs, schemas.MCPConnectionFailureStageConnect, err)
 		}
 		m.mu.Unlock()
 
-		if !alreadyDisabled {
+		if exists {
 			isPingAvailable := true
 			if configCopy.IsPingAvailable != nil {
 				isPingAvailable = *configCopy.IsPingAvailable
@@ -2005,10 +2043,9 @@ var ErrMCPSharedConnectFailedAfterUpdate = errors.New("mcp client fields updated
 
 // ErrMCPEnableConnectFailed signals that EnableClient already un-disabled the
 // client (ExecutionConfig.Disabled is false and a connection checker is
-// retrying) before its first dial failed. The runtime state is parked back at
-// Disabled — not Unstable, which would wedge every subsequent enable against
-// isEnableable — except for a dead OAuth2 credential, which keeps the more
-// specific NeedsReauth. Callers that persist disabled=false to a store before
+// retrying) before its first dial failed. The client is left Unstable, its
+// checker redialling it, except for a dead OAuth2 credential, which keeps the
+// more specific NeedsReauth. Callers that persist disabled=false to a store before
 // calling EnableClient (see the HTTP update handler) must NOT roll that row
 // back on this specific error: the client is genuinely enabled and retrying in
 // the background, so a rolled-back row would say disabled while the runtime
@@ -2830,8 +2867,29 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 // registers its available tools with the manager. Uses exponential backoff
 // retry logic (5 retries, 1-30 seconds) for connection establishment.
 func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *schemas.MCPClientConfig) error {
+	return m.connectToMCPClientWithin(m.ctx, requestCtx, config)
+}
+
+// connectToMCPClientWithin is connectToMCPClient with the dial bounded by
+// dialCtx. Cancelling it stops every step: resolving the connection
+// credentials, the retries and attempts of the transport start and the
+// handshake, and the discovery that follows; the connect plugin hooks stop too
+// when requestCtx derives from dialCtx. An SSE or STDIO connection is only
+// stopped while it is still being dialled, since its own context then lives on
+// as the connection's. A dial stopped that way is not recorded as the client's
+// failure, which keeps the last real one.
+func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Context, config *schemas.MCPClientConfig) error {
 	if requestCtx == nil {
 		requestCtx = m.ctx
+	}
+	// recordable is the failure to record on the client: none when the dial was
+	// stopped for another operation rather than failed, so the client keeps the
+	// reason of its last real failure.
+	recordable := func(failure error) error {
+		if dialCtx.Err() != nil && m.ctx.Err() == nil {
+			return nil
+		}
+		return failure
 	}
 	// First lock: initialize or validate the client entry.
 	//
@@ -2952,6 +3010,9 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// Use context.Background() to avoid inheriting deadline from m.ctx
 		// This prevents STDIO/SSE from being limited by HTTP request timeouts
 		longLivedCtx, longLivedCancel = context.WithCancel(context.Background())
+		// dialCtx may stop the dial, never the connection it produced.
+		stopDialCancel := context.AfterFunc(dialCtx, longLivedCancel)
+		defer stopDialCancel()
 
 		// Use long-lived context for starting the transport (spawns subprocess)
 		// but create a timeout context for initialization to prevent hangs
@@ -2959,7 +3020,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		cancel = longLivedCancel
 	} else {
 		// Other connection types (HTTP) can use timeout context
-		ctx, cancel = context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
+		ctx, cancel = context.WithTimeout(dialCtx, MCPClientConnectionEstablishTimeout)
 		defer cancel()
 	}
 
@@ -3009,7 +3070,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// may still reference in PostHook).
 		mutForWire := preReq
 		if config.ConnectionType == schemas.MCPConnectionTypeHTTP || config.ConnectionType == schemas.MCPConnectionTypeSSE {
-			bfCtx := schemas.NewBifrostContext(m.ctx, schemas.NoDeadline)
+			bfCtx := schemas.NewBifrostContext(dialCtx, schemas.NoDeadline)
 			authHeaders, credErr := m.credStore.ConnectionHeaders(bfCtx, config)
 			if credErr != nil {
 				return nil, credErr
@@ -3040,7 +3101,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			return isTransientError(err)
 		}
 		if startErr := ExecuteWithRetry(
-			m.ctx,
+			dialCtx,
 			func() error {
 				// Close previous client if this is a retry attempt
 				if externalClient != nil {
@@ -3103,7 +3164,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		}
 		initRetryConfig := ConnectRetryConfig
 		if initErr := ExecuteWithRetry(
-			m.ctx,
+			dialCtx,
 			func() error {
 				var initCtx context.Context
 				if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
@@ -3163,8 +3224,9 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// authoritative, same invariant the health monitor's updateClientState
 		// guard preserves).
 		needsReauth := gateErr.Error != nil && errors.Is(gateErr.Error.Error, schemas.ErrOAuth2TokenExpired)
-		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, needsReauth, errors.New(gateErr.GetErrorString()))
-		return fmt.Errorf("failed to connect MCP client %s: %s", config.Name, gateErr.GetErrorString())
+		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, needsReauth, recordable(errors.New(gateErr.GetErrorString())))
+		// The reason alone: each caller says what failed and for which client.
+		return errors.New(gateErr.GetErrorString())
 	}
 
 	tools := make(map[string]schemas.ChatTool)
@@ -3189,7 +3251,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
 		// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.
 		m.logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
-		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
+		toolRetrievalCtx, toolRetrievalCancel := context.WithTimeout(dialCtx, MCPClientConnectionEstablishTimeout)
 		defer toolRetrievalCancel()
 		t, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
 		if err != nil {
@@ -3225,7 +3287,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// connect+list. A server that legitimately exposes zero tools returns success with
 	// an empty list (listToolsErr == nil) and is still marked Connected.
 	if listToolsErr != nil {
-		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false, listToolsErr)
+		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, false, recordable(listToolsErr))
 		return fmt.Errorf("failed to retrieve tools from MCP client %s: %w", config.Name, listToolsErr)
 	}
 
