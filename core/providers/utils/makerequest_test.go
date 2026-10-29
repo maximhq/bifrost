@@ -957,6 +957,85 @@ func TestContextTransport_MatchesDefaultForBufferedBodies(t *testing.T) {
 	}
 }
 
+// newSlowContextTransportClient returns a client on NewContextTransport whose
+// ReadTimeout (default_request_timeout_in_seconds) is shorter than the server's
+// response delay, so only a ctx deadline that overrides it lets the request through.
+func newSlowContextTransportClient(t *testing.T, delay, readTimeout time.Duration) *fasthttp.Client {
+	t.Helper()
+	ln := fasthttputil.NewInmemoryListener()
+	server := &fasthttp.Server{
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			time.Sleep(delay)
+			ctx.SetStatusCode(200)
+			ctx.SetBodyString(`{"ok":true}`)
+		},
+	}
+	go server.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { ln.Close() })
+	return &fasthttp.Client{
+		Dial:         func(addr string) (net.Conn, error) { return ln.Dial() },
+		ReadTimeout:  readTimeout,
+		WriteTimeout: readTimeout,
+		Transport:    NewContextTransport(),
+	}
+}
+
+func TestContextTransport_ContextDeadlineOverridesShorterReadTimeout(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://slow/")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		t.Fatalf("ctx deadline (2s) should override ReadTimeout (100ms) for a 300ms response, got error: %s", bifrostErr.Error.Message)
+	}
+	if resp.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode())
+	}
+}
+
+func TestContextTransport_ContextDeadlineOverridesShorterReadTimeoutForStreamHeaders(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	client.StreamResponseBody = true
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer ReleaseStreamingResponse(nil, resp)
+	req.SetRequestURI("http://slow/")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+		t.Fatalf("ctx deadline (2s) should override ReadTimeout (100ms) for a 300ms header wait, got error: %v", err)
+	}
+	if resp.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode())
+	}
+}
+
+func TestContextTransport_ReadTimeoutAppliesWithoutContextDeadline(t *testing.T) {
+	client := newSlowContextTransportClient(t, 300*time.Millisecond, 100*time.Millisecond)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://slow/")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr == nil {
+		t.Fatal("expected ReadTimeout (100ms) to bound a ctx without a deadline")
+	}
+}
+
 // benchServer serves either a small buffered JSON body or a 20-chunk SSE stream
 // over an in-memory listener, so the transport benchmarks measure client-side
 // cost only.
