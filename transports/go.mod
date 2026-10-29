@@ -16,18 +16,18 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v1.3.0
-	github.com/maximhq/bifrost/core v1.13.1
-	github.com/maximhq/bifrost/framework v1.10.1
-	github.com/maximhq/bifrost/plugins/compat v0.5.1
-	github.com/maximhq/bifrost/plugins/governance v1.10.1
-	github.com/maximhq/bifrost/plugins/logging v1.10.1
-	github.com/maximhq/bifrost/plugins/maxim v1.7.12
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.12
-	github.com/maximhq/bifrost/plugins/otel v1.6.2
-	github.com/maximhq/bifrost/plugins/prompts v1.1.12
-	github.com/maximhq/bifrost/plugins/routing v1.2.2
-	github.com/maximhq/bifrost/plugins/semanticcache v1.7.2
-	github.com/maximhq/bifrost/plugins/telemetry v1.9.2
+	github.com/maximhq/bifrost/core v1.14.0
+	github.com/maximhq/bifrost/framework v1.11.0
+	github.com/maximhq/bifrost/plugins/compat v0.5.2
+	github.com/maximhq/bifrost/plugins/governance v1.11.0
+	github.com/maximhq/bifrost/plugins/logging v1.11.0
+	github.com/maximhq/bifrost/plugins/maxim v1.7.13
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.13
+	github.com/maximhq/bifrost/plugins/otel v1.6.3
+	github.com/maximhq/bifrost/plugins/prompts v1.1.13
+	github.com/maximhq/bifrost/plugins/routing v1.2.3
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.3
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.3
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
@@ -62,6 +62,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
 	github.com/ClickHouse/ch-go v0.65.0 // indirect
 	github.com/ClickHouse/clickhouse-go/v2 v2.32.0 // indirect
@@ -102,7 +103,6 @@ require (
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
@@ -157,7 +157,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.12 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.13 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
