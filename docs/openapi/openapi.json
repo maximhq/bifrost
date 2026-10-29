@@ -115969,6 +115969,34 @@
               }
             }
           },
+          "fallback_attempts": {
+            "type": "array",
+            "description": "Set when the primary and every fallback failed and the primary's error was returned: what became of each fallback, in chain order. A fallback refused before reaching its provider (for example by a virtual key that does not allow it) is only visible here.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "status_code": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "skipped": {
+                  "type": "boolean",
+                  "description": "The fallback was never attempted (no provider config, or the request type has no fallback support)"
+                }
+              }
+            }
+          },
           "mcp_auth_required": {
             "type": "object",
             "description": "Set when a per-user MCP tool needs the caller to complete an inline auth flow",
