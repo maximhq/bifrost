@@ -1789,6 +1789,24 @@ func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
 	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
 }
 
+// TestAddMCPClient_IgnoresToolPricing pins that create does not take
+// tool_pricing; prices are set with an update. A price taken from the create
+// body was never stored, yet sat in the running config until the next edit
+// stored and applied it.
+func TestAddMCPClient_IgnoresToolPricing(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"tool_pricing":     map[string]float64{"listPets": 0.25},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	assert.Empty(t, mgr.added[0].ToolPricing)
+}
+
 // TestGetMCPClients_ReturnsMaxInstructionsLength pins that the client list carries
 // a client's max_instructions_length, so a reader sees the stored cap and an edit
 // that sends the listed config back keeps it. The list used to leave it out.
