@@ -16936,7 +16936,8 @@ func rollbackVoiceLivePricingColumns(context.Context, *gorm.DB, schemas.Logger) 
 // identity, mcp_client_id) for user and virtual-key callers with the same
 // partial-unique-index pattern as mcp_per_user_header_credentials, so a
 // caller's discovery and the credential it was made with share one binding
-// shape. Forward-only on data — no rows
+// shape, and indexed by (mcp_client_id, discovery_hash) for grouping a
+// client's callers by the discovery they hold. Forward-only on data — no rows
 // exist yet.
 func migrationAddMCPPerUserDiscoveries(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_per_user_discoveries"
@@ -16975,6 +16976,10 @@ func migrationAddMCPPerUserDiscoveries(ctx context.Context, db *gorm.DB, logger 
 					return fmt.Errorf("create partial unique index on mcp_per_user_discoveries: %w", err)
 				}
 			}
+			if err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_mcp_per_user_discoveries_client_hash
+				ON mcp_per_user_discoveries (mcp_client_id, discovery_hash)`).Error; err != nil {
+				return fmt.Errorf("create client and hash index on mcp_per_user_discoveries: %w", err)
+			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
@@ -16983,6 +16988,7 @@ func migrationAddMCPPerUserDiscoveries(ctx context.Context, db *gorm.DB, logger 
 			for _, name := range []string{
 				"idx_mcp_per_user_discoveries_user_mcp",
 				"idx_mcp_per_user_discoveries_vk_mcp",
+				"idx_mcp_per_user_discoveries_client_hash",
 			} {
 				if err := tx.Exec("DROP INDEX IF EXISTS " + name).Error; err != nil {
 					return fmt.Errorf("drop %s: %w", name, err)
