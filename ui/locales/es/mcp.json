@@ -897,7 +897,22 @@
 			"boundTo": "Líbra a",
 			"status": "Situación",
 			"accessTokenExpiry": "Acceso a la caducidad",
+			"discovery": "Descubrimiento",
+			"discoveryHelp": "Lo que Bifrost descubrió con esta credencial en un servidor con el descubrimiento por solicitante activado: sus herramientas, prompts y recursos, y cuándo. Todavía no: el solicitante no se ha conectado desde que inició sesión, o el descubrimiento falló; se ejecuta en su próxima conexión. Compartido: el servidor guarda un descubrimiento que usan todos los solicitantes. Un guion: la credencial necesita una acción primero, o está vinculada a una sesión.",
 			"created": "Creado"
+		},
+		"discoveryCell": {
+			"shared": "Compartido",
+			"noTools": "Sin herramientas",
+			"tools_one": "{{count}} herramienta",
+			"tools_other": "{{count}} herramientas",
+			"prompts_one": "{{count}} prompt",
+			"prompts_other": "{{count}} prompts",
+			"resources_one": "{{count}} recurso",
+			"resources_other": "{{count}} recursos",
+			"discoveredAgo": "descubierto {{time}}",
+			"notYet": "Todavía no",
+			"onNextConnect": "en la próxima conexión"
 		},
 		"tooltips": {
 			"type": "OAuth: per-user OAuth credential, ya sea un token almacenado de un registro terminado, o un flujo de registro pendiente. Headers: per-user header values (API keys / fichas firmadas), ya sea almacenado o pendiente de presentación.",
