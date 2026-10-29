@@ -1177,6 +1177,7 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoadin
 		len(t.InputExamples) > 0 ||
 		t.EagerInputStreaming != nil ||
 		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil) ||
+		(t.ResponsesToolWebSearch != nil && t.ResponsesToolWebSearch.Version != nil) ||
 		hasAnthropicMCPToolsetConfig(t)
 }
 
@@ -1543,6 +1544,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
 					ciCopy.Version = nil
 					toolCopy.ResponsesToolCodeInterpreter = &ciCopy
+				}
+				if toolCopy.ResponsesToolWebSearch != nil && toolCopy.ResponsesToolWebSearch.Version != nil {
+					searchCopy := *toolCopy.ResponsesToolWebSearch
+					searchCopy.Version = nil
+					toolCopy.ResponsesToolWebSearch = &searchCopy
 				}
 				processedTools = append(processedTools, toolCopy)
 			}
