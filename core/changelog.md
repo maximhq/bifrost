@@ -1,3 +1,4 @@
+- fix: Perplexity, Cohere and HuggingFace converters no longer remove the keys they map from the caller's ExtraParams, so a retry or a fallback converts the same request, and HuggingFace speech no longer panics when the request has no params
 - fix: anthropic - native Sonnet 5.5 requests keep the caller's thinking settings on both the typed and raw paths (#7895) [@valentinyanakiev](https://github.com/valentinyanakiev)
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
