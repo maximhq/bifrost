@@ -6561,7 +6561,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		if reroutedPq == nil {
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr := newBifrostProviderShuttingDownError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
@@ -6574,7 +6574,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Message was sent successfully
 	case <-pq.done:
 		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+		bifrostErr := newBifrostProviderShuttingDownError()
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	case <-ctx.Done():
@@ -6593,7 +6593,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr := newBifrostProviderShuttingDownError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
@@ -6602,7 +6602,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			// Message was sent successfully
 		case <-pq.done:
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr := newBifrostProviderShuttingDownError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		case <-ctx.Done():
@@ -6977,7 +6977,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		if reroutedPq == nil {
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr := newBifrostProviderShuttingDownError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
@@ -6990,7 +6990,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Message was sent successfully
 	case <-pq.done:
 		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+		bifrostErr := newBifrostProviderShuttingDownError()
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
 	case <-ctx.Done():
@@ -7009,7 +7009,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Re-check closing flag before blocking send (lock-free atomic check)
 		if pq.isClosing() {
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr := newBifrostProviderShuttingDownError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		}
@@ -7018,7 +7018,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			// Message was sent successfully
 		case <-pq.done:
 			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
+			bifrostErr := newBifrostProviderShuttingDownError()
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 			return nil, bifrostErr
 		case <-ctx.Done():
@@ -8196,17 +8196,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					// Draining a still-open queue-wait span: close it before discarding.
 					bifrost.endQueueWaitSpan(r)
 					provKey, mod, _ := r.GetRequestFields()
-					bifrost.sendWorkerError(r, schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: "provider is shutting down",
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							RequestType:            r.RequestType,
-							Provider:               provKey,
-							OriginalModelRequested: mod,
-						},
-					})
+					bifrostErr := newBifrostProviderShuttingDownError()
+					bifrostErr.PopulateExtraFields(r.RequestType, provKey, mod, mod)
+					bifrost.sendWorkerError(r, *bifrostErr)
 				default:
 					return
 				}
@@ -10859,18 +10851,9 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 			// Draining a still-open queue-wait span: close it before discarding.
 			bifrost.endQueueWaitSpan(r)
 			provKey, mod, _ := r.GetRequestFields()
-			// r.Err is a buffered channel of size 1 drained on acquire, so the send
-			// completes immediately; sendWorkerError handles a caller that has already
-			// abandoned the handoff (bills and releases instead of sending).
-			bifrost.sendWorkerError(r, schemas.BifrostError{
-				IsBifrostError: false,
-				Error:          &schemas.ErrorField{Message: "provider is shutting down"},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:            r.RequestType,
-					Provider:               provKey,
-					OriginalModelRequested: mod,
-				},
-			})
+			bifrostErr := newBifrostProviderShuttingDownError()
+			bifrostErr.PopulateExtraFields(r.RequestType, provKey, mod, mod)
+			bifrost.sendWorkerError(r, *bifrostErr)
 		default:
 			return
 		}
