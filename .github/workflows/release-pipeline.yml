@@ -2680,12 +2680,11 @@ jobs:
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
-            azure.ports.ubuntu.com:80
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
-            esm.ubuntu.com:443
+            download.docker.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
@@ -2716,19 +2715,15 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh node docker jq
+
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
-
-      # The arm64 base image does not ship libatomic1, which the official
-      # linux-arm64 Node binary links against; without it node exits 127.
-      - name: Install libatomic1 for Node.js
-        run: |
-          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends libatomic1
-          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3359,8 +3354,6 @@ jobs:
           allowed-endpoints: >
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.github.com:443
-            azure.ports.ubuntu.com:80
-            esm.ubuntu.com:443
             files.pythonhosted.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -3383,19 +3376,15 @@ jobs:
       - name: Pull latest changes
         run: git pull origin ${{ github.ref_name }}
 
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh node build
+
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
-
-      # The arm64 base image does not ship libatomic1, which the official
-      # linux-arm64 Node binary links against; without it node exits 127.
-      - name: Install libatomic1 for Node.js
-        run: |
-          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends libatomic1
-          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3639,11 +3628,13 @@ jobs:
           allowed-endpoints: >
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
+            download.docker.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
+            ports.ubuntu.com:80
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -3656,6 +3647,11 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh docker gh
 
       - name: Verify bifrost-http release
         id: verify
@@ -3935,11 +3931,13 @@ jobs:
           allowed-endpoints: >
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
+            download.docker.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
+            ports.ubuntu.com:80
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -3954,6 +3952,11 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
+      # linux-arm64 Node binary) or build tools; see the script for details.
+      - name: Install arm64 runner dependencies
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh docker gh
 
       - name: Verify bifrost-http release
         id: verify
