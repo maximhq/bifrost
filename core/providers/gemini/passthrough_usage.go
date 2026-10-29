@@ -154,6 +154,7 @@ func extractGeminiGenerateContentUsage(body []byte) *schemas.BifrostPassthroughU
 			TotalTokens:  ru.TotalTokens,
 			OutputTokensDetails: &schemas.ImageTokenDetails{
 				ImageTokens:     *ru.OutputTokensDetails.ImageTokens,
+				TextTokens:      ru.OutputTokensDetails.TextTokens,
 				ReasoningTokens: ru.OutputTokensDetails.ReasoningTokens,
 			},
 		}

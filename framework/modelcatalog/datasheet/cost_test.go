@@ -2131,6 +2131,21 @@ func TestComputeImageCost_ReasoningTokensBillWhenOutputBelowImageDetail(t *testi
 	assert.InDelta(t, 0.068316, cost, 1e-12)
 }
 
+func TestComputeImageCost_TextDetailAndReasoningBothBillAsText(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// 418 candidates (100 TEXT, rest below the 1120 IMAGE detail) + 372 thoughts
+	usage := &schemas.ImageUsage{
+		OutputTokens:        790,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120, TextTokens: 100, ReasoningTokens: 372},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + (100+372)*0.000003
+	assert.InDelta(t, 0.068616, cost, 1e-12)
+}
+
 func TestComputeImageCost_ReasoningOnlyDetailsKeepTokenPricing(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		OutputCostPerToken:      bifrost.Ptr(0.000003),

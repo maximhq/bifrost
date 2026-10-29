@@ -54,6 +54,20 @@ func TestExtractGeminiPassthroughUsage(t *testing.T) {
 			},
 		},
 		{
+			name: "generateContent image output keeps the TEXT detail",
+			path: "/v1beta/models/gemini-3.1-flash-image:generateContent",
+			body: `{"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":418,"totalTokenCount":798,"thoughtsTokenCount":372,"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":100},{"modality":"IMAGE","tokenCount":1120}]}}`,
+			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+				if u == nil || u.ImageUsage == nil || u.ImageUsage.OutputTokensDetails == nil {
+					t.Fatalf("image usage = %+v", u)
+				}
+				d := u.ImageUsage.OutputTokensDetails
+				if d.ImageTokens != 1120 || d.TextTokens != 100 || d.ReasoningTokens != 372 {
+					t.Fatalf("details = %+v, want 1120 image, 100 text, 372 reasoning", d)
+				}
+			},
+		},
+		{
 			name: "embedContent",
 			path: "/v1beta/models/text-embedding-004:embedContent",
 			body: `{"usageMetadata":{"promptTokenCount":7,"totalTokenCount":7}}`,
