@@ -1689,9 +1689,10 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if imageUsage.OutputTokensDetails != nil {
 		outputImageTokens = imageUsage.OutputTokensDetails.ImageTokens
 		outputTextTokens = imageUsage.OutputTokensDetails.TextTokens
-		// Output the details leave unattributed (Gemini's thinking tokens) bills at the text rate
+		// Output the details leave unattributed bills at the text rate, and never less than the reported
+		// thinking tokens: Gemini can report a candidatesTokenCount below its own IMAGE detail
 		if outputImageTokens > 0 || outputTextTokens > 0 {
-			outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, 0)
+			outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, imageUsage.OutputTokensDetails.ReasoningTokens, 0)
 		}
 	} else {
 		outputImageTokens = imageUsage.OutputTokens

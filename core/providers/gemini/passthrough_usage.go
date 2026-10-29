@@ -153,7 +153,8 @@ func extractGeminiGenerateContentUsage(body []byte) *schemas.BifrostPassthroughU
 			OutputTokens: ru.OutputTokens,
 			TotalTokens:  ru.TotalTokens,
 			OutputTokensDetails: &schemas.ImageTokenDetails{
-				ImageTokens: *ru.OutputTokensDetails.ImageTokens,
+				ImageTokens:     *ru.OutputTokensDetails.ImageTokens,
+				ReasoningTokens: ru.OutputTokensDetails.ReasoningTokens,
 			},
 		}
 		if ru.InputTokensDetails != nil && (ru.InputTokensDetails.TextTokens > 0 || ru.InputTokensDetails.ImageTokens > 0) {

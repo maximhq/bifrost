@@ -2115,6 +2115,37 @@ func TestComputeImageCost_UnattributedOutputTokensBillAsText(t *testing.T) {
 	assert.InDelta(t, 0.067611, cost, 1e-12)
 }
 
+func TestComputeImageCost_ReasoningTokensBillWhenOutputBelowImageDetail(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// Live gemini-3.1-flash-image usage: 318 candidates + 372 thoughts, yet 1120 IMAGE tokens in the details
+	usage := &schemas.ImageUsage{
+		OutputTokens:        690,
+		TotalTokens:         698,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120, ReasoningTokens: 372},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 372*0.000003
+	assert.InDelta(t, 0.068316, cost, 1e-12)
+}
+
+func TestComputeImageCost_ReasoningTokensNotDoubleCounted(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerToken:      bifrost.Ptr(0.000003),
+		OutputCostPerImageToken: bifrost.Ptr(0.00006),
+	}
+	// Typed path: OutputTokens already holds candidates (1120 image + 135) plus 283 thoughts
+	usage := &schemas.ImageUsage{
+		OutputTokens:        1538,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120, ReasoningTokens: 283},
+	}
+	cost := computeImageCostTotal(&p, usage, "", "", serviceTier{})
+	// 1120*0.00006 + 418*0.000003
+	assert.InDelta(t, 0.068454, cost, 1e-12)
+}
+
 // geminiFlashImageStore holds only the image_generation row, as the datasheet ships gemini-3.1-flash-image.
 func geminiFlashImageStore() *Store {
 	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
