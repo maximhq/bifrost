@@ -91,6 +91,43 @@ func TestConsentFlowDetail(t *testing.T) {
 		assert.Equal(t, []consentFlowMode{consentFlowModeVK}, resp.AvailableModes)
 	})
 
+	// CIMD clients expose their document host; loopback-only redirects are flagged.
+	t.Run("client metadata document client shows where it is published", func(t *testing.T) {
+		store := newConsentStore()
+		host := newMetadataHost(t)
+		clientID := host.document("/client.json", map[string]any{"client_name": "Claude"}, nil)
+		seedPendingFlow(store, "flow-cimd", time.Now().Add(time.Minute))
+		store.authReqs["flow-cimd"].ClientID = clientID
+		store.authReqs["flow-cimd"].RedirectURI = "http://127.0.0.1:3000/callback"
+		h := newConsentHandler(store, nil, false)
+		h.clientMetadata = newOAuth2ClientMetadataResolver(host.server.Client())
+
+		// The document fetch uses ctx as its context.
+		var req fasthttp.Request
+		ctx := initCtx(&req)
+		ctx.SetUserValue("id", "flow-cimd")
+		h.flowDetail(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp consentFlowDetailResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, "Claude", resp.ClientName)
+		assert.Equal(t, "127.0.0.1", resp.ClientHost)
+		assert.Equal(t, "127.0.0.1", resp.RedirectHost)
+		assert.True(t, resp.LocalhostOnly)
+	})
+
+	t.Run("registered client has no published host", func(t *testing.T) {
+		store := newConsentStore()
+		seedPendingFlow(store, "flow-dcr", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		ctx := consentCtx("flow-dcr", "")
+		h.flowDetail(ctx)
+		var resp consentFlowDetailResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Empty(t, resp.ClientHost)
+		assert.Equal(t, "127.0.0.1", resp.RedirectHost)
+	})
+
 	t.Run("missing flow returns 404", func(t *testing.T) {
 		h := newConsentHandler(newConsentStore(), nil, false)
 		ctx := consentCtx("nope", "")

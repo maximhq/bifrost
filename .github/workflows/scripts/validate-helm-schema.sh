@@ -633,8 +633,9 @@ done
 echo ""
 echo "  Checking MCP properties (Gap 6)..."
 check_property_exists "mcp.toolSyncInterval" ".properties.bifrost.properties.mcp.properties.toolSyncInterval" "$HELM_SCHEMA"
+check_property_exists "mcp.maxProtocolVersion" ".properties.bifrost.properties.mcp.properties.maxProtocolVersion" "$HELM_SCHEMA"
 check_property_exists "mcp.toolManagerConfig.codeModeBindingLevel" '.properties.bifrost.properties.mcp.properties.toolManagerConfig.properties.codeModeBindingLevel' "$HELM_SCHEMA"
-for prop in clientId isCodeModeClient toolSyncInterval isPingAvailable; do
+for prop in clientId isCodeModeClient toolSyncInterval maxProtocolVersion isPingAvailable; do
   check_property_exists "mcpClientConfig.$prop" '.["$defs"].mcpClientConfig.properties.'"${prop}" "$HELM_SCHEMA"
 done
 

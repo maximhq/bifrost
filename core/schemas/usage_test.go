@@ -168,3 +168,17 @@ func TestToolUsageAddHandlesNilOperands(t *testing.T) {
 		t.Fatalf("empty + one = %d, want 2", got)
 	}
 }
+
+func TestMergeBifrostLLMUsageKeepsIterations(t *testing.T) {
+	earlier := &BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10, Iterations: []ResponsesResponseUsage{{Type: Ptr("advisor_message"), InputTokens: 100}}}
+	billed := &BifrostLLMUsage{PromptTokens: 20, TotalTokens: 20, Iterations: []ResponsesResponseUsage{{Type: Ptr("advisor_message"), InputTokens: 200}}}
+
+	merged := MergeBifrostLLMUsage(earlier, billed)
+	if len(merged.Iterations) != 2 || merged.Iterations[0].InputTokens != 100 || merged.Iterations[1].InputTokens != 200 {
+		t.Fatalf("merged Iterations = %+v, want both turns' passes in order", merged.Iterations)
+	}
+	merged.Iterations[0].InputTokens = 999
+	if earlier.Iterations[0].InputTokens != 100 {
+		t.Fatal("merged Iterations aliases the base usage")
+	}
+}

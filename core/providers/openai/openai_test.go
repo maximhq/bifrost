@@ -2,6 +2,7 @@ package openai_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -524,4 +525,101 @@ func TestOpenAI(t *testing.T) {
 	t.Run("OpenAITests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
+}
+
+// TestOpenAIDisableStoreForcesStoreFalse verifies that openai_config.disable_store forces store=false on chat and
+// responses requests, including a passthrough extra_params store, without rewriting the caller's request that fallbacks share.
+func TestOpenAIDisableStoreForcesStoreFalse(t *testing.T) {
+	for _, api := range []string{"chat", "responses"} {
+		for _, streaming := range []bool{false, true} {
+			for _, mode := range []string{"typed", "passthrough"} {
+				t.Run(fmt.Sprintf("%s/stream=%v/%s", api, streaming, mode), func(t *testing.T) {
+					var body []byte
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, _ = io.ReadAll(r.Body)
+						switch {
+						case api == "chat" && streaming:
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = w.Write([]byte("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+						case api == "chat":
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+						case streaming:
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"m\",\"output\":[]}}\n\n"))
+						default:
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[]}`))
+						}
+					}))
+					defer server.Close()
+
+					provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+						OpenAIConfig:  &schemas.OpenAIConfig{DisableStore: true},
+					}, oauthTestLogger{})
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					var extraParams map[string]interface{}
+					if mode == "passthrough" {
+						ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+						extraParams = map[string]interface{}{"store": true}
+					}
+					key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+					postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						return result, err
+					}
+
+					var callerStore *bool
+					var callerExtra map[string]interface{}
+					if api == "chat" {
+						req := &schemas.BifrostChatRequest{
+							Provider: schemas.OpenAI,
+							Model:    "gpt-4o-mini",
+							Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+							Params:   &schemas.ChatParameters{Store: schemas.Ptr(true), ExtraParams: extraParams},
+						}
+						if streaming {
+							stream, bErr := provider.ChatCompletionStream(ctx, postHookRunner, nil, key, req)
+							if bErr != nil {
+								t.Fatalf("ChatCompletionStream returned error: %v", llmtests.GetErrorMessage(bErr))
+							}
+							for range stream {
+							}
+						} else if _, bErr := provider.ChatCompletion(ctx, key, req); bErr != nil {
+							t.Fatalf("ChatCompletion returned error: %v", llmtests.GetErrorMessage(bErr))
+						}
+						callerStore, callerExtra = req.Params.Store, req.Params.ExtraParams
+					} else {
+						req := &schemas.BifrostResponsesRequest{
+							Provider: schemas.OpenAI,
+							Model:    "gpt-4o-mini",
+							Input:    []schemas.ResponsesMessage{llmtests.CreateBasicResponsesMessage("hello")},
+							Params:   &schemas.ResponsesParameters{Store: schemas.Ptr(true), ExtraParams: extraParams},
+						}
+						if streaming {
+							stream, bErr := provider.ResponsesStream(ctx, postHookRunner, nil, key, req)
+							if bErr != nil {
+								t.Fatalf("ResponsesStream returned error: %v", llmtests.GetErrorMessage(bErr))
+							}
+							for range stream {
+							}
+						} else if _, bErr := provider.Responses(ctx, key, req); bErr != nil {
+							t.Fatalf("Responses returned error: %v", llmtests.GetErrorMessage(bErr))
+						}
+						callerStore, callerExtra = req.Params.Store, req.Params.ExtraParams
+					}
+
+					if !strings.Contains(string(body), `"store":false`) || strings.Count(string(body), `"store":`) != 1 {
+						t.Fatalf("expected upstream body to contain exactly one \"store\":false, got %s", body)
+					}
+					if !*callerStore {
+						t.Fatalf("caller's Params.Store was rewritten to false")
+					}
+					if v, ok := callerExtra["store"]; ok && v != true {
+						t.Fatalf("caller's ExtraParams store was rewritten to %v", v)
+					}
+				})
+			}
+		}
+	}
 }

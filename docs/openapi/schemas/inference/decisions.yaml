@@ -13,15 +13,16 @@ DecisionRequest:
       example: typesafe/jev-1.13.0
     input:
       description: |
-        The evidence. A string of text; an array of messages, each with text and
-        image parts (images are read only by providers that accept them);
+        The evidence. A string of text; a conversation, as an array of messages
+        (with text, JSON, and image parts; images are read only by providers
+        that accept them), function and custom tool calls, and their outputs;
         an object of structured data (passed to Typesafe-based models as their
         state); or null.
       oneOf:
         - type: string
         - type: array
           items:
-            $ref: '#/DecisionInputMessage'
+            $ref: '#/DecisionInputItem'
         - type: object
           additionalProperties: true
         - type: 'null'
@@ -34,11 +35,46 @@ DecisionRequest:
     safety_identifier:
       type: string
       description: Stable end-user identifier, forwarded to providers that accept one (OpenAI)
+    prompt_cache_key:
+      type: string
+      description: Partitions prompt-cache reuse by a caller-chosen key. Forwarded to OpenAI; other providers drop it.
+    prompt_cache_options:
+      $ref: '#/DecisionPromptCacheOptions'
     fallbacks:
       type: array
       items:
         type: string
       description: Fallback models in provider/model format
+
+DecisionPromptCacheOptions:
+  type: object
+  description: Prompt-caching options, forwarded to OpenAI; other providers drop them.
+  properties:
+    mode:
+      type: string
+      enum: [implicit, explicit]
+      description: "`implicit` (the default) adds a breakpoint at the end of the shared input; `explicit` uses only the parts marked with `prompt_cache_breakpoint`"
+    ttl:
+      type: string
+      enum: [30m]
+      description: Minimum lifetime of every breakpoint the request writes
+
+DecisionPromptCacheBreakpoint:
+  type: object
+  description: Marks the end of a reusable prompt prefix on a text or image part of the input. Forwarded to OpenAI.
+  properties:
+    mode:
+      type: string
+      enum: [explicit]
+
+DecisionInputItem:
+  description: One item of a conversation input
+  oneOf:
+    - $ref: '#/DecisionInputMessage'
+    - $ref: '#/DecisionFunctionCall'
+    - $ref: '#/DecisionFunctionCallOutput'
+    - $ref: '#/DecisionCustomToolCall'
+    - $ref: '#/DecisionCustomToolCallOutput'
 
 DecisionInputMessage:
   type: object
@@ -60,13 +96,112 @@ DecisionInputMessage:
         - type: array
           items:
             $ref: '#/DecisionInputPart'
+    phase:
+      type: string
+      enum: [commentary, final_answer]
+      description: An assistant message's phase
+
+DecisionFunctionCall:
+  type: object
+  required: [type, call_id, name, arguments]
+  properties:
+    type:
+      type: string
+      enum: [function_call]
+    call_id:
+      type: string
+      description: The call's ID, which its output names
+    name:
+      type: string
+    arguments:
+      type: string
+      description: The call's arguments, as JSON text
+    namespace:
+      type: string
+    id:
+      type: string
+    status:
+      type: string
+      enum: [in_progress, completed, incomplete]
+
+DecisionFunctionCallOutput:
+  type: object
+  required: [type, call_id, output]
+  properties:
+    type:
+      type: string
+      enum: [function_call_output]
+    call_id:
+      type: string
+      description: The call this output answers
+    output:
+      $ref: '#/DecisionToolOutput'
+    id:
+      type: string
+    status:
+      type: string
+      enum: [in_progress, completed, incomplete]
+
+DecisionCustomToolCall:
+  type: object
+  required: [type, call_id, name, input]
+  properties:
+    type:
+      type: string
+      enum: [custom_tool_call]
+    call_id:
+      type: string
+      description: The call's ID, which its output names
+    name:
+      type: string
+    input:
+      type: string
+      description: The call's freeform input
+    namespace:
+      type: string
+    id:
+      type: string
+    status:
+      type: string
+      enum: [in_progress, completed, incomplete]
+
+DecisionCustomToolCallOutput:
+  type: object
+  required: [type, call_id, output]
+  properties:
+    type:
+      type: string
+      enum: [custom_tool_call_output]
+    call_id:
+      type: string
+      description: The call this output answers
+    output:
+      $ref: '#/DecisionToolOutput'
+    id:
+      type: string
+    status:
+      type: string
+      enum: [in_progress, completed, incomplete]
+
+DecisionToolOutput:
+  description: A tool's output, as text or as text and image parts
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        oneOf:
+          - $ref: '#/DecisionInputText'
+          - $ref: '#/DecisionInputImage'
 
 DecisionInputPart:
-  description: One part of a message's content
+  description: One part of a message's content. User messages take text, JSON, and image parts; assistant messages take output text and refusals.
   oneOf:
     - $ref: '#/DecisionInputText'
+    - $ref: '#/DecisionInputJSON'
     - $ref: '#/DecisionInputImage'
     - $ref: '#/DecisionInputImageAsset'
+    - $ref: '#/DecisionOutputText'
+    - $ref: '#/DecisionRefusal'
 
 DecisionInputText:
   type: object
@@ -83,6 +218,46 @@ DecisionInputText:
           additionalProperties: true
         - type: array
           items: {}
+    prompt_cache_breakpoint:
+      $ref: '#/DecisionPromptCacheBreakpoint'
+
+DecisionInputJSON:
+  type: object
+  description: Structured evidence, read as JSON
+  required: [type, data]
+  properties:
+    type:
+      type: string
+      enum: [input_json]
+    data:
+      description: A JSON object, or an array
+      oneOf:
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+
+DecisionOutputText:
+  type: object
+  description: An assistant message's text
+  required: [type, text]
+  properties:
+    type:
+      type: string
+      enum: [output_text]
+    text:
+      type: string
+
+DecisionRefusal:
+  type: object
+  description: An assistant message's refusal
+  required: [type, refusal]
+  properties:
+    type:
+      type: string
+      enum: [refusal]
+    refusal:
+      type: string
 
 DecisionInputImage:
   type: object
@@ -99,6 +274,8 @@ DecisionInputImage:
       type: string
       enum: [low, high, auto, original]
       description: Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)
+    prompt_cache_breakpoint:
+      $ref: '#/DecisionPromptCacheBreakpoint'
 
 DecisionInputImageAsset:
   type: object
@@ -135,16 +312,19 @@ DecisionQuestion:
       type: string
       description: Optional name; the answer carries it back
     instructions:
-      description: Instructions for this question. A string, or structured data preserved losslessly for providers that accept it.
-      oneOf:
+      description: Instructions for this question. A string; a list of `input_text`, `input_image`, and `input_json` parts, which give the question its own images (OpenAI's decision models read them as parts; other providers receive the list as structured data); or other structured data preserved losslessly for providers that accept it.
+      anyOf:
         - type: string
+        - type: array
+          items:
+            $ref: '#/DecisionInstructionPart'
         - type: object
           additionalProperties: true
         - type: array
           items: {}
     criteria:
       type: object
-      description: Predicate only, read by Typesafe-based models. Optional descriptions of the `true` and `false` outcomes.
+      description: Predicate only, read by Typesafe-based models. Optional descriptions of the `true` and `false` outcomes. Other providers add them to the instructions.
       additionalProperties: false
       properties:
         "true":
@@ -176,6 +356,31 @@ DecisionQuestion:
             type: string
           description:
             description: A string, or structured data
+
+DecisionInstructionPart:
+  description: One part of a question's instructions
+  oneOf:
+    - type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          enum: [input_text]
+        text:
+          type: string
+    - type: object
+      required: [type, image_url]
+      properties:
+        type:
+          type: string
+          enum: [input_image]
+        image_url:
+          type: string
+          description: A base64 data URL or an HTTP(S) URL
+        detail:
+          type: string
+          enum: [low, high, auto, original]
+    - $ref: '#/DecisionInputJSON'
 
 DecisionResponse:
   type: object

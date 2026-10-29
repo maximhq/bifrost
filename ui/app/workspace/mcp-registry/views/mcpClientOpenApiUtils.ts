@@ -478,7 +478,7 @@ export function openAPIParseControls(state: {
 	isParsing: boolean;
 }): { autoParse: boolean; showButton: boolean; showPending: boolean; buttonLabel: string } {
 	if (state.mode === "url") {
-		return { autoParse: false, showButton: !state.isCurrent || state.hasError, showPending: false, buttonLabel: "Fetch spec" };
+		return { autoParse: false, showButton: !state.isCurrent || state.hasError, showPending: false, buttonLabel: "Fetch" };
 	}
 	return {
 		autoParse: true,

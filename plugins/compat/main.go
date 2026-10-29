@@ -292,12 +292,12 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // (OpenRouter's gpt-6-luna chat models) serves it as a chat model, so it is
 // emulated unless that provider's datasheet row says otherwise (OpenRouter's
 // openai/gpt-6-luna-decisions).
-// Typesafe serves every model natively, so it is never marked. Custom
+// Typesafe, vLLM and SGLang serve every model natively, so they are never marked. Custom
 // providers have no catalog rows and are matched by their own name, so one
 // serving a decisions model (on the Typesafe base, or gpt-6-luna on the OpenAI
 // base) would be emulated; the docs ask users to leave the setting off for them.
 func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) {
-	if provider == schemas.Typesafe {
+	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
 		return
 	}
 	fallback := (provider == schemas.OpenAI && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||

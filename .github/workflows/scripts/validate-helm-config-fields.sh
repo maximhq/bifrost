@@ -785,12 +785,14 @@ bifrost:
   mcp:
     enabled: true
     toolSyncInterval: "10m"
+    maxProtocolVersion: "auto"
     clientConfigs:
       - name: "stdio-server"
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
         toolSyncInterval: "5m"
+        maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
         toolPricing:
           search: 0.05
@@ -815,6 +817,17 @@ bifrost:
           url: "https://mcp.example.com/headers"
         authType: "per_user_headers"
         perUserHeaderKeys: ["Authorization", "X-Api-Key"]
+      - name: "openapi-server"
+        connectionType: "openapi"
+        authType: "headers"
+        openapiConfig:
+          specUrl: "https://api.example.com/openapi.json"
+          baseUrl: "https://api.example.com/v2"
+          securityCredentials:
+            bearerAuth:
+              value: "env.API_TOKEN"
+          includeDeprecated: true
+          maxResponseBytes: 65536
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
@@ -846,17 +859,28 @@ assert_field_value 'mcp client[3] auth_type' '.mcp.client_configs.[3].auth_type'
 assert_field_value 'mcp client[3] per_user_header_keys[0]' '.mcp.client_configs.[3].per_user_header_keys.[0]' '"Authorization"'
 assert_field_value 'mcp client[3] per_user_header_keys[1]' '.mcp.client_configs.[3].per_user_header_keys.[1]' '"X-Api-Key"'
 
+# openapi client (openapiConfig -> openapi_config)
+assert_field_value 'mcp client[4] connection_type' '.mcp.client_configs.[4].connection_type' '"openapi"'
+assert_field_value 'mcp client[4] auth_type' '.mcp.client_configs.[4].auth_type' '"headers"'
+assert_field_value 'mcp client[4] openapi_config.spec_url' '.mcp.client_configs.[4].openapi_config.spec_url' '"https://api.example.com/openapi.json"'
+assert_field_value 'mcp client[4] openapi_config.base_url' '.mcp.client_configs.[4].openapi_config.base_url' '"https://api.example.com/v2"'
+assert_field_value 'mcp client[4] openapi_config.security_credentials.bearerAuth.value' '.mcp.client_configs.[4].openapi_config.security_credentials.bearerAuth.value' '"env.API_TOKEN"'
+assert_field_value 'mcp client[4] openapi_config.include_deprecated' '.mcp.client_configs.[4].openapi_config.include_deprecated' 'true'
+assert_field_value 'mcp client[4] openapi_config.max_response_bytes' '.mcp.client_configs.[4].openapi_config.max_response_bytes' '65536'
+
 # Tool manager config
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'
 assert_field_value 'mcp tool_manager_config.max_agent_depth' '.mcp.tool_manager_config.max_agent_depth' '5'
 
 # Gap 6a: Global tool sync interval
 assert_field_value 'mcp tool_sync_interval' '.mcp.tool_sync_interval' '"10m"'
+assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto"'
 
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
+assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'
 assert_field 'mcp client[0] tool_pricing' '.mcp.client_configs.[0].tool_pricing'
 assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].tool_pricing.search' '0.05'
@@ -1430,6 +1454,8 @@ storage:
       bucket: "bifrost-logs"
       prefix: "prod"
       compress: true
+      format: json
+      compression: gzip
       region: "us-east-1"
       endpoint: "https://minio.internal:9000"
       accessKeyId: "AKIA..."
@@ -1449,6 +1475,8 @@ assert_field_value 'logs_store.object_storage.access_key_id' '.logs_store.object
 assert_field_value 'logs_store.object_storage.secret_access_key' '.logs_store.object_storage.secret_access_key' '"secret"'
 assert_field_value 'logs_store.object_storage.role_arn' '.logs_store.object_storage.role_arn' '"arn:aws:iam::123:role/bifrost"'
 assert_field_value 'logs_store.object_storage.force_path_style' '.logs_store.object_storage.force_path_style' 'true'
+assert_field_value 'logs_store.object_storage.format (s3)' '.logs_store.object_storage.format' '"json"'
+assert_field_value 'logs_store.object_storage.compression (s3)' '.logs_store.object_storage.compression' '"gzip"'
 
 # S3 with existingSecret — exercises env.BIFROST_OBJECT_STORAGE_* substitution path
 cat > "$TMPDIR/values-objstore-s3-secret.yaml" << 'VALS'
@@ -1493,6 +1521,8 @@ storage:
       bucket: "bifrost-gcs-bucket"
       projectId: "my-gcp-project"
       credentialsJson: "/etc/gcs/creds.json"
+      format: json
+      compression: gzip
 VALS
 
 render_config "$TMPDIR/values-objstore-gcs.yaml"
@@ -1500,6 +1530,242 @@ assert_field_value 'logs_store.object_storage.type (gcs)' '.logs_store.object_st
 assert_field_value 'logs_store.object_storage.bucket (gcs)' '.logs_store.object_storage.bucket' '"bifrost-gcs-bucket"'
 assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_storage.project_id' '"my-gcp-project"'
 assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
+assert_field_value 'logs_store.object_storage.format (gcs)' '.logs_store.object_storage.format' '"json"'
+assert_field_value 'logs_store.object_storage.compression (gcs)' '.logs_store.object_storage.compression' '"gzip"'
+
+# Azure Blob: both workload templates, inline/secret authentication, and identity.
+for workload in Deployment StatefulSet; do
+  persistence=false
+  if [ "$workload" = StatefulSet ]; then persistence=true; fi
+
+  cat > "$TMPDIR/values-objstore-azure-inline.yaml" << VALS
+storage:
+  mode: sqlite
+  persistence:
+    enabled: $persistence
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      prefix: prod
+      connectionString: "UseDevelopmentStorage=true"
+      format: parquet
+      compression: zstd
+bifrost:
+  auditLogs:
+    objectStorage:
+      type: azure
+      bucket: bifrost-audit
+      connectionString: "UseDevelopmentStorage=true"
+      compress: true
+VALS
+  render_config "$TMPDIR/values-objstore-azure-inline.yaml"
+  assert_field_value "$workload Azure logs type" '.logs_store.object_storage.type' '"azure"'
+  assert_field_value "$workload Azure logs container" '.logs_store.object_storage.bucket' '"bifrost-logs"'
+  assert_field_value "$workload Azure logs prefix" '.logs_store.object_storage.prefix' '"prod"'
+  assert_field_value "$workload Azure logs connection string" '.logs_store.object_storage.connection_string' '"UseDevelopmentStorage=true"'
+  assert_field_value "$workload Azure logs Parquet" '.logs_store.object_storage.format' '"parquet"'
+  assert_field_value "$workload Azure logs compression" '.logs_store.object_storage.compression' '"zstd"'
+  assert_field_value "$workload Azure audit type" '.audit_logs.object_storage.type' '"azure"'
+  assert_field_value "$workload Azure audit container" '.audit_logs.object_storage.bucket' '"bifrost-audit"'
+  assert_field_value "$workload Azure audit connection string" '.audit_logs.object_storage.connection_string' '"UseDevelopmentStorage=true"'
+  assert_field_value "$workload Azure audit gzip" '.audit_logs.object_storage.compress' 'true'
+
+  cat > "$TMPDIR/values-objstore-azure-secret.yaml" << VALS
+storage:
+  mode: sqlite
+  persistence:
+    enabled: $persistence
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      existingSecret: azure-log-secret
+      connectionStringKey: azure-connection
+bifrost:
+  auditLogs:
+    objectStorage:
+      type: azure
+      bucket: bifrost-audit
+      connectionString: env.AZURE_AUDIT_STORAGE_CONNECTION_STRING
+  providerSecrets:
+    azureAuditStorage:
+      existingSecret: azure-audit-secret
+      key: audit-connection
+      envVar: AZURE_AUDIT_STORAGE_CONNECTION_STRING
+VALS
+  render_config "$TMPDIR/values-objstore-azure-secret.yaml"
+  assert_field_value "$workload Azure logs secret reference" '.logs_store.object_storage.connection_string' '"env.BIFROST_OBJECT_STORAGE_CONNECTION_STRING"'
+  assert_field_value "$workload Azure audit secret reference" '.audit_logs.object_storage.connection_string' '"env.AZURE_AUDIT_STORAGE_CONNECTION_STRING"'
+  if python3 - "$TMPDIR/rendered.yaml" "$workload" << 'PY'
+import sys, yaml
+docs = list(yaml.safe_load_all(open(sys.argv[1])))
+workloads = [doc for doc in docs if doc and doc.get("kind") == sys.argv[2]]
+assert len(workloads) == 1, "expected exactly one Bifrost workload"
+container = workloads[0]["spec"]["template"]["spec"]["containers"][0]
+env = {item["name"]: item for item in container["env"]}
+for name, secret, key in [
+    ("BIFROST_OBJECT_STORAGE_CONNECTION_STRING", "azure-log-secret", "azure-connection"),
+    ("AZURE_AUDIT_STORAGE_CONNECTION_STRING", "azure-audit-secret", "audit-connection"),
+]:
+    ref = env[name]["valueFrom"]["secretKeyRef"]
+    assert ref["name"] == secret and ref["key"] == key, ref
+    assert not ref.get("optional", False), "Azure connection string secret must be required"
+PY
+  then
+    report_result "$workload Azure secret env injection" 0
+  else
+    report_result "$workload Azure secret env injection" 1
+  fi
+
+  # The default connection-string key must work without connectionStringKey.
+  python3 - "$TMPDIR/values-objstore-azure-secret.yaml" "$TMPDIR/values-objstore-azure-secret-default.yaml" << 'PY'
+import sys, yaml
+values = yaml.safe_load(open(sys.argv[1]))
+del values["storage"]["logsStore"]["objectStorage"]["connectionStringKey"]
+yaml.safe_dump(values, open(sys.argv[2], "w"))
+PY
+  render_config "$TMPDIR/values-objstore-azure-secret-default.yaml"
+  if python3 - "$TMPDIR/rendered.yaml" "$workload" << 'PY'
+import sys, yaml
+workload = next(doc for doc in yaml.safe_load_all(open(sys.argv[1])) if doc and doc.get("kind") == sys.argv[2])
+env = workload["spec"]["template"]["spec"]["containers"][0]["env"]
+ref = next(item for item in env if item["name"] == "BIFROST_OBJECT_STORAGE_CONNECTION_STRING")["valueFrom"]["secretKeyRef"]
+assert ref["name"] == "azure-log-secret" and ref["key"] == "connection-string", ref
+PY
+  then
+    report_result "$workload Azure default secret key" 0
+  else
+    report_result "$workload Azure default secret key" 1
+  fi
+
+  cat > "$TMPDIR/values-objstore-azure-identity.yaml" << VALS
+storage:
+  mode: sqlite
+  persistence:
+    enabled: $persistence
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: azure
+      bucket:
+        value: ""
+        ref: env.AZURE_LOG_CONTAINER
+        type: env
+      endpoint:
+        value: ""
+        ref: env.AZURE_BLOB_ENDPOINT
+        type: env
+bifrost:
+  auditLogs:
+    objectStorage:
+      type: azure
+      bucket: bifrost-audit
+      endpoint: https://example.blob.core.windows.net
+VALS
+  render_config "$TMPDIR/values-objstore-azure-identity.yaml"
+  assert_field_value "$workload Azure structured container" '.logs_store.object_storage.bucket.ref' '"env.AZURE_LOG_CONTAINER"'
+  assert_field_value "$workload Azure structured endpoint" '.logs_store.object_storage.endpoint.ref' '"env.AZURE_BLOB_ENDPOINT"'
+  assert_field_value "$workload Azure audit identity endpoint" '.audit_logs.object_storage.endpoint' '"https://example.blob.core.windows.net"'
+  if python3 - "$TMPDIR/rendered.yaml" "$TMPDIR/config.json" "$workload" << 'PY'
+import json, sys, yaml
+cfg = json.load(open(sys.argv[2]))
+assert "connection_string" not in cfg["logs_store"]["object_storage"]
+assert "connection_string" not in cfg["audit_logs"]["object_storage"]
+workload = next(doc for doc in yaml.safe_load_all(open(sys.argv[1])) if doc and doc.get("kind") == sys.argv[3])
+env = workload["spec"]["template"]["spec"]["containers"][0]["env"]
+assert all(item["name"] != "BIFROST_OBJECT_STORAGE_CONNECTION_STRING" for item in env)
+PY
+  then
+    report_result "$workload Azure identity omits connection string" 0
+  else
+    report_result "$workload Azure identity omits connection string" 1
+  fi
+
+  for reference in env vault legacy env-only vault-only legacy-only; do
+    python3 - "$TMPDIR/values-objstore-azure-inline.yaml" "$TMPDIR/values-objstore-azure-reference.yaml" "$reference" << 'PY'
+import sys, yaml
+values = yaml.safe_load(open(sys.argv[1]))
+reference = sys.argv[3].removesuffix("-only")
+for storage in [values["storage"]["logsStore"]["objectStorage"], values["bifrost"]["auditLogs"]["objectStorage"]]:
+    for field, name in [("bucket", "AZURE_CONTAINER"), ("connectionString", "AZURE_STORAGE_CONNECTION_STRING")]:
+        if reference == "legacy":
+            storage[field] = {"value": "", "env_var": name, "from_env": True}
+        else:
+            storage[field] = {"value": "", "ref": reference + "." + name, "type": reference}
+        if sys.argv[3].endswith("-only"):
+            del storage[field]["value"]
+yaml.safe_dump(values, open(sys.argv[2], "w"))
+PY
+    render_config "$TMPDIR/values-objstore-azure-reference.yaml"
+    if python3 - "$TMPDIR/config.json" "$reference" << 'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+reference = sys.argv[2].removesuffix("-only")
+for path in ["logs_store", "audit_logs"]:
+    storage = cfg[path]["object_storage"]
+    for field, name in [("bucket", "AZURE_CONTAINER"), ("connection_string", "AZURE_STORAGE_CONNECTION_STRING")]:
+        expected = {"value": "", "env_var": name, "from_env": True} if reference == "legacy" else {"value": "", "ref": reference + "." + name, "type": reference}
+        if sys.argv[2].endswith("-only"):
+            del expected["value"]
+        assert storage[field] == expected, storage[field]
+PY
+    then
+      report_result "$workload Azure $reference structured references" 0
+    else
+      report_result "$workload Azure $reference structured references" 1
+    fi
+  done
+done
+
+# Reject invalid Azure authentication before rendering either config path.
+for target in logs audit; do
+  for invalid in missing-auth both-auth empty-endpoint empty-connection empty-container secret-and-inline empty-ref empty-legacy-env inactive-legacy-env empty-object untyped-ref; do
+    python3 - "$TMPDIR/values-objstore-azure-inline.yaml" "$TMPDIR/values-objstore-azure-invalid.yaml" "$target" "$invalid" << 'PY'
+import sys, yaml
+values = yaml.safe_load(open(sys.argv[1]))
+storage = values["storage"]["logsStore"]["objectStorage"] if sys.argv[3] == "logs" else values["bifrost"]["auditLogs"]["objectStorage"]
+case = sys.argv[4]
+if case == "missing-auth":
+    del storage["connectionString"]
+elif case == "both-auth":
+    storage["endpoint"] = "https://example.blob.core.windows.net"
+elif case == "empty-endpoint":
+    del storage["connectionString"]
+    storage["endpoint"] = ""
+elif case == "empty-connection":
+    storage["connectionString"] = ""
+elif case == "empty-container":
+    storage["bucket"] = ""
+elif case == "empty-object":
+    storage["connectionString"] = {}
+elif case == "untyped-ref":
+    storage["connectionString"] = {"ref": "env.AZURE_STORAGE_CONNECTION_STRING"}
+elif case == "empty-ref":
+    storage["connectionString"] = {"value": "", "ref": "", "type": "env"}
+elif case == "empty-legacy-env":
+    storage["connectionString"] = {"value": "", "env_var": "", "from_env": True}
+elif case == "inactive-legacy-env":
+    storage["connectionString"] = {"value": "", "env_var": "AZURE_STORAGE_CONNECTION_STRING", "from_env": False}
+elif case == "secret-and-inline":
+    if sys.argv[3] == "logs":
+        storage["existingSecret"] = "azure-secret"
+    else:
+        storage["endpoint"] = "https://example.blob.core.windows.net"
+yaml.safe_dump(values, open(sys.argv[2], "w"))
+PY
+    if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 -f "$TMPDIR/values-objstore-azure-invalid.yaml" > "$TMPDIR/azure-invalid.yaml" 2> "$TMPDIR/azure-invalid.err"; then
+      report_result "Azure $target rejects $invalid" 1
+    else
+      report_result "Azure $target rejects $invalid" 0
+    fi
+  done
+done
 
 ###############################################################################
 # 2.1.44 config.schema.json sync (fields added after helm v2.1.43)
@@ -1748,6 +2014,134 @@ for bad in '"next_rotation_at":"2026-11-01T00:00:00Z"' \
     report_result "access_profiles {$bad} is rejected" 0
   else
     report_result "access_profiles {$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# 2.1.46 Warp (bifrost.warp -> warp)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.46 Warp${NC}"
+
+cat > "$TMPDIR/values-warp.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  featureFlags:
+    warp:
+      enabled: true
+  warp:
+    enabled: true
+    provider: "openai"
+    model: "gpt-4o-mini"
+    apiKeyId: "openai-key-1"
+    additionalModels:
+      - provider: "anthropic"
+        model: "claude-3-5-haiku"
+        apiKeyId: "anthropic-key-1"
+      - provider: "openai"
+        model: "gpt-4.1-nano"
+    maxIterations: 12
+    requestTimeoutSeconds: 90
+    historyRetentionDays: 14
+    systemPromptSuffix: "Teams are named after rivers."
+    temperature: 0.3
+    reasoningEffort: "medium"
+    embeddingProvider: "openai"
+    embeddingModel: "text-embedding-3-small"
+    embeddingApiKeyId: "openai-embed-key"
+    embeddingDimension: 1536
+    logVectorStoreNamespace: "WarpLogsV2"
+    semanticSearchThreshold: 0.6
+    semanticSearchLimit: 20
+    topicDiscoveryMinRequests: 250
+VALS
+render_config "$TMPDIR/values-warp.yaml"
+assert_field_value 'feature_flags.flags.warp.enabled' '.feature_flags.flags.warp.enabled' 'true'
+assert_field_value 'warp.enabled' '.warp.enabled' 'true'
+assert_field_value 'warp.provider' '.warp.provider' '"openai"'
+assert_field_value 'warp.model' '.warp.model' '"gpt-4o-mini"'
+assert_field_value 'warp.api_key_id' '.warp.api_key_id' '"openai-key-1"'
+assert_field_value 'warp.additional_models[0] (with api_key_id)' '.warp.additional_models.[0]' '{"api_key_id": "anthropic-key-1", "model": "claude-3-5-haiku", "provider": "anthropic"}'
+assert_field_value 'warp.additional_models[1] (no api_key_id)' '.warp.additional_models.[1]' '{"model": "gpt-4.1-nano", "provider": "openai"}'
+assert_field_value 'warp.max_iterations' '.warp.max_iterations' '12'
+assert_field_value 'warp.request_timeout_seconds' '.warp.request_timeout_seconds' '90'
+assert_field_value 'warp.history_retention_days' '.warp.history_retention_days' '14'
+assert_field_value 'warp.system_prompt_suffix' '.warp.system_prompt_suffix' '"Teams are named after rivers."'
+assert_field_value 'warp.temperature' '.warp.temperature' '0.3'
+assert_field_value 'warp.reasoning_effort' '.warp.reasoning_effort' '"medium"'
+assert_field_value 'warp.embedding_provider' '.warp.embedding_provider' '"openai"'
+assert_field_value 'warp.embedding_model' '.warp.embedding_model' '"text-embedding-3-small"'
+assert_field_value 'warp.embedding_api_key_id' '.warp.embedding_api_key_id' '"openai-embed-key"'
+assert_field_value 'warp.embedding_dimension' '.warp.embedding_dimension' '1536'
+assert_field_value 'warp.log_vector_store_namespace' '.warp.log_vector_store_namespace' '"WarpLogsV2"'
+assert_field_value 'warp.semantic_search_threshold' '.warp.semantic_search_threshold' '0.6'
+assert_field_value 'warp.semantic_search_limit' '.warp.semantic_search_limit' '20'
+assert_field_value 'warp.topic_discovery_min_requests' '.warp.topic_discovery_min_requests' '250'
+
+# Explicit false, 0, [] and "" must reach config.json: Warp keeps the stored value for an
+# omitted embedding, search or topic field (and 0 means the default or a reset), so a value
+# the chart dropped would silently leave the old setting in force.
+cat > "$TMPDIR/values-warp-zero.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  warp:
+    enabled: false
+    additionalModels: []
+    maxIterations: 0
+    requestTimeoutSeconds: 0
+    historyRetentionDays: 0
+    temperature: 0
+    embeddingProvider: ""
+    embeddingModel: ""
+    embeddingApiKeyId: ""
+    embeddingDimension: 0
+    logVectorStoreNamespace: ""
+    semanticSearchThreshold: 0
+    semanticSearchLimit: 0
+    topicDiscoveryMinRequests: 0
+VALS
+render_config "$TMPDIR/values-warp-zero.yaml"
+assert_field_value 'warp.enabled false kept' '.warp.enabled' 'false'
+assert_field_value 'warp.additional_models [] kept' '.warp.additional_models' '[]'
+assert_field_value 'warp.max_iterations 0 kept' '.warp.max_iterations' '0'
+assert_field_value 'warp.request_timeout_seconds 0 kept' '.warp.request_timeout_seconds' '0'
+assert_field_value 'warp.history_retention_days 0 kept' '.warp.history_retention_days' '0'
+assert_field_value 'warp.temperature 0 kept' '.warp.temperature' '0'
+assert_field_value 'warp.embedding_provider "" kept' '.warp.embedding_provider' '""'
+assert_field_value 'warp.embedding_model "" kept' '.warp.embedding_model' '""'
+assert_field_value 'warp.embedding_api_key_id "" kept' '.warp.embedding_api_key_id' '""'
+assert_field_value 'warp.embedding_dimension 0 kept' '.warp.embedding_dimension' '0'
+assert_field_value 'warp.log_vector_store_namespace "" kept' '.warp.log_vector_store_namespace' '""'
+assert_field_value 'warp.semantic_search_threshold 0 kept' '.warp.semantic_search_threshold' '0'
+assert_field_value 'warp.semantic_search_limit 0 kept' '.warp.semantic_search_limit' '0'
+assert_field_value 'warp.topic_discovery_min_requests 0 kept' '.warp.topic_discovery_min_requests' '0'
+
+# Unset, the chart renders no warp block, so Warp stays managed from the dashboard.
+cat > "$TMPDIR/values-warp-unset.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+VALS
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "import json, sys; sys.exit(0 if 'warp' not in json.load(open('$TMPDIR/config.json')) else 1)"; then
+  report_result 'warp omitted when bifrost.warp is unset' 0
+else
+  report_result 'warp omitted when bifrost.warp is unset' 1
+  echo -e "${YELLOW}    config.json carries a warp block nobody configured${NC}"
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'enabled=true,bifrost.warp.provider=openai' 'maxIterations=1' 'reasoningEffort=extreme' 'baseUrl=http://warp'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set "bifrost.warp.$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "warp {$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "warp" "$TMPDIR/render-err.txt"; then
+    report_result "warp {$bad} is rejected" 0
+  else
+    report_result "warp {$bad} is rejected" 1
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done

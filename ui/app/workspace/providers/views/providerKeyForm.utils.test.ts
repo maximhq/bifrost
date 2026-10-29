@@ -156,6 +156,8 @@ describe("applyAuthMethod clears the static key for the other providers' tabs", 
 		["bedrock iam role", "bedrock_key_config", { _auth_type: "iam_role", region: { value: "us-east-1" } }],
 		["bedrock explicit", "bedrock_key_config", { _auth_type: "explicit", access_key: { value: "a" }, secret_key: { value: "s" } }],
 		["bedrock mantle iam role", "bedrock_mantle_key_config", { _auth_type: "iam_role", region: { value: "us-east-1" } }],
+		["sagemaker iam role", "sagemaker_key_config", { _auth_type: "iam_role", region: { value: "us-east-1" } }],
+		["sagemaker explicit", "sagemaker_key_config", { _auth_type: "explicit", access_key: { value: "a" }, secret_key: { value: "s" } }],
 		["vertex service account", "vertex_key_config", { _auth_type: "service_account", project_id: { value: "p" } }],
 	];
 
@@ -175,6 +177,16 @@ describe("applyAuthMethod clears the static key for the other providers' tabs", 
 		);
 		expect(databricks.value).toEqual({ value: "dapi" });
 		expect(databricks.databricks_key_config).toEqual({ workspace_url });
+	});
+
+	it("keeps a pre-minted SageMaker bearer token on its tab", () => {
+		const region = { value: "us-east-1" };
+		const out = applyAuthMethod(
+			{ name: "k", value: { value: "sagemaker-api-key-abc" }, sagemaker_key_config: { _auth_type: "api_key", region } },
+			true,
+		);
+		expect(out.value).toEqual({ value: "sagemaker-api-key-abc" });
+		expect(out.sagemaker_key_config).toEqual({ region });
 	});
 
 	// The discriminator is only seeded on mount and after the key resolves; with none, the form

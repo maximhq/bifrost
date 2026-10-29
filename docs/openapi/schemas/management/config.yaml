@@ -113,6 +113,17 @@ ClientConfig:
         clients whose per-client tool_sync_interval is 0 or omitted; a
         per-client positive value overrides it. When 0 or unset, a 10-minute
         default applies.
+    mcp_max_protocol_version:
+      type: string
+      enum: ["", "auto", "2026-07-28", "2025-11-25", "2025-06-18"]
+      description: >
+        Newest MCP protocol version Bifrost offers MCP servers; a server can
+        still negotiate an older one. "auto" uses the newest version Bifrost
+        supports. Applies to servers whose own max_protocol_version is "".
+        An empty value (nothing stored) behaves as "auto". On update,
+        omitting it or sending "" keeps the stored value. Deployments upgraded
+        with existing MCP servers start at "2025-06-18"; fresh installs start
+        on "auto". A change reconnects affected servers at the new version.
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode

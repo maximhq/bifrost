@@ -889,6 +889,36 @@ func TestConvertToBifrostContext_APIKeyHeaderNonVirtualKeyIgnored(t *testing.T) 
 	}
 }
 
+// Azure AI Speech clients send their key as Ocp-Apim-Subscription-Key, so a virtual key there is
+// captured, and a real Speech resource key is not mistaken for one.
+func TestConvertToBifrostContext_VirtualKeyFromAzureSpeechHeader(t *testing.T) {
+	for value, want := range map[string]interface{}{"sk-bf-azure-speech-vk": "sk-bf-azure-speech-vk", "real-speech-resource-key": nil} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Ocp-Apim-Subscription-Key", value)
+
+		bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey)
+		cancel()
+		if got != want {
+			t.Errorf("Ocp-Apim-Subscription-Key %q: virtual key = %#v, want %#v", value, got, want)
+		}
+	}
+}
+
+// BenchmarkConvertToBifrostContextVirtualKeyHeader measures the header walk on a request that names
+// its virtual key in x-bf-vk, the common case the Ocp-Apim-Subscription-Key branch must not slow down.
+func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Request.Header.Set("User-Agent", "OpenAI/Python 2.8.1")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-benchmark-vk")
+	b.ReportAllocs()
+	for b.Loop() {
+		_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+		cancel()
+	}
+}
+
 func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
 	cases := []struct {
 		name   string

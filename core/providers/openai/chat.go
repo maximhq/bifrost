@@ -39,15 +39,26 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return nil
 	}
 
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
 		Provider: bifrostReq.Provider,
 	}
 
-	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
-	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	if !caps.SupportsDeveloperRole(true) {
+		for i := range openaiReq.Messages {
+			if openaiReq.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
+				openaiReq.Messages[i].Role = schemas.ChatMessageRoleSystem
+			}
+		}
+	}
+
+	if !caps.SupportsMidConversationSystem(true) {
+		openaiReq.Messages = inlineChatMidConversationSystem(openaiReq.Messages)
+	}
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
@@ -104,6 +115,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 				}
 			}
 			openaiReq.ChatParameters.Tools = normalizedTools
+		}
+	}
+
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		openaiReq.Store = new(false)
+		if _, ok := openaiReq.ExtraParams["store"]; ok {
+			openaiReq.ExtraParams = maps.Clone(openaiReq.ExtraParams)
+			openaiReq.ExtraParams["store"] = false
 		}
 	}
 

@@ -1909,3 +1909,21 @@ func BenchmarkFileListPagination(b *testing.B) {
 		}
 	}
 }
+
+// On an OpenAI model's message input, a tool result's media is named instead of sent.
+func TestToReplicateChatRequest_FlattensToolResultMedia(t *testing.T) {
+	req, err := replicate.ToReplicateChatRequest(&schemas.BifrostChatRequest{
+		Model: "openai/gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, req.Input.Messages, 2)
+	require.NotNil(t, req.Input.Messages[1].Content.ContentStr, "the tool message is text")
+	assert.Contains(t, *req.Input.Messages[1].Content.ContentStr, "[image/png")
+}

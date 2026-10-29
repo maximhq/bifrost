@@ -148,7 +148,7 @@ func TestRefreshClientTools_StickyClient_RelistsOverLiveConnection(t *testing.T)
 // every other discovery path.
 func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 	// Both discovery branches, because they reach the callback by different
-	// routes: the per-call one through writeBackDiscoveredTools after an
+	// routes: the per-call one through writeBackDiscovery after an
 	// ephemeral discovery, the sticky one through the same write-back after a
 	// tools/list over the live connection.
 	for _, sticky := range []bool{false, true} {
@@ -163,7 +163,8 @@ func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			fired := make(chan map[string]schemas.ChatTool, 4)
-			m.SetToolsChangeCallback(func(_, _ string, tools map[string]schemas.ChatTool, _ map[string]string, _ string) {
+			m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
+				tools := discovery.Tools
 				fired <- tools
 			})
 
@@ -361,7 +362,7 @@ func buildRefreshMCPServerWithHook(t *testing.T, onToolsList func()) (ts *httpte
 }
 
 // TestRefreshClientTools_StaleWriteBack_ReportsInstalledCount pins tool_count to
-// what the client actually serves. writeBackDiscoveredTools drops a discovery
+// what the client actually serves. writeBackDiscovery drops a discovery
 // whose ConnGeneration no longer matches — a reconnect swapped the connection
 // while the tools/list was in flight — and leaves the existing ToolMap in place.
 // Reporting the discarded discovery's length would then describe a tool set the
@@ -371,7 +372,7 @@ func TestRefreshClientTools_StaleWriteBack_ReportsInstalledCount(t *testing.T) {
 	const clientID = "refresh-stale-writeback"
 
 	// Bump the generation from inside the in-flight tools/list, which is
-	// exactly the window writeBackDiscoveredTools guards against.
+	// exactly the window writeBackDiscovery guards against.
 	bumped := false
 	ts, addTool := buildRefreshMCPServerWithHook(t, func() {
 		if m == nil || bumped {

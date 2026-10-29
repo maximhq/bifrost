@@ -90,7 +90,9 @@ jobs:
       - name: Install dependencies
         if: steps.check-bifrost.outputs.changed == 'true'
         working-directory: npx/bifrost
-        run: npm ci
+        # --ignore-scripts: this job can mint an npm OIDC publish token (id-token: write),
+        # so no dependency lifecycle script may run here. The package declares none.
+        run: npm ci --ignore-scripts
 
       - name: Run tests
         if: steps.check-bifrost.outputs.changed == 'true'
@@ -108,8 +110,8 @@ jobs:
         working-directory: npx/bifrost
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.extract-version.outputs.version }}
         run: |
-          VERSION="${{ steps.extract-version.outputs.version }}"
           echo "Publishing @maximhq/bifrost@${VERSION} to npm..."
           if npm view @maximhq/bifrost@"${VERSION}" version >/dev/null 2>&1; then
             echo "@maximhq/bifrost@${VERSION} already exists on npm. Skipping publish."
@@ -143,12 +145,16 @@ jobs:
         if: steps.check-bifrost.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/workflows/scripts/create-npx-release.sh "${{ steps.extract-version.outputs.version }}" "${{ steps.extract-version.outputs.full-tag }}"
+          VERSION: ${{ steps.extract-version.outputs.version }}
+          FULL_TAG: ${{ steps.extract-version.outputs.full-tag }}
+        run: bash .github/workflows/scripts/create-npx-release.sh "$VERSION" "$FULL_TAG"
 
       - name: Discord Notification
         if: always() && steps.check-bifrost.outputs.changed == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          VERSION: ${{ steps.extract-version.outputs.version }}
+          FULL_TAG: ${{ steps.extract-version.outputs.full-tag }}
         run: |
           AUTHOR="${{ github.actor }}"
           COMMIT_AUTHOR="$(git log -1 --pretty=%an || true)"
@@ -156,14 +162,14 @@ jobs:
           if [ "${{ job.status }}" = "success" ]; then
             TITLE="**NPX Package Published**"
             STATUS="Success"
-            VERSION_LINE="**Version**: \`${{ steps.extract-version.outputs.version }}\`"
+            VERSION_LINE="**Version**: \`${VERSION}\`"
             PACKAGE_LINE="**Package**: \`@maximhq/bifrost\`"
             NPM_LINK="**[View on npm](https://www.npmjs.com/package/@maximhq/bifrost)**"
-            MESSAGE="$TITLE\n**Status**: $STATUS\n$VERSION_LINE\n$PACKAGE_LINE\n$NPM_LINK\n**Tag**: \`${{ steps.extract-version.outputs.full-tag }}\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+            MESSAGE="$TITLE\n**Status**: $STATUS\n$VERSION_LINE\n$PACKAGE_LINE\n$NPM_LINK\n**Tag**: \`${FULL_TAG}\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           else
             TITLE="**NPX Package Publish Failed**"
             STATUS="Failed"
-            MESSAGE="$TITLE\n**Status**: $STATUS\n**Tag**: \`${{ steps.extract-version.outputs.full-tag }}\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+            MESSAGE="$TITLE\n**Status**: $STATUS\n**Tag**: \`${FULL_TAG}\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           fi
           payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
           curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
@@ -205,23 +211,15 @@ jobs:
       - name: Extract version
         if: steps.check-cli.outputs.changed == 'true'
         id: extract-version
-        run: |
-          VERSION=$(jq -r '.version' npx/bifrost-cli/package.json)
-          if [[ -z "$VERSION" ]] || [[ "$VERSION" == "null" ]]; then
-            echo "Failed to extract version from npx/bifrost-cli/package.json"
-            exit 1
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "full-tag=npx/bifrost-cli/v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Extracted bifrost-cli version: ${VERSION}"
+        run: ./.github/workflows/scripts/read-version-file.sh npx/bifrost-cli/package.json npx/bifrost-cli
 
       - name: Publish to npm
         if: steps.check-cli.outputs.changed == 'true'
         working-directory: npx/bifrost-cli
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.extract-version.outputs.version }}
         run: |
-          VERSION="${{ steps.extract-version.outputs.version }}"
           echo "Publishing @maximhq/bifrost-cli@${VERSION} to npm..."
           if npm view @maximhq/bifrost-cli@"${VERSION}" version >/dev/null 2>&1; then
             echo "@maximhq/bifrost-cli@${VERSION} already exists on npm. Skipping publish."
@@ -255,9 +253,9 @@ jobs:
         if: steps.check-cli.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.extract-version.outputs.version }}
+          FULL_TAG: ${{ steps.extract-version.outputs.full-tag }}
         run: |
-          VERSION="${{ steps.extract-version.outputs.version }}"
-          FULL_TAG="${{ steps.extract-version.outputs.full-tag }}"
           PRERELEASE_FLAG=""
           if [[ "$VERSION" == *-* ]]; then
             PRERELEASE_FLAG="--prerelease"
@@ -289,12 +287,14 @@ jobs:
         if: always() && steps.check-cli.outputs.changed == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          VERSION: ${{ steps.extract-version.outputs.version }}
+          FULL_TAG: ${{ steps.extract-version.outputs.full-tag }}
         run: |
           AUTHOR="${{ github.actor }}"
           COMMIT_AUTHOR="$(git log -1 --pretty=%an || true)"
           if [ -n "$COMMIT_AUTHOR" ]; then AUTHOR="$COMMIT_AUTHOR"; fi
           if [ "${{ job.status }}" = "success" ]; then
-            MESSAGE="**NPX Bifrost CLI Published**\n**Status**: Success\n**Version**: \`${{ steps.extract-version.outputs.version }}\`\n**Package**: \`@maximhq/bifrost-cli\`\n**[View on npm](https://www.npmjs.com/package/@maximhq/bifrost-cli)**\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+            MESSAGE="**NPX Bifrost CLI Published**\n**Status**: Success\n**Version**: \`${VERSION}\`\n**Package**: \`@maximhq/bifrost-cli\`\n**[View on npm](https://www.npmjs.com/package/@maximhq/bifrost-cli)**\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           else
             MESSAGE="**NPX Bifrost CLI Publish Failed**\n**Status**: Failed\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           fi

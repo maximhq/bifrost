@@ -2,17 +2,21 @@ package oauth2
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -245,5 +249,453 @@ func TestDiscoverOAuthMetadataUsesGlobalProxy(t *testing.T) {
 		if hit.Target != "mcp.bifrost.test:443" {
 			t.Errorf("proxy saw %+v, want only CONNECTs to mcp.bifrost.test:443", hit)
 		}
+	}
+}
+
+// resourceMetadataServer is a fake MCP server that is also its own
+// authorization server. advertised, when set, is served at /prm and named in the
+// 401 WWW-Authenticate header; wellKnown maps a .well-known protected resource
+// path to the document served there; asResource is put in the authorization
+// server metadata.
+type resourceMetadataServer struct {
+	server     *httptest.Server
+	advertised map[string]any
+	wellKnown  map[string]map[string]any
+	asResource string
+}
+
+func newResourceMetadataServer(t *testing.T, configure func(s *resourceMetadataServer)) *resourceMetadataServer {
+	t.Helper()
+	if logger == nil {
+		logger = bifrost.NewNoOpLogger()
+		t.Cleanup(func() { logger = nil })
+	}
+	s := &resourceMetadataServer{wellKnown: map[string]map[string]any{}}
+	writeJSON := func(w http.ResponseWriter, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(v)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if s.advertised != nil {
+			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+s.server.URL+`/prm"`)
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/prm", func(w http.ResponseWriter, r *http.Request) {
+		if s.advertised == nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, s.advertised)
+	})
+	mux.HandleFunc("/.well-known/", func(w http.ResponseWriter, r *http.Request) {
+		if doc, ok := s.wellKnown[r.URL.Path]; ok {
+			writeJSON(w, doc)
+			return
+		}
+		if r.URL.Path == "/.well-known/oauth-authorization-server" {
+			doc := map[string]any{
+				"issuer":                 s.server.URL,
+				"authorization_endpoint": s.server.URL + "/authorize",
+				"token_endpoint":         s.server.URL + "/token",
+			}
+			if s.asResource != "" {
+				doc["resource"] = s.asResource
+			}
+			writeJSON(w, doc)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	s.server = httptest.NewServer(mux)
+	t.Cleanup(s.server.Close)
+	configure(s)
+	return s
+}
+
+// newOtherAuthServer is a second authorization server a protected resource
+// metadata document can point at; its endpoints carry an "other-as" path.
+func newOtherAuthServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 srv.URL,
+			"authorization_endpoint": srv.URL + "/other-as/authorize",
+			"token_endpoint":         srv.URL + "/other-as/token",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestDiscoverOAuthMetadataIgnoresAdvertisedMetadataForAnotherResource pins
+// RFC 9728 section 3.3 on the advertised path: a resource_metadata document
+// whose resource names a different server is not used at all, neither its
+// resource nor its authorization servers, and discovery falls back.
+func TestDiscoverOAuthMetadataIgnoresAdvertisedMetadataForAnotherResource(t *testing.T) {
+	otherAS := newOtherAuthServer(t)
+	s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+		s.advertised = map[string]any{
+			"resource":              "https://other-mcp.example/mcp",
+			"authorization_servers": []string{otherAS.URL},
+		}
+	})
+
+	metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+	require.NoError(t, err)
+	require.Empty(t, metadata.Resource, "a resource naming another server must not be adopted")
+	require.Equal(t, s.server.URL+"/authorize", metadata.AuthorizationURL,
+		"authorization servers from a non-matching document must not be used")
+}
+
+// TestDiscoverOAuthMetadataSkipsWellKnownMetadataForAnotherResource pins the
+// same rule on the .well-known path: a non-matching candidate is skipped and the
+// next, matching candidate is used.
+func TestDiscoverOAuthMetadataSkipsWellKnownMetadataForAnotherResource(t *testing.T) {
+	otherAS := newOtherAuthServer(t)
+	s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+		s.wellKnown["/.well-known/oauth-protected-resource/mcp"] = map[string]any{
+			"resource":              "https://other-mcp.example/mcp",
+			"authorization_servers": []string{otherAS.URL},
+		}
+		s.wellKnown["/.well-known/oauth-protected-resource"] = map[string]any{
+			"resource":              s.server.URL,
+			"authorization_servers": []string{s.server.URL},
+		}
+	})
+
+	metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+	require.NoError(t, err)
+	require.Equal(t, s.server.URL, metadata.Resource)
+	require.Equal(t, s.server.URL+"/authorize", metadata.AuthorizationURL)
+}
+
+// TestDiscoverOAuthMetadataSkipsAllNonMatchingWellKnownMetadata pins the final
+// fallback: when no candidate matches (here a path that only shares a prefix
+// with the server path), no resource is adopted.
+func TestDiscoverOAuthMetadataSkipsAllNonMatchingWellKnownMetadata(t *testing.T) {
+	otherAS := newOtherAuthServer(t)
+	s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+		doc := map[string]any{
+			"resource":              s.server.URL + "/mcpx",
+			"authorization_servers": []string{otherAS.URL},
+		}
+		s.wellKnown["/.well-known/oauth-protected-resource/mcp"] = doc
+		s.wellKnown["/.well-known/oauth-protected-resource"] = doc
+	})
+
+	metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+	require.NoError(t, err)
+	require.Empty(t, metadata.Resource)
+	require.Equal(t, s.server.URL+"/authorize", metadata.AuthorizationURL)
+}
+
+// TestDiscoverOAuthMetadataIgnoresMetadataWithoutResource pins RFC 9728 section
+// 3.3 for a document that omits resource: it identifies no protected resource,
+// so neither the advertised document nor a .well-known candidate without one is
+// used, and its authorization servers are never adopted.
+func TestDiscoverOAuthMetadataIgnoresMetadataWithoutResource(t *testing.T) {
+	otherAS := newOtherAuthServer(t)
+	noResource := map[string]any{"authorization_servers": []string{otherAS.URL}}
+	emptyResource := map[string]any{"resource": "", "authorization_servers": []string{otherAS.URL}}
+	for name, doc := range map[string]map[string]any{"absent": noResource, "empty": emptyResource} {
+		t.Run(name+" advertised", func(t *testing.T) {
+			s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+				s.advertised = doc
+			})
+			metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+			require.NoError(t, err)
+			require.Empty(t, metadata.Resource)
+			require.Equal(t, s.server.URL+"/authorize", metadata.AuthorizationURL,
+				"authorization servers from a document without a resource must not be used")
+		})
+		t.Run(name+" well-known", func(t *testing.T) {
+			s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+				s.wellKnown["/.well-known/oauth-protected-resource/mcp"] = doc
+				s.wellKnown["/.well-known/oauth-protected-resource"] = doc
+			})
+			metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+			require.NoError(t, err)
+			require.Empty(t, metadata.Resource)
+			require.Equal(t, s.server.URL+"/authorize", metadata.AuthorizationURL,
+				"authorization servers from a document without a resource must not be used")
+		})
+	}
+}
+
+// TestDiscoverOAuthMetadataAdoptsMatchingAdvertisedResource pins that a
+// matching document is still honoured, including a differently cased scheme and
+// a trailing slash.
+func TestDiscoverOAuthMetadataAdoptsMatchingAdvertisedResource(t *testing.T) {
+	otherAS := newOtherAuthServer(t)
+	var resource string
+	s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+		resource = "HTTP" + strings.TrimPrefix(s.server.URL, "http") + "/mcp/"
+		s.advertised = map[string]any{
+			"resource":              resource,
+			"authorization_servers": []string{otherAS.URL},
+		}
+	})
+
+	metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+	require.NoError(t, err)
+	require.Equal(t, resource, metadata.Resource)
+	require.Equal(t, otherAS.URL+"/other-as/authorize", metadata.AuthorizationURL)
+}
+
+// TestDiscoverOAuthMetadataIgnoresAuthorizationServerResource pins that the
+// resource indicator never comes from authorization server metadata, which RFC
+// 8414 does not define a resource member for.
+func TestDiscoverOAuthMetadataIgnoresAuthorizationServerResource(t *testing.T) {
+	s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+		s.asResource = "https://other-mcp.example/mcp"
+	})
+
+	metadata, err := DiscoverOAuthMetadata(context.Background(), s.server.URL+"/mcp")
+	require.NoError(t, err)
+	require.Empty(t, metadata.Resource)
+}
+
+// TestFetchResourceMetadataMismatchErrorOmitsURLQueries pins that the mismatch
+// error, which DiscoverOAuthMetadata logs at Warn, carries neither the server
+// URL's query (MCP URLs can hold an API key there) nor the document's.
+func TestFetchResourceMetadataMismatchErrorOmitsURLQueries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"resource":              "https://other-mcp.example/mcp?token=document-query-value",
+			"authorization_servers": []string{"https://other-as.example"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	_, _, _, err := fetchResourceMetadata(context.Background(), srv.URL, "https://user:pass@mcp.example.com/mcp?api_key=server-query-secret")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not match")
+	require.Contains(t, err.Error(), "https://mcp.example.com/mcp", "the error should still name the server")
+	require.NotContains(t, err.Error(), "server-query-secret")
+	require.NotContains(t, err.Error(), "user:pass")
+	require.NotContains(t, err.Error(), "document-query-value")
+}
+
+func TestResourceMatchesServerURL(t *testing.T) {
+	const server = "https://mcp.example.com/api/mcp"
+	cases := []struct {
+		resource string
+		want     bool
+	}{
+		{"https://mcp.example.com/api/mcp", true},
+		{"https://mcp.example.com/api/mcp/", true},
+		{"HTTPS://MCP.Example.com/api/mcp", true},
+		{"https://mcp.example.com:443/api/mcp", true},
+		{"https://mcp.example.com/api", true},
+		{"https://mcp.example.com", true},
+		{"https://mcp.example.com/", true},
+		{"https://mcp.example.com/api/mcpx", false},
+		{"https://mcp.example.com/ap", false},
+		{"https://mcp.example.com/api/mcp/tools", false},
+		{"https://other.example.com/api/mcp", false},
+		{"https://mcp.example.com.other.test/api/mcp", false},
+		{"http://mcp.example.com/api/mcp", false},
+		{"https://mcp.example.com:8443/api/mcp", false},
+		{"https://user@mcp.example.com/api/mcp", false},
+		{"https://mcp.example.com/api/mcp#frag", false},
+		{"mcp.example.com/api/mcp", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, resourceMatchesServerURL(tc.resource, server), "resource %q", tc.resource)
+	}
+	require.True(t, resourceMatchesServerURL("http://localhost:80/mcp", "http://LOCALHOST/mcp"))
+
+	// A resource carrying a query names that query's resource, so it must match
+	// the server URL's query exactly; a resource without one still matches a
+	// server URL that carries, say, an API key in its query.
+	const queried = "https://mcp.example.com/mcp?tenant=a"
+	for _, tc := range []struct {
+		resource string
+		want     bool
+	}{
+		{"https://mcp.example.com/mcp?tenant=a", true},
+		{"https://mcp.example.com/mcp", true},
+		{"https://mcp.example.com", true},
+		{"https://mcp.example.com/mcp?tenant=b", false},
+		{"https://mcp.example.com/mcp?tenant=a&x=1", false},
+		{"https://mcp.example.com?tenant=b", false},
+	} {
+		require.Equal(t, tc.want, resourceMatchesServerURL(tc.resource, queried), "resource %q", tc.resource)
+	}
+	require.False(t, resourceMatchesServerURL("https://mcp.example.com/mcp?tenant=a", "https://mcp.example.com/mcp"),
+		"a query-qualified resource does not identify the unqualified server")
+}
+
+// DCR sends application_type: "native" for loopback redirects, else "web" (SEP-837).
+func TestRegisterDynamicClient_SendsApplicationType(t *testing.T) {
+	newDCRProvider(t) // sets the package logger
+	var got atomic.Value
+	mux := http.NewServeMux()
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ApplicationType string `json:"application_type"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		got.Store(req.ApplicationType)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "registered"})
+	})
+	as := httptest.NewServer(mux)
+	t.Cleanup(as.Close)
+
+	for redirectURI, want := range map[string]string{
+		"https://bifrost.example.com/api/oauth/callback": "web",
+		"http://localhost:8080/api/oauth/callback":       "native",
+		"http://127.0.0.1:8080/api/oauth/callback":       "native",
+		"http://[::1]:8080/api/oauth/callback":           "native",
+	} {
+		t.Run(redirectURI, func(t *testing.T) {
+			_, _, err := registerDynamicClient(context.Background(), as.URL+"/register", redirectURI, nil)
+			require.NoError(t, err)
+			assert.Equal(t, want, got.Load())
+		})
+	}
+}
+
+// Client ID Metadata Document URLs: https, a non-root path without dot segments, no credentials or fragment.
+func TestIsClientMetadataURL(t *testing.T) {
+	for clientID, want := range map[string]bool{
+		"https://app.example.com/oauth/client.json":    true,
+		"HTTPS://app.example.com/oauth/client.json":    true, // URI schemes are case-insensitive
+		"Https://app.example.com/oauth/client.json":    true,
+		"HTTP://app.example.com/oauth/client.json":     false,
+		"https://:443/oauth/client.json":               false, // a port is not a host
+		"https://app.example.com/":                     false, // needs a path
+		"https://app.example.com":                      false,
+		"http://app.example.com/oauth/client.json":     false, // https only
+		"https://user:pw@app.example.com/client.json":  false, // no credentials
+		"https://app.example.com/client.json#fragment": false,
+		"https://app.example.com/a/../client.json":     false, // no dot segments
+		"https://app.example.com/a/./client.json":      false,
+		"https://app.example.com/a/%2e%2e/client.json": false, // encoded dot segments too
+		"https://app.example.com/oauth/client/":        true,  // a trailing slash is allowed
+		"https://app.example.com/a//client.json":       true,
+		"3f2b6c1e-dynamically-registered-client-id":    false,
+		"": false,
+	} {
+		assert.Equal(t, want, IsClientMetadataURL(clientID), clientID)
+	}
+}
+
+// An issuer with a path (a Keycloak realm, an Entra tenant) may serve its metadata only at the OpenID
+// Connect path-appended URL; the root document names another issuer and is skipped.
+func TestDiscoverOAuthMetadata_PathIssuerUsesPathAppendedOpenIDConfiguration(t *testing.T) {
+	newDCRProvider(t) // sets the package logger
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+server.URL+`/.well-known/oauth-protected-resource"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": server.URL + "/mcp", "authorization_servers": []string{server.URL + "/realms/acme"}})
+	})
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token"})
+	})
+	mux.HandleFunc("/realms/acme/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 server.URL + "/realms/acme",
+			"authorization_endpoint": server.URL + "/realms/acme/auth",
+			"token_endpoint":         server.URL + "/realms/acme/token",
+		})
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	metadata, err := DiscoverOAuthMetadata(context.Background(), server.URL+"/mcp")
+	require.NoError(t, err)
+	assert.Equal(t, server.URL+"/realms/acme", metadata.Issuer)
+	assert.Equal(t, server.URL+"/realms/acme/token", metadata.TokenURL)
+}
+
+// RFC 8414 3.3: metadata naming another issuer than the one it was fetched for is not used.
+func TestDiscoverOAuthMetadata_RejectsMetadataNamingAnotherIssuer(t *testing.T) {
+	newDCRProvider(t) // sets the package logger
+	for _, tc := range []struct {
+		name    string
+		issuer  func(base string) string
+		wantErr bool
+	}{
+		{"identical", func(base string) string { return base }, false},
+		{"another issuer", func(string) string { return "https://honest.example" }, true},
+		{"trailing slash", func(base string) string { return base + "/" }, true},
+		{"missing", func(string) string { return "" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var server *httptest.Server
+			mux := http.NewServeMux()
+			mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+server.URL+`/.well-known/oauth-protected-resource"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			})
+			mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"authorization_servers": []string{server.URL}})
+			})
+			mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"issuer":                 tc.issuer(server.URL),
+					"authorization_endpoint": server.URL + "/authorize",
+					"token_endpoint":         server.URL + "/token",
+
+					"authorization_response_iss_parameter_supported": true,
+				})
+			})
+			server = httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+
+			metadata, err := DiscoverOAuthMetadata(context.Background(), server.URL+"/mcp")
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrIssuerMismatch)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, server.URL, metadata.Issuer)
+			assert.True(t, metadata.IssParameterSupported)
+		})
+	}
+}
+
+// RFC 9207 2.4 as the MCP authorization spec tabulates it.
+func TestCheckAuthorizationResponseIssuer(t *testing.T) {
+	const expected = "https://auth.example.com"
+	for _, tc := range []struct {
+		name     string
+		expected string
+		required bool
+		iss      string
+		hasIss   bool
+		wantErr  bool
+	}{
+		{"advertised, matching", expected, true, expected, true, false},
+		{"advertised, another issuer", expected, true, "https://attacker.example", true, true},
+		{"advertised, missing", expected, true, "", false, true},
+		{"not advertised, matching", expected, false, expected, true, false},
+		{"not advertised, another issuer", expected, false, "https://attacker.example", true, true},
+		{"not advertised, missing", expected, false, "", false, false},
+		{"no normalization", expected, false, expected + "/", true, true},
+		{"empty iss", expected, false, "", true, true},
+		{"no recorded issuer", "", true, "https://attacker.example", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkAuthorizationResponseIssuer(tc.expected, tc.required, tc.iss, tc.hasIss)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrAuthorizationResponseIssuer)
+			} else {
+				require.NoError(t, err)
+			}
+		})
 	}
 }

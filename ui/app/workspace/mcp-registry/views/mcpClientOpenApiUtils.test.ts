@@ -428,7 +428,7 @@ describe("openAPIParseControls", () => {
 			autoParse: false,
 			showButton: true,
 			showPending: false,
-			buttonLabel: "Fetch spec",
+			buttonLabel: "Fetch",
 		});
 		expect(openAPIParseControls({ ...base, mode: "url", isCurrent: true }).showButton).toBe(false);
 		expect(openAPIParseControls({ ...base, mode: "url", isCurrent: true, hasError: true }).showButton).toBe(true);

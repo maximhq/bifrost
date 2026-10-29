@@ -121,6 +121,9 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
 	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+	// Relay jobs settle on their own sweeper: they bill to the Relay Logs and
+	// the overall budgets, not through the model catalog.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.

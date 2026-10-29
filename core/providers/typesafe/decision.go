@@ -153,14 +153,14 @@ func typesafeAssets(input schemas.DecisionInput) (schemas.DecisionInput, map[str
 // is sent as that part again; any other is sent as data_base64, with the format
 // read from its bytes.
 func typesafeAsset(part schemas.DecisionInputPart) (TypesafeAsset, error) {
-	if part.Data == nil {
+	if part.Data.File == nil {
 		return TypesafeAsset{}, providerUtils.InvalidRequestErrorf("asset %q has no data; send the image file base64-encoded in data, or as a multipart file part its name points at", *part.ID)
 	}
 	if part.Name != nil {
 		return TypesafeAsset{Type: "image", Part: *part.Name}, nil
 	}
-	format := strings.TrimPrefix(typesafeImageType(part.Data), "image/")
-	return TypesafeAsset{Type: "image", Format: format, DataBase64: base64.StdEncoding.EncodeToString(part.Data)}, nil
+	format := strings.TrimPrefix(typesafeImageType(part.Data.File), "image/")
+	return TypesafeAsset{Type: "image", Format: format, DataBase64: base64.StdEncoding.EncodeToString(part.Data.File)}, nil
 }
 
 // typesafeImageType reads an image file's media type from its bytes, as Typesafe
@@ -577,13 +577,13 @@ func (req *TypesafeDecisionRequest) toBifrostDecisionInputWithAssets() (schemas.
 				return schemas.DecisionInput{}, providerUtils.InvalidRequestErrorf("asset %q names part %q, which needs a multipart request", ref, asset.Part)
 			}
 			part.Name = schemas.Ptr(asset.Part)
-			part.Data = asset.Data
+			part.Data.File = asset.Data
 		} else {
 			data, err := base64.StdEncoding.DecodeString(asset.DataBase64)
 			if err != nil {
 				return schemas.DecisionInput{}, providerUtils.InvalidRequestErrorf("asset %q data_base64 is not valid base64", ref)
 			}
-			part.Data = data
+			part.Data.File = data
 		}
 		parts = append(parts, part)
 	}
@@ -979,7 +979,7 @@ func typesafeFileParts(input schemas.DecisionInput) []typesafeFilePart {
 	for _, message := range input.Messages {
 		for _, part := range message.Content.Parts {
 			if part.IsAsset() && part.Name != nil {
-				files = append(files, typesafeFilePart{name: *part.Name, contentType: typesafeImageType(part.Data), data: part.Data})
+				files = append(files, typesafeFilePart{name: *part.Name, contentType: typesafeImageType(part.Data.File), data: part.Data.File})
 			}
 		}
 	}

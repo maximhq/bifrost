@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -246,6 +247,14 @@ func oauthAllowlistedProxySelector(next func(*http.Request) (*url.URL, error), a
 	}
 }
 
+// NewAdminConfiguredHTTPClient returns a client for an endpoint an authenticated
+// administrator configured (such as a trusted identity provider's JWKS): the MCP
+// OAuth chain's proxy handling and SSRF guard, honoring the private-target
+// allowlist. Build one per request so allowlist changes apply immediately.
+func NewAdminConfiguredHTTPClient(timeout time.Duration) *http.Client {
+	return newOAuthDiscoveryHTTPClient(withRequirePublicTarget(context.Background(), false), timeout)
+}
+
 // newOAuthDiscoveryHTTPClient returns a client for the OAuth chain whose
 // transport applies the destination policy recorded on ctx (see
 // requirePublicTargetFrom).
@@ -290,6 +299,12 @@ type OAuthMetadata struct {
 	GrantTypes       []string `json:"grant_types_supported,omitempty"`
 	TokenAuthMethods []string `json:"token_endpoint_auth_methods_supported,omitempty"`
 	PKCEMethods      []string `json:"code_challenge_methods_supported,omitempty"`
+	// Accepts an HTTPS URL to a Client ID Metadata Document as client_id (MCP 2025-11-25+).
+	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
+	// Sends iss in authorization responses (RFC 9207).
+	IssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
+
+	AuthorizationServers []string `json:"-"` // every authorization server the MCP server advertises; this metadata is the first that answered
 }
 
 // ResourceMetadata contains metadata from protected resource
@@ -356,7 +371,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	var resource string
 
 	if resourceMetadataURL != "" {
-		authServers, resourceScopes, resource, err = fetchResourceMetadata(ctx, resourceMetadataURL)
+		authServers, resourceScopes, resource, err = fetchResourceMetadata(ctx, resourceMetadataURL, serverURL)
 		if err != nil {
 			// Log but continue to well-known discovery
 			logger.Warn(fmt.Sprintf("[OAuth Discovery] Failed to fetch resource metadata: %v", err))
@@ -380,6 +395,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authorization server metadata: %w", err)
 	}
+	metadata.AuthorizationServers = authServers
 
 	// Step 6: Merge scopes (priority: header > resource metadata > discovered)
 	if len(scopesFromHeader) > 0 {
@@ -387,9 +403,10 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	} else if len(resourceScopes) > 0 {
 		metadata.ScopesSupported = resourceScopes
 	}
-	if metadata.Resource == "" {
-		metadata.Resource = resource
-	}
+	// The resource indicator comes only from protected resource metadata that
+	// matched serverURL; a resource field in the authorization server's own
+	// metadata is not part of RFC 8414 and is ignored.
+	metadata.Resource = resource
 
 	logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully discovered OAuth metadata for %s", serverURL))
 	logger.Debug(fmt.Sprintf("[OAuth Discovery] Authorization URL: %s", metadata.AuthorizationURL))
@@ -430,8 +447,12 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 	return resourceMetadataURL, scopes
 }
 
-// fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
-func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
+// fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728).
+// Per RFC 9728 section 3.3 the document is used only when its resource identifies
+// serverURL (see resourceMatchesServerURL); a document with no resource identifies
+// nothing. Otherwise an error is returned and the caller falls back to the next
+// discovery source.
+func fetchResourceMetadata(ctx context.Context, metadataURL, serverURL string) ([]string, []string, string, error) {
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
@@ -452,6 +473,12 @@ func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, [
 	var data ResourceMetadata
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, nil, "", fmt.Errorf("failed to decode resource metadata: %w", err)
+	}
+	if !resourceMatchesServerURL(data.Resource, serverURL) {
+		// DiscoverOAuthMetadata logs this at Warn: keep only scheme, host and path, since
+		// an MCP URL can carry an API key in its query.
+		return nil, nil, "", fmt.Errorf("resource metadata resource %q does not match server URL %q",
+			providerUtils.RedactURLForError(data.Resource), providerUtils.RedactURLForError(serverURL))
 	}
 
 	// Use scopes_supported first, fall back to scopes
@@ -482,7 +509,7 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying: %s", candidateURL))
-		authServers, scopes, resource, err := fetchResourceMetadata(ctx, candidateURL)
+		authServers, scopes, resource, err := fetchResourceMetadata(ctx, candidateURL, serverURL)
 		if err == nil && len(authServers) > 0 {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Found metadata at: %s", candidateURL))
 			return authServers, scopes, resource, nil
@@ -497,21 +524,35 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 // fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
 // Tries multiple authorization servers until one succeeds
 func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
+	var lastErr error
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
-		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer)
+		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasAuthorizationEndpoint, true)
 		if err == nil && metadata != nil {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
 		}
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Failed to fetch from %s: %v", issuer, err))
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to fetch metadata from any authorization server: %w", lastErr)
 	}
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
 
+// hasAuthorizationEndpoint accepts metadata an interactive sign-in can use.
+func hasAuthorizationEndpoint(m *OAuthMetadata) bool { return m.AuthorizationURL != "" }
+
+// hasTokenEndpoint accepts metadata a token-endpoint-only grant, such as
+// redeeming an ID-JAG, can use: a server that only does that may publish no
+// authorization endpoint.
+func hasTokenEndpoint(m *OAuthMetadata) bool { return m.TokenURL != "" }
+
 // fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization server
-// Implements RFC 8414 discovery
-func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMetadata, error) {
+// and returns the first document usable accepts. Implements RFC 8414 discovery; strictIssuer skips a
+// document naming another issuer (callers that check the issuer themselves pass false).
+func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable func(*OAuthMetadata) bool, strictIssuer bool) (*OAuthMetadata, error) {
 	base, path := splitURL(issuer)
 	if base == "" {
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
@@ -523,6 +564,8 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		candidateURLs = append(candidateURLs,
 			fmt.Sprintf("%s/.well-known/oauth-authorization-server/%s", base, path),
 			fmt.Sprintf("%s/.well-known/openid-configuration/%s", base, path),
+			// OpenID Connect Discovery appends to the issuer's path (Keycloak realms, Entra tenants).
+			strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration",
 		)
 	}
 	candidateURLs = append(candidateURLs,
@@ -533,6 +576,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 
 	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
+	var mismatch error
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
 		req, err := http.NewRequestWithContext(ctx, "GET", candidateURL, nil)
@@ -554,19 +598,71 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 				continue
 			}
 
-			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
-				// Validate that we got at least authorization_endpoint
-				if metadata.AuthorizationURL != "" {
-					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
-					return &metadata, nil
+			if err := json.Unmarshal(bodyBytes, &metadata); err == nil && usable(&metadata) {
+				// RFC 8414 3.3: metadata naming another issuer must not be used.
+				if strictIssuer && metadata.Issuer != issuer {
+					mismatch = fmt.Errorf("%w: metadata at %s names issuer %q, expected %q", ErrIssuerMismatch, candidateURL, metadata.Issuer, issuer)
+					continue
 				}
+				logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
+				return &metadata, nil
 			}
 		} else {
 			resp.Body.Close()
 		}
 	}
 
+	if mismatch != nil {
+		return nil, mismatch
+	}
 	return nil, fmt.Errorf("no valid metadata found for issuer: %s", issuer)
+}
+
+// resourceMatchesServerURL reports whether a protected resource metadata resource
+// identifies serverURL: same scheme, host and port (case and default ports
+// normalized), and a path equal to serverURL's path or a path-segment prefix of it.
+// A resource carrying a query must carry serverURL's exact query; one without a
+// query matches regardless of serverURL's. An empty resource, or one carrying a
+// fragment or userinfo, never matches.
+func resourceMatchesServerURL(resource, serverURL string) bool {
+	res, err := url.Parse(strings.TrimSpace(resource))
+	if err != nil || res.Fragment != "" || res.User != nil {
+		return false
+	}
+	srv, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(res.Scheme)
+	if scheme == "" || scheme != strings.ToLower(srv.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(res.Hostname(), srv.Hostname()) || res.Hostname() == "" {
+		return false
+	}
+	if normalizedPort(res, scheme) != normalizedPort(srv, scheme) {
+		return false
+	}
+	if res.RawQuery != "" && res.RawQuery != srv.RawQuery {
+		return false
+	}
+	resPath := strings.TrimSuffix(res.EscapedPath(), "/")
+	srvPath := strings.TrimSuffix(srv.EscapedPath(), "/")
+	return resPath == "" || resPath == srvPath || strings.HasPrefix(srvPath, resPath+"/")
+}
+
+// normalizedPort returns u's port, or the default port for scheme when u has none.
+func normalizedPort(u *url.URL, scheme string) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // splitURL splits a URL into base (scheme://host) and path
@@ -632,6 +728,7 @@ type DynamicClientRegistrationRequest struct {
 	GrantTypes              []string `json:"grant_types"`
 	ResponseTypes           []string `json:"response_types"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	ApplicationType         string   `json:"application_type,omitempty"` // OIDC: "web" or "native"; MCP requires it (SEP-837)
 	Scope                   string   `json:"scope,omitempty"`
 	LogoURI                 string   `json:"logo_uri,omitempty"`
 	ClientURI               string   `json:"client_uri,omitempty"`
@@ -665,11 +762,12 @@ type DynamicClientRegistrationResponse struct {
 // since; see ReregisterDynamicClient.
 func registerDynamicClient(ctx context.Context, registrationURL, redirectURI string, scopes []string) (clientID, clientSecret *schemas.SecretVar, err error) {
 	regReq := &DynamicClientRegistrationRequest{
-		ClientName:              "Bifrost MCP Gateway",
+		ClientName:              ClientName,
 		RedirectURIs:            []string{redirectURI},
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
 		TokenEndpointAuthMethod: "none", // Public client with PKCE (no client secret needed)
+		ApplicationType:         ApplicationTypeFor(redirectURI),
 	}
 	if len(scopes) > 0 {
 		regReq.Scope = strings.Join(scopes, " ")
@@ -696,6 +794,68 @@ func registerDynamicClient(ctx context.Context, registrationURL, redirectURI str
 	return &schemas.SecretVar{Val: regResp.ClientID, SecretType: schemas.SecretTypePlainText},
 		&schemas.SecretVar{Val: regResp.ClientSecret, SecretType: schemas.SecretTypePlainText}, // May be empty for public clients
 		nil
+}
+
+// ClientName is Bifrost's client_name in DCR and its Client ID Metadata Document.
+const ClientName = "Bifrost MCP Gateway"
+
+// IsClientMetadataURL reports whether clientID is a Client ID Metadata Document URL.
+func IsClientMetadataURL(clientID string) bool {
+	u, err := url.Parse(clientID)
+	// url.Parse lowercases the scheme, which is case-insensitive (RFC 3986 §3.1).
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || strings.Contains(clientID, "#") {
+		return false
+	}
+	if u.Path == "" || u.Path == "/" {
+		return false
+	}
+	// Only dot segments are refused; trailing and doubled slashes are valid (u.Path is decoded).
+	for _, segment := range strings.Split(u.Path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// clientMetadataDocumentID returns documentURL if it can be used as the client_id, else "".
+func clientMetadataDocumentID(documentURL string, supported bool) string {
+	if !supported || !IsClientMetadataURL(documentURL) || ApplicationTypeFor(documentURL) == "native" {
+		return ""
+	}
+	return documentURL
+}
+
+// metadataForTokenURL discovers serverURL's authorization server metadata for hand-entered
+// endpoints, or nil when it fails or names another token endpoint than tokenURL.
+func metadataForTokenURL(ctx context.Context, serverURL, tokenURL string) *OAuthMetadata {
+	metadata, err := DiscoverOAuthMetadata(ctx, serverURL)
+	if err != nil {
+		logger.Debug(fmt.Sprintf("[OAuth Discovery] Could not read the authorization server metadata for hand-entered endpoints: %v", err))
+		return nil
+	}
+	if !sameTokenEndpoint(metadata.TokenURL, tokenURL) {
+		return nil
+	}
+	return metadata
+}
+
+func sameTokenEndpoint(a, b string) bool {
+	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
+}
+
+// ApplicationTypeFor returns "native" for a loopback redirectURI, else "web" (SEP-837).
+func ApplicationTypeFor(redirectURI string) string {
+	if u, err := url.Parse(redirectURI); err == nil {
+		host := u.Hostname()
+		if strings.EqualFold(host, "localhost") {
+			return "native"
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return "native"
+		}
+	}
+	return "web"
 }
 
 // RegisterDynamicClient performs dynamic client registration with the OAuth provider (RFC 7591)

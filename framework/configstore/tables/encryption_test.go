@@ -1049,6 +1049,73 @@ func TestTableKey_BedrockMantleProjectID_RoundTrip(t *testing.T) {
 	assert.Equal(t, "us-east-1", found.BedrockMantleKeyConfig.Region.GetValue())
 }
 
+// TestTableKey_SageMakerKeyConfig_RoundTrip verifies every sagemaker_* column is written under
+// its explicit name (GORM would otherwise derive sage_maker_*), secrets are encrypted at rest, and
+// the config is rebuilt on read. Clearing the config must null the columns.
+func TestTableKey_SageMakerKeyConfig_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	const runtimeHost = "vpce-0abc123-x1y2z3.runtime.sagemaker.us-east-1.vpce.amazonaws.com"
+	key := &TableKey{
+		Name:       "sagemaker-key",
+		ProviderID: 1,
+		Provider:   "sagemaker",
+		KeyID:      "sagemaker-uuid",
+		Value:      *schemas.NewSecretVar(""),
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey:       *schemas.NewSecretVar("AKIA-SAGEMAKER"),
+			SecretKey:       *schemas.NewSecretVar("wJalr-SAGEMAKER"),
+			SessionToken:    schemas.NewSecretVar("session-SAGEMAKER"),
+			Region:          schemas.NewSecretVar("us-east-1"),
+			RoleARN:         schemas.NewSecretVar("arn:aws:iam::123456789012:role/bifrost"),
+			ExternalID:      schemas.NewSecretVar("ext-123"),
+			RoleSessionName: schemas.NewSecretVar("bifrost-session"),
+			Endpoints:       &schemas.SageMakerEndpoints{Runtime: schemas.NewSecretVar(runtimeHost)},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	for col, plain := range map[string]string{
+		"sagemaker_access_key":        "AKIA-SAGEMAKER",
+		"sagemaker_secret_key":        "wJalr-SAGEMAKER",
+		"sagemaker_session_token":     "session-SAGEMAKER",
+		"sagemaker_role_arn":          "arn:aws:iam::123456789012:role/bifrost",
+		"sagemaker_external_id":       "ext-123",
+		"sagemaker_role_session_name": "bifrost-session",
+	} {
+		require.Contains(t, raw, col, "column %s must exist under its sagemaker_ name", col)
+		require.NotNil(t, raw[col], col)
+		assert.NotContains(t, raw[col], plain, "%s must be encrypted at rest", col)
+	}
+	assert.NotContains(t, raw["sagemaker_endpoints_json"], runtimeHost)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.SageMakerKeyConfig)
+	cfg := found.SageMakerKeyConfig
+	assert.Equal(t, "AKIA-SAGEMAKER", cfg.AccessKey.GetValue())
+	assert.Equal(t, "wJalr-SAGEMAKER", cfg.SecretKey.GetValue())
+	assert.Equal(t, "session-SAGEMAKER", cfg.SessionToken.GetValue())
+	assert.Equal(t, "us-east-1", cfg.Region.GetValue())
+	assert.Equal(t, "arn:aws:iam::123456789012:role/bifrost", cfg.RoleARN.GetValue())
+	assert.Equal(t, "ext-123", cfg.ExternalID.GetValue())
+	assert.Equal(t, "bifrost-session", cfg.RoleSessionName.GetValue())
+	require.NotNil(t, cfg.Endpoints)
+	assert.Equal(t, runtimeHost, cfg.Endpoints.Runtime.GetValue())
+
+	found.SageMakerKeyConfig = nil
+	require.NoError(t, db.Save(&found).Error)
+	raw = rawRow(t, db, "config_keys", key.ID)
+	for _, col := range []string{"sagemaker_access_key", "sagemaker_secret_key", "sagemaker_region", "sagemaker_endpoints_json"} {
+		assert.Nil(t, raw[col], "%s must be cleared with the config", col)
+	}
+	var cleared TableKey
+	require.NoError(t, db.First(&cleared, key.ID).Error)
+	assert.Nil(t, cleared.SageMakerKeyConfig)
+}
+
 // TestTableKey_BedrockEndpoints_RoundTrip verifies the VPC endpoint hosts survive a save/find
 // cycle on both Bedrock configs. The columns are the only persistence path: BedrockKeyConfig is
 // a virtual field, so an endpoint without a column is silently dropped on write.

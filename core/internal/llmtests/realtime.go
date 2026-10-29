@@ -2,6 +2,7 @@ package llmtests
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -48,7 +49,12 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			t.Fatalf("failed to select key for provider %s: %v", testConfig.Provider, err)
 		}
 
-		wsURL, urlErr := rtProvider.RealtimeWebSocketURL(key, testConfig.RealtimeModel, "")
+		if connector, ok := provider.(schemas.RealtimeConnector); ok {
+			runConnectorRealtimeTest(t, bfCtx, connector, key, testConfig)
+			return
+		}
+
+		wsURL, urlErr := rtProvider.RealtimeWebSocketURL(bfCtx, key, testConfig.RealtimeModel, "")
 		if urlErr != nil {
 			t.Fatalf("failed to build realtime URL for provider %s: %v", testConfig.Provider, urlErr)
 		}
@@ -197,6 +203,139 @@ func runOpenAIRealtimeTest(t *testing.T, conn *ws.Conn, testConfig Comprehensive
 		t.Error("expected a response.done event")
 	}
 	t.Logf("OpenAI Realtime test passed (%d events)", eventCount)
+}
+
+// runConnectorRealtimeTest drives a provider-owned connection with a text turn while streaming silence.
+func runConnectorRealtimeTest(t *testing.T, ctx *schemas.BifrostContext, connector schemas.RealtimeConnector, key schemas.Key, testConfig ComprehensiveTestConfig) {
+	upstream, bifrostErr := connector.ConnectRealtime(ctx, key, testConfig.RealtimeModel, "")
+	if bifrostErr != nil {
+		t.Fatalf("failed to connect realtime for provider %s: %s", testConfig.Provider, GetErrorMessage(bifrostErr))
+	}
+	defer upstream.Close()
+
+	type frame struct {
+		data []byte
+		err  error
+	}
+	frames := make(chan frame, 64)
+	readerDone := make(chan struct{})
+	defer close(readerDone) // runs before upstream.Close, so a reader blocked on frames exits
+	go func() {
+		for {
+			_, data, err := upstream.ReadMessage()
+			select {
+			case frames <- frame{data, err}:
+			case <-readerDone:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	waitFor := func(want string, timeout time.Duration, onEvent func([]byte)) {
+		t.Helper()
+		deadline := time.After(timeout)
+		for {
+			select {
+			case f := <-frames:
+				if f.err != nil {
+					t.Fatalf("realtime stream ended before %s: %v", want, f.err)
+				}
+				eventType := extractEventType(f.data)
+				if eventType == "error" {
+					t.Fatalf("received error event: %s", string(f.data))
+				}
+				if onEvent != nil {
+					onEvent(f.data)
+				}
+				if eventType == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for %s", want)
+			}
+		}
+	}
+	write := func(v interface{}) {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal realtime event: %v", err)
+		}
+		if err := upstream.WriteMessage(ws.TextMessage, data); err != nil {
+			t.Fatalf("write realtime event: %v", err)
+		}
+	}
+
+	waitFor("session.created", 10*time.Second, nil)
+	write(map[string]interface{}{"type": "session.update", "session": map[string]interface{}{
+		"type":         "realtime",
+		"instructions": "You are a concise assistant. Answer in one short sentence.",
+	}})
+	waitFor("session.updated", 10*time.Second, nil)
+	write(map[string]interface{}{"type": "conversation.item.create", "item": map[string]interface{}{
+		"type": "message", "role": "user",
+		"content": []map[string]interface{}{{"type": "input_text", "text": "Say hello in exactly two words."}},
+	}})
+	write(map[string]interface{}{"type": "response.create"})
+
+	// 32ms of 24kHz 16-bit mono silence per frame, the cadence Nova Sonic expects from a microphone.
+	silence := base64.StdEncoding.EncodeToString(make([]byte, 1536))
+	stopAudio := make(chan struct{})
+	audioDone := make(chan struct{})
+	go func() {
+		defer close(audioDone)
+		ticker := time.NewTicker(32 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopAudio:
+				return
+			case <-ticker.C:
+				data, _ := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": silence})
+				if upstream.WriteMessage(ws.TextMessage, data) != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stopAudio)
+		<-audioDone
+	}()
+
+	var gotAudio bool
+	var transcript string
+	var usage struct {
+		Response struct {
+			Usage struct {
+				TotalTokens int `json:"total_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	waitFor("response.done", 60*time.Second, func(data []byte) {
+		switch extractEventType(data) {
+		case "response.output_audio.delta":
+			gotAudio = true
+		case "response.output_audio_transcript.done":
+			var done struct {
+				Transcript string `json:"transcript"`
+			}
+			if json.Unmarshal(data, &done) == nil {
+				transcript = done.Transcript
+			}
+		case "response.done":
+			_ = json.Unmarshal(data, &usage)
+		}
+	})
+	if !gotAudio {
+		t.Error("expected at least one response.output_audio.delta event")
+	}
+	if strings.TrimSpace(transcript) == "" {
+		t.Error("expected a non-empty assistant transcript")
+	}
+	t.Logf("%s realtime test passed: transcript=%q total_tokens=%d", testConfig.Provider, transcript, usage.Response.Usage.TotalTokens)
 }
 
 // runElevenLabsRealtimeTest drives an ElevenLabs Conversational AI session.

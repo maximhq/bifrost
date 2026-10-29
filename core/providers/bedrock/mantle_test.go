@@ -99,7 +99,7 @@ func TestParseBedrockRegionAndModelStripsForTheWire(t *testing.T) {
 		{"openai.gpt-6-astra", "", "openai.gpt-6-astra"},
 		// A cross-region profile is dotted, not slashed, and must survive intact.
 		{"us.openai.gpt-5.6-terra", "", "us.openai.gpt-5.6-terra"},
-		// A vendor segment is not a region: only awsRegionRegex may strip.
+		// A vendor segment is not a region: only AWSRegionRegex may strip.
 		{"openai/gpt-6-astra", "", "openai/gpt-6-astra"},
 	}
 	for _, tc := range cases {

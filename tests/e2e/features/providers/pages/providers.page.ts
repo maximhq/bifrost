@@ -306,6 +306,32 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Add a SageMaker key with explicit AWS credentials to the currently selected sagemaker provider.
+   * Bifrost mints the endpoint bearer token from these locally, so no AWS call is made at save time.
+   */
+  async addSageMakerKey(config: {
+    name: string
+    accessKey: string
+    secretKey: string
+    region: string
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-sagemaker-explicit-credentials-tab').click()
+    await this.page.getByTestId('apikey-sagemaker-access-key-input').fill(config.accessKey)
+    await this.page.getByTestId('apikey-sagemaker-secret-key-input').fill(config.secretKey)
+    await this.page.getByTestId('apikey-sagemaker-region-input').fill(config.region)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
    * Add a known provider from the "Add provider" dropdown (e.g. Nebius, OpenAI).
    * Opens the dropdown and clicks the option with data-testid add-provider-option-{name}.
    */

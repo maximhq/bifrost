@@ -105,10 +105,11 @@ During the consent step, Bifrost shows the user how they can identify themselves
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Open **Config** and go to the **MCP** settings.
-2. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
-3. When using `both` or `oauth`, set the **OAuth Server** settings: an **Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header), and the **Authorization Code** and **Access Token** lifetimes.
-4. Click **Save**.
+1. When using `both` or `oauth`, first open **Config → Security** and set the **OAuth Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header). It lives under Security because Cross App Access uses the same issuer. Click **Save Changes**.
+2. Open **Config** and go to the **MCP** settings.
+3. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
+4. When using `both` or `oauth`, set the **Authorization Code** and **Access Token** lifetimes. The issuer is shown read-only, with a link back to Security.
+5. Click **Save**.
 
 ![MCP server auth mode and OAuth server settings](/media/ui-mcp-server-auth-mode.png)
 
@@ -248,6 +249,11 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 **Symptom:** A request with a valid virtual key gets `403` with `virtual key is inactive` or `virtual key has expired`.
 **Cause:** The key authenticated, but governance refuses it, exactly as it would on an inference request.
 **Fix:** Reactivate the key or extend its expiry; the change applies on the next `/mcp` request.
+
+### Browser app refused with 403 on /mcp
+**Symptom:** A browser-based MCP client on another origin gets `403` saying the origin is refused, while the same server works from a CLI or desktop client.
+**Cause:** Browser requests to the MCP gateway must come from an allowed origin. While inference auth is off (`enforce_auth_on_inference: false`), only localhost origins and origins listed in `allowed_origins` by name or pattern are allowed; the `"*"` entry does not count. With inference auth on, `allowed_origins` applies as configured.
+**Fix:** List the app's origin in `allowed_origins` (for example `https://inspector.example.com` or `https://*.example.com`). If `allowed_origins` already contains `"*"`, turning on inference auth also works. Clients that send no `Origin` header are never affected.
 
 ### Conflicting credentials on /mcp
 **Symptom:** `conflicting credentials: an OAuth token and a virtual key header were both provided`.

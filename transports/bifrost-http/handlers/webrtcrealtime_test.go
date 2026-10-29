@@ -364,6 +364,20 @@ func TestNewRealtimeRelayContextCarriesRequestGrant(t *testing.T) {
 	}
 }
 
+// The SDP exchange runs on the relay, so the resolved alias must reach it for per-alias provider
+// overrides such as Azure's use_voice_live_endpoints.
+func TestNewRealtimeRelayContextCarriesResolvedAlias(t *testing.T) {
+	requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	alias := &schemas.ResolvedAlias{Key: "gpt-realtime-vl", Config: &schemas.AliasConfig{ModelID: "gpt-realtime"}}
+	requestCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, alias)
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+	if got := schemas.GetResolvedAlias(relayCtx); got != alias {
+		t.Fatalf("relay alias = %+v, want the request's", got)
+	}
+}
+
 func TestNewRealtimeRelayContextCopiesValuesWithoutRequestCancellation(t *testing.T) {
 	type metadataKey uint8
 	const userKey metadataKey = 0
@@ -676,7 +690,7 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenOnAzureIsRefused(t *tes
 	}
 
 	provider := &azure.AzureProvider{}
-	if _, urlErr := provider.RealtimeWebSocketURL(authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
+	if _, urlErr := provider.RealtimeWebSocketURL(nil, authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
 		t.Fatalf("RealtimeWebSocketURL() error = %#v, want a 400", urlErr)
 	}
 	answer, sdpErr := provider.ExchangeRealtimeWebRTCSDP(bifrostCtx, authKey, "gpt-realtime", "v=0", nil)

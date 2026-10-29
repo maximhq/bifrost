@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,56 +98,6 @@ func TestVertexEndpointChat(t *testing.T) {
 			}
 			if response == nil || len(response.Choices) != 1 || response.Choices[0].Message.Content.ContentStr == nil || *response.Choices[0].Message.Content.ContentStr != "hello" {
 				t.Fatalf("expected OpenAI chat response, got %+v", response)
-			}
-		})
-	}
-}
-
-func TestVertexEndpointRejectsNonChatOperations(t *testing.T) {
-	provider := &VertexProvider{}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{
-		ModelID: "1234567890", VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222222222", Format: schemas.VertexEndpointOpenAIChat}},
-	}})
-	key := schemas.Key{}
-	operations := map[string]func() *schemas.BifrostError{
-		"embedding": func() *schemas.BifrostError {
-			_, err := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{})
-			return err
-		},
-		"count tokens": func() *schemas.BifrostError {
-			_, err := provider.CountTokens(ctx, key, &schemas.BifrostResponsesRequest{})
-			return err
-		},
-		"rerank": func() *schemas.BifrostError {
-			_, err := provider.Rerank(ctx, key, &schemas.BifrostRerankRequest{})
-			return err
-		},
-		"image generation": func() *schemas.BifrostError {
-			_, err := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Model: "1234567890"})
-			return err
-		},
-		"image edit": func() *schemas.BifrostError {
-			_, err := provider.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{Model: "1234567890"})
-			return err
-		},
-		"video generation": func() *schemas.BifrostError {
-			_, err := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Model: "1234567890"})
-			return err
-		},
-	}
-	wantType := map[string]schemas.RequestType{
-		"embedding": schemas.EmbeddingRequest, "count tokens": schemas.CountTokensRequest, "rerank": schemas.RerankRequest,
-		"image generation": schemas.ImageGenerationRequest, "image edit": schemas.ImageEditRequest, "video generation": schemas.VideoGenerationRequest,
-	}
-	for name, operation := range operations {
-		t.Run(name, func(t *testing.T) {
-			err := operation()
-			if err == nil || !strings.Contains(err.Error.Message, "vertex_endpoint format openai_chat supports chat completions") {
-				t.Fatalf("expected an explicit unsupported custom endpoint error, got %v", err)
-			}
-			if err.Error.Code == nil || *err.Error.Code != "unsupported_operation" || err.ExtraFields.Provider != schemas.Vertex || err.ExtraFields.RequestType != wantType[name] {
-				t.Fatalf("expected the standard unsupported_operation error for %s on vertex, got code=%v provider=%q type=%q", wantType[name], err.Error.Code, err.ExtraFields.Provider, err.ExtraFields.RequestType)
 			}
 		})
 	}
@@ -1798,5 +1749,120 @@ func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
 				t.Errorf("anthropic_beta body field = %q, want %q", bodyBeta, tc.want)
 			}
 		})
+	}
+}
+
+// vertexModelGarden serves ids as the google publisher's catalog and answers 404 for the
+// other publishers, the way a region without their models does. It counts every request.
+func vertexModelGarden(hits *atomic.Int32, ids ...string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/v1beta1/publishers/google/models" {
+			http.NotFound(w, r)
+			return
+		}
+		models := make([]map[string]string, 0, len(ids))
+		for _, id := range ids {
+			models = append(models, map[string]string{"name": "publishers/google/models/" + id, "versionId": "default"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"publisherModels": models})
+	})
+}
+
+// listedVertexModels lists key's models and maps each listed id to its alias, "" when it has none.
+func listedVertexModels(t *testing.T, provider *VertexProvider, key schemas.Key) map[string]string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Vertex})
+	if bifrostErr != nil {
+		t.Fatalf("listModelsByKey: %s", bifrostErr.GetErrorString())
+	}
+	got := make(map[string]string, len(resp.Data))
+	for _, m := range resp.Data {
+		if _, dup := got[m.ID]; dup {
+			t.Fatalf("%s is listed twice", m.ID)
+		}
+		alias := ""
+		if m.Alias != nil {
+			alias = *m.Alias
+		}
+		got[m.ID] = alias
+	}
+	return got
+}
+
+// A key that can mint an OAuth token lists the Model Garden catalog through its allowlist and
+// adds its deployments, so "*" and regex: entries reach catalog models. It used to list only its
+// configuration whenever it had a deployment or an allowlist other than "*".
+func TestVertexListModelsOAuthKeyListsModelGarden(t *testing.T) {
+	catalog := []string{"gemini-2.5-flash", "gemini-3.1-flash-image", "text-embedding-005"}
+	for _, tc := range []struct {
+		name        string
+		models      schemas.WhiteList
+		deployments schemas.KeyAliases
+		want        map[string]string
+	}{
+		{
+			name:   "regex allowlist",
+			models: schemas.WhiteList{"regex:^gemini-.*$"},
+			want:   map[string]string{"vertex/gemini-2.5-flash": "", "vertex/gemini-3.1-flash-image": ""},
+		},
+		{
+			name:        "all models with a deployment",
+			models:      schemas.WhiteList{"*"},
+			deployments: schemas.KeyAliases{"gemini-3.1-flash-image-lite": {ModelID: "gemini-3.1-flash-image-lite"}},
+			want: map[string]string{
+				"vertex/gemini-2.5-flash":            "",
+				"vertex/gemini-3.1-flash-image":      "",
+				"vertex/text-embedding-005":          "",
+				"vertex/gemini-3.1-flash-image-lite": "gemini-3.1-flash-image-lite",
+			},
+		},
+		{
+			name:        "regex allowlist with custom endpoint deployments",
+			models:      schemas.WhiteList{"regex:^gemini-.*$"},
+			deployments: schemas.KeyAliases{"gemini-tuned": {ModelID: "1234567890"}, "tuned": {ModelID: "9876543210"}},
+			want: map[string]string{
+				"vertex/gemini-2.5-flash":       "",
+				"vertex/gemini-3.1-flash-image": "",
+				"vertex/gemini-tuned":           "1234567890",
+			},
+		},
+		{
+			name:   "exact allowlist",
+			models: schemas.WhiteList{"gemini-2.5-flash", "gemini-preview-only"},
+			want:   map[string]string{"vertex/gemini-2.5-flash": "", "vertex/gemini-preview-only": ""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, catalog...))
+			key.Models = tc.models
+			key.Aliases = tc.deployments
+			if got := listedVertexModels(t, provider, key); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("listed %v, want %v", got, tc.want)
+			}
+			if hits.Load() == 0 {
+				t.Error("Model Garden was never called")
+			}
+		})
+	}
+}
+
+// Model Garden refuses API keys, so an API-key-only key keeps listing its configuration: the
+// deployments its allowlist covers and its exact entries, without calling Model Garden.
+func TestVertexListModelsAPIKeyOnlyKeyListsConfiguration(t *testing.T) {
+	var hits atomic.Int32
+	provider, key := vertexOpenAIEndpointTestProvider(t, vertexModelGarden(&hits, "gemini-2.5-flash"))
+	key.VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar("")
+	key.Models = schemas.WhiteList{"regex:^gemini-.*$", "gemini-exact"}
+	key.Aliases = schemas.KeyAliases{"gemini-tuned": {ModelID: "1234567890"}, "tuned": {ModelID: "9876543210"}}
+	want := map[string]string{"vertex/gemini-tuned": "1234567890", "vertex/gemini-exact": ""}
+	if got := listedVertexModels(t, provider, key); !reflect.DeepEqual(got, want) {
+		t.Errorf("listed %v, want %v", got, want)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("an API-key-only key called Model Garden %d times", n)
 	}
 }

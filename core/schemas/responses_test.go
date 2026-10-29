@@ -292,6 +292,89 @@ func TestBifrostResponsesStreamResponsePreservesOpenAIStreamMetadata(t *testing.
 	}
 }
 
+// TestBifrostResponsesStreamResponseSignatureOnlyReasoningDeltaHasDelta covers the
+// text-less reasoning_summary_text.delta Anthropic and Bedrock use to carry the thinking
+// signature: the Responses spec requires a string delta on that event, and strict clients
+// (openai-java: "`delta` is not set") abort the stream without it.
+func TestBifrostResponsesStreamResponseSignatureOnlyReasoningDeltaHasDelta(t *testing.T) {
+	signatureOnly := func() *BifrostResponsesStreamResponse {
+		return &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+			SequenceNumber: 4,
+			OutputIndex:    new(0),
+			SummaryIndex:   new(0),
+			ContentIndex:   new(0),
+			ItemID:         new("rs_1"),
+			Signature:      new("sig_abc"),
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		encode func(*BifrostResponsesStreamResponse) ([]byte, error)
+	}{
+		{"sonic", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return Marshal(r) }},
+		{"sorted", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return MarshalSorted(r) }},
+		{"encoding/json", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return json.Marshal(r) }},
+		{"v1 responses chunk", func(r *BifrostResponsesStreamResponse) ([]byte, error) {
+			return MarshalSorted(BifrostStreamChunk{BifrostResponsesStreamResponse: r})
+		}},
+		{"openai WithDefaults", func(r *BifrostResponsesStreamResponse) ([]byte, error) { return Marshal(r.WithDefaults()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := signatureOnly()
+			encoded, err := tc.encode(ev)
+			require.NoError(t, err)
+			delta := gjson.GetBytes(encoded, "delta")
+			assert.Equal(t, gjson.String, delta.Type, "delta must be a string: %s", encoded)
+			assert.Equal(t, "", delta.Str)
+			assert.Equal(t, "sig_abc", gjson.GetBytes(encoded, "signature").Str)
+			assert.Nil(t, ev.Delta, "marshaling must not mutate the caller's event")
+		})
+	}
+
+	t.Run("text delta unchanged", func(t *testing.T) {
+		// Gemini sends text and signature on one delta.
+		ev := signatureOnly()
+		ev.Delta = new("thinking")
+		encoded, err := MarshalSorted(ev)
+		require.NoError(t, err)
+		assert.Equal(t, "thinking", gjson.GetBytes(encoded, "delta").Str)
+		assert.Equal(t, "sig_abc", gjson.GetBytes(encoded, "signature").Str)
+	})
+
+	t.Run("other events gain no delta", func(t *testing.T) {
+		for _, typ := range []ResponsesStreamResponseType{
+			ResponsesStreamResponseTypeReasoningSummaryTextDone,
+			ResponsesStreamResponseTypeOutputItemAdded,
+			ResponsesStreamResponseTypeCompleted,
+		} {
+			encoded, err := MarshalSorted(&BifrostResponsesStreamResponse{Type: typ})
+			require.NoError(t, err)
+			assert.False(t, gjson.GetBytes(encoded, "delta").Exists(), "%s: %s", typ, encoded)
+		}
+	})
+}
+
+func BenchmarkBifrostResponsesStreamResponseMarshalReasoningDelta(b *testing.B) {
+	for _, bc := range []struct {
+		name string
+		ev   *BifrostResponsesStreamResponse
+	}{
+		{"text", &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: new(0), SummaryIndex: new(0), ItemID: new("rs_1"), Delta: new("thinking")}},
+		{"signature_only", &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: new(0), SummaryIndex: new(0), ItemID: new("rs_1"), Signature: new("sig_abc")}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			chunk := BifrostStreamChunk{BifrostResponsesStreamResponse: bc.ev}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := MarshalSorted(chunk); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestBifrostResponsesResponseWithDefaultsPreservesUltrafastServiceTier(t *testing.T) {
 	tier := BifrostServiceTierUltrafast
 	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
@@ -307,6 +390,28 @@ func TestBifrostResponsesResponseWithDefaultsPreservesFastServiceTier(t *testing
 	got := (&BifrostResponsesResponse{ServiceTier: &tier}).WithDefaults()
 	if got.ServiceTier == nil || *got.ServiceTier != BifrostServiceTierFast {
 		t.Fatalf("service tier = %v, want fast", got.ServiceTier)
+	}
+}
+
+// WithDefaults shapes the wire copy. Governance prices the same response in a goroutine, so the
+// advisor passes and the rest of the caller's usage must survive it.
+func TestBifrostResponsesResponseWithDefaultsLeavesUsageUntouched(t *testing.T) {
+	usage := &ResponsesResponseUsage{
+		Type:         Ptr("message"),
+		InputTokens:  10,
+		OutputTokens: 1,
+		Iterations:   []ResponsesResponseUsage{{Type: Ptr("advisor_message"), Model: Ptr("claude-opus-4-8"), InputTokens: 2000}},
+	}
+	got := (&BifrostResponsesResponse{Usage: usage}).WithDefaults()
+
+	if got.Usage.Iterations != nil || got.Usage.Type != nil || got.Usage.InputTokensDetails == nil || got.Usage.OutputTokensDetails == nil {
+		t.Fatalf("wire usage = %+v, want iterations and type cleared and token details defaulted", got.Usage)
+	}
+	if got.Usage.InputTokens != 10 || got.Usage.OutputTokens != 1 {
+		t.Fatalf("wire usage tokens = %d/%d, want 10/1", got.Usage.InputTokens, got.Usage.OutputTokens)
+	}
+	if len(usage.Iterations) != 1 || usage.Type == nil || usage.InputTokensDetails != nil || usage.OutputTokensDetails != nil {
+		t.Fatalf("WithDefaults changed the caller's usage: %+v", usage)
 	}
 }
 

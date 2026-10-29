@@ -43,7 +43,7 @@ func TestExtractInputHistoryDecisionInput(t *testing.T) {
 			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
 			unknownPart,
 			{Type: schemas.DecisionInputPartTypeText, Text: &schemas.DecisionText{Structured: map[string]any{"camera": "r-cam"}}},
-			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), Data: []byte("\x89PNG\r\n\x1a\nCAM")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), Data: schemas.DecisionData{File: []byte("\x89PNG\r\n\x1a\nCAM")}},
 		}}},
 	}})
 	require.Len(t, messages, 2)

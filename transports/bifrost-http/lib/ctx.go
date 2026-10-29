@@ -545,6 +545,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
+		// Azure AI Speech clients send their key as Ocp-Apim-Subscription-Key.
+		if keyStr == "ocp-apim-subscription-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
+			return true
+		}
 		if keyStr == "x-bf-api-key" {
 			if keyName := strings.TrimSpace(string(value)); keyName != "" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, keyName)

@@ -1,0 +1,1287 @@
+# Relays: management CRUD, usage preview, Relay Logs and the /relay data plane.
+# Mounted from openapi.yaml. Handlers: transports/bifrost-http/handlers/relays.go,
+# transports/bifrost-http/integrations/relays.go, and (Enterprise) the access-profile reverse lookup.
+
+_relay-log-filters:
+  relay_names:
+    name: relay_names
+    in: query
+    description: Relay names to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  methods:
+    name: methods
+    in: query
+    description: HTTP methods to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  statuses:
+    name: statuses
+    in: query
+    description: Statuses to filter by (`success`, `error`, `cancelled`). Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  kinds:
+    name: kinds
+    in: query
+    description: Row kinds to filter by (`call`, `job`). Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  virtual_key_ids:
+    name: virtual_key_ids
+    in: query
+    description: Virtual key IDs to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  user_ids:
+    name: user_ids
+    in: query
+    description: User IDs to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  team_ids:
+    name: team_ids
+    in: query
+    description: Team IDs to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  customer_ids:
+    name: customer_ids
+    in: query
+    description: Customer IDs to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  business_unit_ids:
+    name: business_unit_ids
+    in: query
+    description: Business unit IDs to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  project_ids:
+    name: project_ids
+    in: query
+    description: Project IDs to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  apps:
+    name: apps
+    in: query
+    description: Client applications (as detected from the User-Agent) to filter by. Accepts repeated parameters or comma-separated values.
+    schema:
+      type: string
+  billable:
+    name: billable
+    in: query
+    description: Keep only billable (`true`) or non-billable (`false`) calls.
+    schema:
+      type: boolean
+  start_time:
+    name: start_time
+    in: query
+    description: Start of the time range (RFC3339).
+    schema:
+      type: string
+      format: date-time
+  end_time:
+    name: end_time
+    in: query
+    description: End of the time range (RFC3339).
+    schema:
+      type: string
+      format: date-time
+  min_cost:
+    name: min_cost
+    in: query
+    description: Minimum cost in USD.
+    schema:
+      type: number
+  max_cost:
+    name: max_cost
+    in: query
+    description: Maximum cost in USD.
+    schema:
+      type: number
+  request_id:
+    name: request_id
+    in: query
+    description: Exact request ID.
+    schema:
+      type: string
+  job_id:
+    name: job_id
+    in: query
+    description: Exact upstream job ID.
+    schema:
+      type: string
+  search:
+    name: search
+    in: query
+    description: Free-text match on the path, matched route, model and request ID. Metadata columns only, never bodies.
+    schema:
+      type: string
+
+_relay-call-parameters:
+  endpoint:
+    name: endpoint
+    in: path
+    required: true
+    description: Name of a configured relay (`^[A-Za-z0-9._-]{1,64}$`).
+    schema:
+      type: string
+  path:
+    name: path
+    in: path
+    required: true
+    description: >
+      Path below the relay's `base_url`, without the leading `/` (the route supplies it), matched against the
+      relay's `routes[]`. It may span several `/`-separated segments. The query string is forwarded as sent.
+      Must not contain `//`, backslashes or `..` segments.
+    schema:
+      type: string
+
+relays:
+  get:
+    operationId: listRelays
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List relays
+    description: |
+      Lists every configured relay with its credentials redacted. `search` matches the name or description
+      case-insensitively; `limit` and `offset` page the matches. Without `limit` every match is returned.
+      Requires the config store; returns 503 when it is disabled.
+    tags:
+      - Relays
+    parameters:
+      - name: search
+        in: query
+        description: Case-insensitive substring of the name or description.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Page size, 1 to 1000. Omit to return every match.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1000
+      - name: offset
+        in: query
+        description: Number of matches to skip.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Relays matching the query
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayListResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        $ref: "../../openapi.yaml#/components/responses/ConfigStoreUnavailable"
+
+  post:
+    operationId: createRelay
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create relay
+    description: |
+      Validates and stores a relay, then serves it at `/relay/{name}` immediately. Secrets are written through
+      the config store so vault and encryption hooks apply; the response returns them redacted. A relay that
+      stores but cannot go live (an unparseable CA or proxy) is rolled back and reported as 400.
+      Requires the config store; returns 503 when it is disabled.
+    tags:
+      - Relays
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/relays.yaml#/RelayConfig"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "201":
+        description: Relay created and live
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/Relay"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "409":
+        description: A relay with this name already exists
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        $ref: "../../openapi.yaml#/components/responses/ConfigStoreUnavailable"
+
+relay-by-name:
+  get:
+    operationId: getRelay
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get relay
+    description: Returns one relay with its credentials redacted. Requires the config store; returns 503 when it is disabled.
+    tags:
+      - Relays
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Relay name
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: The relay
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/Relay"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        $ref: "../../openapi.yaml#/components/responses/ConfigStoreUnavailable"
+
+  put:
+    operationId: updateRelay
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update relay
+    description: |
+      Replaces the relay's configuration. The body is the whole relay, not a patch. `name` may be omitted or
+      must equal the path name - a relay cannot be renamed. A secret sent back in its redacted form keeps the
+      stored value, so a client that only ever sees redacted values can save an edit without holding the
+      credential; an `env.` or `vault.` reference is a real change. The new configuration goes live before it
+      is stored; if the save fails the previous configuration is restored. Requires the config store; returns
+      503 when it is disabled.
+    tags:
+      - Relays
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Relay name
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/relays.yaml#/RelayConfig"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Relay updated
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/Relay"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        $ref: "../../openapi.yaml#/components/responses/ConfigStoreUnavailable"
+
+  delete:
+    operationId: deleteRelay
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete relay
+    description: |
+      Removes the relay and stops serving `/relay/{name}`. Virtual key grants on the relay are deleted with it
+      and the affected keys are reloaded. Requires the config store; returns 503 when it is disabled.
+    tags:
+      - Relays
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Relay name
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "204":
+        description: Relay deleted
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        $ref: "../../openapi.yaml#/components/responses/ConfigStoreUnavailable"
+
+relays-usage-preview:
+  post:
+    operationId: previewRelayUsage
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Preview relay usage
+    description: |
+      Runs one hypothetical call through the same route matching and usage mapping the relay applies, so a
+      mapping can be checked against a sample before it is saved. Nothing is sent to the upstream. Pass
+      `config` to preview an unsaved relay, or `name` to preview a saved one (the config store must be
+      enabled for `name`). The configuration is validated first; a validation failure is reported as 400.
+    tags:
+      - Relays
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/relays.yaml#/RelayUsagePreviewRequest"
+          example:
+            config:
+              name: deepgram
+              base_url: https://api.deepgram.com
+              auth:
+                type: header
+                header_name: Authorization
+                value_prefix: "Token "
+              credential:
+                value: env.DEEPGRAM_API_KEY
+              usage:
+                model_path: model
+                model_source: query
+                units_path: metadata.duration
+                cost_per_unit: 0.0043
+              routes:
+                - method: POST
+                  path: /v1/listen
+            sample:
+              method: POST
+              path: /v1/listen?model=nova-3
+              request_content_type: audio/wav
+              response_content_type: application/json
+              response_body: '{"metadata":{"duration":12.5}}'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: What the relay would record for the sample
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayUsagePreview"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "404":
+        description: No saved relay has the given `name`
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+relays-openapi-spec:
+  post:
+    operationId: fetchRelayOpenAPISpec
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Fetch an OpenAPI document for route import
+    description: |
+      Fetches an OpenAPI or Swagger document (JSON or YAML) from `spec_url` and returns its text unparsed, with the URL it was
+      read from after redirects, so the route import can read a document the browser cannot fetch itself. The fetch uses the
+      same timeout, size cap and private-network guard as the MCP OpenAPI preview: an unauthenticated caller may not reach
+      loopback or private addresses. Nothing is stored.
+    tags:
+      - Relays
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - spec_url
+            properties:
+              spec_url:
+                type: string
+                description: Absolute http(s) URL of the document.
+          example:
+            spec_url: https://exa.ai/docs/exa-spec.json
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: The fetched document
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                spec:
+                  type: string
+                  description: The document text as served.
+                spec_url:
+                  type: string
+                  description: The URL the document was read from, after redirects.
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        description: Not permitted, or `spec_url` points at a private address for an unauthenticated caller
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "413":
+        description: The document is larger than the size cap
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+relay-access-profiles:
+  get:
+    operationId: listAccessProfilesForRelay
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Relays:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List access profiles granting a relay
+    description: |
+      Reverse lookup for the relay's Access tab - which access-profile templates grant this relay, either by
+      naming it or through allow-all. Only templates visible to the caller are returned. User counts include
+      active, non-expired per-user copies only.
+    tags:
+      - Relays
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Relay name
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Page size, 1 to 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Access profiles that grant the relay
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayAccessProfilesResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+relay-logs:
+  get:
+    operationId: getRelayLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get relay logs
+    description: |
+      Searches Relay Logs with filtering and pagination. Newest first by default. Multi-value filters accept
+      repeated parameters or comma-separated values. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-log-filters/relay_names'
+      - $ref: '#/_relay-log-filters/methods'
+      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/kinds'
+      - $ref: '#/_relay-log-filters/virtual_key_ids'
+      - $ref: '#/_relay-log-filters/user_ids'
+      - $ref: '#/_relay-log-filters/team_ids'
+      - $ref: '#/_relay-log-filters/customer_ids'
+      - $ref: '#/_relay-log-filters/business_unit_ids'
+      - $ref: '#/_relay-log-filters/project_ids'
+      - $ref: '#/_relay-log-filters/apps'
+      - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/start_time'
+      - $ref: '#/_relay-log-filters/end_time'
+      - $ref: '#/_relay-log-filters/min_cost'
+      - $ref: '#/_relay-log-filters/max_cost'
+      - $ref: '#/_relay-log-filters/request_id'
+      - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/search'
+      - name: limit
+        in: query
+        description: Number of rows to return (default 50, max 1000)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 50
+      - name: offset
+        in: query
+        description: Number of rows to skip
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: sort_by
+        in: query
+        description: Field to sort by. Unknown values fall back to `timestamp`.
+        schema:
+          type: string
+          enum: [timestamp, latency, cost]
+          default: timestamp
+      - name: order
+        in: query
+        description: Sort order. Anything other than `asc` sorts descending.
+        schema:
+          type: string
+          enum: [asc, desc]
+          default: desc
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: One page of relay logs
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayLogSearchResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+  delete:
+    operationId: deleteRelayLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete relay logs
+    description: Deletes relay log rows by ID, together with the job rows that settle them. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/relays.yaml#/DeleteRelayLogsRequest"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Rows deleted
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/DeleteRelayLogsResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+relay-logs-by-id:
+  get:
+    operationId: getRelayLogById
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get relay log by ID
+    description: Returns one relay log row, including request and response bodies and headers when content logging kept them. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Relay log ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: The relay log
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayLog"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+relay-logs-stats:
+  get:
+    operationId: getRelayLogsStats
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get relay log statistics
+    description: Aggregates the rows matching the same filters as `GET /api/relay-logs`. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-log-filters/relay_names'
+      - $ref: '#/_relay-log-filters/methods'
+      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/kinds'
+      - $ref: '#/_relay-log-filters/virtual_key_ids'
+      - $ref: '#/_relay-log-filters/user_ids'
+      - $ref: '#/_relay-log-filters/team_ids'
+      - $ref: '#/_relay-log-filters/customer_ids'
+      - $ref: '#/_relay-log-filters/business_unit_ids'
+      - $ref: '#/_relay-log-filters/project_ids'
+      - $ref: '#/_relay-log-filters/apps'
+      - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/start_time'
+      - $ref: '#/_relay-log-filters/end_time'
+      - $ref: '#/_relay-log-filters/min_cost'
+      - $ref: '#/_relay-log-filters/max_cost'
+      - $ref: '#/_relay-log-filters/request_id'
+      - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/search'
+      - name: compare_to_previous
+        in: query
+        description: When `true` and the window has a start and end, also return the same statistics for the preceding window of equal length as `previous`, with `has_previous_period` set.
+        schema:
+          type: boolean
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Aggregated statistics
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayLogStats"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+relay-logs-filterdata:
+  get:
+    operationId: getRelayLogsFilterData
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get relay log filter values
+    description: |
+      Returns the distinct values seen in Relay Logs for each requested dimension, up to 100 per dimension.
+      Omit `dimensions` to return every dimension. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    parameters:
+      - name: dimensions
+        in: query
+        description: Comma-separated subset of `relay_names`, `methods`, `apps`, `virtual_keys`, `users`, `teams`, `customers`, `business_units`, `projects`. Omit to return all dimensions.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: Search text; only values matching it are returned.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Available filter values
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayFilterData"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+relay-logs-histogram:
+  get:
+    operationId: getRelayLogsHistogram
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get relay log histogram
+    description: Buckets the rows matching the same filters as `GET /api/relay-logs` by time, with counts per status and cost per bucket. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-log-filters/relay_names'
+      - $ref: '#/_relay-log-filters/methods'
+      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/kinds'
+      - $ref: '#/_relay-log-filters/virtual_key_ids'
+      - $ref: '#/_relay-log-filters/user_ids'
+      - $ref: '#/_relay-log-filters/team_ids'
+      - $ref: '#/_relay-log-filters/customer_ids'
+      - $ref: '#/_relay-log-filters/business_unit_ids'
+      - $ref: '#/_relay-log-filters/project_ids'
+      - $ref: '#/_relay-log-filters/apps'
+      - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/start_time'
+      - $ref: '#/_relay-log-filters/end_time'
+      - $ref: '#/_relay-log-filters/min_cost'
+      - $ref: '#/_relay-log-filters/max_cost'
+      - $ref: '#/_relay-log-filters/request_id'
+      - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/search'
+      - name: bucket_size_seconds
+        in: query
+        description: Width of each bucket in seconds.
+        schema:
+          type: integer
+          minimum: 1
+          default: 3600
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Time-bucketed call volume and cost
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayHistogramResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+relay-logs-top-endpoints:
+  get:
+    operationId: getRelayLogsTopEndpoints
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `RelayLogs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get top relays
+    description: Ranks relays by call count over the rows matching the same filters as `GET /api/relay-logs`. Requires the logs store; returns 503 when it is unavailable.
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-log-filters/relay_names'
+      - $ref: '#/_relay-log-filters/methods'
+      - $ref: '#/_relay-log-filters/statuses'
+      - $ref: '#/_relay-log-filters/kinds'
+      - $ref: '#/_relay-log-filters/virtual_key_ids'
+      - $ref: '#/_relay-log-filters/user_ids'
+      - $ref: '#/_relay-log-filters/team_ids'
+      - $ref: '#/_relay-log-filters/customer_ids'
+      - $ref: '#/_relay-log-filters/business_unit_ids'
+      - $ref: '#/_relay-log-filters/project_ids'
+      - $ref: '#/_relay-log-filters/apps'
+      - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/start_time'
+      - $ref: '#/_relay-log-filters/end_time'
+      - $ref: '#/_relay-log-filters/min_cost'
+      - $ref: '#/_relay-log-filters/max_cost'
+      - $ref: '#/_relay-log-filters/request_id'
+      - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/search'
+      - name: limit
+        in: query
+        description: Number of relays to return (default 10, max 1000)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 10
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Relays ranked by call count
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/relays.yaml#/RelayTopEndpointsResult"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
+        $ref: "../../openapi.yaml#/components/responses/Forbidden"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+      "503":
+        description: Logs store is unavailable
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+
+# ---------------------------------------------------------------------------
+# Data plane: /relay/{endpoint}/{path}
+# Every method shares the same behaviour; one operation per method so clients see each.
+# ---------------------------------------------------------------------------
+_relay-call:
+  description: &relay-call-description |
+    Relays the request to the relay's upstream. Bifrost pins the request under the relay's `base_url`,
+    matches it against the relay's `routes[]`, authenticates the caller like an inference request, drops the
+    caller's credentials and gateway headers (`Authorization`, `x-api-key`, `api-key`, `x-goog-api-key`,
+    `Cookie`, every `x-bf-*` header, hop-by-hop headers), injects the relay's own credential and
+    `extra_headers`, and forwards the body unchanged. The upstream status, headers and body come back as is;
+    a `text/event-stream` reply (or a route with `stream: true`) is streamed through.
+
+    Governance evaluates the virtual key, its budgets and rate limits, then its relay grants: a key that
+    holds no grant for this relay is refused with 403 before any upstream
+    effect. A billable call with a 2xx reply is counted and charged what the relay's usage mapping computes;
+    every call is written to Relay Logs. Routes that match no `routes[]` entry are refused with 404 unless
+    the relay sets `skip_route_check`.
+
+    Error responses generated by Bifrost itself use the standard error envelope. Error responses from the
+    upstream are forwarded with the upstream's status and body.
+  responses:
+    "400":
+      description: Malformed path (not rooted, `//`, backslashes or `..`), a request header sent under two spellings, or a request body the usage mapping cannot measure
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/inference/common.yaml#/BifrostError"
+    "401":
+      $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+    "403":
+      description: The virtual key has no grant for this relay, or a budget or rate limit refused the call
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/inference/common.yaml#/BifrostError"
+    "404":
+      description: No relay has this name, no route matches the method and path, or the matching route is disabled
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/inference/common.yaml#/BifrostError"
+    "502":
+      description: The upstream reply could not be relayed (for example a buffered response that exceeds the size limit)
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/inference/common.yaml#/BifrostError"
+    "500":
+      $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+relay-call:
+  get:
+    operationId: relayGet
+    summary: Relay a GET request
+    description: *relay-call-description
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-call-parameters/endpoint'
+      - $ref: '#/_relay-call-parameters/path'
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+    responses:
+      "200":
+        description: The upstream response, forwarded with its own status, headers and body (any 2xx the upstream returns is passed through)
+      "400":
+        $ref: '#/_relay-call/responses/400'
+      "401":
+        $ref: '#/_relay-call/responses/401'
+      "403":
+        $ref: '#/_relay-call/responses/403'
+      "404":
+        $ref: '#/_relay-call/responses/404'
+      "500":
+        $ref: '#/_relay-call/responses/500'
+      "502":
+        $ref: '#/_relay-call/responses/502'
+  post:
+    operationId: relayPost
+    summary: Relay a POST request
+    description: *relay-call-description
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-call-parameters/endpoint'
+      - $ref: '#/_relay-call-parameters/path'
+    requestBody:
+      description: Forwarded to the upstream unchanged, with the caller's `Content-Type`.
+      content:
+        "*/*":
+          schema:
+            type: string
+            format: binary
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+    responses:
+      "200":
+        description: The upstream response, forwarded with its own status, headers and body (any 2xx the upstream returns is passed through)
+      "400":
+        $ref: '#/_relay-call/responses/400'
+      "401":
+        $ref: '#/_relay-call/responses/401'
+      "403":
+        $ref: '#/_relay-call/responses/403'
+      "404":
+        $ref: '#/_relay-call/responses/404'
+      "500":
+        $ref: '#/_relay-call/responses/500'
+      "502":
+        $ref: '#/_relay-call/responses/502'
+  put:
+    operationId: relayPut
+    summary: Relay a PUT request
+    description: *relay-call-description
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-call-parameters/endpoint'
+      - $ref: '#/_relay-call-parameters/path'
+    requestBody:
+      description: Forwarded to the upstream unchanged, with the caller's `Content-Type`.
+      content:
+        "*/*":
+          schema:
+            type: string
+            format: binary
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+    responses:
+      "200":
+        description: The upstream response, forwarded with its own status, headers and body (any 2xx the upstream returns is passed through)
+      "400":
+        $ref: '#/_relay-call/responses/400'
+      "401":
+        $ref: '#/_relay-call/responses/401'
+      "403":
+        $ref: '#/_relay-call/responses/403'
+      "404":
+        $ref: '#/_relay-call/responses/404'
+      "500":
+        $ref: '#/_relay-call/responses/500'
+      "502":
+        $ref: '#/_relay-call/responses/502'
+  patch:
+    operationId: relayPatch
+    summary: Relay a PATCH request
+    description: *relay-call-description
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-call-parameters/endpoint'
+      - $ref: '#/_relay-call-parameters/path'
+    requestBody:
+      description: Forwarded to the upstream unchanged, with the caller's `Content-Type`.
+      content:
+        "*/*":
+          schema:
+            type: string
+            format: binary
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+    responses:
+      "200":
+        description: The upstream response, forwarded with its own status, headers and body (any 2xx the upstream returns is passed through)
+      "400":
+        $ref: '#/_relay-call/responses/400'
+      "401":
+        $ref: '#/_relay-call/responses/401'
+      "403":
+        $ref: '#/_relay-call/responses/403'
+      "404":
+        $ref: '#/_relay-call/responses/404'
+      "500":
+        $ref: '#/_relay-call/responses/500'
+      "502":
+        $ref: '#/_relay-call/responses/502'
+  delete:
+    operationId: relayDelete
+    summary: Relay a DELETE request
+    description: *relay-call-description
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-call-parameters/endpoint'
+      - $ref: '#/_relay-call-parameters/path'
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+    responses:
+      "200":
+        description: The upstream response, forwarded with its own status, headers and body (any 2xx the upstream returns is passed through)
+      "400":
+        $ref: '#/_relay-call/responses/400'
+      "401":
+        $ref: '#/_relay-call/responses/401'
+      "403":
+        $ref: '#/_relay-call/responses/403'
+      "404":
+        $ref: '#/_relay-call/responses/404'
+      "500":
+        $ref: '#/_relay-call/responses/500'
+      "502":
+        $ref: '#/_relay-call/responses/502'
+  head:
+    operationId: relayHead
+    summary: Relay a HEAD request
+    description: *relay-call-description
+    tags:
+      - Relays
+    parameters:
+      - $ref: '#/_relay-call-parameters/endpoint'
+      - $ref: '#/_relay-call-parameters/path'
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+      - ApiKeyAuth: []
+    responses:
+      "200":
+        description: The upstream response headers, forwarded with the upstream's status (any 2xx the upstream returns is passed through)
+      "400":
+        $ref: '#/_relay-call/responses/400'
+      "401":
+        $ref: '#/_relay-call/responses/401'
+      "403":
+        $ref: '#/_relay-call/responses/403'
+      "404":
+        $ref: '#/_relay-call/responses/404'
+      "500":
+        $ref: '#/_relay-call/responses/500'
+      "502":
+        $ref: '#/_relay-call/responses/502'

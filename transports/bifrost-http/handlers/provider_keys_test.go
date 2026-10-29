@@ -342,6 +342,11 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: secret("mantle-secret-key-current"),
 		},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey: secret("sagemaker-access-key-current"),
+			SecretKey: secret("sagemaker-secret-key-current"),
+			RoleARN:   secretPtr("arn:aws:iam::123456789012:role/sagemaker-current"),
+		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
@@ -362,6 +367,11 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
 			SecretKey: staleMask("mant", "0006"),
 		},
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey: staleMask("sage", "0010"),
+			SecretKey: staleMask("sags", "0011"),
+			RoleARN:   secretPtr(staleMaskValue("arn:", "rent")),
+		},
 		VLLMKeyConfig:       &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
 		OllamaKeyConfig:     &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
 		SGLKeyConfig:        &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
@@ -380,6 +390,9 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"bedrock access key", merged.BedrockKeyConfig.AccessKey.GetValue(), oldRaw.BedrockKeyConfig.AccessKey.GetValue()},
 		{"bedrock session token", merged.BedrockKeyConfig.SessionToken.GetValue(), oldRaw.BedrockKeyConfig.SessionToken.GetValue()},
 		{"mantle secret key", merged.BedrockMantleKeyConfig.SecretKey.GetValue(), oldRaw.BedrockMantleKeyConfig.SecretKey.GetValue()},
+		{"sagemaker access key", merged.SageMakerKeyConfig.AccessKey.GetValue(), oldRaw.SageMakerKeyConfig.AccessKey.GetValue()},
+		{"sagemaker secret key", merged.SageMakerKeyConfig.SecretKey.GetValue(), oldRaw.SageMakerKeyConfig.SecretKey.GetValue()},
+		{"sagemaker role arn", merged.SageMakerKeyConfig.RoleARN.GetValue(), oldRaw.SageMakerKeyConfig.RoleARN.GetValue()},
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
@@ -465,6 +478,9 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 		{"bedrock ok", schemas.Bedrock, schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: region}}, ""},
 		{"mantle missing region", schemas.BedrockMantle, schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{}}, "bedrock_mantle_key_config.region"},
 		{"mantle ok", schemas.BedrockMantle, schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Region: region}}, ""},
+		{"sagemaker missing region", schemas.SageMaker, schemas.Key{SageMakerKeyConfig: &schemas.SageMakerKeyConfig{}}, "sagemaker_key_config.region"},
+		{"sagemaker nil config", schemas.SageMaker, schemas.Key{}, "sagemaker_key_config.region"},
+		{"sagemaker ok", schemas.SageMaker, schemas.Key{SageMakerKeyConfig: &schemas.SageMakerKeyConfig{Region: region}}, ""},
 		{"vllm missing url", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{ModelName: "m"}}, "vllm_key_config.url"},
 		{"vllm missing model_name", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://vllm:8000")}}, "vllm_key_config.model_name"},
 		{"vllm ok", schemas.VLLM, schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar("http://vllm:8000"), ModelName: "m"}}, ""},
@@ -1110,6 +1126,16 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			want403: true,
 		},
 		{
+			name:     "update sagemaker runtime endpoint override",
+			provider: schemas.SageMaker,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "sagemaker-key", Weight: 1,
+				SageMakerKeyConfig: &schemas.SageMakerKeyConfig{Region: schemas.NewSecretVar("us-east-1")},
+			},
+			body:    `{"weight":1,"sagemaker_key_config":{"region":"us-east-1","endpoints":{"runtime":"evil.example.com"}}}`,
+			want403: true,
+		},
+		{
 			name:     "update azure key adding a per-alias endpoint",
 			provider: schemas.Azure,
 			stored: &schemas.Key{
@@ -1298,6 +1324,8 @@ func TestProviderKeyRegion_RejectsHostShapedValues(t *testing.T) {
 		{name: "bedrock alias valid region", provider: schemas.Bedrock, body: `{"name":"k","weight":1,"bedrock_key_config":{"access_key":"AKIAEXAMPLE","secret_key":"secret","region":"us-east-1"},"aliases":{"claude":{"model_id":"anthropic.claude-3","region":"eu-west-1"}}}`, wantStatus: fasthttp.StatusOK},
 		{name: "vertex host-shaped region", provider: schemas.Vertex, body: `{"name":"k","weight":1,"vertex_key_config":{"project_id":"p","region":"attacker.example/x?","auth_credentials":"{}"}}`, wantStatus: fasthttp.StatusBadRequest},
 		{name: "mantle host-shaped region", provider: schemas.BedrockMantle, body: `{"name":"k","weight":1,"bedrock_mantle_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "sagemaker host-shaped region", provider: schemas.SageMaker, body: `{"name":"k","weight":1,"sagemaker_key_config":{"region":"evil.example/#"}}`, wantStatus: fasthttp.StatusBadRequest},
+		{name: "sagemaker valid region", provider: schemas.SageMaker, body: `{"name":"k","weight":1,"sagemaker_key_config":{"region":"us-east-1"}}`, wantStatus: fasthttp.StatusOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

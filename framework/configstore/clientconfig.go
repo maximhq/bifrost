@@ -120,6 +120,7 @@ type ClientConfig struct {
 	MCPToolExecutionTimeout                 int                                   `json:"mcp_tool_execution_timeout"`                    // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel                 string                                `json:"mcp_code_mode_binding_level"`                   // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                     int                                   `json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
+	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
@@ -668,7 +669,7 @@ type ProviderConfig struct {
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
-	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP passthrough endpoints may forward
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP relays may forward
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -772,6 +773,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if len(key.AzureKeyConfig.Scopes) > 0 {
 				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
+			azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
+			azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
 
@@ -855,6 +858,30 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
+		}
+
+		// Redact SageMaker key config if present
+		if key.SageMakerKeyConfig != nil {
+			smConfig := &schemas.SageMakerKeyConfig{}
+			smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
+			smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
+			if key.SageMakerKeyConfig.SessionToken != nil {
+				smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
+			}
+			if key.SageMakerKeyConfig.Region != nil {
+				smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
+			}
+			if key.SageMakerKeyConfig.RoleARN != nil {
+				smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
+			}
+			if key.SageMakerKeyConfig.ExternalID != nil {
+				smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
+			}
+			if key.SageMakerKeyConfig.RoleSessionName != nil {
+				smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
+			}
+			smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
+			redactedConfig.Keys[i].SageMakerKeyConfig = smConfig
 		}
 
 		if key.VLLMKeyConfig != nil {
@@ -1231,6 +1258,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash SageMakerKeyConfig
+	if key.SageMakerKeyConfig != nil {
+		data, err := sonic.Marshal(key.SageMakerKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Aliases (encoded by the caller, see GenerateKeyHash).
 	if aliases != nil {
 		hash.Write(aliases)
@@ -1397,6 +1432,16 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		}
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
+	}
+	// Hash relay grants only when the key declares them, so every key that predates
+	// relays keeps its hash. Grant names are sorted so file order cannot move it.
+	if vk.RelayGrants != nil {
+		names := make([]string, 0, len(vk.RelayGrants))
+		for _, g := range vk.RelayGrants {
+			names = append(names, g.RelayName)
+		}
+		sort.Strings(names)
+		hash.Write([]byte("relayGrants:" + strings.Join(names, ",")))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -2113,6 +2158,26 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 	}
 
+	// Only a set value contributes, so existing hashes are unchanged.
+	if m.MaxProtocolVersion != "" {
+		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
+	}
+	// nil (expose all) contributes nothing; [] and listed entries do.
+	for _, list := range []struct {
+		name  string
+		value schemas.WhiteList
+	}{{"prompts_to_expose", m.PromptsToExpose}, {"resources_to_expose", m.ResourcesToExpose}} {
+		if list.value != nil {
+			// JSON keeps entry boundaries: ["a,b"] and ["a","b"] hash apart.
+			data, err := sonic.Marshal([]string(list.value))
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte(list.name + ":"))
+			hash.Write(data)
+		}
+	}
+
 	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to
 	// the declared header-name schema in config.json drift the hash.
 	if len(m.PerUserHeaderKeys) > 0 {
@@ -2368,6 +2433,132 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	hashAgentUpstreamAuth(hash, "discovery_auth", r.DiscoveryAuth)
 	hashAgentUpstreamAuth(hash, "runtime_auth", r.RuntimeAuth)
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// GenerateRelayHash generates a SHA256 hash of a relay as config.json declares it, the way
+// ProviderConfig.GenerateConfigHash hashes a provider: each field is written on its own and each
+// optional block only when set, so a field added to RelayConfig does not move the hash of every
+// stored relay on upgrade. This is used to detect changes between config.json and the stored row.
+func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
+	hash := sha256.New()
+
+	// Hash Name, BaseURL and Description
+	hash.Write([]byte(cfg.Name))
+	hash.Write([]byte("baseURL:" + cfg.BaseURL))
+	if cfg.Description != "" {
+		hash.Write([]byte("description:" + cfg.Description))
+	}
+
+	// Hash Auth
+	data, err := sonic.Marshal(cfg.Auth)
+	if err != nil {
+		return "", err
+	}
+	hash.Write([]byte("auth:"))
+	hash.Write(data)
+
+	// Hash Credential. Every secret here and below hashes its reference, like a provider key's
+	// value: the row stores the reference and resolves it on read, so a rotated value is not a change.
+	if cfg.Credential != nil {
+		hashRelaySecret(hash, "credential", cfg.Credential.Value)
+		if aws := cfg.Credential.AWS; aws != nil {
+			hash.Write([]byte("credentialAWS:"))
+			hashRelaySecret(hash, "credentialAWS:accessKey", aws.AccessKey)
+			hashRelaySecret(hash, "credentialAWS:secretKey", aws.SecretKey)
+			hashRelaySecret(hash, "credentialAWS:sessionToken", aws.SessionToken)
+			hashRelaySecret(hash, "credentialAWS:region", aws.Region)
+			hashRelaySecret(hash, "credentialAWS:roleARN", aws.RoleARN)
+			hashRelaySecret(hash, "credentialAWS:externalID", aws.ExternalID)
+			hashRelaySecret(hash, "credentialAWS:sessionName", aws.SessionName)
+		}
+	}
+
+	// Hash ExtraHeaders (sorted for deterministic hashing)
+	if len(cfg.ExtraHeaders) > 0 {
+		names := make([]string, 0, len(cfg.ExtraHeaders))
+		for name := range cfg.ExtraHeaders {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			value := cfg.ExtraHeaders[name]
+			hashRelaySecret(hash, "extraHeader:"+name, &value)
+		}
+	}
+
+	// Hash Network
+	if cfg.Network != nil {
+		data, err := sonic.Marshal(cfg.Network)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("network:"))
+		hash.Write(data)
+	}
+
+	// Hash ProxyConfig
+	if p := cfg.ProxyConfig; p != nil {
+		hash.Write([]byte("proxyConfig:" + string(p.Type)))
+		hashRelaySecret(hash, "proxyConfig:url", p.URL)
+		hashRelaySecret(hash, "proxyConfig:username", p.Username)
+		hashRelaySecret(hash, "proxyConfig:password", p.Password)
+		hashRelaySecret(hash, "proxyConfig:caCertPEM", p.CACertPEM)
+	}
+
+	// Hash Usage
+	if cfg.Usage != nil {
+		data, err := sonic.Marshal(cfg.Usage)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("usage:"))
+		hash.Write(data)
+	}
+
+	// Hash Streaming
+	if cfg.Streaming != nil {
+		data, err := sonic.Marshal(cfg.Streaming)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("streaming:"))
+		hash.Write(data)
+	}
+
+	// Hash Routes in file order (the first match wins); route headers are a map, so sort keys
+	if len(cfg.Routes) > 0 {
+		data, err := providerUtils.MarshalSorted(cfg.Routes)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("routes:"))
+		hash.Write(data)
+	}
+
+	// Hash SkipRouteCheck
+	if cfg.SkipRouteCheck {
+		hash.Write([]byte("skipRouteCheck"))
+	}
+
+	// Hash IgnoreUpstreamCost
+	if cfg.IgnoreUpstreamCost {
+		hash.Write([]byte("ignoreUpstreamCost"))
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// hashRelaySecret contributes one relay secret to a relay hash, prefixed with its source type like a
+// provider key's value so a reference and a literal never collide. A nil secret contributes nothing.
+func hashRelaySecret(h hash.Hash, label string, v *schemas.SecretVar) {
+	if v == nil {
+		return
+	}
+	if v.IsFromSecret() {
+		h.Write([]byte(label + ":ref:" + v.GetRawRef()))
+	} else {
+		h.Write([]byte(label + ":val:" + v.Val))
+	}
 }
 
 // GeneratePluginHash generates a SHA256 hash for a plugin.

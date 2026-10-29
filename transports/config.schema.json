@@ -655,6 +655,9 @@
         "bedrock_mantle": {
           "$ref": "#/$defs/provider_with_bedrock_mantle_config"
         },
+        "sagemaker": {
+          "$ref": "#/$defs/provider_with_sagemaker_config"
+        },
         "cohere": {
           "$ref": "#/$defs/provider"
         },
@@ -1446,6 +1449,13 @@
                 "description": "Agent grants directly assigned to this virtual key (empty array means no agents allowed, deny-by-default)",
                 "items": {
                   "$ref": "#/$defs/virtual_key_agent_grant"
+                }
+              },
+              "relay_grants": {
+                "type": "array",
+                "description": "Relays this virtual key may call, one by one (empty means no relays allowed, deny-by-default)",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_relay_grant"
                 }
               }
             },
@@ -2323,6 +2333,13 @@
         "additionalProperties": false
       }
     },
+    "relays": {
+      "type": "array",
+      "description": "Relays reconciled into the config store at startup, before governance so virtual keys can grant them. Matching is by name with hash-based change detection; in config.json source-of-truth mode stored endpoints absent from this list are pruned.",
+      "items": {
+        "$ref": "#/$defs/relay"
+      }
+    },
     "mcp": {
       "type": "object",
       "description": "Model Context Protocol configuration",
@@ -2336,6 +2353,10 @@
         },
         "tool_manager_config": {
           "$ref": "#/$defs/mcp_tool_manager_config"
+        },
+        "max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Newest MCP protocol version Bifrost offers to upstream MCP servers. 'auto' uses the newest version Bifrost supports. MCP servers can override it with their own max_protocol_version. Omitted keeps the stored value: deployments upgraded with existing MCP servers start at '2025-06-18', the version they used before."
         },
         "tool_sync_interval": {
           "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
@@ -3529,13 +3550,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS/Azure Blob while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "azure"
               ],
               "description": "Object storage backend type"
             },
@@ -3569,13 +3591,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+              "description": "Bucket name, or Azure Blob container name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -3593,7 +3612,7 @@
                 "json",
                 "parquet"
               ],
-              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 only. Default: json",
+              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 and azure. Default: json",
               "default": "json"
             },
             "compression": {
@@ -3656,7 +3675,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -3904,9 +3923,12 @@
             "additionalProperties": false
           },
           "else": {
+            "if": { "properties": { "type": { "const": "azure" } } },
+            "then": { "$ref": "#/$defs/azure_object_storage" },
+            "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -4029,6 +4051,7 @@
               "compression": true
             },
             "additionalProperties": false
+            }
           }
         },
         "object_storage_exclude_request_types": {
@@ -5410,6 +5433,476 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "relay_secret": {
+      "description": "A literal value, an env.VAR_NAME reference, or a structured secret reference (vault-backed secrets are stored as references).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "plain_text",
+                "env",
+                "vault"
+              ]
+            },
+            "env_var": {
+              "type": "string"
+            },
+            "from_env": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "properties": {
+                "value": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "ref": {
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "anyOf": [
+                {
+                  "required": [
+                    "type"
+                  ]
+                },
+                {
+                  "required": [
+                    "value"
+                  ]
+                }
+              ]
+            },
+            {
+              "properties": {
+                "env_var": {
+                  "minLength": 1
+                },
+                "from_env": {
+                  "const": true
+                }
+              },
+              "required": [
+                "env_var",
+                "from_env"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "relay_auth_config": {
+      "type": "object",
+      "description": "How the endpoint's credential is presented to the upstream",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "header",
+            "query",
+            "basic",
+            "aws_sigv4",
+            "none"
+          ],
+          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; aws_sigv4: SigV4 with the endpoint's credential.aws; none: nothing injected (default bearer)"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "Header that carries the key (auth.type header)"
+        },
+        "query_param": {
+          "type": "string",
+          "description": "Query parameter that carries the key (auth.type query)"
+        },
+        "value_prefix": {
+          "type": "string",
+          "description": "Literal prefix placed before the key value (auth.type header)"
+        },
+        "aws": {
+          "type": "object",
+          "description": "SigV4 settings (auth.type aws_sigv4)",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$",
+              "description": "SigV4 signing name, e.g. textract or translate. Requests are signed for credential.aws.region"
+            }
+          },
+          "required": [
+            "service"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_usage_config": {
+      "type": "object",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read. On the endpoint, a field left empty reads nothing; on a route, an empty field inherits the endpoint's value and reads nothing only when it is still empty after that (a route cannot switch an endpoint path off by leaving it blank). Negative numbers are ignored",
+      "properties": {
+        "model_path": {
+          "type": "string",
+          "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Stored on the log row and checked against virtual-key model restrictions. Unset reads no model"
+        },
+        "model_source": {
+          "type": "string",
+          "enum": [
+            "body",
+            "query"
+          ],
+          "description": "Where model_path points: body (default), a JSON field of the request body; or query, a query parameter (Deepgram's ?model=nova-3)"
+        },
+        "input_tokens_path": {
+          "type": "string",
+          "description": "Response body path for input tokens"
+        },
+        "output_tokens_path": {
+          "type": "string",
+          "description": "Response body path for output tokens"
+        },
+        "total_tokens_path": {
+          "type": "string",
+          "description": "Response body path for total tokens"
+        },
+        "cost_path": {
+          "type": "string",
+          "description": "Response body path for an endpoint-reported USD cost; an array of numbers is summed"
+        },
+        "cost_per_request": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat USD fee added to every billable call; on a route, 0 waives the endpoint fee"
+        },
+        "units_path": {
+          "type": "string",
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes or body_chars"
+        },
+        "units_source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "request"
+          ],
+          "description": "Body the quantity is read from: the upstream response (default) or the caller's request, which is what per-character APIs bill on"
+        },
+        "units_measure": {
+          "type": "string",
+          "enum": [
+            "value",
+            "chars",
+            "body_bytes",
+            "body_chars"
+          ],
+          "description": "value: the number at units_path (default); chars: the character count of the JSON string at units_path; body_bytes: the byte length of the whole body; body_chars: the character count of the whole body, any content type (what per-character APIs such as Azure Speech bill)"
+        },
+        "cost_per_unit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
+        },
+        "units_block_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bill per started block of this many raw units: 100 for an API priced per 100 characters. Default exact"
+        },
+        "units_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Least number of billed units once a quantity was read. Default 0"
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_streaming_config": {
+      "type": "object",
+      "description": "Paths that are always relayed as streams. Otherwise a route's stream flag wins, and without one the upstream's reply decides: text/event-stream is streamed, anything else is read and priced. Nothing the caller sends selects streaming",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Rooted segment globs that always stream, e.g. /v1/stream/**",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "relay_route_config": {
+      "type": "object",
+      "description": "Overrides for one upstream operation",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "false refuses requests matching this route with 404, even when skip_route_check is on. Defaults to true"
+        },
+        "billable": {
+          "type": "boolean",
+          "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers that must also match for this route: header name (case-insensitive) to value glob. AWS JSON APIs send every operation to POST / and name it in X-Amz-Target, so one route per operation is {\"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"} or a glob such as Textract.Get*",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "Forces the streaming or buffered relay for this route"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        }
+      },
+      "required": [
+        "method",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "relay": {
+      "type": "object",
+      "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$",
+          "description": "Served at /relay/{name}; immutable"
+        },
+        "description": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Absolute http(s) upstream origin and base path every request is pinned under"
+        },
+        "auth": {
+          "$ref": "#/$defs/relay_auth_config"
+        },
+        "credential": {
+          "type": "object",
+          "description": "The one secret the endpoint signs in with: value for bearer, header, query and basic auth; aws for aws_sigv4. Omit for auth none.",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/relay_secret"
+            },
+            "aws": {
+              "type": "object",
+              "properties": {
+                "access_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "secret_key": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_token": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "region": {
+                  "$ref": "#/$defs/relay_secret",
+                  "description": "SigV4 signing region"
+                },
+                "role_arn": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "external_id": {
+                  "$ref": "#/$defs/relay_secret"
+                },
+                "session_name": {
+                  "$ref": "#/$defs/relay_secret"
+                }
+              },
+              "required": [
+                "region"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "extra_headers": {
+          "type": "object",
+          "description": "Operator headers sent on every request; a caller cannot replace them",
+          "additionalProperties": {
+            "$ref": "#/$defs/relay_secret"
+          }
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Whole-response timeout for buffered calls (default 60)"
+            },
+            "stream_idle_timeout_in_seconds": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Max silence between stream chunks (default 60)"
+            },
+            "max_conns_per_host": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Default 5000"
+            },
+            "insecure_skip_verify": {
+              "type": "boolean"
+            },
+            "ca_cert_pem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config",
+          "description": "Outbound proxy; omit to inherit the global proxy when it is enabled for inference"
+        },
+        "usage": {
+          "$ref": "#/$defs/relay_usage_config"
+        },
+        "streaming": {
+          "$ref": "#/$defs/relay_streaming_config"
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relay_route_config"
+          },
+          "description": "Upstream operations, first match wins; only listed routes are relayed unless skip_route_check is set"
+        },
+        "skip_route_check": {
+          "type": "boolean",
+          "description": "Relay requests that match no route instead of refusing them with 404"
+        },
+        "ignore_upstream_cost": {
+          "type": "boolean",
+          "description": "Ignore cost_path values; the operator's fee and unit pricing still apply"
+        }
+      },
+      "required": [
+        "name",
+        "base_url"
+      ],
+      "additionalProperties": false
+    },
+    "virtual_key_relay_grant": {
+      "type": "object",
+      "properties": {
+        "relay_name": {
+          "type": "string",
+          "description": "Name of a relay this key may call"
+        }
+      },
+      "required": [
+        "relay_name"
+      ],
+      "additionalProperties": false
+    },
+    "azure_storage_secret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference.",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "azure_object_storage": {
+      "type": "object",
+      "description": "Azure Blob Storage. Supply a connection string, or a Blob service endpoint to use DefaultAzureCredential (including workload identity). Authentication is independent of inference-provider credentials.",
+      "properties": {
+        "type": { "const": "azure" },
+        "bucket": { "$ref": "#/$defs/azure_storage_secret" },
+        "prefix": true,
+        "compress": true,
+        "format": true,
+        "compression": true,
+        "endpoint": {
+          "$ref": "#/$defs/azure_storage_secret",
+          "description": "Azure Blob service URL for DefaultAzureCredential authentication. Mutually exclusive with connection_string. Supports env var and structured secret references."
+        },
+        "connection_string": {
+          "$ref": "#/$defs/azure_storage_secret",
+          "description": "Azure Storage connection string. Mutually exclusive with endpoint. Supports env var and structured secret references."
+        }
+      },
+      "required": ["type", "bucket"],
+      "oneOf": [
+        { "required": ["endpoint"], "not": { "required": ["connection_string"] } },
+        { "required": ["connection_string"], "not": { "required": ["endpoint"] } }
+      ],
+      "additionalProperties": false
+    },
+    "mcp_max_protocol_version": {
+      "type": "string",
+      "enum": ["auto", "2026-07-28", "2025-11-25", "2025-06-18"],
+      "description": "An MCP protocol version cap: 'auto' (newest supported) or a revision."
+    },
     "warp_config": {
       "type": "object",
       "description": "Warp settings (the dashboard's Settings > Warp page): the models Warp runs on, its behaviour and limits, log search, and topics. Takes the same body as PUT /api/warp/config and goes through the same validation and vector namespace provisioning. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additional_models is replaced whole. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage Warp from the dashboard. The warp feature flag (feature_flags.flags.warp) is separate.",
@@ -6879,11 +7372,11 @@
     },
     "openai_config": {
       "type": "object",
-      "description": "OpenAI-specific provider settings",
+      "description": "OpenAI Responses API settings, honoured by the openai and fireworks providers",
       "properties": {
         "disable_store": {
           "type": "boolean",
-          "description": "Disable OpenAI Responses API conversation storage."
+          "description": "Force store=false on outgoing Responses API requests (openai and fireworks)."
         }
       },
       "additionalProperties": false
@@ -6976,7 +7469,7 @@
     },
     "passthrough_policy": {
       "type": "object",
-      "description": "Routes the HTTP passthrough endpoints (/openai_passthrough, /anthropic_passthrough, /azure_passthrough, /genai_passthrough, /bedrock_passthrough) forward to this provider. Omit to use the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing. A custom provider is reached on its base provider's route with the x-model-provider header, once it has a policy.",
+      "description": "Routes the HTTP relays (/openai_passthrough, /anthropic_passthrough, /azure_passthrough, /genai_passthrough, /bedrock_passthrough) forward to this provider. Omit to use the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing. A custom provider is reached on its base provider's route with the x-model-provider header, once it has a policy.",
       "properties": {
         "allowed_routes": {
           "type": "array",
@@ -7271,6 +7764,14 @@
                     "type": "string",
                     "description": "Per-alias Azure endpoint override (can use env. prefix)."
                   },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_speech_endpoints: send this alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
+                  },
+                  "use_voice_live_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_voice_live_endpoints: send this alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI."
+                  },
                   "project_id": {
                     "type": "string",
                     "description": "Per-alias project override shared across providers: Vertex uses it as the GCP project; Bedrock and Bedrock Mantle send it as the AWS project via the OpenAI-Project / anthropic-workspace-id header (can use env. prefix)."
@@ -7536,6 +8037,68 @@
         }
       ]
     },
+    "sagemaker_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sagemaker_key_config": {
+              "type": "object",
+              "description": "AWS credentials and routing for SageMaker real-time endpoints. Leave access_key and secret_key empty to use the default AWS credential chain. Bifrost mints the SageMaker bearer token from these credentials; a key value is sent verbatim as a pre-minted sagemaker-api-key-... token instead.",
+              "properties": {
+                "access_key": {
+                  "type": "string",
+                  "description": "AWS access key used to mint bearer tokens (can use env. prefix)"
+                },
+                "secret_key": {
+                  "type": "string",
+                  "description": "AWS secret key (can use env. prefix)"
+                },
+                "session_token": {
+                  "type": "string",
+                  "description": "AWS session token for temporary credentials (can use env. prefix)"
+                },
+                "region": {
+                  "type": "string",
+                  "description": "AWS region of the endpoints. A model id may override it with a region prefix: sagemaker/us-west-2/my-endpoint"
+                },
+                "role_arn": {
+                  "type": "string",
+                  "description": "AWS IAM role ARN for AssumeRole (can use env. prefix)"
+                },
+                "external_id": {
+                  "type": "string",
+                  "description": "External ID for AssumeRole (can use env. prefix)"
+                },
+                "session_name": {
+                  "type": "string",
+                  "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Runtime host override, e.g. an interface VPC endpoint, FIPS or dual-stack host. Region is still required: it sets the token's credential scope.",
+                  "properties": {
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the SageMaker runtime (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "region"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
     "vllm_key": {
       "allOf": [
         {
@@ -7779,6 +8342,16 @@
                 "api_version": {
                   "type": "string",
                   "description": "Deprecated: Bifrost now uses the Azure OpenAI v1 API which does not require an api-version parameter."
+                },
+                "use_speech_endpoints": {
+                  "type": "boolean",
+                  "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+                  "default": false
+                },
+                "use_voice_live_endpoints": {
+                  "type": "boolean",
+                  "description": "Send realtime WebSocket sessions to Azure Voice Live (/voice-live/realtime) instead of Azure OpenAI. The WebRTC and client secret routes reject it.",
+                  "default": false
                 }
               },
               "required": [
@@ -8074,6 +8647,57 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/bedrock_mantle_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_and_buffer_size"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)"
+        },
+        "ignore_provider_cost": {
+          "type": "boolean",
+          "description": "Ignore the provider-reported usage.cost and calculate cost from Bifrost's model pricing and pricing overrides (default: false)"
+        },
+        "injected_tools": {
+          "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_sagemaker_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sagemaker_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
@@ -8938,7 +9562,7 @@
             },
             "use_idp_credentials": {
               "type": "boolean",
-              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
+              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Always implied by the id_jag profile, since the identity provider accepts the user's sign-in token only from the app it was issued to. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
             },
             "client_id": {
               "type": "string",
@@ -8951,7 +9575,7 @@
             },
             "authorization_server_url": {
               "type": "string",
-              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0)."
+              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0). Takes an issuer URL, from which the token endpoint is derived, or a full token endpoint URL ending in /token, which is used as is."
             },
             "scopes": {
               "type": "array",
@@ -8959,6 +9583,49 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty (default): the identity provider issues the upstream token directly. 'id_jag' (Bifrost Enterprise): Cross App Access (Okta XAA) \u2014 the identity provider issues an ID-JAG for `audience` (the upstream authorization server's issuer) from the user's SSO session, and the upstream authorization server exchanges it for its own token with the jwt-bearer grant. Users must have signed in to Bifrost through the identity provider."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider. Set it only when the identity provider's connection defines one; Okta rejects a resource it does not expect. Omitted when empty."
+            },
+            "resource_token_endpoint": {
+              "type": "string",
+              "description": "id_jag only: the upstream authorization server's token endpoint. Defaults to the endpoint discovered from the audience's own authorization server metadata (never from what the MCP server advertises), whose issuer must equal the audience and which must list the jwt-bearer grant."
+            },
+            "resource_client_id": {
+              "type": "string",
+              "description": "id_jag only, required: Bifrost's client ID registered at the upstream authorization server. Can use env. or vault. prefix."
+            },
+            "resource_client_secret": {
+              "type": "string",
+              "description": "id_jag only: secret for resource_client_id; omit for a public client or when resource_private_key is set. Can use env. or vault. prefix."
+            },
+            "resource_private_key": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC private key. When set, Bifrost authenticates to the upstream authorization server with private_key_jwt (a client assertion signed with this key, audience the token endpoint) instead of a client secret. Cannot be combined with resource_client_secret. Can use env. or vault. prefix."
+            },
+            "resource_key_id": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion, when the upstream server selects keys by ID. Requires resource_private_key."
+            },
+            "resource_signing_algorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion signing algorithm; empty (default) means RS256. Use an ES algorithm with an EC key. Requires resource_private_key."
+            },
+            "resource_assertion_audience": {
+              "type": "string",
+              "description": "id_jag only: aud claim of the client assertion. Defaults to the upstream token endpoint, which Okta and Entra require; set the authorization server's issuer for servers that expect it instead. Requires resource_private_key."
+            },
+            "resource_client_auth_method": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resource_client_secret is sent. Empty (default) uses HTTP Basic unless the discovered metadata admits only client_secret_post. Set it when resource_token_endpoint is configured, since there is then no discovery. Requires resource_client_secret."
             }
           },
           "required": [
@@ -8966,16 +9633,44 @@
           ],
           "allOf": [
             {
-              "$comment": "client_id is required unless use_idp_credentials is true, in which case the exchange uses the SSO login application's own credentials instead.",
+              "$comment": "Bifrost authenticates to the upstream authorization server with a client secret or a private key, not both.",
+              "not": {
+                "required": ["resource_client_secret", "resource_private_key"]
+              }
+            },
+            {
+              "$comment": "The id_jag profile redeems the ID-JAG as a client of the upstream authorization server.",
+              "if": {
+                "properties": { "profile": { "const": "id_jag" } },
+                "required": ["profile"]
+              },
+              "then": { "required": ["resource_client_id"] }
+            },
+            {
+              "$comment": "client_id is required unless use_idp_credentials is true or the profile is id_jag, in which cases the exchange uses the SSO login application's own credentials instead.",
               "if": {
                 "not": {
-                  "properties": {
-                    "use_idp_credentials": {
-                      "const": true
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "use_idp_credentials": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "use_idp_credentials"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "profile": {
+                          "const": "id_jag"
+                        }
+                      },
+                      "required": [
+                        "profile"
+                      ]
                     }
-                  },
-                  "required": [
-                    "use_idp_credentials"
                   ]
                 }
               },
@@ -9022,6 +9717,11 @@
             "resource": {
               "type": "string",
               "description": "OAuth resource indicator, RFC 8707 (optional: discovered from the MCP server's protected resource metadata when omitted)"
+            },
+            "use_client_metadata_document": {
+              "type": "boolean",
+              "default": false,
+              "description": "Register with Bifrost's Client ID Metadata Document even if the authorization server does not advertise support (for example when discovery fails and the endpoints are entered by hand). Requires Bifrost on a public HTTPS address; cannot be combined with client_id. When off, the document is still used automatically wherever the server advertises support."
             }
           },
           "additionalProperties": false
@@ -9082,6 +9782,24 @@
             "type": "string"
           },
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
+        },
+        "prompts_to_expose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway. ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list."
+        },
+        "resources_to_expose": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resource URIs and URI templates served through Bifrost's MCP gateway. ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list."
+        },
+        "max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Per-client cap on the MCP protocol version Bifrost offers this server. Omit to use the global mcp.max_protocol_version; 'auto' uses the newest version Bifrost supports."
         },
         "tool_sync_interval": {
           "description": "Per-client override for tool sync interval as a Go duration string in whole seconds (e.g. '10m', '90s'; '0s' or omitted = use global). Legacy integer nanoseconds are also accepted and must be a whole number of seconds.",
@@ -10460,6 +11178,15 @@
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
         },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -10556,6 +11283,15 @@
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
         },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -10635,6 +11371,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -10728,6 +11473,15 @@
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
         },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -10806,6 +11560,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -10902,6 +11665,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11037,6 +11809,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11685,6 +12466,13 @@
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
           "default": false
         },
+        "relay_grants": {
+          "type": "array",
+          "description": "Relays keys governed by this access profile may call, one by one",
+          "items": {
+            "$ref": "#/$defs/virtual_key_relay_grant"
+          }
+        },
         "auto_rotation_interval": {
           "type": [
             "string",
@@ -11952,6 +12740,13 @@
           "type": "boolean",
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
+        },
+        "relay_grants": {
+          "type": "array",
+          "description": "Relays requests scoped to this project may call, one by one",
+          "items": {
+            "$ref": "#/$defs/virtual_key_relay_grant"
+          }
         },
         "disable_content_logging": {
           "type": "boolean",
@@ -12428,13 +13223,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for archiving audit events to S3/GCS. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
+          "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "azure"
               ],
               "description": "Object storage backend type"
             },
@@ -12468,13 +13264,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+              "description": "Bucket name, or Azure Blob container name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -12501,7 +13294,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -12747,9 +13540,17 @@
             "additionalProperties": false
           },
           "else": {
+            "if": { "properties": { "type": { "const": "azure" } } },
+            "then": {
+              "allOf": [
+                { "$ref": "#/$defs/azure_object_storage" },
+                { "properties": { "format": false, "compression": false } }
+              ]
+            },
+            "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -12865,6 +13666,7 @@
               "compress": true
             },
             "additionalProperties": false
+            }
           }
         }
       },
@@ -13512,6 +14314,51 @@
       ],
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
+    },
+    "scim_access_profile_resolution_strategy": {
+      "type": "string",
+      "enum": [
+        "all",
+        "order"
+      ],
+      "default": "all",
+      "description": "How many attribute-access-profile grants a user receives when several attributeAccessProfileMappings match: 'all' (default) grants every matching rule's profile; 'order' grants only the profiles of the first rule, in list order, that the user matches. Profiles granted through roles are unaffected."
+    },
+    "scim_token_exchange_hosts": {
+      "type": "array",
+      "description": "Hosts besides the issuer's own that an MCP client's token exchange may be sent to through its authorization_server_url (for example an Okta custom authorization server on another domain). The exchange carries the caller's identity-provider token, so only these hosts may be named. Each entry is a bare host name, with a port only when it needs one; entries are lowercased and deduplicated.",
+      "items": {
+        "type": "string",
+        "pattern": "^\\s*[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[1-9][0-9]{0,4})?\\s*$"
+      }
+    },
+    "scim_cross_app_access": {
+      "type": "object",
+      "description": "Cross App Access (XAA, the ID-JAG profile), inbound: AI clients this identity provider admits for a user exchange a provider-signed ID-JAG at Bifrost's /oauth2/token for a Bifrost token that acts as that user. Needs the governance plugin and client.oauth2_server_config.issuer_url. Client IDs are registered in the dashboard.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn Cross App Access on for this provider."
+        },
+        "accessTokenTtl": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 60,
+              "maximum": 86400
+            }
+          ],
+          "description": "Lifetime in seconds of the Bifrost tokens issued for an ID-JAG, 60 to 86400. 0 or omitted uses the default of 86400 (one day), since Okta caps ID-JAGs per user per resource app per month."
+        },
+        "provisionUsers": {
+          "type": "boolean",
+          "description": "Create a Bifrost user for an assertion that names someone who has none, instead of refusing the grant. Off by default: an ID-JAG carries only an ID and email, so most new users would resolve no role."
+        }
+      },
+      "additionalProperties": false
     },
     "scim_claims_sync_mode": {
       "type": "string",

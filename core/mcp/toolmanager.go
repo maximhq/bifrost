@@ -723,7 +723,7 @@ func (m *ToolsManager) ExecuteTool(
 		if chatResult == nil {
 			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
 		}
-		responsesMessage := chatResult.ToResponsesToolMessage()
+		responsesMessage := schemas.ToolResultForResponses(chatResult).ToResponsesToolMessage()
 		if responsesMessage == nil {
 			return nil, fmt.Errorf("failed to convert tool result to Responses format")
 		}
@@ -777,10 +777,7 @@ func (m *ToolsManager) executeToolInternal(
 
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
-	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-	if executionConfig != nil && executionConfig.ToolExecutionTimeout > 0 {
-		toolExecutionTimeout = executionConfig.ToolExecutionTimeout
-	}
+	toolExecutionTimeout := m.executionTimeout(executionConfig)
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
@@ -807,7 +804,7 @@ func (m *ToolsManager) executeToolInternal(
 	// 401/403/unauthorized/forbidden as non-retryable — those fail
 	// immediately here with zero retries and fall through to the
 	// isAuthFailureErrorText handling below unchanged.
-	toolCallStart := time.Now()
+	toolWait := schemas.BeginUpstreamWait(ctx)
 	var toolResponse *mcp.CallToolResult
 	callErr := ExecuteWithRetry(
 		toolCtx,
@@ -819,7 +816,7 @@ func (m *ToolsManager) executeToolInternal(
 		ToolCallRetryConfig,
 		m.logger,
 	)
-	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))
+	toolWait.End()
 	if callErr != nil {
 		// Set by the recovery below when it gave up because the tool budget ran
 		// out, as opposed to because the reconnect or the retry failed on its
@@ -845,10 +842,12 @@ func (m *ToolsManager) executeToolInternal(
 		//     at all: it is not auth-shaped, and it matches no transient
 		//     substring, so ToolCallRetryConfig does not even retry it. Every
 		//     later call failed the same way until the periodic connection
-		//     checker reconnected, up to a full check interval away.
+		//     checker reconnected, up to a full check interval away. Only on
+		//     revisions that have sessions: mcp-go reports any 404 as a
+		//     terminated session, which on 2026-07-28 it cannot be.
 		//
 		// See attemptCallFailureRecovery for the per-auth-type mechanics.
-		if isAuthFailureErrorText(callErr.Error()) || isDeadSessionError(callErr) {
+		if isAuthFailure(callErr) || (isDeadSessionError(callErr) && hasProtocolSession(clientConn)) {
 			// Recovery runs inside this call's own budget, not the caller's.
 			// The attempt above already spent part of toolCtx, and handing the
 			// parent ctx down instead would let the reconnect wait its full
@@ -864,14 +863,8 @@ func (m *ToolsManager) executeToolInternal(
 			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout)
 			recoveryExhaustedBudget = budgetExhausted
 			if recovered {
-				responseText := extractTextFromMCPResponse(retryResponse, toolName)
-				// Mirrors the non-retry success path below: the retry's own
-				// IsError is the upstream server reporting a failed execution
-				// over an otherwise-successful call, and must reach the model
-				// as a failure the same way, not be silently swallowed just
-				// because the retry itself succeeded at the transport level.
-				retryIsToolError := retryResponse != nil && retryResponse.IsError
-				return createToolResponseMessage(*toolCall, responseText, retryIsToolError), executionConfig.Name, sanitizedToolName, nil
+				// Mirrors the non-retry success path below, IsError included.
+				return createToolResponseMessage(*toolCall, retryResponse, toolName), executionConfig.Name, sanitizedToolName, nil
 			}
 		}
 
@@ -888,18 +881,13 @@ func (m *ToolsManager) executeToolInternal(
 		if recoveryExhaustedBudget {
 			return nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v: %w", toolName, callErr, ErrMCPToolTimeout)
 		}
+		if explained, ok := DescribeUnservableInput(callErr, executionConfig.Name); ok {
+			return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %s: %w", toolName, explained, ErrMCPToolCallFailed)
+		}
 		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
-	// Extract text from MCP response
-	responseText := extractTextFromMCPResponse(toolResponse, toolName)
-
-	// Create tool response message. toolResponse.IsError is the server reporting a
-	// failed execution over a successful call, so it must reach the model as a
-	// failure rather than as ordinary result text. toolResponse is nil-checked for
-	// the same reason extractTextFromMCPResponse checks it above.
-	isToolError := toolResponse != nil && toolResponse.IsError
-	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
+	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, sanitizedToolName, nil
 }
 
 // attemptCallFailureRecovery reacts to a live tool call that failed for a
@@ -984,20 +972,50 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		}
 	}
 
+	var retryResponse *mcp.CallToolResult
+	recovered, budgetExhausted := m.recoverCall(ctx, toolName, state, executionConfig, toolExecutionTimeout, retryOptedOut,
+		func(state *schemas.MCPClientState) bool {
+			_, ok := state.ToolMap[toolName]
+			return ok
+		},
+		func(ctx context.Context, conn *client.Client) error {
+			var err error
+			retryResponse, err = conn.CallTool(ctx, callRequest)
+			return err
+		})
+	if !recovered {
+		return nil, false, budgetExhausted
+	}
+	return retryResponse, true, false
+}
+
+// recoverCall heals the connection a call failed on and, unless retryOptedOut, runs retry once on a
+// fresh one (attemptCallFailureRecovery has the mechanics). serves, when set, reports whether the
+// reconnected client still offers what failed. Returns (recovered, budgetExhausted).
+func (m *ToolsManager) recoverCall(
+	ctx *schemas.BifrostContext,
+	label string,
+	state *schemas.MCPClientState,
+	executionConfig *schemas.MCPClientConfig,
+	toolExecutionTimeout time.Duration,
+	retryOptedOut bool,
+	serves func(*schemas.MCPClientState) bool,
+	retry func(context.Context, *client.Client) error,
+) (bool, bool) {
 	if !m.credStore.RequiresPerCallConnection(executionConfig) {
-		return m.recoverSharedConnection(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout, retryOptedOut)
+		return m.recoverSharedConnection(ctx, label, executionConfig, toolExecutionTimeout, retryOptedOut, serves, retry)
 	}
 
 	if state == nil {
 		// No client state means no connection to re-acquire: nothing to retry.
-		return nil, false, false
+		return false, false
 	}
 
 	if retryOptedOut {
 		// No retry will use the refreshed credential, so the caller's error is
 		// not held up for it; the next call picks it up.
 		go m.forceRefreshDetached(ctx, executionConfig, toolExecutionTimeout)
-		return nil, false, false
+		return false, false
 	}
 
 	if err := m.credStore.ForceRefresh(ctx, executionConfig); err != nil {
@@ -1013,24 +1031,32 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 
 	conn, release, err := m.clientManager.AcquireClientConn(ctx, state)
 	if err != nil {
-		m.logger.Debug("%s Auth-failure retry could not re-acquire a connection for %s: %v", MCPLogPrefix, toolName, err)
-		return nil, false, false
+		m.logger.Debug("%s Auth-failure retry could not re-acquire a connection for %s: %v", MCPLogPrefix, label, err)
+		return false, false
 	}
 	defer release()
 
 	retryCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
-	retryStart := time.Now()
-	retryResponse, retryErr := conn.CallTool(retryCtx, callRequest)
-	schemas.AddUpstreamLatency(ctx, time.Since(retryStart))
+	retryWait := schemas.BeginUpstreamWait(ctx)
+	retryErr := retry(retryCtx, conn)
+	retryWait.End()
 	if retryErr != nil {
-		m.logger.Debug("%s Auth-failure retry also failed for %s: %v", MCPLogPrefix, toolName, retryErr)
-		return nil, false, false
+		m.logger.Debug("%s Auth-failure retry also failed for %s: %v", MCPLogPrefix, label, retryErr)
+		return false, false
 	}
 
-	m.logger.Debug("%s Auth-failure retry succeeded for %s", MCPLogPrefix, toolName)
-	return retryResponse, true, false
+	m.logger.Debug("%s Auth-failure retry succeeded for %s", MCPLogPrefix, label)
+	return true, false
+}
+
+// executionTimeout is config's own tool execution timeout, else the global one.
+func (m *ToolsManager) executionTimeout(config *schemas.MCPClientConfig) time.Duration {
+	if config != nil && config.ToolExecutionTimeout > 0 {
+		return config.ToolExecutionTimeout
+	}
+	return m.toolExecutionTimeout.Load().(time.Duration)
 }
 
 // forceRefreshDetached refreshes config's credential for the caller on ctx
@@ -1059,15 +1085,16 @@ func (m *ToolsManager) forceRefreshDetached(ctx *schemas.BifrostContext, config 
 // surfaces, with the reconnect still running in the background on a timeout.
 func (m *ToolsManager) recoverSharedConnection(
 	ctx *schemas.BifrostContext,
-	toolName string,
-	callRequest mcp.CallToolRequest,
+	label string,
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
 	retryOptedOut bool,
-) (*mcp.CallToolResult, bool, bool) {
+	serves func(*schemas.MCPClientState) bool,
+	retry func(context.Context, *client.Client) error,
+) (bool, bool) {
 	reconnectResult := m.triggerBackgroundReconnect(executionConfig)
 	if retryOptedOut || reconnectResult == nil || executionConfig == nil {
-		return nil, false, false
+		return false, false
 	}
 
 	budget := MCPSharedAuthRetryReconnectBudget
@@ -1086,7 +1113,7 @@ func (m *ToolsManager) recoverSharedConnection(
 	if budget <= 0 {
 		// Only reachable through the branch above, with the deadline already
 		// passed, so deadlineBound is necessarily true here.
-		return nil, false, deadlineBound
+		return false, deadlineBound
 	}
 	waitDeadline := time.Now().Add(budget)
 
@@ -1102,7 +1129,7 @@ func (m *ToolsManager) recoverSharedConnection(
 			// no in-flight operation left and this returns immediately.
 			joined, joinErr := m.clientManager.AwaitReconnect(executionConfig.ID, time.Until(waitDeadline))
 			if !joined || joinErr != nil {
-				return nil, false, false
+				return false, false
 			}
 		}
 	case <-ctx.Done():
@@ -1112,10 +1139,10 @@ func (m *ToolsManager) recoverSharedConnection(
 		// Deadline and cancellation both land here and only the former is a
 		// timeout. Reading ctx.Err() inside this branch is well defined: Done
 		// is already closed, so there is no clock mid-flip to lose a race to.
-		return nil, false, errors.Is(ctx.Err(), context.DeadlineExceeded)
+		return false, errors.Is(ctx.Err(), context.DeadlineExceeded)
 	case <-timer.C:
 		m.logger.Debug("%s Reconnect for %s did not finish within the retry budget; surfacing the original auth failure", MCPLogPrefix, executionConfig.Name)
-		return nil, false, deadlineBound
+		return false, deadlineBound
 	}
 
 	// The reconnect replaces the client state entry, so re-resolve it to pick
@@ -1133,31 +1160,31 @@ func (m *ToolsManager) recoverSharedConnection(
 	// connection.
 	state := m.clientManager.GetClientByName(executionConfig.Name)
 	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
-		return nil, false, false
+		return false, false
 	}
-	if _, ok := state.ToolMap[toolName]; !ok {
-		return nil, false, false
+	if serves != nil && !serves(state) {
+		return false, false
 	}
 	conn, release, err := m.clientManager.AcquireClientConn(ctx, state)
 	if err != nil {
-		m.logger.Debug("%s Auth-failure retry could not acquire the reconnected client for %s: %v", MCPLogPrefix, toolName, err)
-		return nil, false, false
+		m.logger.Debug("%s Auth-failure retry could not acquire the reconnected client for %s: %v", MCPLogPrefix, label, err)
+		return false, false
 	}
 	defer release()
 
 	retryCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
-	retryStart := time.Now()
-	retryResponse, retryErr := conn.CallTool(retryCtx, callRequest)
-	schemas.AddUpstreamLatency(ctx, time.Since(retryStart))
+	retryWait := schemas.BeginUpstreamWait(ctx)
+	retryErr := retry(retryCtx, conn)
+	retryWait.End()
 	if retryErr != nil {
-		m.logger.Debug("%s Auth-failure retry after reconnect also failed for %s: %v", MCPLogPrefix, toolName, retryErr)
-		return nil, false, false
+		m.logger.Debug("%s Auth-failure retry after reconnect also failed for %s: %v", MCPLogPrefix, label, retryErr)
+		return false, false
 	}
 
-	m.logger.Debug("%s Auth-failure retry after reconnect succeeded for %s", MCPLogPrefix, toolName)
-	return retryResponse, true, false
+	m.logger.Debug("%s Auth-failure retry after reconnect succeeded for %s", MCPLogPrefix, label)
+	return true, false
 }
 
 // triggerBackgroundReconnect forces a credential refresh and reconnects a

@@ -8,10 +8,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -385,19 +388,30 @@ func TestReregisterMCPClient_StatusSaysWhoseProblemItIs(t *testing.T) {
 // registration an OAuth-protected MCP server on the operator's own host
 // exposes (the shape of examples/mcps/oauth-demo-server).
 func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
+	server, _ := newLoopbackOAuthMCPServerWithCIMD(t, false)
+	return server
+}
+
+// newLoopbackOAuthMCPServerWithCIMD is newLoopbackOAuthMCPServer, optionally advertising
+// Client ID Metadata Document support. It counts requests to its OAuth endpoints.
+func newLoopbackOAuthMCPServerWithCIMD(t *testing.T, supportsCIMD bool) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
+	var oauthRequests atomic.Int32
 	mux := http.NewServeMux()
 	var server *httptest.Server
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		oauthRequests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":                 server.URL,
-			"authorization_endpoint": server.URL + "/authorize",
-			"token_endpoint":         server.URL + "/token",
-			"registration_endpoint":  server.URL + "/register",
+			"issuer":                                server.URL,
+			"authorization_endpoint":                server.URL + "/authorize",
+			"token_endpoint":                        server.URL + "/token",
+			"registration_endpoint":                 server.URL + "/register",
+			"client_id_metadata_document_supported": supportsCIMD,
 		})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
+		oauthRequests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "loopback-client"})
@@ -407,7 +421,7 @@ func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
 	})
 	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return server
+	return server, &oauthRequests
 }
 
 // TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist pins the fix for MCP
@@ -457,6 +471,67 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			body := string(ctx.Response.Body())
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
 			assert.Contains(t, body, tc.wantBody)
+		})
+	}
+}
+
+// Across the shared and per-user auth types, OAuth ones present Bifrost's Client ID Metadata
+// Document as client_id when the upstream supports it (no dynamic registration), and header ones
+// never contact the authorization server.
+func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
+	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+
+	for _, tc := range []struct {
+		authType   string
+		extra      string // extra request fields
+		wantStatus int    // header types stop at the stub manager's connect
+		wantCIMD   bool
+	}{
+		{authType: "oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		{authType: "per_user_oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		{authType: "headers", extra: `,"headers":{"Authorization":"Bearer shared"}`, wantStatus: fasthttp.StatusInternalServerError},
+		{authType: "per_user_headers", extra: `,"per_user_header_keys":["Authorization"],"user_headers":{"Authorization":"Bearer sample"}`, wantStatus: fasthttp.StatusUnprocessableEntity},
+	} {
+		t.Run(tc.authType, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			server, oauthRequests := newLoopbackOAuthMCPServerWithCIMD(t, true)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
+				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
+			}}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"cimd_` + tc.authType + `","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `"` + tc.extra + `}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			if !tc.wantCIMD {
+				assert.Contains(t, body, "manager must not be reached", "reaches the connection step")
+				assert.NotContains(t, body, "authorize_url")
+				assert.Zero(t, oauthRequests.Load(), "header auth never contacts the authorization server")
+				return
+			}
+			var resp struct {
+				AuthorizeURL string `json:"authorize_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			authorize, err := url.Parse(resp.AuthorizeURL)
+			require.NoError(t, err)
+			assert.Equal(t, documentURL, authorize.Query().Get("client_id"))
+			assert.Equal(t, int32(1), oauthRequests.Load(), "metadata fetched once, no dynamic registration")
 		})
 	}
 }
@@ -664,4 +739,435 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 	for in, want := range cases {
 		assert.Equal(t, want, sanitizeMCPLibraryServerName(in), in)
 	}
+}
+
+// The use_client_metadata_document toggle reaches the provider on every bootstrap path: the create
+// request (through InitiateOAuthFlow) and a config.json client's stored pending config.
+func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
+	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil)
+	_, err := handler.InitiateOAuthFlow(context.Background(), OAuthInitiationRequest{
+		ClientID:                  schemas.NewSecretVar("preset"),
+		ClientMetadataURL:         "https://bifrost.example.com/api/oauth/client-metadata.json",
+		UseClientMetadataDocument: true,
+	})
+	require.ErrorIs(t, err, oauth2.ErrClientMetadataDocumentWithClientID, "the toggle was dropped before the provider")
+
+	req := pendingOAuthConfigToRequest(&schemas.OAuth2Config{UseClientMetadataDocument: true})
+	assert.True(t, req.UseClientMetadataDocument, "a config.json client's toggle survives to initiate-verification")
+}
+
+// A toggle the caller set wrongly is a 400, not a server error.
+func TestOAuthBootstrapErrorStatus(t *testing.T) {
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentWithClientID)))
+	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
+	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
+}
+
+// capturingAddMCPManager records the config the add handler hands the manager, then stops the add.
+type capturingAddMCPManager struct {
+	failingMCPManager
+	got *schemas.MCPClientConfig
+}
+
+func (m *capturingAddMCPManager) AddMCPClient(_ context.Context, config *schemas.MCPClientConfig) error {
+	m.got = config
+	return errors.New("stop after capture")
+}
+
+func (m *capturingAddMCPManager) VerifyHeadersConnection(_ context.Context, config *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
+	m.got = config
+	return nil, errors.New("stop after capture")
+}
+
+// A new MCP client follows the global max protocol version unless the caller sets one; an
+// unsupported value is rejected before anything is dialed.
+func TestAddMCPClient_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, want string
+		wantStatus        int
+	}{
+		{"omitted follows the global setting", ``, "", fasthttp.StatusInternalServerError},
+		{"explicit cap is kept", `,"max_protocol_version":"2025-11-25"`, schemas.MCPProtocolVersion20251125, fasthttp.StatusInternalServerError},
+		{"unsupported value rejected", `,"max_protocol_version":"2024-11-05"`, "", fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			manager := &capturingAddMCPManager{}
+			h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.SetBodyString(`{"name":"capped","connection_type":"http","connection_string":"https://mcp.example.com/mcp","auth_type":"headers","headers":{"Authorization":"Bearer x"}` + tc.field + `}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				assert.Nil(t, manager.got, "rejected before dialing")
+				assert.Contains(t, string(ctx.Response.Body()), "max_protocol_version")
+				return
+			}
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.want, manager.got.MaxProtocolVersion)
+		})
+	}
+}
+
+// capturingUpdateMCPManager records the config a live update hands the manager.
+type capturingUpdateMCPManager struct {
+	fakeMCPManagerVerifyOnly
+	got *schemas.MCPClientConfig
+}
+
+func (m *capturingUpdateMCPManager) UpdateMCPClient(_ context.Context, _ string, config *schemas.MCPClientConfig) error {
+	m.got = config
+	return nil
+}
+
+// capturingUpdateConfigStore records the row the update handler writes.
+type capturingUpdateConfigStore struct {
+	mockUpdateConfigStore
+	row *configtables.TableMCPClient
+}
+
+func (s *capturingUpdateConfigStore) UpdateMCPClientConfig(_ context.Context, _ string, row *configtables.TableMCPClient) error {
+	s.row = row
+	return nil
+}
+
+// An update sets, keeps or rejects the per-client max protocol version, and both the stored row and
+// the live config get the result.
+func TestUpdateMCPClient_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		want       string
+		wantStatus int
+	}{
+		{"set", `{"max_protocol_version":"2025-06-18"}`, schemas.MCPProtocolVersion20250618, fasthttp.StatusOK},
+		{"back to the global setting", `{"max_protocol_version":""}`, "", fasthttp.StatusOK},
+		{"omitted keeps the current value", `{"is_code_mode_client":false}`, schemas.MCPProtocolVersion20251125, fasthttp.StatusOK},
+		{"unsupported value rejected", `{"max_protocol_version":"latest"}`, "", fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			existing := &schemas.MCPClientConfig{
+				ID: "client-1", Name: "capped", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
+				MaxProtocolVersion: schemas.MCPProtocolVersion20251125,
+			}
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}}
+			store := &capturingUpdateConfigStore{}
+			cfg.ConfigStore = store
+			manager := &capturingUpdateMCPManager{}
+			h := &MCPHandler{store: cfg, mcpManager: manager}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", existing.ID)
+			ctx.Request.SetBodyString(tc.body)
+			h.updateMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus != fasthttp.StatusOK {
+				assert.Nil(t, store.row, "nothing stored")
+				assert.Nil(t, manager.got, "nothing applied")
+				return
+			}
+			require.NotNil(t, store.row)
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.want, store.row.MaxProtocolVersion, "stored")
+			assert.Equal(t, tc.want, manager.got.MaxProtocolVersion, "applied live")
+		})
+	}
+}
+
+// An ordinary settings edit of a client with saved discovery keeps its saved resources, prompts and
+// instructions: the edit carries the saved tools forward, and that is not a new discovery.
+func TestUpdateMCPClient_SettingsEditKeepsSavedSnapshot(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := newTestConfigStore(t)
+	existing := &schemas.MCPClientConfig{
+		ID: "client-1", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}
+	require.NoError(t, store.CreateMCPClientConfig(ctx, existing))
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, existing.ID, &schemas.MCPDiscovery{
+		Tools:        map[string]schemas.ChatTool{"docs-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "docs-search"}}},
+		Instructions: "Use the handbook first.",
+		Resources:    []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+		Prompts:      []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+	}))
+	cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}, ConfigStore: store}
+	h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}}
+	// Init attaches a server, so the store's queries can use the request as their context.
+	var req fasthttp.Request
+	req.SetBodyString(`{"is_code_mode_client":true}`)
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.Init(&req, nil, nil)
+	reqCtx.SetUserValue("id", existing.ID)
+	h.updateMCPClient(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	row, err := store.GetMCPClientByID(ctx, existing.ID)
+	require.NoError(t, err)
+	assert.True(t, row.IsCodeModeClient, "fixture check: the edit was stored")
+	assert.Len(t, row.DiscoveredTools, 1)
+	assert.Len(t, row.DiscoveredResources, 1, "the saved resources survive the edit")
+	assert.Len(t, row.DiscoveredPrompts, 1, "the saved prompts survive the edit")
+	assert.Equal(t, "Use the handbook first.", row.DiscoveredInstructions)
+}
+
+// A new client exposes every prompt and resource unless the caller lists them; an invalid list is
+// rejected before anything is dialed.
+func TestAddMCPClient_ExposeLists(t *testing.T) {
+	for _, tc := range []struct {
+		name, field        string
+		prompts, resources schemas.WhiteList
+		wantStatus         int
+	}{
+		{"omitted exposes everything", ``, nil, nil, fasthttp.StatusInternalServerError},
+		{"lists are kept", `,"prompts_to_expose":[],"resources_to_expose":["repo://{owner}/{name}"]`, schemas.WhiteList{}, schemas.WhiteList{"repo://{owner}/{name}"}, fasthttp.StatusInternalServerError},
+		{"invalid list rejected", `,"prompts_to_expose":["*","review"]`, nil, nil, fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			manager := &capturingAddMCPManager{}
+			h := &MCPHandler{store: &lib.Config{ConfigStore: newRealOAuth2Store(t), ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.SetBodyString(`{"name":"docs","connection_type":"http","connection_string":"https://mcp.example.com/mcp","auth_type":"headers","headers":{"Authorization":"Bearer x"}` + tc.field + `}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				assert.Nil(t, manager.got, "rejected before dialing")
+				assert.Contains(t, string(ctx.Response.Body()), "prompts_to_expose")
+				return
+			}
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.prompts, manager.got.PromptsToExpose)
+			assert.Equal(t, tc.resources, manager.got.ResourcesToExpose)
+		})
+	}
+}
+
+// An update sets, keeps or rejects the allow-lists, and both the stored row and the live config get the result.
+func TestUpdateMCPClient_ExposeLists(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		want       schemas.WhiteList
+		wantStatus int
+	}{
+		{"set to none", `{"prompts_to_expose":[]}`, schemas.WhiteList{}, fasthttp.StatusOK},
+		{"back to all", `{"prompts_to_expose":["*"]}`, schemas.WhiteList{"*"}, fasthttp.StatusOK},
+		{"omitted keeps the current list", `{"is_code_mode_client":false}`, schemas.WhiteList{"review"}, fasthttp.StatusOK},
+		{"invalid list rejected", `{"resources_to_expose":["file:///a","FILE:///A"]}`, nil, fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			existing := &schemas.MCPClientConfig{
+				ID: "client-1", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
+				PromptsToExpose: schemas.WhiteList{"review"},
+			}
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}}
+			store := &capturingUpdateConfigStore{}
+			cfg.ConfigStore = store
+			manager := &capturingUpdateMCPManager{}
+			h := &MCPHandler{store: cfg, mcpManager: manager}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", existing.ID)
+			ctx.Request.SetBodyString(tc.body)
+			h.updateMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus != fasthttp.StatusOK {
+				assert.Nil(t, store.row, "nothing stored")
+				assert.Nil(t, manager.got, "nothing applied")
+				return
+			}
+			require.NotNil(t, store.row)
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.want, store.row.PromptsToExpose, "stored")
+			assert.Equal(t, tc.want, manager.got.PromptsToExpose, "applied live")
+		})
+	}
+}
+
+// refusingExchangeResolver is an available identity-provider integration that refuses every
+// token_exchange settings it is asked to check. Its other methods panic through the nil embedded
+// interface, since a refused save must not resolve or exchange anything.
+type refusingExchangeResolver struct {
+	schemas.TokenExchangeIdPResolver
+}
+
+// Available reports the integration as configured, so token_exchange clients can be created.
+func (refusingExchangeResolver) Available() bool { return true }
+
+// ValidateTokenExchangeConfig refuses the settings with a synthetic reason.
+func (refusingExchangeResolver) ValidateTokenExchangeConfig(context.Context, *schemas.MCPTokenExchangeConfig) error {
+	return errors.New("synthetic refusal of these token_exchange settings")
+}
+
+// newRefusingExchangeProvider is an OAuth provider whose identity-provider integration is refusingExchangeResolver.
+func newRefusingExchangeProvider(store configstore.ConfigStore) *oauth2.OAuth2Provider {
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider.SetTokenExchangeIdPResolver(refusingExchangeResolver{})
+	return provider
+}
+
+// A token_exchange client whose settings the identity-provider integration refuses is rejected at
+// create with the integration's reason, before anything is stored or dialed.
+func TestAddMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	manager := &capturingAddMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: newRefusingExchangeProvider(store)}, mcpManager: manager}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"name":"exchange","connection_type":"http","connection_string":"http://127.0.0.1:1/mcp","auth_type":"token_exchange","token_exchange":{"audience":"api://exchange","use_idp_credentials":true}}`)
+	ctx := initCtx(&req)
+	ctx.SetUserValue(schemas.BifrostContextKeyIsEnterprise, true)
+	h.addMCPClient(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "synthetic refusal of these token_exchange settings")
+	assert.Nil(t, manager.got, "rejected before dialing")
+}
+
+// An edit to a token_exchange client's settings that the identity-provider integration refuses is
+// rejected with the integration's reason, and neither the stored nor the live client changes.
+func TestUpdateMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	existing := &schemas.MCPClientConfig{
+		ID: "client-1", Name: "exchange", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"),
+		AuthType:         schemas.MCPAuthTypeTokenExchange,
+		TokenExchange:    &schemas.MCPTokenExchangeConfig{Audience: "api://exchange", UseIdPCredentials: true},
+	}
+	require.NoError(t, store.CreateMCPClientConfig(context.Background(), existing))
+	manager := &capturingUpdateMCPManager{}
+	cfg := &lib.Config{
+		MCPConfig:     &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+		ClientConfig:  &configstore.ClientConfig{},
+		ConfigStore:   store,
+		OAuthProvider: newRefusingExchangeProvider(store),
+	}
+	h := &MCPHandler{store: cfg, mcpManager: manager, mcpCredentialCacheManager: &recordingCredentialCache{}}
+	// Init attaches a server, so the store's queries can use the request as their context.
+	var req fasthttp.Request
+	req.SetBodyString(`{"token_exchange":{"audience":"api://edited","use_idp_credentials":true}}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	ctx.SetUserValue("id", existing.ID)
+	h.updateMCPClient(ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "synthetic refusal of these token_exchange settings")
+	assert.Nil(t, manager.got, "nothing applied")
+	assert.Equal(t, "api://exchange", existing.TokenExchange.Audience, "the live client keeps its settings")
+	stored, err := store.GetMCPClientConfigByID(context.Background(), existing.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TokenExchange)
+	assert.Equal(t, "api://exchange", stored.TokenExchange.Audience, "the stored client keeps its settings")
+}
+
+// Moving an OAuth client to new endpoints needs the secret resent only when one is stored: a public
+// client has none to carry over, so it can follow its MCP server to a new authorization server.
+func TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent(t *testing.T) {
+	cases := []struct {
+		name         string
+		storedSecret string
+		sentSecret   string
+		wantStatus   int
+	}{
+		{name: "public client", wantStatus: fasthttp.StatusOK},
+		{name: "confidential client without the secret", storedSecret: "old-secret", wantStatus: fasthttp.StatusBadRequest},
+		{name: "confidential client resending the secret", storedSecret: "old-secret", sentSecret: "new-secret", wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			bg := context.Background()
+			oauthRow := &configtables.TableOauthConfig{
+				ID:           "oauth-1",
+				ClientID:     schemas.NewSecretVar("old-client"),
+				AuthorizeURL: "https://old-as.example.com/authorize",
+				TokenURL:     "https://old-as.example.com/token",
+				RedirectURI:  "http://localhost:8080/api/oauth/callback",
+				Status:       "authorized",
+				ServerURL:    "https://mcp.example.com/mcp",
+			}
+			if tc.storedSecret != "" {
+				oauthRow.ClientSecret = schemas.NewSecretVar(tc.storedSecret)
+			}
+			require.NoError(t, store.CreateOauthConfig(bg, oauthRow))
+			existing := &schemas.MCPClientConfig{
+				ID: "client-1", Name: "moved", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://mcp.example.com/mcp"),
+				AuthType:         schemas.MCPAuthTypeOauth,
+				OauthConfigID:    bifrost.Ptr(oauthRow.ID),
+			}
+			require.NoError(t, store.CreateMCPClientConfig(bg, existing))
+			cfg := &lib.Config{
+				MCPConfig:     &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+				ClientConfig:  &configstore.ClientConfig{},
+				ConfigStore:   store,
+				OAuthProvider: oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError)),
+			}
+			h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}, mcpCredentialCacheManager: &recordingCredentialCache{}}
+
+			secret := ""
+			if tc.sentSecret != "" {
+				secret = `,"client_secret":"` + tc.sentSecret + `"`
+			}
+			var req fasthttp.Request
+			req.SetBodyString(`{"oauth_config":{"client_id":"new-client","authorize_url":"https://new-as.example.com/authorize","token_url":"https://new-as.example.com/token"` + secret + `}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, nil, nil)
+			ctx.SetUserValue("id", existing.ID)
+			h.updateMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			stored, err := store.GetOauthConfigByID(bg, oauthRow.ID)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			if tc.wantStatus != fasthttp.StatusOK {
+				assert.Contains(t, string(ctx.Response.Body()), "client_secret must be resent")
+				assert.Equal(t, "https://old-as.example.com/token", stored.TokenURL, "a refused edit changes nothing")
+				return
+			}
+			assert.Equal(t, "https://new-as.example.com/token", stored.TokenURL)
+			assert.Equal(t, "new-client", stored.GetResolvedClientID())
+			assert.Equal(t, tc.sentSecret, stored.ClientSecret.GetValue(), "a public client stays without a secret")
+		})
+	}
+}
+
+// The resources and prompts lists are always arrays on the wire, empty when the server offers none, so clients
+// can iterate them like tools.
+func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {
+	var empty MCPClientResponse
+	empty.setResourcesAndPrompts(nil)
+	data, err := json.Marshal(empty)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"resources":[]`)
+	assert.Contains(t, string(data), `"resource_templates":[]`)
+	assert.Contains(t, string(data), `"prompts":[]`)
+
+	var full MCPClientResponse
+	full.setResourcesAndPrompts(&schemas.MCPClient{
+		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+		Prompts:   []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+	})
+	data, err = json.Marshal(full)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"uri":"file:///handbook.md"`)
+	assert.Contains(t, string(data), `"name":"docs-review"`)
+	assert.Contains(t, string(data), `"resource_templates":[]`)
 }

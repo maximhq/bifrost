@@ -300,6 +300,14 @@ test_template "mcp: toolSyncInterval + codeModeBindingLevel (Gap 6)" \
   --set 'bifrost.mcp.clientConfigs[0].isCodeModeClient=true' \
   --set 'bifrost.mcp.clientConfigs[0].toolSyncInterval=5m'
 
+test_template "mcp: maxProtocolVersion global + per-client" \
+  --set bifrost.mcp.enabled=true \
+  --set bifrost.mcp.maxProtocolVersion=auto \
+  --set 'bifrost.mcp.clientConfigs[0].name=test' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=http://localhost:3000' \
+  --set 'bifrost.mcp.clientConfigs[0].maxProtocolVersion=2025-06-18'
+
 # Gap 7: Cluster with region
 test_template "cluster: region (Gap 7)" \
   --set bifrost.cluster.enabled=true \
@@ -538,6 +546,43 @@ else:
   fi
 }
 
+# check_config renders the chart and runs a Python assertion against the rendered config.json,
+# available to the assertion as `cfg`.
+check_config() {
+  local test_name=$1
+  local assertion=$2
+  shift 2
+  if ! helm template bifrost ./helm-charts/bifrost --set image.tag=v1.0.0 "$@" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Error output:${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    return
+  fi
+  local reason
+  reason=$(ASSERTION="$assertion" python3 -c '
+import json, os, yaml
+docs = [d for d in yaml.safe_load_all(open("/tmp/helm-template-output.yaml")) if d]
+cms = [d for d in docs if d.get("kind") == "ConfigMap" and "config.json" in (d.get("data") or {})]
+if len(cms) != 1:
+    print("expected exactly one ConfigMap carrying config.json, got %d" % len(cms))
+else:
+    cfg = json.loads(cms[0]["data"]["config.json"])
+    try:
+        exec(os.environ["ASSERTION"])
+    except AssertionError as e:
+        print(e or "assertion failed")
+    except Exception as e:
+        print("%s: %s" % (type(e).__name__, e))
+' 2>&1 || true)
+  if [ -z "$reason" ]; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  $reason${NC}"
+  fi
+}
+
 # expect_render_failure asserts the chart refuses the values (schema or template guard).
 expect_render_failure() {
   local test_name=$1
@@ -704,6 +749,267 @@ expect_render_failure "sidecars: schema requires an image on extraContainers" \
   --set 'extraContainers[0].name=no-image'
 
 rm -f "$VALUES_DIR/sidecar-values.yaml"
+
+# Bundled PostgreSQL tuning and persistent volume metadata.
+cat > "$VALUES_DIR/postgresql-tuning.yaml" << 'VALS'
+storage:
+  mode: postgres
+postgresql:
+  enabled: true
+  primary:
+    extraArgs: ["-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+    persistence:
+      annotations:
+        example.com/storage-profile: "fast"
+VALS
+
+check_workload "postgresql: tuning and volume metadata omitted by default" \
+  'pg = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-postgresql")
+pvc = next(d for d in docs if d.get("kind") == "PersistentVolumeClaim")
+assert "args" not in pg["spec"]["template"]["spec"]["containers"][0], "PostgreSQL manifest contract failed"
+assert "annotations" not in pvc["metadata"], "PostgreSQL manifest contract failed"
+assert "volumeAttributesClassName" not in pvc["spec"], "PostgreSQL manifest contract failed"' \
+  --set storage.mode=postgres --set postgresql.enabled=true
+
+check_workload "postgresql: extra arguments and PVC annotations render verbatim" \
+  'pg = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-postgresql")
+pvc = next(d for d in docs if d.get("kind") == "PersistentVolumeClaim")
+assert pg["spec"]["template"]["spec"]["containers"][0].get("args") == ["-c", "max_connections=200", "-c", "shared_buffers=256MB"], "PostgreSQL manifest contract failed"
+assert pvc["metadata"].get("annotations") == {"example.com/storage-profile": "fast"}, "PostgreSQL manifest contract failed"
+assert pg["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] == pvc["metadata"]["name"], "PostgreSQL manifest contract failed"' \
+  -f "$VALUES_DIR/postgresql-tuning.yaml"
+
+check_workload "postgresql: optional VolumeAttributesClass renders on PVC" \
+  'pvc = next(d for d in docs if d.get("kind") == "PersistentVolumeClaim")
+assert pvc["spec"].get("volumeAttributesClassName") == "fast-storage", "PostgreSQL manifest contract failed"' \
+  --set storage.mode=postgres --set postgresql.enabled=true \
+  --set postgresql.primary.persistence.volumeAttributesClassName=fast-storage
+
+check_workload "postgresql: external database has no bundled workload or PVC" \
+  'assert not any(d.get("kind") == "PersistentVolumeClaim" or d["metadata"]["name"] == "bifrost-postgresql" for d in docs), "bundled PostgreSQL resources unexpectedly rendered"' \
+  -f "$VALUES_DIR/postgresql-tuning.yaml" \
+  --set postgresql.external.enabled=true --set postgresql.external.host=postgres.example.com
+
+check_workload "postgresql: disabled persistence has no PVC" \
+  'assert not any(d.get("kind") == "PersistentVolumeClaim" for d in docs), "bundled PostgreSQL resources unexpectedly rendered"' \
+  -f "$VALUES_DIR/postgresql-tuning.yaml" --set postgresql.primary.persistence.enabled=false
+
+expect_render_failure "postgresql: schema rejects non-string arguments" "extraArgs" \
+  --set 'postgresql.primary.extraArgs[0]=42'
+expect_render_failure "postgresql: schema rejects non-string PVC annotations" "annotations" \
+  --set 'postgresql.primary.persistence.annotations.invalid=42'
+
+# token_exchange in config.schema.json requires client_id unless use_idp_credentials is true or
+# the profile is id_jag; the values schema must refuse what config.json validation would.
+TOKEN_EXCHANGE_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=te'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http'
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp'
+  --set 'bifrost.mcp.clientConfigs[0].authType=token_exchange'
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.audience=https://auth.example.com'
+)
+expect_render_failure "mcp tokenExchange: schema requires clientId without useIdpCredentials or id_jag" "allOf" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}"
+expect_render_failure "mcp tokenExchange: schema treats a blank clientId as unset" "allOf" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set-string 'bifrost.mcp.clientConfigs[0].tokenExchange.clientId= '
+test_template "mcp tokenExchange: clientId satisfies the default profile" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.clientId=exchange-app'
+test_template "mcp tokenExchange: useIdpCredentials needs no clientId" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.useIdpCredentials=true'
+test_template "mcp tokenExchange: id_jag needs resourceClientId, not clientId" \
+  "${TOKEN_EXCHANGE_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.profile=id_jag' \
+  --set 'bifrost.mcp.clientConfigs[0].tokenExchange.resourceClientId=bifrost-client'
+
+# connection_type "openapi" builds an MCP server from an OpenAPI/Swagger document. Every
+# openapiConfig field must render under its config.schema.json key, and the values schema plus
+# the template guards must refuse what config.schema.json refuses.
+cat > "$VALUES_DIR/mcp-openapi.yaml" << 'VALS'
+bifrost:
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: web_search
+        connectionType: openapi
+        authType: headers
+        headers:
+          X-Team: platform
+        openapiConfig:
+          specUrl: "https://searxng.example.com/openapi.json"
+          baseUrl: "https://searxng.example.com"
+          securityCredentials:
+            apiKeyAuth:
+              value: "env.SEARXNG_API_KEY"
+            basicAuth:
+              username: "svc"
+              password: "env.SEARXNG_PASSWORD"
+          includeDeprecated: true
+          maxResponseBytes: 131072
+        toolsToExecute: ["*"]
+      - name: inline_spec
+        connectionType: openapi
+        openapiConfig:
+          spec: |
+            openapi: 3.0.3
+            info: {title: Inline, version: "1"}
+            paths: {}
+      - name: file_spec
+        connectionType: openapi
+        authType: per_user_headers
+        perUserHeaderKeys: ["Authorization"]
+        openapiConfig:
+          specFile: "specs/petstore.yaml"
+          includeDeprecated: false
+          maxResponseBytes: 0
+VALS
+OPENAPI_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=oa'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi'
+)
+
+check_config "mcp openapi: every openapiConfig field renders under its openapi_config key" \
+  'cc = cfg["mcp"]["client_configs"]
+assert cc[0]["connection_type"] == "openapi", cc[0]
+assert cc[0]["auth_type"] == "headers", cc[0]
+assert cc[0]["headers"] == {"X-Team": "platform"}, cc[0]
+assert cc[0]["openapi_config"] == {
+    "spec_url": "https://searxng.example.com/openapi.json",
+    "base_url": "https://searxng.example.com",
+    "security_credentials": {
+        "apiKeyAuth": {"value": "env.SEARXNG_API_KEY"},
+        "basicAuth": {"username": "svc", "password": "env.SEARXNG_PASSWORD"},
+    },
+    "include_deprecated": True,
+    "max_response_bytes": 131072,
+}, "openapi_config changed: %r" % cc[0]["openapi_config"]
+assert cc[1]["openapi_config"] == {"spec": "openapi: 3.0.3\ninfo: {title: Inline, version: \"1\"}\npaths: {}\n"}, "inline spec changed: %r" % cc[1]["openapi_config"]
+assert "auth_type" not in cc[1], "auth_type rendered without being set: %r" % cc[1]
+assert cc[2]["openapi_config"] == {"spec_file": "specs/petstore.yaml", "include_deprecated": False, "max_response_bytes": 0}, "spec_file client changed: %r" % cc[2]["openapi_config"]
+assert cc[2]["auth_type"] == "per_user_headers" and cc[2]["per_user_header_keys"] == ["Authorization"], cc[2]
+for c in cc:
+    for k in ("connection_string", "stdio_config", "tls_config"):
+        assert k not in c, "%s rendered on openapi client %s" % (k, c["name"])' \
+  -f "$VALUES_DIR/mcp-openapi.yaml"
+
+# The values schema refuses what config.schema.json refuses.
+expect_render_failure "mcp openapi: schema requires openapiConfig" "allOf" \
+  "${OPENAPI_CLIENT[@]}"
+expect_render_failure "mcp openapi: schema requires spec, specFile or specUrl" "anyOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.baseUrl=https://api.example.com'
+expect_render_failure "mcp openapi: schema refuses oauth auth" "allOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=oauth'
+expect_render_failure "mcp openapi: schema refuses token_exchange auth" "allOf" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=token_exchange'
+expect_render_failure "mcp openapi: schema refuses a non-http specUrl" "specUrl" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=ftp://api.example.com/openapi.json'
+expect_render_failure "mcp openapi: schema refuses a credential userinfo baseUrl" "baseUrl" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.baseUrl=https://user:pass@api.example.com'
+expect_render_failure "mcp openapi: schema refuses unknown openapiConfig fields" "additional" \
+  "${OPENAPI_CLIENT[@]}" --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.spec_url=https://api.example.com/openapi.json'
+expect_render_failure "mcp openapi: schema refuses openapiConfig on an http client" "allOf" \
+  --set bifrost.mcp.enabled=true --set 'bifrost.mcp.clientConfigs[0].name=h' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+
+# Every identity provider inherits crossAppAccess, tokenExchangeHosts and
+# accessProfileResolutionStrategy from the enterprise ProvisioningConfig; the chart passes
+# scim.config through, so the values schema is what has to accept them.
+OKTA_SCIM=(
+  --set bifrost.scim.enabled=true
+  --set bifrost.scim.provider=okta
+  --set bifrost.scim.config.issuerUrl=https://acme.okta.com/oauth2/default
+  --set bifrost.scim.config.clientId=bifrost
+  --set bifrost.scim.config.clientSecret=env.OKTA_CLIENT_SECRET
+)
+check_config "scim: Cross App Access, token exchange hosts and access profile strategy render" \
+  'c = cfg["scim_config"]["config"]
+assert c["crossAppAccess"] == {"enabled": True, "accessTokenTtl": 3600, "provisionUsers": False}, "crossAppAccess changed: %r" % c.get("crossAppAccess")
+assert c["tokenExchangeHosts"] == ["auth.example.com", "login.example.com:8443"], "tokenExchangeHosts changed: %r" % c.get("tokenExchangeHosts")
+assert c["accessProfileResolutionStrategy"] == "order", "accessProfileResolutionStrategy changed: %r" % c.get("accessProfileResolutionStrategy")
+assert c["syncAllUsers"] is False, "syncAllUsers false was dropped: %r" % c.get("syncAllUsers")' \
+  "${OKTA_SCIM[@]}" \
+  --set bifrost.scim.config.crossAppAccess.enabled=true \
+  --set bifrost.scim.config.crossAppAccess.accessTokenTtl=3600 \
+  --set bifrost.scim.config.crossAppAccess.provisionUsers=false \
+  --set 'bifrost.scim.config.tokenExchangeHosts[0]=auth.example.com' \
+  --set 'bifrost.scim.config.tokenExchangeHosts[1]=login.example.com:8443' \
+  --set bifrost.scim.config.accessProfileResolutionStrategy=order \
+  --set bifrost.scim.config.syncAllUsers=false
+expect_render_failure "scim: schema rejects a crossAppAccess accessTokenTtl under 60 seconds" "accessTokenTtl" \
+  "${OKTA_SCIM[@]}" \
+  --set bifrost.scim.config.crossAppAccess.accessTokenTtl=30
+expect_render_failure "scim: schema rejects a URL in tokenExchangeHosts" "tokenExchangeHosts" \
+  "${OKTA_SCIM[@]}" \
+  --set 'bifrost.scim.config.tokenExchangeHosts[0]=https://auth.example.com'
+
+# Relays render as top-level relays exactly as declared, and relay_grants reach virtual keys,
+# projects and access profiles, as declared: an explicit relay_grants: [] stays in the rendered key
+# (the key hash records it) and an omitted one stays omitted.
+cat > "$VALUES_DIR/relay-values.yaml" << 'VALS'
+bifrost:
+  relays:
+    - name: tavily
+      base_url: "https://api.tavily.com"
+      auth: { type: bearer }
+      credential: { value: "env.TAVILY_API_KEY" }
+      usage: { cost_per_request: 0.001 }
+      routes:
+        - { method: POST, path: /search, usage: { units_path: usage.credits, cost_per_unit: 0.008 } }
+    - name: textract
+      base_url: "https://textract.us-east-1.amazonaws.com"
+      auth: { type: aws_sigv4, aws: { service: textract } }
+      credential: { aws: { region: us-east-1 } }
+      routes:
+        - { method: POST, path: /, headers: { X-Amz-Target: "Textract.AnalyzeDocument" } }
+  governance:
+    virtualKeys:
+      - { id: vk-search, name: search, relay_grants: [{ relay_name: tavily }] }
+      - { id: vk-cleared, name: cleared, relay_grants: [] }
+      - { id: vk-plain, name: plain }
+    projects:
+      - { name: research, access_rule: union, relay_grants: [{ relay_name: textract }] }
+  accessProfiles:
+    - { name: analysts, relay_grants: [{ relay_name: tavily }] }
+VALS
+check_config "relays: rendered as declared with grants on keys, projects and access profiles" \
+  'assert [r["name"] for r in cfg["relays"]] == ["tavily", "textract"], "relays changed: %r" % cfg.get("relays")
+assert cfg["relays"][0]["credential"] == {"value": "env.TAVILY_API_KEY"}, "credential changed: %r" % cfg["relays"][0]
+assert cfg["relays"][1]["auth"] == {"type": "aws_sigv4", "aws": {"service": "textract"}}, "auth changed: %r" % cfg["relays"][1]
+vks = {k["id"]: k for k in cfg["governance"]["virtual_keys"]}
+assert vks["vk-search"]["relay_grants"] == [{"relay_name": "tavily"}], "grants dropped: %r" % vks["vk-search"]
+assert vks["vk-cleared"]["relay_grants"] == [], "relay_grants: [] must render to clear grants: %r" % vks["vk-cleared"]
+assert "relay_grants" not in vks["vk-plain"], "an omitted relay_grants must stay omitted: %r" % vks["vk-plain"]
+assert cfg["governance"]["projects"][0]["relay_grants"] == [{"relay_name": "textract"}], "project grants: %r" % cfg["governance"]["projects"]
+assert cfg["access_profiles"][0]["relay_grants"] == [{"relay_name": "tavily"}], "profile grants: %r" % cfg["access_profiles"]' \
+  -f "$VALUES_DIR/relay-values.yaml"
+check_config "relays: an explicit empty list renders, so source of truth prunes stored relays" \
+  'assert cfg["relays"] == [], "relays: [] must render: %r" % cfg.get("relays")' \
+  --set-json 'bifrost.relays=[]'
+check_config "relays: omitted by default, leaving stored relays alone" \
+  'assert "relays" not in cfg, "relays rendered without being configured: %r" % cfg.get("relays")'
+expect_render_failure "relays: a repeated name is refused" "used by more than one relay" \
+  --set 'bifrost.relays[0].name=tavily' --set 'bifrost.relays[0].base_url=https://a.example.com' \
+  --set 'bifrost.relays[1].name=tavily' --set 'bifrost.relays[1].base_url=https://b.example.com'
+expect_render_failure "relays: schema rejects an invalid name" "name" \
+  --set 'bifrost.relays[0].name=has space' --set 'bifrost.relays[0].base_url=https://a.example.com'
+expect_render_failure "relays: schema rejects an unknown auth type" "type" \
+  --set 'bifrost.relays[0].name=tavily' --set 'bifrost.relays[0].base_url=https://a.example.com' \
+  --set 'bifrost.relays[0].auth.type=oauth'
+expect_render_failure "relays: schema requires base_url" "base_url" \
+  --set 'bifrost.relays[0].name=tavily'
+expect_render_failure "relays: schema rejects a relay grant without relay_name" "relay_name" \
+  --set 'bifrost.governance.virtualKeys[0].id=vk' --set 'bifrost.governance.virtualKeys[0].name=vk' \
+  --set-json 'bifrost.governance.virtualKeys[0].relay_grants=[{"name":"tavily"}]'
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml

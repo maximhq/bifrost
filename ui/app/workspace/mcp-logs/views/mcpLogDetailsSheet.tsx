@@ -35,7 +35,13 @@ import { useGetMCPLogByIdQuery, useGetUserAgentMappingsQuery } from "@/lib/store
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
-import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, type MCPLogPillTone } from "@/lib/utils/mcpLogPresentation";
+import {
+	getMCPLogPillTone,
+	getMCPLogPresentation,
+	getMCPLogTimeline,
+	getMCPReadKind,
+	type MCPLogPillTone,
+} from "@/lib/utils/mcpLogPresentation";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { OsIcon } from "@enterprise/lib/constants/edgeApps";
@@ -381,7 +387,12 @@ export function MCPLogDetailSheet({
 									) : null}
 								</div>
 								<div className="mt-3 flex items-center gap-2">
-									<div className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase">Tool</div>
+									<div
+										className="text-muted-foreground w-24 shrink-0 text-[10.5px] font-semibold tracking-wider uppercase"
+										data-testid="mcplogdetails-tool-label"
+									>
+										{getMCPReadKind(displayLog) ?? "Tool"}
+									</div>
 									<Link
 										to="/workspace/mcp-logs"
 										search={{ tool_names: [displayLog.tool_name] }}

@@ -365,6 +365,86 @@ test.describe("Providers", () => {
       expect((await savedAlias()).vertex_endpoint).toBeUndefined();
     });
 
+    test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("azure"))) {
+        await providersPage.addKnownProviderFromDropdown("azure");
+        createdProviders.push("azure");
+      }
+      const keyName = `Azure-Speech-${Date.now()}`;
+      createdKeys.push({ provider: "azure", keyName });
+      const created = await page.request.post("/api/providers/azure/keys", {
+        data: {
+          name: keyName,
+          value: "e2e-azure-key",
+          models: ["*"],
+          weight: 1,
+          azure_key_config: { endpoint: "https://e2e-speech.openai.azure.com" },
+          aliases: { "speech-tts": { model_id: "neural" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("azure");
+      const keySwitch = page.getByTestId("apikey-azure-use-speech-endpoints-switch");
+      const override = page.getByTestId("deployment-azure-use-speech-endpoints");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-speech-tts").click();
+      };
+      const selectOverride = async (label: string) => {
+        await override.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedKey = async () => {
+        const response = await page.request.get("/api/providers/azure/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key;
+      };
+
+      await edit();
+      await expect(keySwitch).not.toBeChecked();
+      await expect(override).toContainText("Use key setting");
+      await keySwitch.click();
+      await save();
+      let key = await savedKey();
+      expect(key.azure_key_config.use_speech_endpoints).toBe(true);
+      expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
+
+      await edit();
+      await expect(keySwitch).toBeChecked();
+      await selectOverride("Off");
+      await save();
+      key = await savedKey();
+      expect(key.azure_key_config.use_speech_endpoints).toBe(true);
+      expect(key.aliases["speech-tts"].use_speech_endpoints).toBe(false);
+
+      await edit();
+      await expect(override).toContainText("Off");
+      await selectOverride("On");
+      await save();
+      expect((await savedKey()).aliases["speech-tts"].use_speech_endpoints).toBe(true);
+
+      await edit();
+      await expect(override).toContainText("On");
+      await selectOverride("Use key setting");
+      await keySwitch.click();
+      await save();
+      key = await savedKey();
+      expect(key.azure_key_config.use_speech_endpoints ?? false).toBe(false);
+      expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,

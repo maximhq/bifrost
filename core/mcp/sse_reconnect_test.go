@@ -7,25 +7,23 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/mark3labs/mcp-go/server/servertest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
-// SSE: a dropped event stream is repaired by the periodic checker, not by
-// anything SSE-specific.
+// SSE: a dropped event stream is flagged by the loss hook and repaired by the
+// periodic checker.
 // =============================================================================
 
 // TestSSEStreamDropped_CheckerReconnects covers the SSE half of the same gap
-// the STDIO respawn test covers in the integration suite, and the gap is wider
-// than handleSSEConnectionLost suggests: for a server-side close, mcp-go never
-// invokes the OnConnectionLost hook at all. The entry keeps reading healthy, on
-// a connection that is already dead, with no failure recorded. Nothing converts
-// transport death into Conn == nil either, so the client sits on the checker's
-// live-connection branch and that branch's reconnect is the only thing that can
-// heal it. The assertions below pin that, rather than a loss callback that does
-// not fire here.
+// the STDIO respawn test covers in the integration suite. On a server-side
+// close mcp-go invokes OnConnectionLost, so handleSSEConnectionLost marks the
+// entry Unstable with a transport_lost failure. It does not convert transport
+// death into Conn == nil, so the client sits on the checker's live-connection
+// branch and that branch's reconnect is the only thing that heals it.
 //
 // httptest's CloseClientConnections drops the established stream while the
 // server keeps accepting new ones, which is exactly the recoverable shape: an
@@ -38,7 +36,7 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 			return mcpgo.NewToolResultText("ok"), nil
 		},
 	)
-	ts := server.NewTestServer(s)
+	ts := servertest.NewTestServer(s)
 	t.Cleanup(ts.Close)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
@@ -78,21 +76,16 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 		},
 	)
 
-	// Nothing notices the drop on its own. Asserting Conn != nil here would be
-	// vacuous (it was already true before the drop), so assert the whole
-	// unchanged shape instead, and assert that it stays that way: no loss
-	// callback fires, no failure is recorded, the connection is not detached,
-	// and the client still advertises itself as healthy while being unusable.
-	// That is the precise reason the periodic checker is the only repair path
-	// for SSE, and it is what the branch under test has to act on.
-	require.Never(t, func() bool {
+	// The loss hook flags the drop on the same connection: Unstable with a transport_lost failure,
+	// still attached, generation unchanged. Only the checker replaces it.
+	require.Eventually(t, func() bool {
 		st, exists := snapshotClientState(m, config.ID)
-		return !exists ||
-			st.State != schemas.MCPConnectionStateHealthy ||
-			st.ConnGeneration != before.ConnGeneration ||
-			st.Conn == nil ||
-			st.LastFailure != nil
-	}, 1*time.Second, 100*time.Millisecond, "a dropped SSE stream is not self-detected: the entry must stay healthy on its dead connection until the checker probes it")
+		return exists &&
+			st.State == schemas.MCPConnectionStateUnstable &&
+			st.LastFailure != nil && st.LastFailure.Stage == schemas.MCPConnectionFailureStageTransportLost &&
+			st.ConnGeneration == before.ConnGeneration &&
+			st.Conn == before.Conn
+	}, 5*time.Second, 50*time.Millisecond, "a dropped SSE stream is flagged by the loss hook without detaching the connection")
 
 	// Why the post-reconnect tool assertion is not vacuous: right now the entry
 	// still carries the pre-drop list, and cannot possibly carry the tool that

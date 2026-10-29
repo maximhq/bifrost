@@ -1,10 +1,10 @@
 ---
 title: "Log Exports"
-description: "Offload Bifrost request and response payloads to S3 or GCS object storage while keeping searchable metadata in the logs database."
+description: "Offload Bifrost request and response payloads to S3, GCS, or Azure Blob Storage while keeping searchable metadata in the logs database."
 icon: "download"
 ---
 
-Bifrost's log store can be paired with an **object storage** backend (S3 or GCS) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite, Postgres, or ClickHouse) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
+Bifrost's log store can be paired with an **object storage** backend (S3, GCS, or Azure Blob Storage) so that large request/response payloads are streamed to durable object storage while the logs database (SQLite, Postgres, or ClickHouse) keeps only searchable metadata, indexes, and pointers. This keeps the database small and fast, makes payloads cheap to retain for long periods, and lets you query archived traffic from your own data lake.
 
 ## How it works
 
@@ -15,7 +15,7 @@ logs_store
 ├── enabled
 ├── type            (sqlite | postgres | clickhouse)
 ├── config          (SQLite path, or Postgres / ClickHouse connection)
-├── object_storage              ← S3 or GCS payload offload (optional)
+├── object_storage              ← S3, GCS, or Azure payload offload (optional)
 ├── object_storage_exclude_fields
 └── object_storage_exclude_request_types
 ```
@@ -38,7 +38,7 @@ Error details stay in the database with three limits:
 - **Logs written by earlier versions** with object storage on hold their error details only in object storage. They are not backfilled, so they stay out of the error breakdowns. Opening one of those logs still shows its error details.
 </Note>
 
-Only **S3** and **GCS** are supported today. Azure Blob, local filesystem, and data warehouse destinations are not implemented.
+Logs support **S3**, **GCS**, and **Azure Blob Storage**. Azure also supports skills files. Azure audit-log archival has not been verified. Local filesystem and data warehouse destinations are not supported.
 
 ## Configuration via `config.json`
 
@@ -153,9 +153,45 @@ GCS fields:
 
 A live example is checked in at `examples/configs/withobjectstoragegcs/config.json`.
 
+### Azure Blob Storage
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "/app/data/logs.db" },
+    "object_storage": {
+      "type": "azure",
+      "bucket": "bifrost-logs",
+      "endpoint": "https://myaccount.blob.core.windows.net",
+      "prefix": "bifrost",
+      "compress": true
+    }
+  }
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `type` | yes | Must be `"azure"`. |
+| `bucket` | yes | Pre-existing container name, not the storage account name. |
+| `endpoint` | identity mode | Blob service URL for `DefaultAzureCredential`. |
+| `connection_string` | connection-string mode | Connection string or secret reference, such as `env.AZURE_STORAGE_CONNECTION_STRING`. Omit `endpoint`. |
+| `prefix` | optional | Object key prefix. Defaults to `bifrost`. |
+| `format`, `compression`, `compress` | optional | Same JSON/gzip and Parquet options as S3. |
+
+Set either `endpoint` or `connection_string`, not both. `bucket` and both authentication fields accept environment or vault references and must resolve to nonempty values.
+
+Identity mode supports managed identity, workload identity, or a service principal configured through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. Azure model-provider credentials are not reused.
+
+Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete permissions. Attributes are stored as URL-encoded blob metadata, not index tags: no index-tag permissions are needed. URL-decode values when reading metadata outside Bifrost.
+
+See `examples/configs/withobjectstorageazure/config.json` for a connection-string example.
+
 ### Payload format: JSON or Parquet
 
-By default each offloaded payload is stored as a JSON object. Set `format` to `parquet` to store each payload as a single-row Parquet file instead, so the bucket can be queried directly with Athena, Spark, Trino or DuckDB. Parquet is supported on **S3** only for now.
+By default each offloaded payload is stored as a JSON object. Set `format` to `parquet` to store each payload as a single-row Parquet file instead, so the bucket can be queried directly with compatible data tools. Parquet is supported on **S3 and Azure**; GCS does not yet support it. The Athena examples below are S3-specific.
 
 ```json
 {
@@ -323,10 +359,10 @@ Retention is configured on the **client config**, not on `logs_store`. The activ
 | Default | `365` days |
 | Minimum | `1` day (enforced by validator) |
 | Disable | Set to `0` (cleanup is skipped entirely) |
-| Cleanup cadence | Every 24 hours, plus a random jitter of 15-30 minutes |
+| Cleanup cadence | 24 hours after each pass finishes, plus a random jitter of 15-30 minutes |
 | Startup behaviour | A cleanup pass runs immediately when Bifrost starts |
-| Delete batch size | 100 rows per query |
-| Per-pass timeout | 30 minutes |
+| Delete batch size | 5,000 rows per query |
+| Per-pass timeout | 6 hours |
 
 Source: `framework/logstore/cleaner.go` and `transports/bifrost-http/server/server.go`.
 
@@ -336,9 +372,7 @@ The cleaner deletes **database rows** older than `now - retention_days` (UTC). I
 
 ### What does NOT get deleted automatically
 
-> **Important**: the retention cleaner does **not** delete the corresponding payloads in S3 or GCS. The hybrid log store explicitly delegates object cleanup to the bucket's own lifecycle policy.
-
-If you have object storage enabled, configure a lifecycle / object-lifecycle-management rule on the bucket to expire objects under your `prefix/`. Pick a duration that matches (or exceeds) `log_retention_days`.
+The retention cleaner deletes database rows, **not stored payloads**. Configure lifecycle rules for `logs/`, `mcp-logs/`, and `agent-logs/` under your configured `prefix`, with retention longer than `log_retention_days` to cover the cleaner's 24-hour interval, 15-30 minute jitter, and pass duration. For example, use 32 days for a 30-day `log_retention_days` setting. Allow more time for cleanup backlogs, failures, or downtime: missing payloads leave database rows readable without their offloaded content. Do not expire `skills/` or the whole container.
 
 **Amazon S3 lifecycle rule (example)**
 
@@ -346,10 +380,10 @@ If you have object storage enabled, configure a lifecycle / object-lifecycle-man
 {
   "Rules": [
     {
-      "ID": "bifrost-logs-expire-30d",
+      "ID": "bifrost-logs-expire-32d",
       "Status": "Enabled",
       "Filter": { "Prefix": "bifrost/logs/" },
-      "Expiration": { "Days": 30 }
+      "Expiration": { "Days": 32 }
     }
   ]
 }
@@ -366,7 +400,7 @@ Apply with `aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lif
       {
         "action": { "type": "Delete" },
         "condition": {
-          "age": 30,
+          "age": 32,
           "matchesPrefix": ["bifrost/logs/"]
         }
       }
@@ -377,52 +411,46 @@ Apply with `aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lif
 
 Apply with `gcloud storage buckets update gs://<bucket> --lifecycle-file=lifecycle.json`. See the GCS docs on [Object Lifecycle Management](https://cloud.google.com/storage/docs/lifecycle).
 
+### Azure operations
+
+Configure [Azure Blob lifecycle management](https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview) for block blobs. Each `prefixMatch` includes the container name. For container `bifrost-logs` and `prefix: bifrost`, use:
+
+- `bifrost-logs/bifrost/logs/`
+- `bifrost-logs/bifrost/mcp-logs/`
+- `bifrost-logs/bifrost/agent-logs/`
+
+Do not expire `skills/` or the whole container. Early expiry makes historical payloads unreadable; soft delete and version retention can delay permanent removal.
+
+Restart Bifrost after changing storage configuration or credentials. The SDK refreshes identity tokens automatically, but does not reload configuration.
+
+Changing backends does not move existing data. Before switching:
+
+1. Keep the destination's `object_storage.prefix` identical to the source. Historical payload lookups use the currently configured prefix, so changing it makes objects copied with their original keys unreadable. For example, retain `bifrost/logs` when migrating from the S3/GCS examples above rather than adopting the Azure example's `bifrost`.
+2. Copy objects with their exact keys, `Content-Type`, `Content-Encoding`, and metadata.
+3. Pause writes or synchronize remaining changes before restarting against the destination.
+4. Check historical payload reads before removing the source.
+
 ### Manual deletes still cascade
 
-Single and batch deletes triggered explicitly (via the UI's **Delete log** action or the underlying `DeleteLog` / `DeleteLogs` APIs) **do** remove the associated objects from S3 or GCS at the same time. Only the time-based retention sweep is bucket-blind.
+Single and batch deletes triggered explicitly (via the UI's **Delete log** action or the underlying `DeleteLog` / `DeleteLogs` APIs) **do** remove the associated objects from S3, GCS, or Azure Blob Storage at the same time. Only the time-based retention sweep is bucket-blind.
 
 ## Configuration via Helm
 
-The Bifrost Helm chart at `helm-charts/bifrost/` does not expose dedicated values for `logs_store.object_storage`. It renders the same `config.json` schema documented above, so you supply the block under the chart's `bifrost.*` configuration tree (or mount your own `config.json` via an existing ConfigMap/Secret).
-
-### Inline values
+Use the chart's `storage.logsStore.objectStorage` values. For Azure identity mode:
 
 ```yaml
-bifrost:
+storage:
   logsStore:
-    enabled: true
-    type: sqlite
-    config:
-      path: /app/data/logs.db
     objectStorage:
-      type: s3
-      bucket: env.AWS_S3_BUCKET
-      region: env.AWS_REGION
-      accessKeyId: env.AWS_ACCESS_KEY_ID
-      secretAccessKey: env.AWS_SECRET_ACCESS_KEY
-      prefix: bifrost/logs
+      enabled: true
+      type: azure
+      bucket: bifrost-logs
+      endpoint: https://myaccount.blob.core.windows.net
+      prefix: bifrost
       compress: true
 ```
 
-For GCS, substitute the `objectStorage` block:
-
-```yaml
-bifrost:
-  logsStore:
-    enabled: true
-    type: sqlite
-    config:
-      path: /app/data/logs.db
-    objectStorage:
-      type: gcs
-      bucket: env.GCS_BUCKET
-      credentialsJson: env.GCS_KEY
-      projectId: env.GCP_PROJECT_ID
-      prefix: bifrost/logs
-      compress: true
-```
-
-The chart converts camelCase keys to the `snake_case` form Bifrost expects when it writes the runtime `config.json`. Provide the referenced env vars (`AWS_*`, `GCS_*`) through `extraEnv`, `envFrom`, or an existing Kubernetes Secret.
+For connection-string authentication, replace `endpoint` with `existingSecret` naming a Kubernetes Secret. Its default key is `connection-string`; override it with `connectionStringKey`. See [Helm storage](/deployment-guides/helm/storage#azure-blob-storage) for an example.
 
 ### BYO config.json
 

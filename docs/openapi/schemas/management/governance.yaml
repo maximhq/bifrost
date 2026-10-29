@@ -570,6 +570,22 @@ VirtualKey:
         When true, this virtual key may use every configured provider. provider_configs still apply as
         optional per-provider overrides (budgets, rate limits, model allow/blacklists, key selection);
         a provider without a config gets all models, all keys, and no per-provider limits.
+    relay_grants:
+      type: array
+      description: Relays this key may call, one by one. With no grants, the key may call no relay.
+      items:
+        type: object
+        properties:
+          virtual_key_id:
+            type: string
+          relay_name:
+            type: string
+          created_at:
+            type: string
+            format: date-time
+        required:
+          - virtual_key_id
+          - relay_name
     disable_content_logging:
       type: [boolean, 'null']
       description: >
@@ -719,6 +735,16 @@ CreateVirtualKeyRequest:
       description: >
         When true, this virtual key may use every configured provider. provider_configs remain optional
         per-provider overrides for budgets, rate limits, model allow/blacklists, and key selection.
+    relay_grants:
+      type: array
+      description: Relays this key may call, one by one; with no grants, the key may call no relay. Each relay_name must be an existing relay; an unknown or duplicate name is rejected with 400.
+      items:
+        type: object
+        required:
+          - relay_name
+        properties:
+          relay_name:
+            type: string
     disable_content_logging:
       type: [boolean, 'null']
       description: >
@@ -843,6 +869,16 @@ UpdateVirtualKeyRequest:
       description: >
         When true, this virtual key may use every configured provider. provider_configs remain optional
         per-provider overrides. Omit to leave the current setting unchanged.
+    relay_grants:
+      type: array
+      description: Replaces the key's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must be an existing relay; an unknown or duplicate name is rejected with 400.
+      items:
+        type: object
+        required:
+          - relay_name
+        properties:
+          relay_name:
+            type: string
     disable_content_logging:
       type: [boolean, 'null']
       description: >
@@ -2458,6 +2494,40 @@ PricingPatch:
     output_cost_per_second:
       type: number
       minimum: 0
+    input_cost_per_token_voice_live:
+      type: number
+      minimum: 0
+      description: >-
+        Azure Voice Live input rate per text token, used on Voice Live turns in place of
+        input_cost_per_token. Each _voice_live rate falls back to its normal rate when unset.
+    output_cost_per_token_voice_live:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_voice_live:
+      type: number
+      minimum: 0
+    input_cost_per_audio_token_voice_live:
+      type: number
+      minimum: 0
+    output_cost_per_audio_token_voice_live:
+      type: number
+      minimum: 0
+    input_cost_per_standard_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
+      description: >-
+        Azure Voice Live rate per input audio token handled by Azure speech to text.
+    output_cost_per_standard_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
+      description: >-
+        Azure Voice Live rate per output audio token from an Azure standard voice.
+    input_cost_per_custom_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
+    output_cost_per_custom_speech_audio_token_voice_live:
+      type: number
+      minimum: 0
     output_cost_per_video_per_second_480p:
       type: number
       minimum: 0
@@ -2493,6 +2563,15 @@ PricingPatch:
         Per-second output rate for 4K video. Matched on the short edge of the
         generated video's size; falls back to output_cost_per_video_per_second
         when unset.
+    output_cost_per_video_token:
+      type: number
+      minimum: 0
+      description: >-
+        Per-token output rate for video, for providers that meter generated
+        video in tokens (BytePlus Seedance bills on the task's
+        completion_tokens). Takes precedence over output_cost_per_token for
+        video output tokens. When no token rate applies (unset or zero), video
+        output falls back to the per-second video rates.
     # Costs - Other
     web_search_cost_per_request:
       type: number

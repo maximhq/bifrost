@@ -401,6 +401,13 @@ agent helpers and scripts. Do not paste its output into logs or configuration
 files. Refresh-token rotation is serialized per context so concurrent helper
 processes cannot consume the same refresh token.
 
+Use `bifrost auth print-token --browser-login` to run the Enterprise browser
+login flow when no agent token is found in the selected context. The new session
+is saved just like `bifrost auth login`; login messages go to stderr and only the
+validated token goes to stdout. Without the flag, a missing token remains an
+error. Existing tokens use the normal validation and refresh flow without
+opening a browser.
+
 OSS gateways retain password login:
 
 ```bash

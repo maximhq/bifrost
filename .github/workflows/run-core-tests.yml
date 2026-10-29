@@ -158,11 +158,33 @@ jobs:
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443
             www.getbifrost.ai:443
+            api.sarvam.ai:443
+            api.typesafe.ai:443
+
+      # This job holds every provider secret, so it only runs code from a branch of
+      # this repository. A free-form ref would also accept refs/pull/<n>/head or a
+      # SHA from a fork, both of which actions/checkout fetches through this repo.
+      # To test a fork PR, review it and push that commit to a branch here first.
+      # The resolver comes from this workflow's own commit, never the requested one.
+      - name: Checkout trusted CI scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          path: .ci-trusted
+          sparse-checkout: .github/workflows/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Resolve requested branch
+        id: ref
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: ./.ci-trusted/.github/workflows/scripts/resolve-test-ref.sh branch "$BRANCH"
 
       - name: Checkout requested branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.branch }}
+          persist-credentials: false
+          ref: ${{ steps.ref.outputs.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0

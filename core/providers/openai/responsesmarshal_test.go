@@ -1393,6 +1393,43 @@ func TestToOpenAIResponsesRequest_ClearsAnthropicToolSearchName(t *testing.T) {
 	}
 }
 
+// An Anthropic tool_result carrying an image becomes a function_call_output whose
+// output holds an input_image. It must leave with detail "auto" like a top-level
+// image does, or vLLM-backed Responses upstreams reject the request.
+func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{
+		"model": "openai/gpt-4o",
+		"max_tokens": 64,
+		"tools": [{"name": "read_file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+		"messages": [
+			{"role": "user", "content": "Read /tmp/img.png and describe it."},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "/tmp/img.png"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+			]}]}
+		]
+	}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	output := gjson.GetBytes(data, `input.#(type=="function_call_output").output`)
+	if !output.IsArray() || len(output.Array()) != 1 {
+		t.Fatalf("want a one-block function_call_output.output, got %s", data)
+	}
+	image := output.Array()[0]
+	if image.Get("type").String() != "input_image" || image.Get("detail").String() != "auto" {
+		t.Fatalf("tool_result image must leave as input_image with detail auto, got %s", image.Raw)
+	}
+}
+
 // The #8361 request through Anthropic ingress: a client tool_search function, a
 // deferred tool, and a search turn whose tool_result is a tool_reference. On
 // gpt-6-sol it previously went out with defer_loading and no tool_search (a 400).
@@ -3263,5 +3300,49 @@ func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogP
 	}
 	if ann := block.Get("annotations"); !ann.IsArray() {
 		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
+	}
+}
+
+// A file a tool returned reaches OpenAI as a data URL: function_call_output has no file_type, and bare
+// base64 in file_data is rejected, exactly as for a file in an input message.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputFileBecomesDataURL(t *testing.T) {
+	pdf := "JVBERi0xLjQK" // "%PDF-1.4\n"
+	for _, fileType := range []*string{schemas.Ptr("application/pdf"), nil} {
+		name := "without file_type"
+		if fileType != nil {
+			name = "with file_type"
+		}
+		t.Run(name, func(t *testing.T) { assertFunctionCallOutputFileIsDataURL(t, pdf, fileType) })
+	}
+}
+
+func assertFunctionCallOutputFileIsDataURL(t *testing.T, pdf string, fileType *string) {
+	t.Helper()
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_report"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+						ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+							FileData: schemas.Ptr(pdf), FileType: fileType, Filename: schemas.Ptr("report.pdf"),
+						},
+					}}},
+				},
+			},
+		},
+	}
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	raw := string(jsonBytes)
+	if !strings.Contains(raw, `"file_data":"data:application/pdf;base64,`+pdf+`"`) {
+		t.Fatalf("file_data must be a data URL; raw=%s", raw)
+	}
+	if strings.Contains(raw, "file_type") {
+		t.Fatalf("file_type must not reach OpenAI; raw=%s", raw)
 	}
 }

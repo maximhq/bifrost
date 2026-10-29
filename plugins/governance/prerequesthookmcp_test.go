@@ -622,3 +622,30 @@ func TestPreRequestHookMCP_ExplicitEmptyConfigBeatsAllowedByDefault(t *testing.T
 		assert.Equal(t, []string{}, stampedIncludeTools(t, p, newPreRequestCtx([]string{"youtube-*"}, []string{"youtube"}), newChatRequest()))
 	})
 }
+
+// A prompt or resource read is evaluated like a tool call (a credential that resolves to nothing is
+// refused) but not checked against the tool allow-list: core only routes it to servers the access reaches.
+func TestPreMCPHookEvaluatesPromptAndResourceReads(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	reads := map[string]*schemas.BifrostMCPRequest{
+		"prompt":   {RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "sentry", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "sentry-triage"}},
+		"resource": {RequestType: schemas.MCPRequestTypeReadResource, ClientName: "sentry", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "sentry://issues/1"}},
+	}
+	for name, req := range reads {
+		t.Run(name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, nil)
+			ctx := newPreRequestCtx(nil, nil)
+			_, shortCircuit, err := plugin.PreMCPHook(ctx, req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a granted caller's read is not refused by the tool allow-list")
+			// Core checks the server it picked against this list after the hooks, so a direct read
+			// is held to the grant exactly as /mcp, which stamps it before core, is.
+			assert.Equal(t, []string{"sentry-read_file"}, ctx.Value(schemas.MCPContextKeyIncludeTools), "the read stamps the grant's tool list")
+
+			_, shortCircuit, err = plugin.PreMCPHook(presentCtx("sk-bf-revoked"), req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "an unresolvable credential is refused by evaluation")
+			assert.Equal(t, string(DecisionAccessNotFound), *shortCircuit.Error.Type)
+		})
+	}
+}

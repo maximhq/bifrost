@@ -553,6 +553,32 @@ func TestTracer_SetAttribute(t *testing.T) {
 	}
 }
 
+// A span opened once its work has finished is backdated to when the work began, so it
+// exports with the work's real duration; its end time is left as EndSpan sets it.
+func TestTracer_SetSpanStartTime(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "plugin.guard.output", schemas.SpanKindPlugin)
+
+	began := time.Now().Add(-2 * time.Second)
+	tracer.SetSpanStartTime(handle, began)
+	tracer.SetSpanStartTime(handle, time.Time{})
+	tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+
+	span := store.GetTrace(traceID).RootSpan
+	if !span.StartTime.Equal(began) {
+		t.Errorf("StartTime = %v, want %v (a zero time must not overwrite it)", span.StartTime, began)
+	}
+	if d := span.EndTime.Sub(span.StartTime); d < 2*time.Second {
+		t.Errorf("span duration = %v, want >= 2s", d)
+	}
+}
+
 // A cancelled stream reaches PopulateLLMResponseAttributes with an accumulated
 // response whose usage exists but reads zero (the final usage chunk never
 // arrived) and an error carrying the authoritative BilledUsage. The response

@@ -75,6 +75,7 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 			// whose RequiresPerCallConnection is what production AddClient calls
 			// resolve against for per_user_headers clients.
 			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			t.Cleanup(func() { _ = m.Cleanup() })
 
 			config := &schemas.MCPClientConfig{
 				ID:                tt.clientID,
@@ -108,6 +109,7 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 // would sit at Healthy/0-tools forever.
 func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
 		ID:                "per-call-checker-client",
@@ -144,6 +146,7 @@ func TestAddClient_PerCallConnection_SharedType_DiscoversToolsSynchronously(t *t
 	ts, _ := buildAdminDiscoveryHTTPServer(t)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
 		ID:               "shared-sync-discovery-client",

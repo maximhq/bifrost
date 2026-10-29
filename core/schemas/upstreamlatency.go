@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,7 +20,7 @@ import (
 // last attempt. So every site that blocks on a provider socket adds its own
 // duration here, and the sum is read once at request end.
 //
-// The value is an *atomic.Int64 (nanoseconds) stored on the context. The pointer
+// The value is an *upstreamAccumulator (nanoseconds) stored on the context. The pointer
 // is installed once per request and only ever dereferenced afterwards, so
 // concurrent adds never touch the context's value map. This matters: streaming
 // keeps writing from the provider goroutine long after the request handler has
@@ -36,7 +37,82 @@ func (bc *BifrostContext) ResetUpstreamLatency() {
 	if bc == nil {
 		return
 	}
-	bc.setReservedValue(BifrostContextKeyUpstreamLatency, &atomic.Int64{})
+	bc.setReservedValue(BifrostContextKeyUpstreamLatency, &upstreamAccumulator{})
+}
+
+// upstreamAccumulator is the per-request upstream total plus a mark of where the
+// current attempt (one log row) began, so each row can report its own share.
+type upstreamAccumulator struct {
+	total             atomic.Int64                      // nanoseconds blocked on upstream, whole request
+	attemptStartNanos atomic.Int64                      // unix nanos when the current attempt began; 0 = unmarked
+	attemptUpstream   atomic.Int64                      // total at the moment the current attempt began
+	attempts          atomic.Int64                      // attempts marked so far in this request
+	wait              atomic.Pointer[upstreamWaitState] // set on the first BeginUpstreamWait
+}
+
+// upstreamWaitState tracks overlapping waits; only requests that make MCP tool calls allocate it.
+type upstreamWaitState struct {
+	mu       sync.Mutex
+	inFlight int       // open waits
+	since    time.Time // when inFlight last rose from zero
+}
+
+func upstreamAccumulatorFrom(ctx context.Context) *upstreamAccumulator {
+	if isNilContext(ctx) {
+		return nil
+	}
+	acc, _ := ctx.Value(BifrostContextKeyUpstreamLatency).(*upstreamAccumulator)
+	return acc
+}
+
+// MarkAttemptStart records that a new attempt (an LLM call that gets its own log
+// row: a fallback attempt or an agent-loop turn) begins now. No-op without an accumulator.
+func (bc *BifrostContext) MarkAttemptStart() {
+	acc := upstreamAccumulatorFrom(bc)
+	if acc == nil {
+		return
+	}
+	acc.attemptUpstream.Store(acc.total.Load())
+	acc.attemptStartNanos.Store(time.Now().UnixNano())
+	acc.attempts.Add(1)
+}
+
+// AttemptWindow is the span of one attempt on the request's upstream clock.
+type AttemptWindow struct {
+	Index         int // 1 for the request's first attempt
+	Start         time.Time
+	End           time.Time
+	UpstreamStart time.Duration // request upstream total when the attempt began
+	UpstreamEnd   time.Duration // request upstream total when the window was read
+	StreamBefore  StreamTotals  // stream counters when the attempt began; set for stream rows only
+}
+
+// Upstream is the upstream time spent inside the window.
+func (w AttemptWindow) Upstream() time.Duration {
+	if d := w.UpstreamEnd - w.UpstreamStart; d > 0 {
+		return d
+	}
+	return 0
+}
+
+// GetAttemptWindow returns the current attempt's window, ending now. ok is false
+// when no accumulator is present or no attempt has been marked.
+func GetAttemptWindow(ctx context.Context) (AttemptWindow, bool) {
+	acc := upstreamAccumulatorFrom(ctx)
+	if acc == nil {
+		return AttemptWindow{}, false
+	}
+	startNanos := acc.attemptStartNanos.Load()
+	if startNanos == 0 {
+		return AttemptWindow{}, false
+	}
+	return AttemptWindow{
+		Index:         int(acc.attempts.Load()),
+		Start:         time.Unix(0, startNanos),
+		End:           time.Now(),
+		UpstreamStart: time.Duration(acc.attemptUpstream.Load()),
+		UpstreamEnd:   time.Duration(acc.total.Load()),
+	}, true
 }
 
 // AddUpstreamLatency adds d to the request's upstream total.
@@ -50,8 +126,55 @@ func AddUpstreamLatency(ctx context.Context, d time.Duration) {
 	if d <= 0 || isNilContext(ctx) {
 		return
 	}
-	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*atomic.Int64); ok && acc != nil {
-		acc.Add(int64(d))
+	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*upstreamAccumulator); ok && acc != nil {
+		acc.total.Add(int64(d))
+	}
+}
+
+// UpstreamWait is one open wait from BeginUpstreamWait; End closes it.
+type UpstreamWait struct {
+	acc *upstreamAccumulator
+	ws  *upstreamWaitState
+}
+
+// BeginUpstreamWait opens a wait that may overlap others on the same request, such as
+// parallel MCP tool calls. Overlapping waits add their union to the upstream total, not
+// their sum, so concurrent calls never report more upstream time than wall time.
+func BeginUpstreamWait(ctx context.Context) UpstreamWait {
+	acc := upstreamAccumulatorFrom(ctx)
+	if acc == nil {
+		return UpstreamWait{}
+	}
+	ws := acc.wait.Load()
+	if ws == nil {
+		ws = &upstreamWaitState{}
+		if !acc.wait.CompareAndSwap(nil, ws) {
+			ws = acc.wait.Load()
+		}
+	}
+	ws.mu.Lock()
+	if ws.inFlight == 0 {
+		ws.since = time.Now()
+	}
+	ws.inFlight++
+	ws.mu.Unlock()
+	return UpstreamWait{acc: acc, ws: ws}
+}
+
+// End closes the wait. The span since the first open wait is added once the last one closes.
+func (w UpstreamWait) End() {
+	ws := w.ws
+	if ws == nil {
+		return
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if ws.inFlight == 0 {
+		return
+	}
+	ws.inFlight--
+	if ws.inFlight == 0 {
+		w.acc.total.Add(int64(time.Since(ws.since)))
 	}
 }
 
@@ -76,8 +199,8 @@ func GetUpstreamLatency(ctx context.Context) (time.Duration, bool) {
 	if isNilContext(ctx) {
 		return 0, false
 	}
-	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*atomic.Int64); ok && acc != nil {
-		return time.Duration(acc.Load()), true
+	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*upstreamAccumulator); ok && acc != nil {
+		return time.Duration(acc.total.Load()), true
 	}
 	return 0, false
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -56,8 +57,9 @@ type OAuth2IdentityResolver interface {
 // to how the existing per-user upstream OAuth consent pages work.
 type OAuth2ConsentHandler struct {
 	store            *lib.Config
-	tempTokens       *temptoken.Service     // used to invalidate the token after consent
-	identityResolver OAuth2IdentityResolver // optional; nil = vk + session modes only
+	tempTokens       *temptoken.Service            // used to invalidate the token after consent
+	identityResolver OAuth2IdentityResolver        // optional; nil = vk + session modes only
+	clientMetadata   *oauth2ClientMetadataResolver // resolves CIMD client_ids
 }
 
 // NewOAuth2ConsentHandler creates a new consent handler. identityResolver may
@@ -67,6 +69,7 @@ func NewOAuth2ConsentHandler(store *lib.Config, tempTokens *temptoken.Service, i
 		store:            store,
 		tempTokens:       tempTokens,
 		identityResolver: identityResolver,
+		clientMetadata:   defaultClientMetadataResolver,
 	}
 }
 
@@ -79,7 +82,10 @@ func (h *OAuth2ConsentHandler) RegisterRoutes(r *router.Router, middlewares ...s
 // consentFlowDetailResponse is the wire shape for GET /api/oauth2/consent/flows/{id}.
 type consentFlowDetailResponse struct {
 	RedirectURI    string            `json:"redirect_uri"`
+	RedirectHost   string            `json:"redirect_host"`
 	ClientName     string            `json:"client_name"`
+	ClientHost     string            `json:"client_host,omitempty"` // CIMD clients only
+	LocalhostOnly  bool              `json:"localhost_only_redirect,omitempty"`
 	AvailableModes []consentFlowMode `json:"available_modes"`
 	LoggedInUser   *loggedInUser     `json:"logged_in_user,omitempty"` // non-nil when a valid session is present
 	ExpiresAt      string            `json:"expires_at"`
@@ -106,7 +112,11 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	client, err := h.store.ConfigStore.GetOAuth2ClientByClientID(ctx, req.ClientID)
+	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, req.ClientID)
+	if metadataErr != nil {
+		SendError(ctx, metadataErr.httpStatus(), metadataErr.description)
+		return
+	}
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusInternalServerError, "client registration not found")
@@ -119,9 +129,14 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 
 	resp := consentFlowDetailResponse{
 		RedirectURI:    req.RedirectURI,
+		RedirectHost:   urlHost(req.RedirectURI),
 		ClientName:     client.ClientName,
+		LocalhostOnly:  allLoopbackRedirects(client.RedirectURIs),
 		AvailableModes: h.availableModes(ctx),
 		ExpiresAt:      req.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	if oauth2.IsClientMetadataURL(client.ClientID) {
+		resp.ClientHost = urlHost(client.ClientID)
 	}
 
 	// If a valid session is present, surface the user so the consent page can

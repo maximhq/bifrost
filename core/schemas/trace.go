@@ -623,6 +623,30 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// SetStartTime moves the span's start, for work measured before its span was opened.
+func (s *Span) SetStartTime(start time.Time) {
+	if s == nil || start.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StartTime = start
+}
+
+// SetStartTimeIfMatch is SetStartTime guarded like EndIfMatch against a recycled span.
+func (s *Span) SetStartTimeIfMatch(id string, start time.Time) bool {
+	if s == nil || start.IsZero() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.StartTime = start
+	return true
+}
+
 // GetAttribute reads one attribute under the span's lock.
 func (s *Span) GetAttribute(key string) (any, bool) {
 	if s == nil {
@@ -918,6 +942,8 @@ const (
 	SpanKindTranscription SpanKind = "transcription"
 	// SpanKindInternal represents internal operations (key selection, etc.)
 	SpanKindInternal SpanKind = "internal"
+	// SpanKindRelay represents one relay call to a non-LLM upstream API.
+	SpanKindRelay SpanKind = "relay.call"
 )
 
 // SpanStatus represents the status of a span's operation
@@ -1199,6 +1225,22 @@ const (
 	// carries OSI-level values (tcp/pipe), not A2A protocol bindings.
 	AttrBifrostA2AUpstreamTransport = "bifrost.a2a.upstream.transport"
 
+	// Relay span attributes. A relay call is plain HTTP, so the method and status code use
+	// the OTel HTTP semconv names; the rest is Bifrost-namespaced.
+	AttrHTTPRequestMethod              = "http.request.method"
+	AttrBifrostRelayName               = "bifrost.relay.name"
+	AttrBifrostRelayRoutePath          = "bifrost.relay.route.path" // the matched route glob, "" for none
+	AttrBifrostRelayBillable           = "bifrost.relay.billable"
+	AttrBifrostRelayCounted            = "bifrost.relay.counted" // the call was priced and charged
+	AttrBifrostRelayStreamed           = "bifrost.relay.streamed"
+	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
+	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
+	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
+
+	// RelayMethodLabelOther is the method label for a request method outside the set a relay
+	// route can name, so a relay that skips the route check cannot grow a metric's series.
+	RelayMethodLabelOther = "_OTHER"
+
 	// =====================================================================
 	// Bifrost-namespaced attributes (bifrost.*)
 	//
@@ -1246,6 +1288,11 @@ const (
 	// no span; the breakdown carves it into its own "worker-handoff" bucket. The
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
+
+	// AttrBifrostBackground marks a span as work the request did not wait for (e.g. a
+	// guardrail evaluating the response after it was delivered). The overhead breakdown
+	// leaves it out; the span is still exported.
+	AttrBifrostBackground = "bifrost.background"
 
 	// AttrBifrostTimeToFirstTokenMs is request receipt to first streamed chunk, so
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
@@ -1367,7 +1414,9 @@ func IsSensitiveHeader(name string) bool {
 	switch normalized {
 	case "authorization", "proxy-authorization", "cookie", "set-cookie",
 		// Bifrost's own virtual key header: a credential that no generic pattern below names.
-		"x-bf-vk":
+		"x-bf-vk",
+		// Azure AI Speech's key header, which also carries a virtual key.
+		"ocp-apim-subscription-key":
 		return true
 	}
 
@@ -1380,4 +1429,17 @@ func IsSensitiveHeader(name string) bool {
 		strings.HasPrefix(normalized, "x-amzn-oidc-") ||
 		strings.HasSuffix(normalized, "-token") ||
 		strings.HasSuffix(normalized, "_token")
+}
+
+// relayMethodLabels are the request methods a relay route can name (plus OPTIONS, which a
+// browser preflight sends); every other method is reported as RelayMethodLabelOther.
+var relayMethodLabels = map[string]struct{}{"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {}, "OPTIONS": {}}
+
+// RelayMethodLabel bounds a relay call's HTTP method to a fixed label set for metrics, as the
+// OTel HTTP semconv does for http.request.method.
+func RelayMethodLabel(method string) string {
+	if _, ok := relayMethodLabels[strings.ToUpper(strings.TrimSpace(method))]; ok {
+		return strings.ToUpper(strings.TrimSpace(method))
+	}
+	return RelayMethodLabelOther
 }

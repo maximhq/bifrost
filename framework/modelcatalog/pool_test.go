@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,35 @@ func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
 	want := []string{"databricks-pricing-model"}
 	if !slices.Equal(got, want) {
 		t.Errorf("GetUnfilteredModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
+// TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases verifies that live alias entries
+// do not shadow the datasheet, which stays the source of Databricks' callable models.
+func TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", false, []string{"my-claude"})
+
+	got := mc.GetModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model", "my-claude"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetModelsForProvider(Databricks) = %v, want %v", got, want)
 	}
 }
 
@@ -318,7 +348,7 @@ func TestExtractModelIDs_StripsOwningProviderPrefix(t *testing.T) {
 			{ID: "openai/o1"},
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenAI)
+	got, _ := extractModelIDs(resp, schemas.OpenAI)
 	slices.Sort(got)
 	want := []string{"gpt-4o", "o1"}
 	if !slices.Equal(got, want) {
@@ -337,7 +367,7 @@ func TestExtractModelIDs_KeepsNestedProviderForGateway(t *testing.T) {
 			{ID: "openrouter/anthropic/claude-sonnet-4"},
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenRouter)
+	got, _ := extractModelIDs(resp, schemas.OpenRouter)
 	slices.Sort(got)
 	want := []string{"anthropic/claude-sonnet-4", "openai/gpt-4"}
 	if !slices.Equal(got, want) {
@@ -358,7 +388,7 @@ func TestExtractModelIDs_DropsForeignPrefix(t *testing.T) {
 			{ID: "anthropic/claude-sonnet"}, // foreign — should be dropped
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenAI)
+	got, _ := extractModelIDs(resp, schemas.OpenAI)
 	slices.Sort(got)
 	want := []string{"gpt-4o"}
 	if !slices.Equal(got, want) {
@@ -369,7 +399,7 @@ func TestExtractModelIDs_DropsForeignPrefix(t *testing.T) {
 // TestExtractModelIDs_NilResp returns nil — the public wrapper relies on
 // this to short-circuit cleanly when a list-models call returns no body.
 func TestExtractModelIDs_NilResp(t *testing.T) {
-	if got := extractModelIDs(nil, schemas.OpenAI); got != nil {
+	if got, _ := extractModelIDs(nil, schemas.OpenAI); got != nil {
 		t.Errorf("extractModelIDs(nil) = %v, want nil", got)
 	}
 }
@@ -384,9 +414,28 @@ func TestExtractModelIDs_Dedup(t *testing.T) {
 			{ID: "openai/gpt-4o"},
 		},
 	}
-	got := extractModelIDs(resp, schemas.OpenAI)
+	got, _ := extractModelIDs(resp, schemas.OpenAI)
 	if len(got) != 1 || got[0] != "gpt-4o" {
 		t.Errorf("extractModelIDs = %v, want [gpt-4o] (deduped)", got)
+	}
+}
+
+// TestExtractModelIDs_DedupKeepsLatestCreated reads the creation time from
+// every row of a duplicated model, not only the first, and keeps the latest.
+func TestExtractModelIDs_DedupKeepsLatestCreated(t *testing.T) {
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{
+			{ID: "openai/gpt-4o"},
+			{ID: "gpt-4o", Created: new(int64(100))},
+			{ID: "openai/gpt-4o", Created: new(int64(200))},
+		},
+	}
+	got, created := extractModelIDs(resp, schemas.OpenAI)
+	if !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("extractModelIDs = %v, want [gpt-4o]", got)
+	}
+	if want := map[string]int64{"gpt-4o": 200}; !maps.Equal(created, want) {
+		t.Errorf("created = %v, want %v", created, want)
 	}
 }
 
@@ -485,5 +534,44 @@ func TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop(t *testing.T) {
 	}
 	if got := mc.GetModelsForProvider(schemas.OpenAI); !slices.Equal(got, []string{"gpt-4o"}) {
 		t.Errorf("after nil-resp guarded upsert = %v, want [gpt-4o] (entry must survive)", got)
+	}
+}
+
+// TestGetModelCreatedTimes keeps the provider creation time from cached
+// list-models responses, takes the latest time across keys, skips models with
+// no time, and drops times when the key is invalidated.
+func TestGetModelCreatedTimes(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "openai/model-a", Created: new(int64(100))},
+		{ID: "openai/model-b"},
+		{ID: "anthropic/other-provider", Created: new(int64(900))},
+	}})
+	gen := mc.LiveGeneration(schemas.OpenAI)
+	if !mc.UpsertLiveFromResponseIfCurrent(schemas.OpenAI, "k2", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "model-a", Created: new(int64(200))},
+		{ID: "model-c", Created: new(int64(0))},
+	}}, gen) {
+		t.Fatal("current generation write was dropped")
+	}
+	want := map[string]int64{"model-a": 200}
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, want) {
+		t.Fatalf("created = %v, want %v", got, want)
+	}
+	mc.InvalidateLive(schemas.OpenAI, "k2")
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, map[string]int64{"model-a": 100}) {
+		t.Fatalf("after invalidation created = %v", got)
+	}
+	if got := mc.GetModelCreatedTimes(schemas.Anthropic, false); len(got) != 0 {
+		t.Fatalf("other providers' rows must not leak: %v", got)
+	}
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", true, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "model-hidden", Created: new(int64(500))},
+	}})
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, true); !maps.Equal(got, map[string]int64{"model-hidden": 500}) {
+		t.Fatalf("unfiltered created = %v, want only the unfiltered entry's times", got)
+	}
+	if got := mc.GetModelCreatedTimes(schemas.OpenAI, false); !maps.Equal(got, map[string]int64{"model-a": 100}) {
+		t.Fatalf("unfiltered times must not leak into filtered reads: %v", got)
 	}
 }

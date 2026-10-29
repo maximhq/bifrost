@@ -1,0 +1,119 @@
+---
+title: "Relay Logs"
+description: "Find a relayed call, read its cost breakdown, latency split and attribution, and query the same data over the API."
+icon: "magnifying-glass"
+---
+
+Every relay call writes one row to **Relay Logs**, a table of its own beside LLM Logs, MCP Logs and Agent Logs, because a relay call has no provider or model: its cost is the relay's pricing formula, recorded here broken down.
+
+Relay Logs need the logging plugin and a log store, as the other log pages do. With no log store configured the API answers `503` and the page shows that error; with a store but no rows yet, the page shows how to send a first request.
+
+## Find a call
+
+1. Open **Observability → Relay Logs**.
+2. Choose a time window. Filter by relay, method, status, billable, virtual key and, where your access allows, user, team, customer, business unit and project. Cost bounds and a request id narrow further.
+3. Search matches the path, matched route, model and request id. It does not search bodies.
+4. Select a row to open its details. **Live** polls for new rows.
+
+
+| Column | Meaning |
+| --- | --- |
+| **Relay** | The relay called. |
+| **Request** | Method and path, with the matched route glob (or **No route**), **streamed** and **not billable** markers. |
+| **Status** | The upstream's HTTP status, or the row status (`success`, `error`, `cancelled`) when no reply was received. |
+| **Latency** | End to end, pre-hooks to the end of the reply or stream. |
+| **Cost** | What was charged to budgets. |
+| **Units** | Billed units after block rounding and the minimum. |
+| **Virtual Key**, **User**, **Team**, **Customer**, **Business Unit**, **Project** | Attribution from governance. |
+
+<Tip>
+Attribution values in the details sheet are links: selecting a team or customer filters the list by it, and the virtual key opens its page. Filters live in the page URL, so a filtered view can be shared.
+</Tip>
+
+## Read a row
+
+The details sheet opens on a hero card with the kind (**Call**), a **Streamed** badge where it applies, the status and HTTP code, a **Not billable** badge for free calls, the route, the request id, and four headline figures: latency, units (or tokens), cost and bytes out.
+
+
+**More details** expands into:
+
+- **Timings** — start and end, total latency, **Upstream Latency** (time blocked on the upstream socket) and **Bifrost Overhead** (the rest), with the per-stage [overhead breakdown](/features/observability/latency-breakdown) once the trace completes.
+- **Cost** — the figure charged and every term behind it: fee per call, price per unit, units read, units billed, reported cost, and token counts when mapped (marked not priced).
+- **Request Details** — relay, kind, detected client **App** (from the `User-Agent`), method, path and query, matched route, billable, streamed, model, and the virtual key, user, team, customer, business unit and project.
+- **Metadata** — the same map LLM and MCP rows carry: the request headers the `client.logging_headers` setting names (exact names and wildcard patterns), every `x-bf-lh-*` header as a label (prefix stripped), the `x-bf-dim-*` dimensions, and the virtual key's own metadata.
+- **Matched Headers** — the headers the matched route matches on, with the value that selected the route: the relay's own extra header when it sets that header, else the caller's. They decided the route and its price. A value the relay reads from the environment or a vault is stored redacted. No other header, and never the reply's, is stored. Metadata and matched headers stay on the row when content logging is off; only bodies and the query string are content.
+
+Below the disclosure, the **Error** box shows the error returned to the caller, and the **Request Body** and **Response Body** boxes show up to 64 KB of each body as text. Binary bodies are not kept. Any plugin that logged during the call appears under **Plugin logs**.
+
+### Content logging
+
+Bodies and the query string are content, and follow the same [content logging](/features/observability/content-logging) decision as LLM rows: `client.disable_content_logging`, the virtual key's and project's overrides, and the `x-bf-disable-content-logging` request header when per-request overrides are allowed. A row whose content is hidden keeps its metadata and cost and shows **Content logging has been disabled for this request**. Query parameters that carry credentials (`key`, `token`, `api_key`, `signature`, ...) are redacted before the path is stored even when content is kept.
+
+## Row statuses
+
+| Status | Meaning |
+| --- | --- |
+| `success` | A reply below `400` reached the caller. |
+| `error` | The upstream answered `4xx` or `5xx`, the upstream could not be reached, or a hook refused the call (access denied, budget exceeded, rate limited). A refused call still records how long Bifrost held it. |
+| `cancelled` | The caller disconnected before the reply or stream ended. Usage observed so far is still charged. |
+
+A call refused before the hooks (unknown relay, no matching route, an unmeasurable request body) returns `404` or `400` to the caller and writes no row.
+
+## Query the API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/relay-logs` | Search. Filters: `relay_names`, `methods`, `statuses`, `kinds`, `virtual_key_ids`, `user_ids`, `team_ids`, `customer_ids`, `business_unit_ids`, `project_ids` (repeatable), `billable`, `start_time`, `end_time` (RFC 3339), `min_cost`, `max_cost`, `request_id`, `search`. Paging: `limit` (default 50, max 1000), `offset`, `sort_by` (`timestamp`, `latency`, `cost`), `order`. |
+| `GET` | `/api/relay-logs/{id}` | One row with its bodies. |
+| `DELETE` | `/api/relay-logs` | Delete rows: `{"ids": ["..."]}`. |
+| `GET` | `/api/relay-logs/stats` | Totals for the same filters: requests, successes, errors, success rate, average latency, total cost, total units. |
+| `GET` | `/api/relay-logs/histogram` | Volume and cost per `bucket_size_seconds` (default 3600). |
+| `GET` | `/api/relay-logs/top-endpoints` | Relays ranked by request count, with errors, cost and average latency; `limit` default 10. |
+| `GET` | `/api/relay-logs/filterdata` | Relay names, methods and virtual keys seen, for building filters. |
+
+```bash
+curl "http://localhost:8080/api/relay-logs?relay_names=tavily&statuses=success&start_time=2026-10-01T00:00:00Z&limit=20"
+```
+
+**Response:**
+
+```json
+{
+  "logs": [
+    {
+      "id": "8c6a1d2e-...",
+      "timestamp": "2026-10-20T09:14:02.118Z",
+      "relay_name": "tavily",
+      "kind": "call",
+      "method": "POST",
+      "path": "/search",
+      "route_path": "/search",
+      "status": "success",
+      "status_code": 200,
+      "streamed": false,
+      "billable": true,
+      "latency": 412.3,
+      "upstream_latency": 398.1,
+      "overhead_latency": 14.2,
+      "bytes_out": 2184,
+      "cost": 0.033,
+      "cost_per_request": 0.001,
+      "cost_per_unit": 0.008,
+      "units": 4,
+      "billed_units": 4,
+      "virtual_key_id": "vk-research",
+      "virtual_key_name": "research-assistant",
+      "request_id": "req_01HZ...",
+      "content_hidden": false
+    }
+  ],
+  "pagination": { "limit": 20, "offset": 0, "sort_by": "timestamp", "order": "desc" },
+  "has_logs": true
+}
+```
+
+## Next steps
+
+- **[Content logging](/features/observability/content-logging)** — Decide what the bodies columns keep.
+- **[Latency breakdown](/features/observability/latency-breakdown)** — How upstream latency and Bifrost overhead are measured.
+- **[Troubleshooting](./troubleshooting)** — Work from a row's status to the cause.

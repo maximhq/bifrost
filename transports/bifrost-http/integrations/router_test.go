@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -115,6 +116,37 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	r.Handler(&ctx)
 
 	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+}
+
+func TestChatGPTPassthroughRouterRegistersOnlyCodexRoutes(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	cases := []struct {
+		method string
+		uri    string
+		want   int
+	}{
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0", fasthttp.StatusNoContent},
+		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/responses", fasthttp.StatusNoContent},
+		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/models", fasthttp.StatusMethodNotAllowed},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/conversations", fasthttp.StatusNotFound},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models/gpt-5.5", fasthttp.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			r.Handler(&ctx)
+			require.Equal(t, tc.want, ctx.Response.StatusCode())
+		})
+	}
 }
 
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
@@ -1000,7 +1032,7 @@ func TestApplyPassthroughCallerAuth_OpenAIJWTForwarded(t *testing.T) {
 	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
 	safeHeaders := map[string]string{}
-	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln"
+	jwt := "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln"
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, schemas.OpenAI, jwt, "https://chatgpt.com")
 	if got := safeHeaders["authorization"]; got != jwt {
 		t.Fatalf("expected JWT forwarded in safe headers, got %q", got)
@@ -1016,11 +1048,16 @@ func TestApplyPassthroughCallerAuth_APIKeysStayStripped(t *testing.T) {
 		auth        string
 		upstreamURL string
 	}{
-		"openai plain api key":      {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
-		"anthropic api key bearer":  {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
-		"provider override bedrock": {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
-		"openai two-segment token":  {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
-		"http upstream override":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "http://mock.local"},
+		"openai plain api key":             {schemas.OpenAI, "Bearer sk-plain-api-key", ""},
+		"anthropic api key bearer":         {schemas.Anthropic, "Bearer sk-ant-api03-key", ""},
+		"provider override bedrock":        {schemas.Bedrock, "Bearer sk-ant-oat01-caller-token", ""},
+		"openai two-segment token":         {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.c2ln", ""},
+		"http upstream override":           {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", "http://mock.local"},
+		"openai jwt on openai api":         {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", ""},
+		"openai jwt on other https":        {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", "https://api.example.com"},
+		"identity provider jwt on chatgpt": {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2lkcC5leGFtcGxlLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.c2ln", "https://chatgpt.com"},
+		"jwt without issuer on chatgpt":    {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjb2RleCJ9.c2ln", "https://chatgpt.com"},
+		"undecodable jwt on chatgpt":       {schemas.OpenAI, "Bearer eyJhbGciOiJSUzI1NiJ9.!!!.c2ln", "https://chatgpt.com"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -1727,6 +1764,7 @@ func (codexPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*sch
 type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
 	skipKeySelection bool
+	skipModelCheck   bool
 }
 
 // GetName identifies the isolated test plugin.
@@ -1745,6 +1783,7 @@ func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	snapshot := *req
 	p.request = &snapshot
 	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
 	status := 403
 	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
 }
@@ -1770,7 +1809,7 @@ func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
 			ctx.Request.Header.SetMethod("POST")
 			ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
 			ctx.Request.Header.SetContentType("application/json")
-			ctx.Request.Header.Set("Authorization", "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.signature")
+			ctx.Request.Header.Set("Authorization", "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature")
 			ctx.Request.SetBodyString(body)
 			r.Handler(&ctx)
 			require.Equal(t, 403, ctx.Response.StatusCode())
@@ -1778,12 +1817,47 @@ func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
 			require.NotNil(t, plugin.request)
 			require.Equal(t, schemas.PassthroughStreamRequest, plugin.request.RequestType, "native Codex responses must not use the buffered API path")
 			require.True(t, plugin.skipKeySelection)
+			require.False(t, plugin.skipModelCheck, "a responses turn runs a model, so the model allowlist still applies")
 			require.Equal(t, "https://chatgpt.com", plugin.request.PassthroughRequest.UpstreamURL)
 			require.Equal(t, "/backend-api/codex/responses", plugin.request.PassthroughRequest.Path)
 			require.Equal(t, body, string(plugin.request.PassthroughRequest.Body))
-			require.Equal(t, "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.signature", plugin.request.PassthroughRequest.SafeHeaders["authorization"])
+			require.Equal(t, "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature", plugin.request.PassthroughRequest.SafeHeaders["authorization"])
 		})
 	}
+}
+
+// TestChatGPTPassthroughForwardsCodexModelList covers Codex fetching its model list through the gateway
+// with ChatGPT sign-in: the caller's ChatGPT token goes upstream, the gateway credential does not.
+func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
+	plugin := &codexPassthroughReceipt{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	NewChatGPTPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	jwt := "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature"
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0")
+	ctx.Request.Header.Set("Authorization", jwt)
+	ctx.Request.Header.Set("ChatGPT-Account-ID", "synthetic-workspace")
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-synthetic")
+	ctx.Request.Header.Set("Cookie", "session=synthetic; auth-openid=synthetic-gateway-token")
+	r.Handler(&ctx)
+	require.Equal(t, 403, ctx.Response.StatusCode())
+	require.NotNil(t, plugin.request)
+	require.Equal(t, schemas.PassthroughRequest, plugin.request.RequestType)
+	require.True(t, plugin.skipKeySelection)
+	require.True(t, plugin.skipModelCheck, "a model list runs no model, so a restricted model allowlist must not refuse it")
+	req := plugin.request.PassthroughRequest
+	require.Equal(t, fasthttp.MethodGet, req.Method)
+	require.Equal(t, "https://chatgpt.com", req.UpstreamURL)
+	require.Equal(t, "/backend-api/codex/models", req.Path)
+	require.Equal(t, "client_version=0.160.0", req.RawQuery)
+	require.Equal(t, jwt, req.SafeHeaders["authorization"])
+	require.Equal(t, "synthetic-workspace", req.SafeHeaders["chatgpt-account-id"])
+	require.NotContains(t, req.SafeHeaders, "x-bf-vk")
+	require.NotContains(t, req.SafeHeaders, "cookie")
 }
 
 // BenchmarkChatGPTPassthroughStreamDecision measures the route predicate without touching provider execution.
@@ -1792,6 +1866,25 @@ func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = cfg.streams("POST", "/backend-api/codex/responses", false)
+	}
+}
+
+// BenchmarkChatGPTPassthroughModelFreeDecision measures the model-list predicate every ChatGPT passthrough request runs.
+func BenchmarkChatGPTPassthroughModelFreeDecision(b *testing.B) {
+	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = cfg.ModelFreePath("POST", "/backend-api/codex/responses")
+	}
+}
+
+// BenchmarkIsChatGPTBearer measures the issuer check each ChatGPT passthrough request runs, on a token padded to a real ChatGPT token's size.
+func BenchmarkIsChatGPTBearer(b *testing.B) {
+	claims := `{"iss":"https://auth.openai.com","sub":"synthetic","pad":"` + strings.Repeat("x", 1500) + `"}`
+	authHeader := "Bearer eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + "." + strings.Repeat("s", 342)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = isChatGPTBearer(authHeader)
 	}
 }
 

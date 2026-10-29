@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -340,14 +342,14 @@ func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronous
 	assert.Contains(t, state.ToolMap, "shared-percall-client-refresh-echo", "tools must be refreshed synchronously, not deferred to the periodic checker")
 }
 
-// TestSetClientTools_ReplacesStaleTools pins SetClientTools' replace
+// TestSetClientDiscovery_ReplacesStaleTools pins SetClientDiscovery' replace
 // semantics: every caller passes a complete discovery result, so a tool the
 // upstream removed between discoveries must disappear from the in-memory
 // ToolMap. The old merge behavior kept such tools alive in memory (and on
 // the hosted MCP surface, which serves from ToolMap) while the DB, persisted
 // from the passed-in set via the tools-change callback, had already dropped
 // them.
-func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
+func TestSetClientDiscovery_ReplacesStaleTools(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{ID: "client-replace-tools", Name: "replace-tools-client"}
 
@@ -363,11 +365,7 @@ func TestSetClientTools_ReplacesStaleTools(t *testing.T) {
 	}
 	m.mu.Unlock()
 
-	m.SetClientTools(config.ID,
-		map[string]schemas.ChatTool{"replace-tools-client-kept": {}},
-		map[string]string{"replace-tools-client-kept": "kept"},
-		"",
-	)
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"replace-tools-client-kept": {}}, ToolNameMapping: map[string]string{"replace-tools-client-kept": "kept"}})
 
 	m.mu.RLock()
 	state := *m.clientMap[config.ID]
@@ -436,7 +434,7 @@ func TestUpdateClientCredentials_PerCallPerUser_ReturnsReconnectNotApplicable(t 
 }
 
 // TestUpdateClientCredentials_PerCallShared_Disabled_SkipsRefresh pins the
-// Disabled guard on the per-call refresh: SetClientTools forces a client
+// Disabled guard on the per-call refresh: SetClientDiscovery forces a client
 // back to Healthy, so a disabled client must keep the sentinel (the fresh
 // credential is picked up when the client is re-enabled, which runs its own
 // discovery) rather than get resurrected by a credential update.
@@ -1029,16 +1027,16 @@ func TestMCPProxySelectorRequirePublicTargetRefusesPrivateLiteral(t *testing.T) 
 	require.Equal(t, proxyURL, got)
 }
 
-// SetClientTools carries the instructions from the same handshake that found the tools,
+// SetClientDiscovery carries the instructions from the same handshake that found the tools,
 // and records them on the config so a per-call client can restore them after a restart.
-func TestSetClientToolsRecordsInstructionsForRestart(t *testing.T) {
+func TestSetClientDiscoveryRecordsInstructionsForRestart(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "per-call", Name: "per-call", ToolsToExecute: []string{"*"}}
 	m.mu.Lock()
 	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
 	m.mu.Unlock()
 
-	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"t": {Type: "function"}}, map[string]string{"t": "t"}, "Use me carefully.")
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"t": {Type: "function"}}, ToolNameMapping: map[string]string{"t": "t"}, Instructions: "Use me carefully."})
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1057,14 +1055,15 @@ func TestInstructionsOnlyChangeStillFiresToolsChangeCallback(t *testing.T) {
 	m.mu.Unlock()
 
 	var seen []string
-	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, instructions string) {
+	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
+		instructions := discovery.Instructions
 		seen = append(seen, instructions)
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
 	mapping := map[string]string{"echo": "echo"}
-	m.SetClientTools(config.ID, tools, mapping, "v1")
-	m.SetClientTools(config.ID, map[string]schemas.ChatTool{"echo": {Type: "function"}}, map[string]string{"echo": "echo"}, "v2")
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping, Instructions: "v1"})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo"}, Instructions: "v2"})
 
 	assert.Equal(t, []string{"v1", "v2"}, seen)
 }
@@ -1081,7 +1080,7 @@ func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing
 	}
 	m.mu.Unlock()
 
-	require.True(t, m.writeBackDiscoveredTools(config.ID, 0, map[string]schemas.ChatTool{"a": {Type: "function"}}, map[string]string{"a": "a"}, nil))
+	require.True(t, m.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"a": {Type: "function"}}, ToolNameMapping: map[string]string{"a": "a"}}, false))
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1403,7 +1402,7 @@ func TestUpdateClient_OpenAPI_SpecChangeRebuildsServer(t *testing.T) {
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	var toolsChanges atomic.Int32
-	m.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string, string) { toolsChanges.Add(1) })
+	m.SetDiscoveryChangeCallback(func(string, string, *schemas.MCPDiscovery) { toolsChanges.Add(1) })
 
 	m.mu.RLock()
 	genBefore := m.clientMap[config.ID].ConnGeneration
@@ -1832,4 +1831,426 @@ func TestUnmatchedToolSelections(t *testing.T) {
 	assert.Equal(t, []string{"a_very_long_operation_name_cut"}, unmatchedToolSelections(schemas.WhiteList{"listPets", "a_very_long_operation_name_cut"}, tools, "zoo"))
 	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"*"}, tools, "zoo"))
 	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"listPets", "createPet"}, tools, "zoo"))
+}
+
+// These make the test binary serve newMatrixUpstream instead of running tests, so an upstream on the
+// vendored mcp-go needs no separate build: over stdio, or over Streamable HTTP at an address pinned to
+// one protocol version (out of process, so benchmarks count only Bifrost's side).
+const (
+	stdioServerEnv       = "BIFROST_MCP_TEST_STDIO_SERVER"
+	stdioAddToolAfterEnv = "BIFROST_MCP_TEST_STDIO_ADD_TOOL_AFTER" // adds matrix tool "added" this long after the first tools/list
+	httpServerEnv        = "BIFROST_MCP_TEST_HTTP_SERVER"
+	httpServerVersionEnv = "BIFROST_MCP_TEST_HTTP_SERVER_VERSION"
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv(stdioServerEnv) == "1" {
+		var opts []server.ServerOption
+		var s *server.MCPServer
+		if after, err := time.ParseDuration(os.Getenv(stdioAddToolAfterEnv)); err == nil {
+			// Timed from the first tools/list (the client's discovery), not process start.
+			var once sync.Once
+			hooks := &server.Hooks{}
+			hooks.AddAfterListTools(func(context.Context, any, *mcpgo.ListToolsRequest, *mcpgo.ListToolsResult) {
+				once.Do(func() { time.AfterFunc(after, func() { addMatrixTool(s) }) })
+			})
+			opts = append(opts, server.WithHooks(hooks))
+		}
+		s = newMatrixUpstream(opts...)
+		_ = server.ServeStdio(s)
+		os.Exit(0)
+	}
+	if os.Getenv(httpServerEnv) == "1" {
+		// The parent passes its bound listener as fd 3, so the port is never free for another process.
+		if l, err := net.FileListener(os.NewFile(3, "upstream-listener")); err == nil {
+			_ = http.Serve(l, server.NewStreamableHTTPServer(newMatrixUpstream(),
+				server.WithStreamableHTTPProtocolVersions(os.Getenv(httpServerVersionEnv))))
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// startHTTPUpstreamProcess runs newMatrixUpstream in a child process pinned to version and returns its URL.
+// The port stays bound throughout: the child inherits this listener rather than binding the address again.
+func startHTTPUpstreamProcess(tb testing.TB, version string) string {
+	tb.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(tb, err)
+	defer l.Close()
+	f, err := l.(*net.TCPListener).File()
+	require.NoError(tb, err)
+	defer f.Close()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), httpServerEnv+"=1", httpServerVersionEnv+"="+version)
+	cmd.ExtraFiles = []*os.File{f}
+	require.NoError(tb, cmd.Start())
+	tb.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	// Requests queue on the already bound socket until the child serves it.
+	return "http://" + l.Addr().String()
+}
+
+func newMatrixUpstream(opts ...server.ServerOption) *server.MCPServer {
+	s := server.NewMCPServer("matrix-upstream", "1.0.0", append([]server.ServerOption{
+		server.WithToolCapabilities(true),
+		server.WithInstructions("matrix instructions"),
+	}, opts...)...)
+	s.AddTool(
+		mcpgo.NewTool("echo", mcpgo.WithString("message", mcpgo.Required())),
+		func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			msg, _ := req.GetArguments()["message"].(string)
+			return mcpgo.NewToolResultText(msg), nil
+		},
+	)
+	return s
+}
+
+// addMatrixTool adds the "added" tool to a running matrix upstream, which tells listening clients
+// the tool list changed.
+func addMatrixTool(s *server.MCPServer) {
+	s.AddTool(mcpgo.NewTool("added"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText("added"), nil
+	})
+}
+
+// TestConnectToMCPClient_ProtocolVersionMatrix pins that an upstream speaking any supported protocol
+// revision connects, negotiates that revision, and serves instructions, discovery, calls and health
+// checks. 2026-07-28 is reached via server/discover; the others via initialize.
+func TestConnectToMCPClient_ProtocolVersionMatrix(t *testing.T) {
+	type upstream struct {
+		name    string
+		version string
+		config  func(t *testing.T) *schemas.MCPClientConfig
+	}
+	httpUpstream := func(version string) func(t *testing.T) *schemas.MCPClientConfig {
+		return func(t *testing.T) *schemas.MCPClientConfig {
+			ts := httptest.NewServer(server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(version)))
+			t.Cleanup(ts.Close)
+			return &schemas.MCPClientConfig{ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL)}
+		}
+	}
+	upstreams := []upstream{
+		{"http", mcpgo.ProtocolVersion20250618, httpUpstream(mcpgo.ProtocolVersion20250618)},
+		{"http", mcpgo.ProtocolVersion20251125, httpUpstream(mcpgo.ProtocolVersion20251125)},
+		{"http", mcpgo.ProtocolVersion20260728, httpUpstream(mcpgo.ProtocolVersion20260728)},
+		// Legacy stdio is covered by the prebuilt example servers in internal/mcptests.
+		{"stdio", mcpgo.ProtocolVersion20260728, func(t *testing.T) *schemas.MCPClientConfig {
+			return &schemas.MCPClientConfig{
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig:    &schemas.MCPStdioConfig{Command: os.Args[0], Envs: []string{stdioServerEnv + "=1"}},
+			}
+		}},
+	}
+	for _, u := range upstreams {
+		t.Run(u.name+"/"+u.version, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := u.config(t)
+			config.ID = "matrix-" + u.name + "-" + u.version
+			config.Name = "matrix"
+			config.ToolsToExecute = []string{"*"}
+			require.NoError(t, m.connectToMCPClient(context.Background(), config))
+			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+			state, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok)
+			require.NotNil(t, state.Conn)
+			assert.Equal(t, u.version, state.Conn.ProtocolVersion(), "negotiated protocol version")
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
+			assert.Equal(t, "matrix instructions", state.ServerInstructions)
+			require.Contains(t, state.ToolMap, "matrix-echo")
+
+			msg, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+			})
+			require.Nil(t, bErr)
+			require.NotNil(t, msg.Content)
+			require.NotNil(t, msg.Content.ContentStr)
+			assert.Equal(t, "hi", *msg.Content.ContentStr)
+
+			checker := NewClientConnectionChecker(m, config.ID, time.Minute, true, &MockLogger{})
+			checker.performCheck()
+			after, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok)
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, after.State, "health check over the negotiated revision")
+		})
+	}
+}
+
+// wireCounter wraps an upstream handler and counts what reaches it: new TCP connections, and
+// requests by JSON-RPC method (DELETE for a legacy session close).
+type wireCounter struct {
+	mu      sync.Mutex
+	conns   int
+	methods map[string]int
+}
+
+func (w *wireCounter) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		method := r.Method
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(strings.NewReader(string(body)))
+			var msg struct {
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(body, &msg)
+			method = msg.Method
+		}
+		w.mu.Lock()
+		w.methods[method]++
+		w.mu.Unlock()
+		next.ServeHTTP(rw, r)
+	})
+}
+
+func newWireCounter() *wireCounter { return &wireCounter{methods: map[string]int{}} }
+
+// count returns how many requests for method (a JSON-RPC method, or GET/DELETE) have arrived.
+func (w *wireCounter) count(method string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.methods[method]
+}
+
+func (w *wireCounter) discovery() (int, map[string]int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.conns, maps.Clone(w.methods)
+}
+
+// TestPerCallConnection_WireCostPerToolCall pins what one tool call on a per-call client costs on
+// the wire: one reused TCP connection across calls, and on a legacy upstream a server/discover
+// probe only until the client's protocol revision is known.
+func TestPerCallConnection_WireCostPerToolCall(t *testing.T) {
+	const calls = 3
+	for _, version := range []string{mcpgo.ProtocolVersion20250618, mcpgo.ProtocolVersion20251125, mcpgo.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			counter := newWireCounter()
+			ts := httptest.NewUnstartedServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(version))))
+			ts.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					counter.mu.Lock()
+					counter.conns++
+					counter.mu.Unlock()
+				}
+			}
+			ts.Start()
+			t.Cleanup(ts.Close)
+
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			// Shared headers auth with stickiness unset: the default per-call client.
+			config := &schemas.MCPClientConfig{
+				ID:               "percall-" + version,
+				Name:             "matrix",
+				AuthType:         schemas.MCPAuthTypeHeaders,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(ts.URL),
+				ToolsToExecute:   []string{"*"},
+			}
+			require.NoError(t, m.AddClient(context.Background(), config))
+			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+			state, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok)
+			require.Nil(t, state.Conn, "per-call client keeps no shared connection")
+			require.Contains(t, state.ToolMap, "matrix-echo")
+
+			connsBefore, before := counter.discovery()
+			for i := range calls {
+				msg, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+					ID:       schemas.Ptr(fmt.Sprintf("call-%d", i)),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+				})
+				require.Nil(t, bErr)
+				require.Equal(t, "hi", *msg.Content.ContentStr)
+			}
+			connsAfter, after := counter.discovery()
+			delta := map[string]int{}
+			for method, n := range after {
+				if d := n - before[method]; d > 0 {
+					delta[method] = d
+				}
+			}
+
+			assert.LessOrEqual(t, connsAfter-connsBefore, 1, "tool calls should reuse one upstream connection, got methods %v", delta)
+			assert.Equal(t, calls, delta["tools/call"])
+			if mcpgo.IsModernProtocol(version) {
+				assert.Equal(t, calls, delta["server/discover"], "2026-07-28 has no handshake to skip but discover")
+				assert.Zero(t, delta["initialize"])
+			} else {
+				assert.Equal(t, 1, delta["server/discover"], "a legacy upstream is probed once, then its version is pinned")
+				assert.Equal(t, calls, delta["initialize"])
+			}
+		})
+	}
+}
+
+// A pinned legacy revision follows the upstream: the periodic check's unpinned handshake notices an
+// upstream that added 2026-07-28, and a call to one that refused legacy still goes through.
+func TestPerCallConnection_UpstreamChangesProtocolVersion(t *testing.T) {
+	var current atomic.Pointer[http.Handler]
+	serve := func(h http.Handler) { current.Store(&h) }
+	legacyOnly := server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
+	serve(legacyOnly)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*current.Load()).ServeHTTP(w, r) }))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID:               "percall-upgrade",
+		Name:             "matrix",
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		ToolsToExecute:   []string{"*"},
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	call := func() {
+		t.Helper()
+		msg, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+		})
+		require.Nil(t, bErr)
+		require.Equal(t, "hi", *msg.Content.ContentStr)
+	}
+	known := func() string {
+		shared, ok := m.perCallConns.Load(config.ID)
+		require.True(t, ok)
+		return shared.(*perCallConn).knownVersion(ts.URL)
+	}
+
+	call()
+	require.Equal(t, mcpgo.ProtocolVersion20251125, known())
+
+	t.Run("upstream adds 2026-07-28", func(t *testing.T) {
+		serve(server.NewStreamableHTTPServer(newMatrixUpstream()))
+		call()
+		assert.Equal(t, mcpgo.ProtocolVersion20251125, known(), "the pin holds while legacy is still served")
+		NewClientConnectionChecker(m, config.ID, time.Minute, true, &MockLogger{}).performCheck()
+		assert.Equal(t, mcpgo.ProtocolVersion20260728, known(), "the periodic check notices the upgrade")
+		call()
+		assert.Equal(t, mcpgo.ProtocolVersion20260728, known())
+	})
+
+	t.Run("upstream refuses legacy", func(t *testing.T) {
+		m.notePerCallVersion(config.ID, ts.URL, mcpgo.ProtocolVersion20251125)
+		modern := server.NewStreamableHTTPServer(newMatrixUpstream())
+		// Refused with an error the connect retry classifies as permanent, so recovery cannot lean on it.
+		serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Mcp-Method") == "" && r.Method == http.MethodPost {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":0,"error":{"code":-32600,"message":"bad request: legacy protocol not served"}}`)
+				return
+			}
+			modern.ServeHTTP(w, r)
+		}))
+		call()
+		assert.Equal(t, mcpgo.ProtocolVersion20260728, known())
+	})
+}
+
+// Per-call state is reused while the settings its HTTP client depends on stay put, rebuilt when they
+// change, and dropped with the client.
+func TestPerCallConnFor_Lifecycle(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "percall-lifecycle", Name: "c", ConnectionType: schemas.MCPConnectionTypeHTTP}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.mu.Unlock()
+
+	first, err := m.perCallConnFor(config)
+	require.NoError(t, err)
+	again, err := m.perCallConnFor(&schemas.MCPClientConfig{ID: config.ID, Name: "renamed", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	require.NoError(t, err)
+	assert.Same(t, first, again, "a config copy with the same TLS settings reuses the pool")
+
+	changed, err := m.perCallConnFor(&schemas.MCPClientConfig{ID: config.ID, ConnectionType: schemas.MCPConnectionTypeHTTP, TLSConfig: &schemas.MCPTLSConfig{InsecureSkipVerify: true}})
+	require.NoError(t, err)
+	assert.NotSame(t, first, changed, "changed TLS settings build a new HTTP client")
+
+	require.NoError(t, m.RemoveClient(config.ID))
+	_, ok := m.perCallConns.Load(config.ID)
+	assert.False(t, ok, "removing the client drops its per-call state")
+}
+
+// A call that took its client discovery before RemoveClient and builds per-call state afterwards must
+// not cache it again: nothing would ever drop that entry. The call itself still gets its connection.
+func TestPerCallConnFor_RemovedClientIsNotRecached(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "percall-removed", Name: "c", ConnectionType: schemas.MCPConnectionTypeHTTP}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config}
+	m.mu.Unlock()
+	require.NoError(t, m.RemoveClient(config.ID))
+
+	// The paused call resumes with its pre-removal discovery.
+	shared, err := m.perCallConnFor(config)
+	require.NoError(t, err)
+	require.NotNil(t, shared, "the in-flight call still gets an HTTP client")
+	_, ok := m.perCallConns.Load(config.ID)
+	assert.False(t, ok, "a removed client's per-call state is not cached again")
+}
+
+// BenchmarkExecuteChatTool_HTTPUpstream measures one tool call through Bifrost to a Streamable HTTP
+// upstream in another process, per negotiated protocol revision.
+func BenchmarkExecuteChatTool_HTTPUpstream(b *testing.B) {
+	for _, version := range []string{mcpgo.ProtocolVersion20251125, mcpgo.ProtocolVersion20260728} {
+		b.Run(version, func(b *testing.B) {
+			url := startHTTPUpstreamProcess(b, version)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID:               "bench-" + version,
+				Name:             "matrix",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(url),
+				ToolsToExecute:   []string{"*"},
+			}
+			require.NoError(b, m.connectToMCPClient(context.Background(), config))
+			b.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+			call := &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), call); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkExecuteChatTool_PerCallHTTPUpstream measures one tool call on a per-call client (a fresh
+// MCP connection per call) to a Streamable HTTP upstream in another process, per revision.
+func BenchmarkExecuteChatTool_PerCallHTTPUpstream(b *testing.B) {
+	for _, version := range []string{mcpgo.ProtocolVersion20251125, mcpgo.ProtocolVersion20260728} {
+		b.Run(version, func(b *testing.B) {
+			url := startHTTPUpstreamProcess(b, version)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID:               "bench-percall-" + version,
+				Name:             "matrix",
+				AuthType:         schemas.MCPAuthTypeHeaders,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(url),
+				ToolsToExecute:   []string{"*"},
+			}
+			require.NoError(b, m.AddClient(context.Background(), config))
+			b.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+			call := &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), call); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
+	}
 }

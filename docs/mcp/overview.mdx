@@ -482,6 +482,31 @@ How a client reconnects, and whether tool calls are affected while it does, depe
 
 Either way, a tool call that lands during a reconnect window is covered by [Auth failure recovery](./tool-execution#auth-failure-recovery) when the failure is auth-shaped; other failures during a close-first window surface as a normal connection error and are retried by the caller.
 
+### Max Protocol Version
+
+The max protocol version is the newest MCP protocol version Bifrost offers an upstream server when it connects. The server can still negotiate an older one; a server that answers with a newer one fails to connect. `auto` means the newest version Bifrost supports (currently `2026-07-28`); the other values are `2026-07-28`, `2025-11-25`, and `2025-06-18`.
+
+Set it globally under **MCP Servers → MCP Settings** or under the `mcp` section of `config.json`. Override it per server with `max_protocol_version` on a `client_configs[]` entry, for example to keep a server that misbehaves on the latest revision on an older one:
+
+```json
+{
+  "mcp": {
+    "max_protocol_version": "auto",
+    "client_configs": [
+      {
+        "name": "legacy_tools",
+        "connection_type": "http",
+        "connection_string": "https://legacy-mcp.example.com/mcp",
+        "tools_to_execute": ["*"],
+        "max_protocol_version": "2025-06-18"
+      }
+    ]
+  }
+}
+```
+
+Fresh installs start on `auto`. Deployments upgraded with existing MCP servers start at `2025-06-18`, the version earlier releases used, until you switch the global setting to `auto`. Changing either setting reconnects the affected servers without a restart. See [Max Protocol Version](./connecting-to-servers#max-protocol-version) for the defaults and every way to set it.
+
 ### Request ID Tracking
 
 For Agent Mode operations, Bifrost can track intermediate tool executions:

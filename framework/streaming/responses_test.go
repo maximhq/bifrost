@@ -780,3 +780,25 @@ func TestBuildResponsesMessagesFromChunksWithoutAccumulator(t *testing.T) {
 	viaAccumulator := testResponsesAccumulator(t).buildCompleteMessageFromResponsesStreamChunks(makeChunks())
 	require.Equal(t, viaAccumulator, msgs)
 }
+
+func TestPassthroughStreamCarriesServiceTierFromUsage(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-service-tier")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	tier := schemas.BifrostServiceTierDefault
+
+	processed, err := acc.processPassthroughStreamingResponse(ctx, &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				LLMUsage:    &schemas.BifrostLLMUsage{TotalTokens: 10},
+				ServiceTier: &tier,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, processed.Data)
+	require.NotNil(t, processed.Data.ServiceTier)
+	require.Equal(t, schemas.BifrostServiceTierDefault, *processed.Data.ServiceTier)
+}

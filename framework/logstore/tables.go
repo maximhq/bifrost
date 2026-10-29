@@ -392,7 +392,7 @@ type Log struct {
 	GuardrailDebug    string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailMetadata
 	RoutingMetadata   string   `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostRoutingMetadata
 	Latency           *float64 `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time across all attempts, ms; nil = unmeasured
+	UpstreamLatency   *float64 `gorm:"index:idx_logs_upstream_latency" json:"upstream_latency,omitempty"` // Provider socket time for this row's call (with its retries), ms; nil = unmeasured
 	OverheadLatency   *float64 `gorm:"index:idx_logs_overhead_latency" json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
 	OverheadBreakdown string   `gorm:"type:text" json:"-"`                                                // JSON serialized []OverheadBucket: per-span self-time decomposition of overhead
 	TokenUsage        string   `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.LLMUsage
@@ -1984,6 +1984,10 @@ type MCPToolLog struct {
 	AppKey   *string `gorm:"type:varchar(64)" json:"app_key,omitempty"` // Canonical policy key of the detected client app (schemas.AppKeyFromName), e.g. "claude-code"; a slug like App, not a secret or credential
 	Decision *string `gorm:"type:varchar(16)" json:"decision,omitempty"`
 	Source   *string `gorm:"type:varchar(16);index:idx_mcp_logs_source" json:"source,omitempty"`
+
+	// Method is the MCP method for a prompt or resource read ("prompts/get", "resources/read"),
+	// whose prompt name or resource URI is in ToolName; nil for a tool call.
+	Method *string `gorm:"type:varchar(32)" json:"method,omitempty"`
 
 	// Virtual fields for JSON output - populated when needed
 	TeamIDsParsed           []string                `gorm:"-" json:"team_ids,omitempty"`

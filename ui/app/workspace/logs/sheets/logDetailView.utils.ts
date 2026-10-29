@@ -268,3 +268,22 @@ export function isParsedPassthroughLog(log: PassthroughLogShape): boolean {
 	if (!params?.parsed_type) return false;
 	return Boolean(log.input_history?.length || log.responses_input_history?.length || log.output_message || log.responses_output?.length);
 }
+export type FallbackChainOutcome = "succeeded" | "failed" | "in_progress";
+
+// The chain a row belongs to: the root request plus the fallback attempts that
+// carry its id as parent_request_id, in the order they ran.
+export function buildFallbackChain(log: LogEntry, root: LogEntry | undefined, children: LogEntry[] | undefined): LogEntry[] {
+	const rootId = log.parent_request_id || log.id;
+	const byId = new Map<string, LogEntry>();
+	for (const entry of [root, log.id === rootId ? log : undefined, ...(children ?? []), log.parent_request_id ? log : undefined]) {
+		if (entry) byId.set(entry.id, entry);
+	}
+	return [...byId.values()].sort((a, b) => a.fallback_index - b.fallback_index || a.timestamp.localeCompare(b.timestamp));
+}
+
+// What the caller actually got: the last attempt decides.
+export function fallbackChainOutcome(chain: LogEntry[]): FallbackChainOutcome {
+	const last = chain[chain.length - 1];
+	if (!last || last.status === "processing") return "in_progress";
+	return last.status === "success" ? "succeeded" : "failed";
+}

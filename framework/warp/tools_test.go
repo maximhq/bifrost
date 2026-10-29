@@ -749,6 +749,212 @@ func TestWarpTruncatesLongContent(t *testing.T) {
 	require.Less(t, len(row.Content), LogContentChars*2)
 }
 
+// codexLog is a Codex request as the log store keeps it: the developer
+// instructions, then AGENTS.md and the environment as user turns of Codex's
+// own, then the person's task, then a later follow-up. The stored summary is
+// what the plain store builds - every message joined from the top.
+func codexLog(id string) logstore.Log {
+	developer, user := schemas.ResponsesInputMessageRoleDeveloper, schemas.ResponsesInputMessageRoleUser
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	agents := "# AGENTS.md instructions for /Users/dan/code/bifrost\n\n<INSTRUCTIONS>\n# AGENTS.md - Bifrost AI Gateway\nBifrost is a high-performance AI gateway that unifies 20+ LLM providers behind a single OpenAI-compatible API." +
+		strings.Repeat(" Provider integration notes.", 200) + "\n</INSTRUCTIONS>"
+	environment := "<environment_context>\n  <cwd>/Users/dan/code/bifrost</cwd>\n  <shell>zsh</shell>\n</environment_context>"
+	message := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(role), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	entry := logstore.Log{
+		ID:        id,
+		Timestamp: time.Now().UTC(),
+		Status:    "success",
+		UserAgent: schemas.Ptr("codex-tui/0.137.0 (Mac OS 14.1.0; arm64) iTerm.app/3.6.6"),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			message(developer, "<permissions instructions>Filesystem sandboxing defines which files can be read or written."+strings.Repeat(" Sandbox rules.", 100)+"</permissions instructions>"),
+			message(user, agents),
+			message(user, environment),
+			message(user, "Fix the flaky retry backoff test in core/bifrost.go"),
+			message(assistant, "I found the race in the backoff timer."),
+			message(user, "also add a benchmark for it"),
+		},
+		ResponsesOutputParsed: []schemas.ResponsesMessage{message(assistant, "Added BenchmarkRetryBackoff to core/bifrost_test.go.")},
+	}
+	entry.ContentSummary = entry.BuildContentSummary()
+	return entry
+}
+
+// A coding agent's request opens with its own setup - the system prompt, the
+// project's AGENTS.md, the environment. A preview cut from the front of every
+// message showed Warp only that, so it could not say what anyone worked on.
+// The preview is the person's turns with the agent's envelopes taken out.
+func TestWarpLogContentShowsTheTaskNotTheCodexSetup(t *testing.T) {
+	entry := codexLog("codex-row")
+	for _, limit := range []int{LogContentChars, DetailContentChars} {
+		content := projectLog(&entry, true, limit).Content
+		require.Contains(t, content, "Fix the flaky retry backoff test", "limit %d", limit)
+		require.Contains(t, content, "also add a benchmark for it", "limit %d", limit)
+		require.Contains(t, content, "BenchmarkRetryBackoff", "limit %d", limit)
+		require.NotContains(t, content, "AGENTS.md", "limit %d", limit)
+		require.NotContains(t, content, "environment_context", "limit %d", limit)
+		require.NotContains(t, content, "Sandbox rules", "limit %d", limit)
+	}
+}
+
+// The limit covers the whole preview: section labels, the newlines between
+// them and each truncation marker count against it, not only the text. With
+// every section long enough to be cut, the preview still fits, and each
+// section still shows it was cut.
+func TestWarpLogContentStaysWithinItsBudget(t *testing.T) {
+	user := schemas.ResponsesInputMessageRoleUser
+	message := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(user), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	reply := strings.Repeat("reply ", 1000)
+	entry := logstore.Log{
+		ID:        "long-sections",
+		Timestamp: time.Now().UTC(),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			message(strings.Repeat("first ", 1000)),
+			message(strings.Repeat("latest ", 1000)),
+		},
+		ResponsesOutputParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: &reply},
+		}},
+	}
+	for _, limit := range []int{LogContentChars, DetailContentChars} {
+		content := projectLog(&entry, true, limit).Content
+		require.LessOrEqual(t, utf8.RuneCountInString(content), limit, "limit %d: %q", limit, content)
+		require.Equal(t, 3, strings.Count(content, "[truncated]"), "limit %d: %q", limit, content)
+		require.Contains(t, content, "user (first turn): first")
+		require.Contains(t, content, "user (latest turn): latest")
+		require.Contains(t, content, "assistant: reply")
+	}
+
+	// A row with no history falls back to the stored summary, within the same limit.
+	summary := logstore.Log{ID: "summary-only", Timestamp: time.Now().UTC(), ContentSummary: strings.Repeat("x", LogContentChars*3)}
+	require.LessOrEqual(t, utf8.RuneCountInString(projectLog(&summary, true, LogContentChars).Content), LogContentChars)
+}
+
+// The stored summary is capped, so it can end inside one of Codex's
+// envelopes, before the tag that closes it. In a summary the cap shortened,
+// what is left from the opening tag on is the envelope, and stays out of the
+// preview; a complete envelope comes out as before, keeping the person's words
+// after it.
+func TestWarpLogContentDropsACutCodexEnvelope(t *testing.T) {
+	codex := schemas.Ptr("codex-tui/0.137.0")
+	capped := func(text string) string {
+		return (text + strings.Repeat(" Provider integration notes.", 200))[:logstore.MaxContentSummaryBytes]
+	}
+	cut := logstore.Log{
+		ID: "cut-envelope", Timestamp: time.Now().UTC(), UserAgent: codex,
+		ContentSummary: capped("<environment_context>\n  <cwd>/Users/dan/code/bifrost</cwd>\n  <shell>zsh"),
+	}
+	require.Empty(t, projectLog(&cut, true, LogContentChars).Content)
+
+	cut.ContentSummary = capped("Fix the retry test # AGENTS.md instructions for /Users/dan/code/bifrost\n\n<INSTRUCTIONS>\nBifrost is a high-performance AI gateway")
+	require.Equal(t, "Fix the retry test", projectLog(&cut, true, LogContentChars).Content)
+
+	cut.ContentSummary = "<environment_context><cwd>/x</cwd></environment_context> Fix the retry test"
+	require.Equal(t, "Fix the retry test", projectLog(&cut, true, LogContentChars).Content)
+}
+
+// An unmatched tag is only an envelope cut short in a summary the cap
+// shortened. In a whole message it is the person's own text - a Codex user
+// debugging these very tags - and every reader keeps it: the preview, what is
+// embedded, and what a topic is named from.
+func TestWarpKeepsAnUnmatchedCodexTagInAWholeMessage(t *testing.T) {
+	codex := schemas.Ptr("codex-tui/0.137.0")
+	question := "Why does <skill> appear in the output? Fix the renderer."
+	turn := logstore.Log{
+		ID: "whole-turn", Object: string(schemas.ResponsesRequest), Status: "success", Timestamp: time.Now().UTC(), UserAgent: codex,
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: &question},
+		}},
+	}
+	require.Equal(t, "user: "+question, projectLog(&turn, true, LogContentChars).Content)
+	item, ok := buildLogIndexItem(&turn)
+	require.True(t, ok)
+	require.Equal(t, "user: "+question, item.text)
+	require.Equal(t, question, logUserText(&turn))
+
+	// A summary short of the cap is a whole message too.
+	summary := logstore.Log{ID: "short-summary", Timestamp: time.Now().UTC(), UserAgent: codex, ContentSummary: question}
+	require.Equal(t, question, projectLog(&summary, true, LogContentChars).Content)
+}
+
+// A list row carries only the last element of a history, which for an agent
+// is usually the model's reply or a tool result, not the person's turn. With
+// no user turn to read, the preview falls back to the stored summary rather
+// than coming out empty.
+func TestWarpLogContentFallsBackFromAPartialListHistory(t *testing.T) {
+	entry := logstore.Log{
+		ID: "partial", Timestamp: time.Now().UTC(),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("I found the race in the backoff timer.")},
+		}},
+		ContentSummary: "Fix the flaky retry backoff test",
+	}
+	require.Contains(t, projectLog(&entry, true, LogContentChars).Content, "Fix the flaky retry backoff test")
+}
+
+// Codex's envelopes are recognised on Codex traffic only. A tag such as
+// <skill> in anyone else's message is what that person wrote.
+func TestWarpLogContentKeepsCodexLikeTagsFromOtherClients(t *testing.T) {
+	entry := logstore.Log{
+		ID:        "other-row",
+		Timestamp: time.Now().UTC(),
+		UserAgent: schemas.Ptr("python-requests/2.32"),
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("rate this resume line: <skill>Go, Kubernetes</skill>")},
+		}},
+	}
+	require.Contains(t, projectLog(&entry, true, LogContentChars).Content, "<skill>Go, Kubernetes</skill>")
+}
+
+// hydratingLogReader is a log reader whose list rows carry only the stored
+// summary, as the log store's list query does, and whose full rows come from
+// GetLogsByIDs.
+type hydratingLogReader struct {
+	*fakeLogReader
+	full map[string]logstore.Log
+}
+
+func (r *hydratingLogReader) GetLogsByIDs(_ context.Context, ids []string) ([]logstore.Log, error) {
+	result := make([]logstore.Log, 0, len(ids))
+	for _, id := range ids {
+		if entry, ok := r.full[id]; ok {
+			result = append(result, entry)
+		}
+	}
+	return result, nil
+}
+
+// A list row has no message history, only the stored summary, which on the
+// plain store starts with the agent's setup. With content asked for,
+// query_logs reads the rows in full so the preview is the conversation.
+func TestWarpQueryLogsContentReadsTheFullRow(t *testing.T) {
+	full := codexLog("codex-row")
+	listRow := logstore.Log{ID: full.ID, Timestamp: full.Timestamp, Status: full.Status, UserAgent: full.UserAgent, ContentSummary: full.ContentSummary[:2048]}
+	reader := &hydratingLogReader{
+		fakeLogReader: &fakeLogReader{searchResult: &logstore.SearchResult{Logs: []logstore.Log{listRow}, Pagination: logstore.PaginationOptions{TotalCount: 1}}},
+		full:          map[string]logstore.Log{full.ID: full},
+	}
+	result, err := runTool(t, "query_logs", &ToolDeps{logManager: reader}, map[string]any{"filters": map[string]any{}, "include_content": true})
+	require.NoError(t, err)
+	rows := result.(map[string]any)["rows"].([]logRow)
+	require.Len(t, rows, 1)
+	require.Contains(t, rows[0].Content, "Fix the flaky retry backoff test")
+	require.NotContains(t, rows[0].Content, "Sandbox rules")
+
+	// Without content asked for, nothing is read beyond the list.
+	reader.full = nil
+	result, err = runTool(t, "query_logs", &ToolDeps{logManager: reader}, map[string]any{"filters": map[string]any{}})
+	require.NoError(t, err)
+	require.Empty(t, result.(map[string]any)["rows"].([]logRow)[0].Content)
+}
+
 // Token counts come from the denormalized columns, which survive object-storage
 // offload and content-hidden rows. Reading them from the token_usage payload
 // would report zero for exactly those rows.
@@ -2359,10 +2565,6 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"roots_only":     "a display mode of the Logs page (grouped), not a question about traffic",
 		"group_sessions": "a display mode of the Logs page (sessions collapsed), not a question about traffic",
 		"ranking_limit":  "set from each tool's own limit argument",
-		// TODO: Warp does not support the agent filters from #7777 yet; remove
-		// these once FilterSchema and parseFilters accept them.
-		"agent_names":          "not yet supported by Warp",
-		"agent_correlation_id": "not yet supported by Warp",
 	}
 	var schema struct {
 		Properties map[string]any `json:"properties"`
@@ -2371,6 +2573,10 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	fields := reflect.TypeOf(logstore.SearchFilters{})
 	for i := range fields.NumField() {
 		name := strings.Split(fields.Field(i).Tag.Get("json"), ",")[0]
+		if name == "-" {
+			// Internal lookups (RealtimeInputItemID), never sent as a filter.
+			continue
+		}
 		if _, skip := notAnArgument[name]; skip {
 			continue
 		}

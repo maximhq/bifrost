@@ -169,16 +169,20 @@ type OpenAIDecisionRequest struct {
 	SafetyIdentifier *string                  `json:"safety_identifier,omitempty"`
 	Fallbacks        []string                 `json:"fallbacks,omitempty"` // Bifrost routing only; never sent upstream
 	ExtraParams      map[string]interface{}   `json:"-"`                   // native extensions, merged onto the wire under the passthrough flag
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 }
 
-// OpenAIDecisionQuestion is one question of OpenAI's decisions request: text
-// instructions and, by type, choices or levels described in text. Unlike the
-// shared question it has no criteria and no structured values, so
-// ToOpenAIDecisionRequest renders both as text.
+// OpenAIDecisionQuestion is one question of OpenAI's decisions request:
+// instructions as text or as a list of text, image, and JSON parts, and, by
+// type, choices or levels described in text. Unlike the shared question it
+// has no criteria and no other structured values, so ToOpenAIDecisionRequest
+// renders both as text.
 type OpenAIDecisionQuestion struct {
 	Type         schemas.DecisionType   `json:"type"`
 	Name         *string                `json:"name,omitempty"`
-	Instructions string                 `json:"instructions"`
+	Instructions *schemas.DecisionText  `json:"instructions"`
 	Choices      []OpenAIDecisionChoice `json:"choices,omitempty"`
 	Levels       []OpenAIDecisionLevel  `json:"levels,omitempty"`
 
@@ -258,6 +262,9 @@ var openAIDecisionRequestKnownFields = map[string]bool{
 	"questions":         true,
 	"safety_identifier": true,
 	"fallbacks":         true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
 }
 
 // UnmarshalJSON decodes the modelled fields and keeps every other top-level
@@ -1038,7 +1045,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := hadToolReferences
 					for _, block := range outputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData))) {
 							hasToolModification = true
 							break
 						}
@@ -1048,15 +1055,19 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
 						for j, block := range outputBlocks {
-							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData)))
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
 								blockCopy.Citations = nil
 								blockCopy.MediaResolution = nil
-								// Strip FileType from file block
-								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+								// Strip FileType from file block, folding it into file_data first as for input
+								// messages: bare base64 is rejected (fileDataAsDataURL).
+								if blockCopy.ResponsesInputMessageContentBlockFile != nil && (blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(blockCopy.ResponsesInputMessageContentBlockFile.FileData)) {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+									if fileCopy.FileData != nil {
+										fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
+									}
 									fileCopy.FileType = nil
 									blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 								}
@@ -1342,7 +1353,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				if block.MediaResolution != nil {
 					return true
 				}
-				if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
+				if block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData)) {
 					return true
 				}
 			}

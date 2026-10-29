@@ -11,6 +11,9 @@ import (
 const (
 	ProviderJobKindBatch = "batch"
 	ProviderJobKindVideo = "video"
+	// ProviderJobKindRelay is an async job a relay route started. Its
+	// Provider column holds the endpoint name.
+	ProviderJobKindRelay = "relay"
 )
 
 // Accounting lifecycle states for a TableProviderJob.

@@ -51,9 +51,15 @@ type Provider struct {
 	// provider itself is lock-free, so the cache's mutexes only ever guard
 	// map and list surgery. Header credentials have no expiry and no
 	// refresh machinery, so cached entries never self-heal: write paths in
-	// this file evict inline, and handler-level database writes that bypass
-	// the provider evict through the exported eviction methods.
+	// this file evict through credentialWritten, and handler-level database
+	// writes that bypass the provider evict through the exported eviction
+	// methods.
 	credentials *headerCredentialCache
+
+	// onCredentialWritten, when set, runs after this provider writes a
+	// credential row; see SetOnCredentialWritten. Same atomic-pointer
+	// rationale as tempTokens.
+	onCredentialWritten atomic.Pointer[func(ctx context.Context, credentialID string)]
 }
 
 // NewProvider constructs a configstore-backed MCPHeadersProvider. Mirrors
@@ -220,7 +226,7 @@ func (p *Provider) UpsertCredential(ctx context.Context, cred *schemas.MCPHeader
 	// row.ID to the reused row's ID when one existed, so this evicts exactly
 	// the row that was written; the next lookup for this binding reads the
 	// new values. A fresh row has nothing cached and the evict is a no-op.
-	p.EvictCredentialByID(row.ID)
+	p.credentialWritten(ctx, row.ID)
 	return nil
 }
 
@@ -235,7 +241,7 @@ func (p *Provider) DeleteCredential(ctx context.Context, id string) error {
 	if err := p.configStore.DeleteMCPPerUserHeaderCredential(ctx, id); err != nil {
 		return fmt.Errorf("delete mcp per-user header credential: %w", err)
 	}
-	p.EvictCredentialByID(id)
+	p.credentialWritten(ctx, id)
 	return nil
 }
 
@@ -264,6 +270,35 @@ func (p *Provider) EvictCredentialByID(id string) {
 		return
 	}
 	p.credentials.EvictByCredentialID(id)
+}
+
+// SetOnCredentialWritten registers a callback invoked after this provider
+// writes a credential row (a submission, a resubmission or a deletion), with
+// the row's ID, once the row is written and dropped from this process's
+// cache. That eviction reaches only this process; a deployment running
+// several processes over one credential store uses the callback to have the
+// others drop the row too. The callback runs inline on the write path, so it
+// must return promptly. Safe to call at any time; nil clears it.
+func (p *Provider) SetOnCredentialWritten(cb func(ctx context.Context, credentialID string)) {
+	if p == nil {
+		return
+	}
+	if cb == nil {
+		p.onCredentialWritten.Store(nil)
+		return
+	}
+	p.onCredentialWritten.Store(&cb)
+}
+
+// credentialWritten drops credentialID from this process's cache after this
+// provider wrote its row, then runs the SetOnCredentialWritten callback.
+// EvictCredentialByID stays local-only, so a process applying another
+// process's eviction never announces it again.
+func (p *Provider) credentialWritten(ctx context.Context, credentialID string) {
+	p.credentials.EvictByCredentialID(credentialID)
+	if cb := p.onCredentialWritten.Load(); cb != nil {
+		(*cb)(ctx, credentialID)
+	}
 }
 
 // EvictCredentialsByMCPClient drops every cached credential bound to the

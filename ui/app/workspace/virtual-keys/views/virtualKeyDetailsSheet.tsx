@@ -640,6 +640,30 @@ export default function VirtualKeyDetailSheet({
 								)}
 							</div>
 
+							{/* Relay access: the relays granted by name. */}
+							<div className="space-y-4" data-testid="vk-details-relay-access">
+								<h3 className="font-semibold">Relay access</h3>
+
+								{!virtualKey.relay_grants || virtualKey.relay_grants.length === 0 ? (
+									<span className="text-muted-foreground text-sm" data-testid="vk-details-relay-none">
+										No relays granted
+									</span>
+								) : (
+									<div className="flex flex-wrap gap-1">
+										{virtualKey.relay_grants.map((grant) => (
+											<Badge
+												key={grant.relay_name}
+												variant="secondary"
+												className="text-xs"
+												data-testid={`vk-details-relay-grant-${grant.relay_name}`}
+											>
+												{grant.relay_name}
+											</Badge>
+										))}
+									</div>
+								)}
+							</div>
+
 							<DottedSeparator />
 
 							{/* Budget Information */}

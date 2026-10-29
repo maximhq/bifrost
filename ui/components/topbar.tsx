@@ -19,11 +19,14 @@ import { useBranding } from "@/lib/hooks/useBranding";
 import { useAppDispatch, useGetCoreConfigQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import { baseApi } from "@/lib/store/apis/baseApi";
 import { cn } from "@/lib/utils";
+import ViewAsBanner from "@enterprise/components/view-as/viewAsBanner";
+import ViewAsDialog, { useCanViewAs } from "@enterprise/components/view-as/viewAsDialog";
+import { getViewAsUserId, stopViewAs } from "@enterprise/lib/store/utils/viewAs";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { getUserInfo } from "@enterprise/lib/store/utils/tokenManager";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { BugIcon, ChevronDown, LogOut, Menu, User } from "lucide-react";
+import { BugIcon, ChevronDown, Eye, EyeOff, LogOut, Menu, User } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Fragment, useEffect, useMemo, useState } from "react";
 
@@ -150,6 +153,11 @@ export default function Topbar() {
 		}
 	}, []);
 
+	const canViewAs = useCanViewAs();
+	const [viewAsOpen, setViewAsOpen] = useState(false);
+	// Every request in a view-as tab is read-only, so signing out there would be refused; offer leaving the view instead.
+	const isViewingAs = !!getViewAsUserId();
+
 	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 	const showUserPill = IS_ENTERPRISE && !!userInfo;
 	const canLogout = showUserPill || isAuthEnabled;
@@ -172,7 +180,7 @@ export default function Topbar() {
 	};
 
 	return (
-		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-0" data-testid="topbar-container-root">
+		<header className="relative flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-0" data-testid="topbar-container-root">
 			<div className="flex min-w-0 flex-1 items-center gap-2">
 				<SidebarTrigger className="shrink-0 md:hidden" />
 				<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />
@@ -184,6 +192,8 @@ export default function Topbar() {
 				    this node, so the topbar never has to know their content. */}
 				<span ref={setDescriptionSlot} className="hidden shrink-0 items-center gap-2 md:flex" />
 			</div>
+
+			<ViewAsBanner />
 
 			{/* Theme stays a first-class topbar control rather than a menu entry —
 			    it's a display preference, not an account action. */}
@@ -245,14 +255,34 @@ export default function Topbar() {
 						))}
 					</DropdownMenuGroup>
 
-					{canLogout && (
+					{canViewAs && (
 						<>
 							<DropdownMenuSeparator />
-							<DropdownMenuItem onClick={handleLogout} data-testid="topbar-logout-btn" className="cursor-pointer">
-								<LogOut className="size-4" strokeWidth={2} />
-								<span>Sign out</span>
+							<DropdownMenuItem onSelect={() => setViewAsOpen(true)} data-testid="topbar-view-as-btn" className="cursor-pointer">
+								<Eye className="size-4" strokeWidth={2} />
+								<span>View as user</span>
 							</DropdownMenuItem>
 						</>
+					)}
+
+					{isViewingAs ? (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem onClick={stopViewAs} data-testid="topbar-close-view-as-btn" className="cursor-pointer">
+								<EyeOff className="size-4" strokeWidth={2} />
+								<span>Close view</span>
+							</DropdownMenuItem>
+						</>
+					) : (
+						canLogout && (
+							<>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem onClick={handleLogout} data-testid="topbar-logout-btn" className="cursor-pointer">
+									<LogOut className="size-4" strokeWidth={2} />
+									<span>Sign out</span>
+								</DropdownMenuItem>
+							</>
+						)
 					)}
 
 					{/* Informational tail row: a Label, not an Item, so it never takes
@@ -268,6 +298,7 @@ export default function Topbar() {
 					)}
 				</DropdownMenuContent>
 			</DropdownMenu>
+			<ViewAsDialog open={viewAsOpen} onOpenChange={setViewAsOpen} />
 		</header>
 	);
 }

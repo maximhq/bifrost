@@ -168,6 +168,8 @@ tags:
     description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
     description: Configuration for Warp, the dashboard agent that answers questions about the deployment's own telemetry
+  - name: Relays
+    description: Relays to non-LLM HTTP APIs - endpoint management, usage preview, Relay Logs and the /relay data plane
 
 paths:
   # ==================== Unified Inference API ====================
@@ -813,6 +815,8 @@ paths:
     $ref: "./paths/management/providers.yaml#/models-parameters"
   /api/models/base:
     $ref: "./paths/management/providers.yaml#/models-base"
+  /api/models/newest:
+    $ref: "./paths/management/providers.yaml#/models-newest"
 
   # Plugins
   /api/plugins:
@@ -1443,6 +1447,32 @@ paths:
   /agents/a2a/{name}/push/callback:
     $ref: "./paths/management/agents.yaml#/agent-push-callback"
 
+  # Relays
+  /api/relays:
+    $ref: "./paths/management/relays.yaml#/relays"
+  /api/relays/{name}:
+    $ref: "./paths/management/relays.yaml#/relay-by-name"
+  /api/relays/usage-preview:
+    $ref: "./paths/management/relays.yaml#/relays-usage-preview"
+  /api/relays/openapi-spec:
+    $ref: "./paths/management/relays.yaml#/relays-openapi-spec"
+  /api/relays/{name}/access-profiles:
+    $ref: "./paths/management/relays.yaml#/relay-access-profiles"
+  /api/relay-logs:
+    $ref: "./paths/management/relays.yaml#/relay-logs"
+  /api/relay-logs/{id}:
+    $ref: "./paths/management/relays.yaml#/relay-logs-by-id"
+  /api/relay-logs/stats:
+    $ref: "./paths/management/relays.yaml#/relay-logs-stats"
+  /api/relay-logs/filterdata:
+    $ref: "./paths/management/relays.yaml#/relay-logs-filterdata"
+  /api/relay-logs/histogram:
+    $ref: "./paths/management/relays.yaml#/relay-logs-histogram"
+  /api/relay-logs/top-endpoints:
+    $ref: "./paths/management/relays.yaml#/relay-logs-top-endpoints"
+  /relay/{endpoint}/{path}:
+    $ref: "./paths/management/relays.yaml#/relay-call"
+
 components:
   securitySchemes:
     AgentNotificationTokenAuth:
@@ -1908,6 +1938,30 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
     DecisionInputImageAsset:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
+    DecisionInputItem:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputItem"
+    DecisionFunctionCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCall"
+    DecisionFunctionCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionFunctionCallOutput"
+    DecisionCustomToolCall:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCall"
+    DecisionCustomToolCallOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionCustomToolCallOutput"
+    DecisionToolOutput:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionToolOutput"
+    DecisionInputJSON:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputJSON"
+    DecisionOutputText:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionOutputText"
+    DecisionRefusal:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionRefusal"
+    DecisionInstructionPart:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInstructionPart"
+    DecisionPromptCacheOptions:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheOptions"
+    DecisionPromptCacheBreakpoint:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionPromptCacheBreakpoint"
     DecisionMapFormRequest:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
     DecisionMapFormResponse:
@@ -2141,6 +2195,8 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPOpenAPIPreviewResponse"
     MCPConnectionFailure:
       $ref: "./schemas/management/mcp.yaml#/MCPConnectionFailure"
+    MCPIcon:
+      $ref: "./schemas/management/mcp.yaml#/MCPIcon"
     MCPInstanceState:
       $ref: "./schemas/management/mcp.yaml#/MCPInstanceState"
     ExecuteToolRequest:
@@ -2514,3 +2570,63 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpStoredToolCall"
     WarpStoredQuestion:
       $ref: "./schemas/management/warp.yaml#/WarpStoredQuestion"
+
+    # Relays
+    RelayAuthConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayAuthConfig"
+    RelayAWSAuthConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayAWSAuthConfig"
+    RelayCredential:
+      $ref: "./schemas/management/relays.yaml#/RelayCredential"
+    RelayAWSCredential:
+      $ref: "./schemas/management/relays.yaml#/RelayAWSCredential"
+    RelayNetworkConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayNetworkConfig"
+    RelayUsageConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayUsageConfig"
+    RelayStreamingConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayStreamingConfig"
+    RelayRouteConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayRouteConfig"
+    RelayConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayConfig"
+    Relay:
+      $ref: "./schemas/management/relays.yaml#/Relay"
+    RelayListResponse:
+      $ref: "./schemas/management/relays.yaml#/RelayListResponse"
+    RelayUsagePreviewSample:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreviewSample"
+    RelayUsagePreviewRequest:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreviewRequest"
+    RelayPreviewTokens:
+      $ref: "./schemas/management/relays.yaml#/RelayPreviewTokens"
+    RelayUsagePreview:
+      $ref: "./schemas/management/relays.yaml#/RelayUsagePreview"
+    RelayOverheadBucket:
+      $ref: "./schemas/management/relays.yaml#/RelayOverheadBucket"
+    RelayLog:
+      $ref: "./schemas/management/relays.yaml#/RelayLog"
+    RelayLogSearchResult:
+      $ref: "./schemas/management/relays.yaml#/RelayLogSearchResult"
+    RelayLogStats:
+      $ref: "./schemas/management/relays.yaml#/RelayLogStats"
+    RelayHistogramBucket:
+      $ref: "./schemas/management/relays.yaml#/RelayHistogramBucket"
+    RelayHistogramResult:
+      $ref: "./schemas/management/relays.yaml#/RelayHistogramResult"
+    RelayTopEndpoint:
+      $ref: "./schemas/management/relays.yaml#/RelayTopEndpoint"
+    RelayTopEndpointsResult:
+      $ref: "./schemas/management/relays.yaml#/RelayTopEndpointsResult"
+    RelayFilterOption:
+      $ref: "./schemas/management/relays.yaml#/RelayFilterOption"
+    RelayFilterData:
+      $ref: "./schemas/management/relays.yaml#/RelayFilterData"
+    DeleteRelayLogsRequest:
+      $ref: "./schemas/management/relays.yaml#/DeleteRelayLogsRequest"
+    DeleteRelayLogsResponse:
+      $ref: "./schemas/management/relays.yaml#/DeleteRelayLogsResponse"
+    RelayAccessProfileUsage:
+      $ref: "./schemas/management/relays.yaml#/RelayAccessProfileUsage"
+    RelayAccessProfilesResponse:
+      $ref: "./schemas/management/relays.yaml#/RelayAccessProfilesResponse"

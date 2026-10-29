@@ -726,6 +726,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	// Omitted keeps the current cap, so a caller unaware of the field never lifts it; "auto" lifts it.
+	if v := payload.ClientConfig.MCPMaxProtocolVersion; v != "" {
+		if err := schemas.ValidateMCPMaxProtocolVersion("mcp_max_protocol_version", v); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		updatedConfig.MCPMaxProtocolVersion = v
+	}
 	// 0 means the built-in default, so compare against the current value
 	// instead of the > 0 guard used by other numeric fields.
 	if payload.ClientConfig.MCPToolSyncInterval != currentConfig.MCPToolSyncInterval {

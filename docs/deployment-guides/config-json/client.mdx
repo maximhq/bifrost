@@ -105,7 +105,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `allowed_origins` | array | `["*"]` | CORS allowed origins: exact URIs, wildcard-host patterns such as `https://*.example.com`, or `"*"`. While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; see the note below |
+| `allowed_origins` | array | `["*"]` | CORS allowed origins: exact URIs, wildcard-host patterns such as `https://*.example.com`, or `"*"`. While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; while `enforce_auth_on_inference` is off, the same holds for the MCP gateway, except that its own origin is not exempt. See the note below |
 | `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes. Realtime connections (`/v1/realtime`, `/v1/realtime/calls`) are refused with `401` at connect time unless they present one of those, or an ephemeral client secret from `POST /v1/realtime/client_secrets` |
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB. It also caps what a compressed request body (`Content-Encoding: gzip`, `deflate`, `br` or `zstd`) may decompress to. Within that cap a body may expand to at most 100 times its compressed size, with a 1 MiB floor, and the gateway keeps at most four times this cap of decompressed request bytes in flight at once; a body past the ratio is refused with `413`, and a request whose decompressed bytes would push the in-flight total past that budget with `503`. Each body counts what it actually inflates to, so concurrent multi-MB gzipped requests are not refused for the cap they could have reached |
 | `dual_credential_conflict_behavior` | string | `prefer_idp` | **Enterprise.** What to do when an inference request carries both an IdP token (`Authorization: Bearer <jwt>`) and a virtual key. `prefer_idp` uses the IdP token's user and drops the virtual key once the token validates, `prefer_vk` ignores the IdP token and uses the virtual key, `error` rejects the request with `400` |
@@ -130,6 +130,8 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 
 <Note>
 While dashboard auth is disabled or unconfigured, or Bifrost runs without a config store (`config_store.enabled: false`), a request to the management API (`/api/*`, `/ws`, `/metrics`) that carries an `Origin` header is accepted only from a localhost origin, from the gateway's own origin (the `Origin` host and port match the request's `Host`, as for the bundled dashboard's own requests such as `PUT /api/config`), or from an origin listed in `allowed_origins` by name or pattern (for example `https://*.example.com`); the `"*"` entry does not count, and other origins receive `403`. Requests without an `Origin` header (CLI and SDKs), whitelisted routes such as `/health`, and inference routes are unaffected. If the dashboard sits behind a proxy that rewrites the `Host` header, list its public origin in `allowed_origins`. To call the management API from a web app on another origin, list that origin explicitly, or enable dashboard authentication, which lifts this check. Dashboard authentication needs the config store: with `config_store.enabled: false` it cannot be turned on, so listing the origin is the only option.
+
+The MCP gateway (`/mcp`) applies the same rule to browser requests while `enforce_auth_on_inference` is off: only localhost origins and origins listed in `allowed_origins` by name or pattern reach it, and other origins receive `403`. Requests from the gateway's own origin are not exempt there, since a page that took over the gateway's address would also look same-origin. With inference auth on, `allowed_origins` applies as configured, including `"*"`. To reach the MCP gateway from a web app on another origin, list that origin explicitly, or turn on `enforce_auth_on_inference`.
 </Note>
 
 ---
@@ -255,6 +257,8 @@ Network permission does not authorize runtime calls to another service. Set `age
   }
 }
 ```
+
+The max MCP protocol version is set under `mcp`, not `client`: use `mcp.max_protocol_version`. See [Max Protocol Version](/mcp/connecting-to-servers#max-protocol-version).
 
 ---
 

@@ -23,6 +23,9 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 			Content:         msg.Content,
 			ChatToolMessage: msg.ChatToolMessage,
 		}
+		if msg.Role == schemas.ChatMessageRoleTool {
+			sanitized[i].Content = schemas.FlattenToolResultMedia(msg.Content, nil)
+		}
 		// The OpenAI-compatible wire has no tool-error field; strip is_error.
 		// Clone first — ChatToolMessage is shared with the caller's input.
 		if msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil {

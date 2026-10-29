@@ -247,10 +247,10 @@ export function normalizeExportFilters(filters: LogFilters, timezone?: string): 
 /**
  * Options for batch log collection.
  */
-export interface CollectLogsOptions {
+export interface CollectLogsOptions<T extends { id?: string } = LogEntry> {
 	targetTotal: number;
 	batchSize?: number;
-	fetchBatch: (offset: number, limit: number) => Promise<LogEntry[]>;
+	fetchBatch: (offset: number, limit: number) => Promise<T[]>;
 	onProgress?: (collectedCount: number, targetTotal: number) => void;
 	isCancelled?: () => boolean;
 }
@@ -258,13 +258,15 @@ export interface CollectLogsOptions {
 /**
  * Collect logs across multiple paginated requests until the target count or end of logs is reached.
  * Deduplicates log records across batch boundaries by ID as a backstop against shifting offsets.
+ * Generic over the row type so the relay export (relay-logs/views/relayLogsExportDialog.utils.ts)
+ * shares the batching; it defaults to LogEntry for the LLM page.
  *
  * @param options Batch collection configuration including fetch function and cancellation check.
  * @returns Array of collected LogEntry items.
  */
-export async function collectLogsInBatches(options: CollectLogsOptions): Promise<LogEntry[]> {
+export async function collectLogsInBatches<T extends { id?: string } = LogEntry>(options: CollectLogsOptions<T>): Promise<T[]> {
 	const { targetTotal, batchSize = BATCH_PAGE_SIZE, fetchBatch, onProgress, isCancelled } = options;
-	const collected: LogEntry[] = [];
+	const collected: T[] = [];
 	const seenIds = new Set<string>();
 	let offset = 0;
 

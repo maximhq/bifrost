@@ -1,4 +1,4 @@
-import type { SemanticStatusInfo } from "@/lib/types/complexityRouter";
+import type { SemanticFallback, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 
 const FAILURE_MESSAGES: Partial<Record<NonNullable<SemanticStatusInfo["failure_reason"]>, string>> = {
 	authentication: "Authentication failed for the selected embedding provider. Update its API key to restart warmup.",
@@ -21,8 +21,16 @@ export function semanticWarmupFailureMessage(status: SemanticStatusInfo): string
 	return FAILURE_MESSAGES.unknown!;
 }
 
-export function semanticWarmupImpactMessage(status: SemanticStatusInfo): string {
-	return status.serving_previous
-		? "The previous classifier is still routing requests. Your latest phrase or embedding changes will become active after warmup succeeds."
-		: "Complexity-tier rules are paused until the classifier is ready. Other routing rules continue normally.";
+// Rules only pause when nothing else can name a tier: a saved llm or decision
+// fallback is tried on every request while semantic warmup is failing, though
+// it can itself fail or name no tier.
+export function semanticWarmupImpactMessage(status: SemanticStatusInfo, fallback: SemanticFallback): string {
+	if (status.serving_previous) {
+		return "The previous classifier is still routing requests. Your latest phrase or embedding changes will become active after warmup succeeds.";
+	}
+	if (fallback !== "none") {
+		const classifier = fallback === "llm" ? "the LLM classifier" : "the decision model";
+		return `Until the classifier is ready, ${classifier} fallback classifies each request instead. Complexity-tier rules match only when it returns a tier. Other routing rules continue normally.`;
+	}
+	return "Complexity-tier rules are paused until the classifier is ready. Other routing rules continue normally.";
 }

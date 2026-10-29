@@ -380,6 +380,28 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 			}
 			result = append(result, m)
 		}
+		// An alias allowed only by a regex: entry has no exact entry above, so backfill it here.
+		for aliasKey, alias := range p.Aliases {
+			if included[strings.ToLower(aliasKey)] || !p.allowedOnlyByRegex(aliasKey) {
+				continue
+			}
+			// Blacklist check.
+			blacklisted := false
+			for _, bl := range p.BlacklistedModels {
+				if matches(aliasKey, bl, p.MatchFns) {
+					blacklisted = true
+					break
+				}
+			}
+			if blacklisted {
+				continue
+			}
+			result = append(result, schemas.Model{
+				ID:    string(p.ProviderKey) + "/" + aliasKey,
+				Name:  schemas.Ptr(ToDisplayName(aliasKey)),
+				Alias: schemas.Ptr(alias.ModelID),
+			})
+		}
 		return result
 	}
 
@@ -409,4 +431,19 @@ func (p *ListModelsPipeline) BackfillModels(included map[string]bool) []schemas.
 	}
 
 	return result
+}
+
+// allowedOnlyByRegex reports whether name matches a regex: allowlist entry and no exact one.
+func (p *ListModelsPipeline) allowedOnlyByRegex(name string) bool {
+	byRegex := false
+	for _, entry := range p.AllowedModels {
+		if !matches(name, entry, p.MatchFns) {
+			continue
+		}
+		if !schemas.IsRegexEntry(entry) {
+			return false
+		}
+		byRegex = true
+	}
+	return byRegex
 }

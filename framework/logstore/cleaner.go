@@ -52,6 +52,12 @@ type MCPToolLogRetentionManager interface {
 	DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 }
 
+// RelayLogRetentionManager is implemented by stores that can expire
+// relay_logs rows. Optional for the same reason MCPToolLogRetentionManager is.
+type RelayLogRetentionManager interface {
+	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+}
+
 // WarpTopicRetentionManager is implemented by stores that keep Warp's topic
 // rows. Optional for the same reason MCPToolLogRetentionManager is. Both tables
 // hold rows about individual logs, and expire on the log's own created time so
@@ -212,6 +218,9 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	var rest []expiringTable
 	if hasMCP {
 		rest = append(rest, expiringTable{"MCP tool logs", mcp.DeleteMCPToolLogsBatch})
+	}
+	if endpoints, ok := c.manager.(RelayLogRetentionManager); ok {
+		rest = append(rest, expiringTable{"relay logs", endpoints.DeleteRelayLogsBatch})
 	}
 	if hasTopics {
 		rest = append(rest,

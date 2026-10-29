@@ -19,32 +19,34 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
-// computeToolsHash returns a stable content hash of a tool map + name
-// mapping, used to gate the tools-change funnel (SetClientTools,
-// connectToMCPClient, writeBackTools) to genuine changes only — a
-// rediscovery that returns byte-identical tools (the common case on most
-// periodic ticks and reconnects) must not re-trigger a registered
-// callback's work (DB persist, external MCP server resync). json.Marshal
-// sorts map string keys, so this is deterministic regardless of the maps'
-// iteration order; errors are treated as "never matches" (marshal failure
-// on these plain data types isn't expected, but must never panic or block
-// a genuine discovery result from being recorded).
-func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) string {
+// computeDiscoveryHash hashes a discovery so an identical rediscovery does not re-fire the change
+// callback. json.Marshal sorts map keys, so the hash is deterministic; marshal errors never match.
+func computeDiscoveryHash(discovery *schemas.MCPDiscovery) string {
 	h := sha256.New()
-	if data, err := json.Marshal(tools); err == nil {
+	if data, err := json.Marshal(discovery.Tools); err == nil {
 		h.Write(data)
 	}
 	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
-	if data, err := json.Marshal(toolNameMapping); err == nil {
+	if data, err := json.Marshal(discovery.ToolNameMapping); err == nil {
 		h.Write(data)
 	}
-	// Instructions ride the same hash so a server that rewrote only its instructions
-	// still counts as a change: without this the callback never fires and the new text
-	// is never persisted or re-served.
 	h.Write([]byte{0})
-	h.Write([]byte(instructions))
+	// ChatTool's JSON leaves annotations and metadata out.
+	if data, err := json.Marshal(schemas.ToolDetails(discovery.Tools)); err == nil {
+		h.Write(data)
+	}
+	// Hashed too, so a change to only these still fires the callback.
+	h.Write([]byte{0})
+	h.Write([]byte(discovery.Instructions))
+	for _, list := range []any{discovery.Resources, discovery.ResourceTemplates, discovery.Prompts} {
+		h.Write([]byte{0})
+		if data, err := json.Marshal(list); err == nil {
+			h.Write(data)
+		}
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -290,6 +292,9 @@ func isTransientError(err error) bool {
 	}
 
 	errStr := err.Error()
+	if errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
+		return false
+	}
 
 	// Context errors are NEVER retryable - they indicate the operation exceeded its deadline
 	// If context is cancelled or deadline exceeded, the issue is permanent (not transient)
@@ -353,7 +358,7 @@ func isTransientError(err error) bool {
 // command that happens to mention a timeout rather than a slow one.
 var permanentErrorPhrases = []string{
 	// Authentication/authorization errors
-	"unauthorized", "forbidden", "invalid auth", "invalid credential",
+	"unauthorized", "forbidden", "invalid auth", "invalid credential", "authorization required",
 	// HTTP client errors
 	"bad request", "method not allowed",
 	// Configuration errors
@@ -461,7 +466,7 @@ func isTransientToolCallError(err error) bool {
 	// error text like "401 unauthorized: try again" would otherwise match
 	// "try again" below and get retried, contradicting the non-retryable
 	// auth-failure rule this classifier exists to enforce for tool calls.
-	if isAuthFailureErrorText(errStr) {
+	if isAuthFailure(err) {
 		return false
 	}
 	for _, transientErr := range transientErrorSubstrings {
@@ -470,6 +475,18 @@ func isTransientToolCallError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isAuthRequiredError reports whether err is mcp-go's 401: since v1.3.0 its text says only
+// "authorization required", with no status code.
+func isAuthRequiredError(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) || errors.Is(err, transport.ErrOAuthAuthorizationRequired)
+}
+
+// isAuthFailure reports whether a tool-call error is an upstream auth rejection: mcp-go's typed
+// 401 first, then the error text for rejections that reach us only as text.
+func isAuthFailure(err error) bool {
+	return err != nil && (isAuthRequiredError(err) || isAuthFailureErrorText(err.Error()))
 }
 
 // isAuthFailureErrorText reports whether a raw upstream tool-call error looks
@@ -495,7 +512,7 @@ func isTransientToolCallError(err error) bool {
 // it's the upstream server's rejection text verbatim, not Bifrost's.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
-	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {
+	for _, needle := range []string{"401", "403", "unauthorized", "forbidden", "authorization required"} {
 		if strings.Contains(lower, needle) {
 			return true
 		}
@@ -572,6 +589,55 @@ func isDeadSessionError(err error) bool {
 	return isDeadSessionErrorText(transportErr.Error())
 }
 
+// unfulfilledInputPrefix starts mcp-go's error for an input request it had no handler for; an upstream
+// error that merely mentions "multi round-trip:" is not one.
+const unfulfilledInputPrefix = "multi round-trip: fulfilling input request "
+
+// unservableInputKinds maps mcp-go's wording for an input request it had no handler for (Bifrost
+// registers none, so declares no capability) to what the upstream was asking for.
+var unservableInputKinds = []struct{ marker, what string }{
+	{"no elicitation handler configured", "input from the user (elicitation)"},
+	{"no sampling handler configured", "an LLM completion (sampling)"},
+	{"no roots handler configured", "the client's filesystem roots (roots)"},
+}
+
+// DescribeUnservableInput explains a tool call that failed because the upstream needed something
+// only a user-facing client can provide: input from the user, an LLM completion, or a step in the
+// user's browser. Exported for code mode's nested tool calls. mcp-go reports most of these as typed errors; an input request it could not
+// fulfil (2026-07-28 input_required) only as text.
+func DescribeUnservableInput(err error, serverName string) (string, bool) {
+	var urlNeeded mcp.URLElicitationRequiredError
+	var capability mcp.MissingRequiredClientCapabilityError
+	switch {
+	case errors.As(err, &urlNeeded):
+		steps := make([]string, 0, len(urlNeeded.Elicitations))
+		for _, e := range urlNeeded.Elicitations {
+			steps = append(steps, strings.TrimSpace(e.Message+" "+e.URL))
+		}
+		return fmt.Sprintf("MCP server %q needs a step completed in the browser before this tool can run: %s", serverName, strings.Join(steps, "; ")), true
+	case errors.As(err, &capability):
+		return fmt.Sprintf("MCP server %q needs the client capability %q to run this tool, which Bifrost does not support", serverName, capability.Capability), true
+	case errors.Is(err, client.ErrMaxInputRoundTripsExceeded):
+		return fmt.Sprintf("MCP server %q kept asking Bifrost to retry the call without completing it", serverName), true
+	}
+	text := err.Error()
+	if !strings.Contains(text, unfulfilledInputPrefix) {
+		return "", false
+	}
+	for _, kind := range unservableInputKinds {
+		if strings.Contains(text, kind.marker) {
+			return fmt.Sprintf("MCP server %q asked for %s, which Bifrost cannot provide", serverName, kind.what), true
+		}
+	}
+	return fmt.Sprintf("MCP server %q asked for input Bifrost cannot provide", serverName), true
+}
+
+// hasProtocolSession reports whether conn speaks a revision with protocol-level sessions, which
+// 2026-07-28 removed.
+func hasProtocolSession(conn *client.Client) bool {
+	return conn != nil && !mcp.IsModernProtocol(conn.ProtocolVersion())
+}
+
 // isDeadSessionErrorText is the text half of isDeadSessionError, kept separate
 // for callers that only hold the flattened message.
 func isDeadSessionErrorText(errStr string) bool {
@@ -613,7 +679,7 @@ func isTransientProbeError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	if isDeadSessionErrorText(errStr) {
+	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) || isAuthRequiredError(err) {
 		return false
 	}
 	// Checked before the timeout rule, not after: an error carrying any
@@ -752,6 +818,10 @@ type listToolsResult struct {
 // and SkippedTools. All callers should go through MCPManager.runListToolsWithHooks rather
 // than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
 func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (*listToolsResult, error) {
+	// A server offering only prompts or resources has no tools/list to call.
+	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
+		return &listToolsResult{tools: map[string]schemas.ChatTool{}, toolNameMapping: map[string]string{}}, nil
+	}
 	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -1034,65 +1104,45 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 			},
 		},
 		Annotations: annotations,
+		MCP:         toolMetadata(mcpTool),
 	}
 }
 
-// extractTextFromMCPResponse extracts text content from an MCP tool response.
-func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string) string {
-	if toolResponse == nil {
-		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
-	}
-
-	var result strings.Builder
-	for _, contentBlock := range toolResponse.Content {
-		// Handle typed content
-		switch content := contentBlock.(type) {
-		case mcp.TextContent:
-			result.WriteString(content.Text)
-		case mcp.ImageContent:
-			result.WriteString(fmt.Sprintf("[Image Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
-		case mcp.AudioContent:
-			result.WriteString(fmt.Sprintf("[Audio Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
-		case mcp.EmbeddedResource:
-			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
-		default:
-			// Fallback: try to extract from map structure
-			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
-				var contentMap map[string]interface{}
-				if json.Unmarshal(jsonBytes, &contentMap) == nil {
-					if text, ok := contentMap["text"].(string); ok {
-						result.WriteString(fmt.Sprintf("[Text Response: %s]\n", text))
-						continue
-					}
-				}
-				// Final fallback: serialize as JSON
-				result.WriteString(string(jsonBytes))
-			}
+// toolMetadata is the title, icons and output schema mcpTool declares, or nil when it declares none.
+func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
+	outputSchema := mcpTool.RawOutputSchema
+	if outputSchema == nil && declaresOutputSchema(mcpTool.OutputSchema) {
+		outputSchema, _ = json.Marshal(mcpTool.OutputSchema)
+		// mcp-go writes "type": "" when none is set.
+		if mcpTool.OutputSchema.Type == "" && mcpTool.OutputSchema.Types == nil {
+			outputSchema, _ = sjson.DeleteBytes(outputSchema, "type")
 		}
 	}
-
-	if result.Len() > 0 {
-		return strings.TrimSpace(result.String())
+	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil {
+		return nil
 	}
-	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+	return &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema}
 }
 
-// createToolResponseMessage creates a tool response message with the execution result.
-// isError carries the MCP protocol's own tool-failure signal (mcp.CallToolResult.IsError),
-// which reports that the tool ran and failed -- distinct from a transport-level error.
-func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string, isError bool) *schemas.ChatMessage {
-	toolMsg := &schemas.ChatToolMessage{
-		ToolCallID: toolCall.ID,
-	}
-	if isError {
-		toolMsg.IsError = schemas.Ptr(true)
-	}
+// declaresOutputSchema reports whether any part of the output schema is set; type is optional.
+func declaresOutputSchema(schema mcp.ToolOutputSchema) bool {
+	return schema.Type != "" || schema.Types != nil || schema.Properties != nil || len(schema.Required) > 0 ||
+		schema.AdditionalProperties != nil || schema.Defs != nil || len(schema.AdditionalFields) > 0
+}
 
+// createToolResponseMessage is the tool message for an MCP result, marked failed when the server says so.
+func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, result *mcp.CallToolResult, toolName string) *schemas.ChatMessage {
+	content := toolResultContent(result, toolName)
+	toolMsg := &schemas.ChatToolMessage{ToolCallID: toolCall.ID}
+	if result != nil {
+		if result.IsError {
+			toolMsg.IsError = schemas.Ptr(true)
+		}
+		toolMsg.SetMCPResult(result, content)
+	}
 	return &schemas.ChatMessage{
-		Role: schemas.ChatMessageRoleTool,
-		Content: &schemas.ChatMessageContent{
-			ContentStr: &responseText,
-		},
+		Role:            schemas.ChatMessageRoleTool,
+		Content:         content,
 		ChatToolMessage: toolMsg,
 	}
 }
@@ -1147,11 +1197,14 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
 			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
 		}
-		if !config.TokenExchange.UseIdPCredentials && strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
-			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s' unless use_idp_credentials is set", config.Name)
+		if !config.TokenExchange.ExchangesAsSSOApplication() && strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s' unless use_idp_credentials is set or the profile is id_jag", config.Name)
 		}
 		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
 			return fmt.Errorf("oauth_config_id must not be set for token_exchange auth type in client '%s'", config.Name)
+		}
+		if err := config.TokenExchange.ValidateProfile(); err != nil {
+			return fmt.Errorf("%w in client '%s'", err, config.Name)
 		}
 	}
 	return nil
@@ -1515,4 +1568,46 @@ func FixArraySchemas(properties map[string]interface{}, logger schemas.Logger) {
 			}
 		}
 	}
+}
+
+// initializeClient runs the MCP handshake for any protocol revision, offering at most maxVersion
+// ("" = uncapped). mcp-go gives up when server/discover is refused with only pre-2026-07-28
+// versions supported, so those are retried through the initialize handshake at the newest
+// version both sides support within the cap.
+func initializeClient(ctx context.Context, c *client.Client, request mcp.InitializeRequest, maxVersion string) (*mcp.InitializeResult, error) {
+	if maxVersion != "" && (request.Params.ProtocolVersion == "" || request.Params.ProtocolVersion > maxVersion) {
+		request.Params.ProtocolVersion = maxVersion
+	}
+	result, err := c.Initialize(ctx, request)
+	var unsupported mcp.UnsupportedProtocolVersionError
+	if err != nil && errors.As(err, &unsupported) {
+		legacy := newestLegacyVersion(unsupported.Supported, maxVersion)
+		if legacy == "" {
+			return nil, err
+		}
+		request.Params.ProtocolVersion = legacy
+		result, err = c.Initialize(ctx, request)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if negotiated := c.ProtocolVersion(); maxVersion != "" && negotiated > maxVersion {
+		return nil, fmt.Errorf("%w: upstream negotiated %s, newer than this client's max protocol version %s", ErrMCPProtocolVersionAboveMax, negotiated, maxVersion)
+	}
+	return result, nil
+}
+
+// ErrMCPProtocolVersionAboveMax is an upstream that negotiated past the client's max protocol
+// version. Retrying cannot change it.
+var ErrMCPProtocolVersionAboveMax = errors.New("mcp protocol version above the configured maximum")
+
+// newestLegacyVersion is the newest pre-2026-07-28 version in supported that Bifrost also
+// supports, at most maxVersion ("" = uncapped).
+func newestLegacyVersion(supported []string, maxVersion string) string {
+	for _, version := range mcp.LegacyProtocolVersions() {
+		if (maxVersion == "" || version <= maxVersion) && slices.Contains(supported, version) {
+			return version
+		}
+	}
+	return ""
 }

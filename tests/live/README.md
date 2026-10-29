@@ -15,7 +15,7 @@ Every scenario that is not about one transport runs on both: `forEachTransport` 
 
 ### Fake mode
 
-Start the gateway from this folder's config, which points the `openai` provider at the fake and enforces auth, then run the suite:
+Start the gateway from this folder's config, which points the `openai` and `azure` providers at the fake and enforces auth, then run the suite:
 
 ```bash
 # from the repo root; the databases land in tests/live/data/ (gitignored)
@@ -44,7 +44,7 @@ LIVE_UPSTREAM=real BIFROST_VK=sk-bf-... make test-live   # when the gateway enfo
 
 Spoken scenarios synthesise speech with macOS `say` and `afconvert` and skip where those are missing; WebRTC speech also needs an `afconvert` that writes Opus. The real set runs each spoken scenario on both transports, one after the other. Each real session costs a few cents.
 
-Real sessions must be started on the `/openai/v1/live/sessions` route: on the generic route a bare `gpt-live-1` may resolve to another configured provider (Azure serves `gpt-*` names) that has no live support. The client also keeps the microphone streaming silence after it speaks; OpenAI stalls a session whose audio stops, leaving the assistant mid-sentence and the voice time short.
+Real sessions must be started on the `/openai/v1/live/sessions` route: on the generic route a bare `gpt-live-1` may resolve to another configured provider that serves `gpt-*` names, such as Azure. The client also keeps the microphone streaming silence after it speaks; OpenAI stalls a session whose audio stops, leaving the assistant mid-sentence and the voice time short.
 
 ### Long sessions
 

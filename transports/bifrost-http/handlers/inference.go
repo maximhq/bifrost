@@ -227,6 +227,9 @@ var decisionParamsKnownFields = map[string]bool{
 	// The deprecated map form's input. Next to "input" it is dropped, not
 	// forwarded as a provider extension that could override the real state.
 	"state": true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
 }
 
 // Known fields for DecisionMapFormRequest, the deprecated /v1/decisions body.
@@ -662,6 +665,9 @@ type DecisionHandlerRequest struct {
 	Questions        []schemas.DecisionQuestion `json:"questions"`
 	SafetyIdentifier *string                    `json:"safety_identifier,omitempty"`
 	BifrostParams
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 }
 
 // DecisionMapFormRequest is a /v1/decisions request in the deprecated map
@@ -1477,6 +1483,9 @@ func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *
 		SafetyIdentifier: handlerReq.SafetyIdentifier,
 		Fallbacks:        base.Fallbacks,
 		ExtraParams:      base.ExtraParams,
+
+		PromptCacheKey:     handlerReq.PromptCacheKey,
+		PromptCacheOptions: handlerReq.PromptCacheOptions,
 	}, false, nil
 }
 
@@ -1522,7 +1531,7 @@ func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) 
 				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
 			}
 			used[*part.Name] = *part.ID
-			part.Data = data
+			part.Data.File = data
 		}
 	}
 	for name := range files {

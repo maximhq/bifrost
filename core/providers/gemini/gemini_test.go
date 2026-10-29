@@ -2979,10 +2979,12 @@ func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
 					}
 				}
 				require.NotNil(t, fr, "Should have a functionResponse")
-				// Text is still preserved, but the image is dropped (older models reject
-				// multimodal function responses with a hard 400), so no parts are emitted.
+				// Text is kept; the image is dropped (older models reject multimodal function
+				// responses with a 400) and named in the text output instead.
 				assert.Contains(t, string(fr.Response), "result:", "Text output should be preserved")
 				assert.Empty(t, fr.Parts, "Media must be dropped for non-Gemini-3 models (no 400)")
+				assert.Contains(t, string(fr.Response), "image/png", "the dropped image is named in the output, not lost silently")
+				assert.Contains(t, string(fr.Response), "returned by the tool, not shown")
 			},
 		},
 		{
@@ -4846,15 +4848,15 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte(tt.input))
+			result := gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, []byte(tt.input), schemas.Gemini, "")
 			require.NotEmpty(t, result)
 			tt.validate(t, parseBody(t, result))
 		})
 	}
 
 	t.Run("EmptyBodyReturnsEmpty", func(t *testing.T) {
-		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil))
-		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility([]byte{}))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, nil, schemas.Gemini, ""))
+		assert.Empty(t, gemini.NormalizeRawGenerateContentRequestForCompatibility(nil, []byte{}, schemas.Gemini, ""))
 	})
 }
 

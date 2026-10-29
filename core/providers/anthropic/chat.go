@@ -1011,13 +1011,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						IsError:   toolMsg.ChatToolMessage.IsError,
 					}
 
-					// Convert tool result content
-					if toolMsg.Content != nil {
-						if toolMsg.Content.ContentStr != nil && *toolMsg.Content.ContentStr != "" {
-							toolResult.Content = &AnthropicContent{ContentStr: toolMsg.Content.ContentStr}
-						} else if toolMsg.Content.ContentBlocks != nil {
-							blocks := make([]AnthropicContentBlock, 0, len(toolMsg.Content.ContentBlocks))
-							for _, block := range toolMsg.Content.ContentBlocks {
+					// Convert tool result content; images are sent as images.
+					if content := schemas.FlattenToolResultMedia(toolMsg.Content, schemas.IsImageBlock); content != nil {
+						if content.ContentStr != nil && *content.ContentStr != "" {
+							toolResult.Content = &AnthropicContent{ContentStr: content.ContentStr}
+						} else if content.ContentBlocks != nil {
+							blocks := make([]AnthropicContentBlock, 0, len(content.ContentBlocks))
+							for _, block := range content.ContentBlocks {
 								// Anthropic rejects cache_control nested inside tool_result.content
 								// ("cache_control may not be specified within `tool_result.content`.
 								// Instead, place it directly on `tool_result`"), so hoist the first

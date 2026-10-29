@@ -14,6 +14,8 @@ interface Props {
 	hideExpandable?: boolean;
 	orientation?: "horizontal" | "vertical";
 	align?: "left" | "right";
+	/** Show the label exactly as given: for names that are case-sensitive data, such as query parameters. */
+	rawLabel?: boolean;
 }
 
 const isPrimitive = (value: React.ReactNode): boolean =>
@@ -35,7 +37,13 @@ export default function LogEntryDetailsView(props: Props) {
 			<div className={cn("min-w-0 max-w-full", props.containerClassName)}>
 				{props.label !== "" && (
 					<div className="text-muted-foreground flex shrink-0 flex-row items-center gap-1.5 pb-2 text-xs font-medium">
-						{props.label.toUpperCase().replace(/_/g, " ")}
+						{props.rawLabel ? (
+							<span className="block min-w-0 truncate font-mono normal-case" title={props.label}>
+								{props.label}
+							</span>
+						) : (
+							props.label.toUpperCase().replace(/_/g, " ")
+						)}
 						{props.tooltip && (
 							<Tooltip>
 								<TooltipTrigger asChild>

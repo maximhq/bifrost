@@ -79,6 +79,8 @@ const AzureKeyConfigSchema = z.object({
 	client_id: z.string().optional(),
 	client_secret: z.string().optional(),
 	tenant_id: z.string().optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 });
 
 // AWS → GCP Workload Identity Federation block; see VertexAWSWorkloadIdentityConfig.
@@ -205,6 +207,34 @@ const BedrockMantleKeyConfigSchema = z
 		},
 	);
 
+const SageMakerKeyConfigSchema = z
+	.object({
+		access_key: z.string(),
+		secret_key: z.string(),
+		session_token: z.string().optional(),
+		region: z.string().min(1, "Region is required for SageMaker keys"),
+		role_arn: z.string().optional(),
+		external_id: z.string().optional(),
+		session_name: z.string().optional(),
+		endpoints: z.object({ runtime: VPCEndpointHostSchema }).optional(),
+	})
+	.refine(
+		(data) => {
+			const accessKey = data.access_key?.trim() || "";
+			const secretKey = data.secret_key?.trim() || "";
+			const bothEmpty = accessKey === "" && secretKey === "";
+			// A session token alone cannot mint a bearer token; reject it without both keys.
+			if (bothEmpty && (data.session_token?.trim() || "") !== "") {
+				return false;
+			}
+			return bothEmpty || (accessKey !== "" && secretKey !== "");
+		},
+		{
+			message: "For SageMaker: either provide both Access Key and Secret Key, or leave both empty to use the default AWS credential chain",
+			path: ["access_key"],
+		},
+	);
+
 // Optional for the same reason as replicateKeyConfigSchema in lib/types/schemas.ts:
 // the registered-but-untouched switch leaves an empty object behind.
 const ReplicateKeyConfigSchema = z.object({
@@ -225,6 +255,7 @@ const KeySchema = z.object({
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
 	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
+	sagemaker_key_config: SageMakerKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
 	oauth_key_config: oauthKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),

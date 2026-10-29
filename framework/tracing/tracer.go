@@ -435,6 +435,22 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	}
 }
 
+// SetSpanStartTime moves the start time of the span identified by the handle.
+func (t *Tracer) SetSpanStartTime(handle schemas.SpanHandle, start time.Time) {
+	h, ok := handle.(*spanHandle)
+	if !ok || h == nil {
+		return
+	}
+	if h.span != nil && h.span.SetStartTimeIfMatch(h.spanID, start) {
+		return
+	}
+	trace := t.store.GetTrace(h.traceID)
+	if trace == nil {
+		return
+	}
+	trace.GetSpan(h.spanID).SetStartTimeIfMatch(h.spanID, start)
+}
+
 // SpanFromHandle resolves the *Span for a handle once. Callers writing many
 // attributes use it to avoid a trace+span lookup per attribute; span.SetAttribute
 // is nil-safe, so a nil return is fine to write against.

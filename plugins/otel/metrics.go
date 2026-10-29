@@ -70,6 +70,8 @@ type MetricsExporter struct {
 
 	// A2A (Agent Gateway) metrics
 	a2aClientOperationDuration *syncFloat64Histogram
+	relayOperationDuration     *syncFloat64Histogram
+	relayCostTotal             *syncFloat64Counter
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -475,6 +477,21 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: mcpOperationDurationBuckets,
 	}
 
+	// Relay calls: a plain HTTP round trip, so the HTTP semconv buckets apply.
+	m.relayOperationDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.operation.duration",
+		desc:       "Duration of a relay call to a non-LLM upstream API as observed by Bifrost",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: mcpOperationDurationBuckets,
+	}
+	m.relayCostTotal = &syncFloat64Counter{
+		name:  "bifrost.relay.cost",
+		desc:  "USD charged for relay calls",
+		unit:  "{USD}",
+		meter: m.meter,
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -613,6 +630,16 @@ func (m *MetricsExporter) RecordMCPOperationDuration(ctx context.Context, durati
 // RecordA2AOperationDuration records the duration of one A2A (Agent Gateway) operation
 func (m *MetricsExporter) RecordA2AOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
 	m.a2aClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayOperationDuration records the duration of one relay call.
+func (m *MetricsExporter) RecordRelayOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayCost adds the USD charged for one relay call.
+func (m *MetricsExporter) RecordRelayCost(ctx context.Context, cost float64, attrs ...attribute.KeyValue) {
+	m.relayCostTotal.Add(ctx, cost, metric.WithAttributes(attrs...))
 }
 
 // RecordHTTPRequest records an HTTP request metric

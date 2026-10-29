@@ -520,6 +520,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"vertex_key_config":         func() { updateKey.VertexKeyConfig = oldRawKey.VertexKeyConfig },
 		"bedrock_key_config":        func() { updateKey.BedrockKeyConfig = oldRawKey.BedrockKeyConfig },
 		"bedrock_mantle_key_config": func() { updateKey.BedrockMantleKeyConfig = oldRawKey.BedrockMantleKeyConfig },
+		"sagemaker_key_config":      func() { updateKey.SageMakerKeyConfig = oldRawKey.SageMakerKeyConfig },
 		"vllm_key_config":           func() { updateKey.VLLMKeyConfig = oldRawKey.VLLMKeyConfig },
 		"replicate_key_config":      func() { updateKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig },
 		"ollama_key_config":         func() { updateKey.OllamaKeyConfig = oldRawKey.OllamaKeyConfig },
@@ -675,6 +676,36 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{mergedKey.BedrockMantleKeyConfig.RoleARN, roleARN, "bedrock_mantle_key_config.role_arn"},
 			{mergedKey.BedrockMantleKeyConfig.ExternalID, externalID, "bedrock_mantle_key_config.external_id"},
 			{mergedKey.BedrockMantleKeyConfig.RoleSessionName, sessionName, "bedrock_mantle_key_config.session_name"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+	}
+
+	if mergedKey.SageMakerKeyConfig != nil {
+		var accessKey, secretKey, sessionToken, region, roleARN, externalID, sessionName *schemas.SecretVar
+		if oldRawKey.SageMakerKeyConfig != nil {
+			accessKey = &oldRawKey.SageMakerKeyConfig.AccessKey
+			secretKey = &oldRawKey.SageMakerKeyConfig.SecretKey
+			sessionToken = oldRawKey.SageMakerKeyConfig.SessionToken
+			region = oldRawKey.SageMakerKeyConfig.Region
+			roleARN = oldRawKey.SageMakerKeyConfig.RoleARN
+			externalID = oldRawKey.SageMakerKeyConfig.ExternalID
+			sessionName = oldRawKey.SageMakerKeyConfig.RoleSessionName
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.SageMakerKeyConfig.AccessKey, accessKey, "sagemaker_key_config.access_key"},
+			{&mergedKey.SageMakerKeyConfig.SecretKey, secretKey, "sagemaker_key_config.secret_key"},
+			{mergedKey.SageMakerKeyConfig.SessionToken, sessionToken, "sagemaker_key_config.session_token"},
+			{mergedKey.SageMakerKeyConfig.Region, region, "sagemaker_key_config.region"},
+			{mergedKey.SageMakerKeyConfig.RoleARN, roleARN, "sagemaker_key_config.role_arn"},
+			{mergedKey.SageMakerKeyConfig.ExternalID, externalID, "sagemaker_key_config.external_id"},
+			{mergedKey.SageMakerKeyConfig.RoleSessionName, sessionName, "sagemaker_key_config.session_name"},
 		} {
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
 				return schemas.Key{}, err
@@ -891,6 +922,9 @@ func validateProviderKeyRegions(key schemas.Key) error {
 	if c := key.BedrockMantleKeyConfig; c != nil && c.Region != nil {
 		regions = append(regions, region{"bedrock_mantle_key_config.region", c.Region})
 	}
+	if c := key.SageMakerKeyConfig; c != nil && c.Region != nil {
+		regions = append(regions, region{"sagemaker_key_config.region", c.Region})
+	}
 	for alias, cfg := range key.Aliases {
 		if cfg.Region != nil {
 			regions = append(regions, region{"aliases." + alias + ".region", cfg.Region})
@@ -937,6 +971,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.BedrockMantle:
 		if key.BedrockMantleKeyConfig == nil || key.BedrockMantleKeyConfig.Region == nil || !key.BedrockMantleKeyConfig.Region.IsSet() {
 			return fmt.Errorf("bedrock_mantle_key_config.region is required for Bedrock Mantle keys")
+		}
+	case schemas.SageMaker:
+		if key.SageMakerKeyConfig == nil || key.SageMakerKeyConfig.Region == nil || !key.SageMakerKeyConfig.Region.IsSet() {
+			return fmt.Errorf("sagemaker_key_config.region is required for SageMaker keys")
 		}
 	case schemas.VLLM:
 		if key.VLLMKeyConfig == nil || !key.VLLMKeyConfig.URL.IsSet() {
@@ -1128,6 +1166,9 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.BedrockMantleKeyConfig; c != nil {
 		addBedrockEndpoints("bedrock_mantle_key_config.endpoints", c.Endpoints)
+	}
+	if c := key.SageMakerKeyConfig; c != nil && c.Endpoints != nil {
+		add("sagemaker_key_config.endpoints.runtime", c.Endpoints.Runtime)
 	}
 	for alias, cfg := range key.Aliases {
 		if cfg.AzureAliasCfg != nil {
