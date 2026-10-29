@@ -312,13 +312,17 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 			decodedModelID = unescaped
 		}
 	}
-	// Avoid copying messages while selecting the codec. toolConfig retains the
-	// existing Converse compatibility path; native Mistral uses the chat codec.
+	// Keep compatibility fields on Converse, where they are translated.
+	// Native Mistral messages use the chat codec without copying their contents.
 	if node, _ := sonic.GetWithOptions(body, ast.SearchOptions{ValidateJSON: true}, "messages"); node.Exists() {
 		if schemas.IsMistralModel(decodedModelID) {
 			toolConfig, _ := sonic.GetWithOptions(body, ast.SearchOptions{}, "toolConfig")
 			if !toolConfig.Exists() {
-				return schemas.ChatCompletionRequest
+				system, _ := sonic.GetWithOptions(body, ast.SearchOptions{}, "system")
+				inferenceConfig, _ := sonic.GetWithOptions(body, ast.SearchOptions{}, "inferenceConfig")
+				if !system.Exists() && !inferenceConfig.Exists() {
+					return schemas.ChatCompletionRequest
+				}
 			}
 		}
 		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
@@ -1372,7 +1376,10 @@ func ToBedrockInvokeChatRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 		}
 	}
 	body := openai.ToOpenAIChatRequest(ctx, request)
-	body.MaxTokens = body.MaxCompletionTokens
+	if request.Params != nil {
+		// The OpenAI converter clamps small limits; Invoke must retain the caller's.
+		body.MaxTokens = request.Params.MaxCompletionTokens
+	}
 	body.MaxCompletionTokens = nil
 	body.Stream, body.StreamOptions = nil, nil
 	if body.ToolChoice != nil && body.ToolChoice.ChatToolChoiceStr != nil && *body.ToolChoice.ChatToolChoiceStr == "required" {
