@@ -298,24 +298,32 @@ func mistralChatResponseHandler(responseBody []byte, response *schemas.BifrostCh
 	if bifrostErr != nil {
 		return rawRequest, rawResponse, bifrostErr
 	}
+	hasThinking := false
 	for _, choice := range response.Choices {
-		if choice.Message == nil || choice.Message.Content == nil {
+		if choice.ChatNonStreamResponseChoice == nil {
+			err := errors.New("mistral response contains an invalid choice")
+			return rawRequest, rawResponse, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		}
+		if hasThinking || choice.Message == nil || choice.Message.Content == nil {
 			continue
 		}
 		for _, block := range choice.Message.Content.ContentBlocks {
-			if block.Type != "thinking" {
-				continue
+			if block.Type == "thinking" {
+				hasThinking = true
+				break
 			}
-			normalized, err := normalizeMistralContent(responseBody, "message.content", "message.reasoning")
-			if err != nil {
-				return rawRequest, rawResponse, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
-			}
-			*response = schemas.BifrostChatResponse{ExtraFields: response.ExtraFields}
-			_, _, bifrostErr = providerUtils.HandleProviderResponse(normalized, response, nil, false, false)
-			return rawRequest, rawResponse, bifrostErr
 		}
 	}
-	return rawRequest, rawResponse, nil
+	if !hasThinking {
+		return rawRequest, rawResponse, nil
+	}
+	normalized, err := normalizeMistralContent(responseBody, "message.content", "message.reasoning")
+	if err != nil {
+		return rawRequest, rawResponse, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
+	*response = schemas.BifrostChatResponse{ExtraFields: response.ExtraFields}
+	_, _, bifrostErr = providerUtils.HandleProviderResponse(normalized, response, nil, false, false)
+	return rawRequest, rawResponse, bifrostErr
 }
 
 // mistralChatStreamResponseHandler normalizes text and thinking arrays while keeping original

@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestMistral(t *testing.T) {
@@ -448,6 +449,7 @@ func TestMistralContentArray(t *testing.T) {
 func TestMistralNonStreamingContentArray(t *testing.T) {
 	cases := []struct {
 		name, message, text, reasoning string
+		choices                        string
 		wantError, wantToolCall        bool
 	}{
 		{
@@ -482,6 +484,26 @@ func TestMistralNonStreamingContentArray(t *testing.T) {
 			message:   `{"role":"assistant","content":[{"type":"thinking","thinking":"not a chunk array"}]}`,
 			wantError: true,
 		},
+		{
+			name:      "NullChoice",
+			choices:   `[null]`,
+			wantError: true,
+		},
+		{
+			name:      "MissingChatChoice",
+			choices:   `[{"index":0,"finish_reason":"stop"}]`,
+			wantError: true,
+		},
+		{
+			name:      "NullChoiceBeforeThinking",
+			choices:   `[null,{"index":1,"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]},"finish_reason":"stop"}]`,
+			wantError: true,
+		},
+		{
+			name:      "NullChoiceAfterThinking",
+			choices:   `[{"index":0,"message":{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]},"finish_reason":"stop"},null]`,
+			wantError: true,
+		},
 	}
 	for _, api := range []string{"ChatCompletion", "Responses", "Anthropic"} {
 		for _, mode := range []struct {
@@ -491,6 +513,11 @@ func TestMistralNonStreamingContentArray(t *testing.T) {
 			for _, tc := range cases {
 				t.Run(api+"/"+mode.name+"/"+tc.name, func(t *testing.T) {
 					body := mistralUnaryResponse(tc.message)
+					if tc.choices != "" {
+						var err error
+						body, err = sjson.SetRaw(body, "choices", tc.choices)
+						require.NoError(t, err)
+					}
 					provider, providerName := mistralUnaryProvider(t, body, mode.raw, mode.alias)
 					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 					key := schemas.Key{Value: *schemas.NewSecretVar("offline-mistral-key")}
@@ -501,20 +528,22 @@ func TestMistralNonStreamingContentArray(t *testing.T) {
 					}
 					var response any
 					var bifrostErr *schemas.BifrostError
-					if api == "ChatCompletion" {
-						response, bifrostErr = provider.ChatCompletion(ctx, key, request)
-					} else if api == "Responses" {
-						response, bifrostErr = provider.Responses(ctx, key, request.ToResponsesRequest())
-					} else {
-						var native anthropic.AnthropicMessageRequest
-						require.NoError(t, json.Unmarshal([]byte(`{"model":"`+string(providerName)+`/mistral-small-latest","max_tokens":1024,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"What is 17 times 23?"}]}`), &native))
-						result, err := provider.Responses(ctx, key, native.ToBifrostResponsesRequest(ctx))
-						bifrostErr = err
-						if err == nil {
-							require.Equal(t, "mistral-fixture-request", result.ExtraFields.ProviderResponseHeaders["X-Request-Id"])
-							response = anthropic.ToAnthropicResponsesResponse(ctx, result)
+					require.NotPanics(t, func() {
+						if api == "ChatCompletion" {
+							response, bifrostErr = provider.ChatCompletion(ctx, key, request)
+						} else if api == "Responses" {
+							response, bifrostErr = provider.Responses(ctx, key, request.ToResponsesRequest())
+						} else {
+							var native anthropic.AnthropicMessageRequest
+							require.NoError(t, json.Unmarshal([]byte(`{"model":"`+string(providerName)+`/mistral-small-latest","max_tokens":1024,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"What is 17 times 23?"}]}`), &native))
+							result, err := provider.Responses(ctx, key, native.ToBifrostResponsesRequest(ctx))
+							bifrostErr = err
+							if err == nil {
+								require.Equal(t, "mistral-fixture-request", result.ExtraFields.ProviderResponseHeaders["X-Request-Id"])
+								response = anthropic.ToAnthropicResponsesResponse(ctx, result)
+							}
 						}
-					}
+					})
 					if tc.wantError {
 						require.NotNil(t, bifrostErr)
 						require.Equal(t, schemas.ErrProviderResponseUnmarshal, bifrostErr.Error.Message)
