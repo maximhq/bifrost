@@ -6357,6 +6357,24 @@ const AUTH39 = folder("AUTH-39 No-token caller on every surface", `Setup: ${PU_T
 
 const FAIL19_TEXT = "echo is broken upstream";
 const FAIL19_TIMEOUT = "Error executing tool alpha-slow_tool: tool execution failed: MCP tool call timed out after 2s";
+const SET13 = folder("SET-13 A \"*\" extra-header list leaves Bifrost's own headers alone", `Setup: ${ALPHA_TOOLS_TEXT}, allowed_extra_headers ["*"]; allow_per_request_raw_override on; ${LLM_TEXT}.`, [
+  ...setClient("SET-13", { allowed_extra_headers: ["*"] }),
+  readConfig("SET-13"),
+  putConfig("SET-13", "setup: allow_per_request_raw_override on", ["cc.allow_per_request_raw_override = true;"], [A.status(200)]),
+  llmScript("SET-13", "set13", TEXT_OK),
+  infChat("SET-13", "chat with x-bf-send-back-raw-request: true", "set13", [A.status(200), A.custom("extra_fields.raw_request is returned", [
+    "pm.expect((pm.response.json().extra_fields || {}).raw_request, 'body: ' + pm.response.text()).to.not.equal(undefined);",
+  ])], { headers: [{ key: "x-bf-send-back-raw-request", value: "true" }] }),
+  mockAuth("SET-13", "alpha", "setup: alpha counts calls under the Cookie value", { identity_header: "Cookie" }),
+  execTool("SET-13", "execute alpha-echo_tool with Cookie: session=secret", "alpha-echo_tool", [A.status(200)], { headers: [{ key: "Cookie", value: "session=secret" }] }),
+  mockGet("SET-13", "alpha", "the Cookie never reached alpha", [A.custom("no identity carries the cookie value", [
+    "var ids = Object.keys(pm.response.json().counters.calls_by_identity || {});",
+    "pm.expect(ids.filter(function (id) { return id.indexOf('session=secret') !== -1; }), 'identities: ' + JSON.stringify(ids)).to.eql([]);",
+  ]), callsIs("echo_tool", 1)]),
+  restoreConfig("SET-13"),
+  deleteClient("SET-13", "set-13-a"),
+]);
+
 // pollMcpInstructions re-sends initialize to /mcp, 200ms apart for up to about 2s, until its instructions equal want;
 // /mcp resyncs from a background goroutine after a refresh.
 const pollMcpInstructions = (want) => [
@@ -7830,7 +7848,7 @@ const collection = {
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET13, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),

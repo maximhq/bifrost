@@ -40,6 +40,7 @@ type testHandlerStore struct {
 	matcher              *HeaderMatcher
 	allowDirectKeys      bool
 	extraFieldsInHeaders bool
+	mcpAllowlist         schemas.WhiteList
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -49,7 +50,10 @@ func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor      
 func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
 func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
-	return schemas.WhiteList{}
+	if s.mcpAllowlist == nil {
+		return schemas.WhiteList{}
+	}
+	return s.mcpAllowlist
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
@@ -197,6 +201,34 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 	for _, h := range directSecurityHeaders {
 		if _, ok := extraHeaders[h]; ok {
 			t.Errorf("expected security header %q to be blocked in direct forwarding even with * allowlist", h)
+		}
+	}
+}
+
+// TestConvertToBifrostContext_StarMCPAllowlistKeepsBifrostHeaders: an MCP client
+// with "*" in allowed_extra_headers makes every header an MCP extra header.
+// Capturing one used to end its handling, so Bifrost's own control headers were
+// ignored on every request, and Cookie was forwarded to MCP servers. Bifrost's
+// headers are still acted on and never forwarded, nor is the security denylist.
+func TestConvertToBifrostContext_StarMCPAllowlistKeepsBifrostHeaders(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-send-back-raw-request", "true")
+	ctx.Request.Header.Set("cookie", "session=secret")
+	ctx.Request.Header.Set("x-tenant", "t1")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{mcpAllowlist: schemas.WhiteList{"*"}})
+	defer cancel()
+
+	if raw, _ := bifrostCtx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); !raw {
+		t.Error("expected x-bf-send-back-raw-request to still be acted on")
+	}
+	mcpHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string)
+	if _, ok := mcpHeaders["x-tenant"]; !ok {
+		t.Error("expected an ordinary header to be captured for MCP servers")
+	}
+	for _, h := range []string{"cookie", "x-bf-send-back-raw-request"} {
+		if _, ok := mcpHeaders[h]; ok {
+			t.Errorf("expected %q not to be captured for MCP servers", h)
 		}
 	}
 }

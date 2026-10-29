@@ -752,6 +752,8 @@ Values forwarded this way come from the **caller's** request, so the upstream se
 
 <Note>
 Headers are matched case-insensitively. The only wildcard supported is a standalone `"*"` (allow all headers) - partial patterns like `x-tenant-*` are not supported. If `"*"` is used, it must be the only entry in the list.
+
+Even with `"*"`, Bifrost's own `x-bf-*` headers and the transport and credential headers (`Cookie`, `Host`, `Connection`, `Content-Length`, `Transfer-Encoding`, `Proxy-Authorization`, `x-api-key`, `x-goog-api-key`) are never forwarded to an MCP server, and the `x-bf-*` headers still take effect in Bifrost.
 </Note>
 
 <Tabs>
