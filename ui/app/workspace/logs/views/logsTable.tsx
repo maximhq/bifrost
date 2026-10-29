@@ -177,7 +177,7 @@ export function LogsDataTable({
 	return (
 		<div className="flex h-full flex-col gap-2">
 			<div className="min-h-0 flex-1 overflow-hidden rounded-sm border">
-				<Table containerClassName="@container/logs-table h-full overflow-auto">
+				<Table containerClassName="@container/logs-table h-full overflow-auto" data-testid="logs-table">
 					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr
