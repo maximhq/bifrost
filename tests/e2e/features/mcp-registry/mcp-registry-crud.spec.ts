@@ -123,6 +123,24 @@ test.describe("MCP Registry", () => {
       await mcpRegistryPage.page.unroute(virtualMcpsRoute);
     });
 
+    test("should keep each stat's full text on hover when a narrow cell truncates it", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+      createdClients.push(clientData.name);
+
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      // The Access figure settles once the Virtual MCPs are known; read it after that.
+      await expect(mcpRegistryPage.viewSheet.getByTestId("mcpclient-view-stat-access")).not.toContainText("Loading virtual MCPs…");
+      // The stat lines truncate to one line, so a long figure (several counts joined) is clipped in a
+      // narrow cell; the title carries the whole text.
+      for (const key of ["tools", "access"]) {
+        for (const line of ["value", "sub"]) {
+          const el = mcpRegistryPage.viewSheet.getByTestId(`mcpclient-view-stat-${key}-${line}`);
+          await expect(el).toHaveAttribute("title", (await el.textContent()) ?? "");
+        }
+      }
+    });
+
     test("should create SSE client", async ({ mcpRegistryPage }) => {
       test.skip(
         !hasSSEHeaders,

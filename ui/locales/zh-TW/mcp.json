@@ -511,6 +511,8 @@
 			"noneAutoExecute": "無自動執行",
 			"virtualKeyCount_one": "{{count}} 個虛擬金鑰",
 			"virtualKeyCount_other": "{{count}} 個虛擬金鑰",
+			"keyCount_one": "{{count}} 個金鑰",
+			"keyCount_other": "{{count}} 個金鑰",
 			"virtualMcpCount_one": "{{count}} 個虛擬 MCP",
 			"virtualMcpCount_other": "{{count}} 個虛擬 MCP",
 			"andAlso": "以及 {{items}}",
