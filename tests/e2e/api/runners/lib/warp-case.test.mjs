@@ -157,24 +157,28 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
   }
 });
 
-// Counting people behind a topic is declined, but the prompt and list_topics'
-// cannot_answer hint both offer what the data does show first: a query_usage_by
-// user ranking with topic_ids counts the users with a request in the topic.
-// Users are not people, so "N users" passes and "N people" does not; the
-// feature-request link is still required, and the logs are never sliced.
-test("topics-people answers the user count from topic_ids, then declines people", () => {
+// How many users are behind a topic is answered, not declined: a
+// query_usage_by user ranking with the topic's topic_ids counts the users with
+// a request in it, and the answer says that number without the feature-request
+// link. The ranking has to carry both the topic and the user dimension.
+test("topics-people answers the user count from a user ranking over topic_ids", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const { expect } = caseFromCollection("topics-people");
   const link = " Counting distinct people is not available yet: https://github.com/maximhq/bifrost/issues/new";
-  const ranking = { name: "query_usage_by", arguments: '{"dimension": "user", "filters": {"topic_ids": ["t-1"]}}' };
-  const pass = lib.evaluate(answered("12 users had a request in Refund Requests." + link, ["list_topics", ranking]), expect);
-  assert.deepStrictEqual(pass, [], "user ranking with topic_ids, then the decline");
-  assert.deepStrictEqual(lib.evaluate(answered("Refund Requests is the largest topic." + link, ["list_topics"]), expect), [], "decline alone");
-  assert.notDeepStrictEqual(lib.evaluate(answered("12 people asked about it." + link, ["list_topics", ranking]), expect), [], "a people count");
-  assert.notDeepStrictEqual(lib.evaluate(answered("12 users had a request in it.", ["list_topics", ranking]), expect), [], "no feature link");
-  assert.notDeepStrictEqual(lib.evaluate(answered("x" + link, ["list_topics", "query_logs"]), expect), [], "the logs sliced");
-  assert.notDeepStrictEqual(lib.evaluate(answered("x" + link, []), expect), [], "no list_topics call");
+  const ranking = { name: "query_usage_by", arguments: '{"dimension": "user", "filters": {"topic_ids": ["t-1"]}, "limit": 20}' };
+  const answer = "The largest topic, Refund Requests, had **7 different users** in the last 7 days.";
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["list_topics", ranking]), expect), [], "user ranking with topic_ids, then the count");
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["describe_filter_space", "list_topics", ranking]), expect), [], "a discovery call first");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer + link, ["list_topics", ranking]), expect), [], "declined with the feature link anyway");
+  assert.notDeepStrictEqual(lib.evaluate(answered("Refund Requests is the largest topic.", ["list_topics", ranking]), expect), [], "no user count");
+  assert.notDeepStrictEqual(lib.evaluate(answered("Refund Requests is the largest topic." + link, ["list_topics"]), expect), [], "the old decline");
+  const unscoped = { name: "query_usage_by", arguments: '{"dimension": "user", "filters": {"start_time": "-7d"}}' };
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", unscoped]), expect), [], "a ranking not narrowed to the topic");
+  const teams = { name: "query_usage_by", arguments: '{"dimension": "team", "filters": {"topic_ids": ["t-1"]}}' };
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", teams]), expect), [], "a ranking of teams");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", ranking, "query_logs"]), expect), [], "the logs sliced");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, []), expect), [], "no list_topics call");
 });
 
 // A survey scoped to a window or a person is answered from one query_logs
