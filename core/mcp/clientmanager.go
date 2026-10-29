@@ -721,9 +721,18 @@ func (m *MCPManager) refreshServerInstructions(ctx context.Context, config *sche
 	attemptCtx, cancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 	defer cancel()
 
+	// Only a client with a live connection gets here, so a sticky one, and its
+	// credential is the one that connection dials with. The admin lookup the
+	// per-call discovery uses refuses a sticky client, which made this re-read
+	// fail for every client it is for.
+	headers, err := m.credStore.ConnectionHeaders(schemas.NewBifrostContext(attemptCtx, schemas.NoDeadline), config)
+	if err != nil {
+		m.logger.Debug("%s Instructions refresh for %s could not resolve its credential: %v", MCPLogPrefix, config.Name, err)
+		return false
+	}
 	// Discovery also lists tools; only the instructions are taken, since the caller's
 	// own path is authoritative for tools and two writers could disagree.
-	discovery, err := m.performAdminToolDiscovery(attemptCtx, config, 0)
+	discovery, err := m.discoverWithHeaders(attemptCtx, config, headers, 0)
 	if err != nil {
 		m.logger.Debug("%s Instructions refresh failed for %s: %v — keeping the installed text", MCPLogPrefix, config.Name, err)
 		return false
@@ -1592,6 +1601,13 @@ func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *sche
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve admin credential: %w", err)
 	}
+	return m.discoverWithHeaders(ctx, config, headers, eachList)
+}
+
+// discoverWithHeaders runs the one-shot connect-discover-close cycle with a
+// credential already resolved by the caller: the bearer it carries for the
+// OAuth-shaped auth types, the headers themselves for the rest.
+func (m *MCPManager) discoverWithHeaders(ctx context.Context, config *schemas.MCPClientConfig, headers http.Header, eachList time.Duration) (*schemas.MCPDiscovery, error) {
 	// Empty AuthType is "headers" everywhere else (see UpdateClient); without this it
 	// fell to the default below and refused discovery for any client that never set one.
 	authType := config.AuthType

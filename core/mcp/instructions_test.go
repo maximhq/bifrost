@@ -3,10 +3,14 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -513,5 +517,66 @@ func BenchmarkGetServerInstructions(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = m.GetServerInstructions(ctx)
+	}
+}
+
+// TestRefreshServerInstructions_RereadsAStickyClient: a tool refresh on a
+// sticky client re-reads the server's instructions, dialling with the
+// credential the live connection uses. The re-read asked for the per-call admin
+// credential, which every shared resolver refuses for a sticky client, so it
+// failed silently for every client it runs for.
+func TestRefreshServerInstructions_RereadsAStickyClient(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		sse    bool
+		config schemas.MCPClientConfig
+	}{
+		{"http with header auth", false, schemas.MCPClientConfig{
+			ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeHeaders, NeedsSessionStickiness: schemas.Ptr(true),
+			Headers: map[string]schemas.SecretVar{"X-Key": *schemas.NewSecretVar("k1")},
+		}},
+		{"sse with no auth", true, schemas.MCPClientConfig{ConnectionType: schemas.MCPConnectionTypeSSE, AuthType: schemas.MCPAuthTypeNone}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// serve is an MCP server that sends text as its instructions, over the client's transport.
+			serve := func(text string) http.Handler {
+				s := server.NewMCPServer("sticky-instructions", "1.0.0", server.WithToolCapabilities(true), server.WithInstructions(text))
+				if tc.sse {
+					return server.NewSSEServer(s)
+				}
+				return server.NewStreamableHTTPServer(s)
+			}
+			before, after := serve("v1"), serve("v2")
+			var changed atomic.Bool
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.config.AuthType == schemas.MCPAuthTypeHeaders && r.Header.Get("X-Key") != "k1" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				if changed.Load() {
+					after.ServeHTTP(w, r)
+					return
+				}
+				before.ServeHTTP(w, r)
+			}))
+			t.Cleanup(ts.Close)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			t.Cleanup(func() { _ = m.Cleanup() })
+			config := tc.config
+			config.ID, config.Name = "sticky-instructions", "sticky_instructions"
+			config.ConnectionString = schemas.NewSecretVar(ts.URL)
+			if tc.sse {
+				config.ConnectionString = schemas.NewSecretVar(ts.URL + "/sse")
+			}
+			require.NoError(t, m.AddClient(context.Background(), &config))
+			state, ok := snapshotAddClientState(m, config.ID)
+			require.True(t, ok)
+			require.Equal(t, "v1", state.ServerInstructions)
+
+			changed.Store(true)
+			assert.True(t, m.refreshServerInstructions(context.Background(), &config, config.ID, state.ConnGeneration), "the re-read reaches the server")
+			state, _ = snapshotAddClientState(m, config.ID)
+			assert.Equal(t, "v2", state.ServerInstructions)
+		})
 	}
 }
