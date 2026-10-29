@@ -7,6 +7,8 @@ import {
 } from "./logs.data";
 
 test.describe("LLM Logs", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
   test.beforeEach(async ({ logsPage }) => {
     await logsPage.goto();
   });
