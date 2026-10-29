@@ -1092,6 +1092,8 @@ Bifrost automatically implements **exponential backoff retry logic** to handle t
 **Important:** Bifrost only retries on transient errors (network failures, timeouts, temporary service unavailability). Permanent errors like authentication failures, configuration errors, and missing commands fail immediately without retry.
 </Warning>
 
+Clients defined in `config.json` connect in the background at startup. Bifrost starts serving at once, each client's tools become available as soon as it connects, and a client that cannot be reached is marked `unstable` and retried every 10 seconds without delaying the others.
+
 ### Automatic Retry Strategy
 
 Bifrost retries failed operations using the following strategy, as implemented by `ExecuteWithRetry` and `DefaultRetryConfig` in the MCP layer:
