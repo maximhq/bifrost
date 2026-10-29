@@ -45,6 +45,9 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 	}
 	hc = guardRedirects(exchangeClient(hc))
 	return func(ctx context.Context, _ *Entry[string]) (*Entry[string], *schemas.BifrostError) {
+		if err := schemas.TokenExchangeURLAllowed(cfg.TokenURL); err != nil {
+			return nil, configurationError(err.Error())
+		}
 		subjectToken, err := readSubjectToken(cfg.SubjectTokenFile)
 		if err != nil {
 			return nil, configurationError("oauth token_exchange: " + err.Error())

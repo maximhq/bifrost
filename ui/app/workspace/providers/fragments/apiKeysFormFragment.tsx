@@ -1388,7 +1388,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								render={({ field }) => (
 									<FormItem>
 										<FormLabel>Grant Type</FormLabel>
-										<Select value={field.value ?? "client_credentials"} onValueChange={field.onChange}>
+										{/* No inputs for token_exchange yet: locking the select keeps an edit from converting the key. */}
+										{field.value === "token_exchange" && (
+											<FormDescription>Workload identity federation is configured through the API or config.json.</FormDescription>
+										)}
+										<Select
+											value={field.value ?? "client_credentials"}
+											onValueChange={field.onChange}
+											disabled={field.value === "token_exchange"}
+										>
 											<FormControl>
 												<SelectTrigger className="w-full" data-testid="key-select-oauth-grant-type">
 													<SelectValue placeholder="Client credentials" />
@@ -1397,6 +1405,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 											<SelectContent>
 												<SelectItem value="client_credentials">Client credentials (client ID + secret)</SelectItem>
 												<SelectItem value="jwt_bearer">JWT bearer (signed assertion, RFC 7523)</SelectItem>
+												<SelectItem value="token_exchange" disabled>
+													Token exchange (workload identity federation, RFC 8693)
+												</SelectItem>
 											</SelectContent>
 										</Select>
 										<FormMessage />

@@ -229,8 +229,8 @@ func oauthKeyCacheKey(cfg *schemas.OAuthKeyConfig, tokenURL string) string {
 		string(cfg.AuthStyle),
 		strings.Join(cfg.Scopes, " "),
 		encodedExtraParams(cfg.ExtraParams),
-		cfg.SubjectTokenFile,
-		cfg.SubjectTokenType,
+		strings.TrimSpace(cfg.SubjectTokenFile),
+		strings.TrimSpace(cfg.SubjectTokenType),
 		string(cfg.RequestEncoding),
 	)
 }

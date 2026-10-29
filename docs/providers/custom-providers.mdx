@@ -364,7 +364,7 @@ curl --location 'http://localhost:8080/api/providers/acme-llm/keys' \
 | Field | Required | Description |
 |-------|----------|-------------|
 | `grant_type` | ✅ | `client_credentials`, `jwt_bearer` or `token_exchange`. |
-| `token_url` | ✅ | The token endpoint. Must be `https` (plain `http` is accepted for loopback hosts only) and must not carry userinfo, a query or a fragment, since the URL is shown in plain text when the key is read back. Supports `env.` references. |
+| `token_url` | ✅ | The token endpoint. Must be `https` (plain `http` is accepted for loopback hosts only) and must not carry userinfo, a query or a fragment, since the URL is shown in plain text when the key is read back. Supports `env.` references. For `token_exchange` it must also be listed in `BIFROST_TOKEN_EXCHANGE_URLS`. |
 | `client_id` | client credentials | Client ID. |
 | `client_secret` | client credentials | Client secret. |
 | `auth_style` | | `header` (HTTP Basic, default) or `body` (form fields) for the client credentials. |
@@ -406,9 +406,14 @@ volumeMounts:
 env:
   - name: BIFROST_SUBJECT_TOKEN_DIRS
     value: /var/run/secrets/openai
+  - name: BIFROST_TOKEN_EXCHANGE_URLS
+    value: https://auth.openai.com/oauth/token
 ```
 
-`BIFROST_SUBJECT_TOKEN_DIRS` lists the directories (separated by `:`) that `subject_token_file` may point into; without it the file is refused. It is process environment rather than key configuration, so someone who can edit keys through the API cannot make Bifrost read, and send to a token endpoint of their choice, any other file on the host. Symlinks are followed only while they stay inside the listed directories, which projected tokens do.
+Both variables are required. They are process environment rather than key configuration, so someone who can edit keys through the API cannot make Bifrost read another file on the host or send the workload's token to an endpoint of their choice:
+
+- `BIFROST_SUBJECT_TOKEN_DIRS` lists the directories (separated by `:`) that `subject_token_file` may point into. Symlinks are followed only while they stay inside them, which projected tokens do.
+- `BIFROST_TOKEN_EXCHANGE_URLS` lists the token endpoints (separated by `,`, matched exactly) a subject token may be sent to. It is checked when the key is saved and again on every exchange, after an `env.` or vault reference resolves.
 
 Point a key on the `openai` provider at it:
 

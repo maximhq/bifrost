@@ -977,8 +977,8 @@ def test_oauth_key_config_contract_matches_server_validation():
         ("assertion_lifetime_seconds 0 means the default", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}, True),
         ("a negative assertion lifetime", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}, False),
         ("an assertion lifetime above an hour", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 3601}, False),
-        # Validate also requires the file's directory in BIFROST_SUBJECT_TOKEN_DIRS, process env no
-        # schema can express; "valid" assumes the operator listed it.
+        # Validate also requires the file's directory in BIFROST_SUBJECT_TOKEN_DIRS and token_url in
+        # BIFROST_TOKEN_EXCHANGE_URLS, process env no schema can express; "valid" assumes both are listed.
         ("token_exchange with a subject token file", {"grant_type": "token_exchange", "token_url": token_url, "subject_token_file": "/var/run/secrets/openai/token", "request_encoding": "json"}, True),
         ("token_exchange without a subject token file", {"grant_type": "token_exchange", "token_url": token_url}, False),
         ("token_exchange with a relative subject token file", {"grant_type": "token_exchange", "token_url": token_url, "subject_token_file": "t"}, False),

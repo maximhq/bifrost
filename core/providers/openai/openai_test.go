@@ -177,6 +177,7 @@ func TestOAuthKeyConfigTokenExchangeMintsBearer(t *testing.T) {
 
 	tokenDir := t.TempDir()
 	t.Setenv(schemas.SubjectTokenDirsEnv, tokenDir)
+	t.Setenv(schemas.TokenExchangeURLsEnv, srv.URL+"/oauth/token")
 	tokenFile := filepath.Join(tokenDir, "token")
 	if err := os.WriteFile(tokenFile, []byte("k8s-projected-jwt\n"), 0o600); err != nil {
 		t.Fatal(err)

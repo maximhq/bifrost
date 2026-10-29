@@ -293,7 +293,7 @@ OAuthKeyConfig:
       description: client_credentials (RFC 6749 §4.4), jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key) or token_exchange (RFC 8693, Bifrost exchanges the subject token read from subject_token_file, e.g. for workload identity federation)
     token_url:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
-      description: Token endpoint, absolute https URL (plain http is accepted for loopback hosts only). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params
+      description: Token endpoint, absolute https URL (plain http is accepted for loopback hosts only). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params. For token_exchange it must also be listed in the BIFROST_TOKEN_EXCHANGE_URLS environment variable
     client_id:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: client_credentials client ID (redacted in responses)

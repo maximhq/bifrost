@@ -7565,7 +7565,7 @@
             "token_url": {
               "type": "string",
               "minLength": 1,
-              "description": "Token endpoint, absolute https URL (plain http is accepted for loopback hosts only; can use env. prefix). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params."
+              "description": "Token endpoint, absolute https URL (plain http is accepted for loopback hosts only; can use env. prefix). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params. For token_exchange it must also be listed in the BIFROST_TOKEN_EXCHANGE_URLS environment variable."
             },
             "client_id": {
               "type": "string",

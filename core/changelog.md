@@ -11,7 +11,7 @@
   </Warning>
 - feat: native decisions on vLLM, SGLang, Databricks System One and Azure gpt-6-luna; OpenAI decisions accept conversation items, JSON parts and prompt caching
 - feat: per-provider passthrough route allowlist, reachable for custom providers through x-model-provider
-- feat: oauth_key_config token_exchange grant (RFC 8693) for workload identity federation: the subject token is read from subject_token_file on every exchange, and request_encoding json covers OpenAI's token endpoint. The file must be inside a directory listed in BIFROST_SUBJECT_TOKEN_DIRS
+- feat: oauth_key_config token_exchange grant (RFC 8693) for workload identity federation: the subject token is read from subject_token_file on every exchange, and request_encoding json covers OpenAI's token endpoint. The file must be inside a directory listed in BIFROST_SUBJECT_TOKEN_DIRS and token_url must be listed in BIFROST_TOKEN_EXCHANGE_URLS
 - feat: Vertex aliases route to custom OpenAI-format Vertex endpoints through vertex_endpoint
 - feat: Gemini 4 receives a thinking budget as thinkingLevel (up to 1024 low, up to 8192 medium, higher high)
 - feat: Gemini long-decode continuation tokens are passed through

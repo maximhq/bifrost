@@ -1160,6 +1160,29 @@ const OAuthTokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
 // environment, so whoever can edit keys through the management API cannot widen it.
 const SubjectTokenDirsEnv = "BIFROST_SUBJECT_TOKEN_DIRS"
 
+// TokenExchangeURLsEnv lists (comma-separated) where a token_exchange key may send its subject token.
+const TokenExchangeURLsEnv = "BIFROST_TOKEN_EXCHANGE_URLS"
+
+// TokenExchangeURLAllowed returns an error unless tokenURL exactly matches an entry in
+// TokenExchangeURLsEnv. Validate runs on the request path, so the list is not allocated.
+func TokenExchangeURLAllowed(tokenURL string) error {
+	tokenURL = strings.TrimSpace(tokenURL)
+	found := false
+	for u := range strings.SplitSeq(os.Getenv(TokenExchangeURLsEnv), ",") {
+		if u = strings.TrimSpace(u); u == "" {
+			continue
+		}
+		found = true
+		if u == tokenURL {
+			return nil
+		}
+	}
+	if !found {
+		return fmt.Errorf("oauth_key_config.token_url for the token_exchange grant requires the %s environment variable to list it", TokenExchangeURLsEnv)
+	}
+	return fmt.Errorf("oauth_key_config.token_url must be listed in %s for the token_exchange grant", TokenExchangeURLsEnv)
+}
+
 // SubjectTokenDir returns the directory listed in SubjectTokenDirsEnv that contains path,
 // compared after cleaning so ".." cannot climb out.
 func SubjectTokenDir(path string) (string, error) {
@@ -1333,6 +1356,12 @@ func (c *OAuthKeyConfig) Validate() error {
 		}
 		if _, err := SubjectTokenDir(strings.TrimSpace(c.SubjectTokenFile)); err != nil {
 			return err
+		}
+		// A reference resolves elsewhere; the minter checks the resolved URL on every exchange.
+		if !c.TokenURL.IsFromSecret() {
+			if err := TokenExchangeURLAllowed(c.TokenURL.GetValue()); err != nil {
+				return err
+			}
 		}
 		switch c.RequestEncoding {
 		case "", OAuthRequestEncodingForm, OAuthRequestEncodingJSON:

@@ -53,6 +53,7 @@ func newExchangeServer(t *testing.T) *exchangeServer {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(es.Close)
+	t.Setenv(schemas.TokenExchangeURLsEnv, es.URL)
 	return es
 }
 
@@ -260,6 +261,25 @@ func TestTokenExchangeMinter(t *testing.T) {
 		require.NotNil(t, bErr)
 		assert.Contains(t, bErr.Error.Message, "requires the "+schemas.SubjectTokenDirsEnv)
 	})
+
+	for _, tc := range []struct{ name, urls, want string }{
+		{"a token URL not in the URL allowlist is refused", "https://auth.openai.com/oauth/token", "must be listed in "},
+		{"no allowed token URLs means the exchange is refused", "", "requires the "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			es := newExchangeServer(t)
+			file := filepath.Join(tokenDir(t), "token")
+			writeSubjectToken(t, file, "subject-jwt")
+			t.Setenv(schemas.TokenExchangeURLsEnv, tc.urls)
+			mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file}, authClient(t))
+
+			_, bErr := mint(context.Background(), nil)
+			require.NotNil(t, bErr)
+			assert.Contains(t, bErr.Error.Message, tc.want+schemas.TokenExchangeURLsEnv)
+			hits, _, _ := es.snapshot()
+			assert.Zero(t, hits)
+		})
+	}
 
 	t.Run("a form-encoded echo of the subject token is scrubbed too", func(t *testing.T) {
 		es := newExchangeServer(t)

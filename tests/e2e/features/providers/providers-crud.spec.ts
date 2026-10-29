@@ -13,6 +13,7 @@ const createdProviders: string[] = [];
 /** The shape of a stored key as GET /api/providers/{provider}/keys returns it (secrets masked). */
 type SavedOAuthKey = {
   name: string;
+  weight?: number;
   value?: { value?: string };
   oauth_key_config?: {
     grant_type: string;
@@ -28,6 +29,9 @@ type SavedOAuthKey = {
     signing_algorithm?: string;
     auth_style?: string;
     assertion_lifetime_seconds?: number;
+    subject_token_file?: string;
+    request_encoding?: string;
+    extra_params?: Record<string, string>;
   } | null;
 };
 
@@ -722,6 +726,62 @@ test.describe("Providers", () => {
       // The PEM is a credential: it comes back masked and never in the clear.
       expect(saved?.oauth_key_config?.private_key?.value ?? "").not.toContain("BEGIN PRIVATE KEY");
       expect(JSON.stringify(saved)).not.toContain("MIGHAgEAMBMGByqGSM49AgEG");
+    });
+
+    test("should keep a token_exchange key's grant and fields when it is edited in the dashboard", async ({
+      providersPage,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-oauth-wif-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: "https://api.openai.com/v1",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+      // The form has no token_exchange inputs; run-e2e.mjs allowlists this path and URL.
+      const keyName = `oauth-wif-key-${Date.now()}`;
+      const created = await request.post(`/api/providers/${encodeURIComponent(providerData.name)}/keys`, {
+        data: {
+          name: keyName,
+          models: ["*"],
+          weight: 1,
+          oauth_key_config: {
+            grant_type: "token_exchange",
+            token_url: { value: "https://auth.openai.com/oauth/token" },
+            subject_token_file: "/var/run/secrets/openai/token",
+            request_encoding: "json",
+            extra_params: { identity_provider_id: "idp_e2e", service_account_id: "sa_e2e" },
+          },
+        },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+
+      await providersPage.goto();
+      await providersPage.selectProvider(providerData.name);
+      await providersPage.openKeyEditor(keyName);
+      await expect(providersPage.page.getByTestId("apikey-openai-oauth-tab")).toHaveAttribute("data-state", "active");
+      const grant = providersPage.page.getByTestId("key-select-oauth-grant-type");
+      await expect(grant).toContainText("Token exchange");
+      await expect(grant).toBeDisabled();
+
+      // An unrelated edit must save the token_exchange block back unchanged.
+      const weight = providersPage.page.getByLabel("Weight");
+      await weight.clear();
+      await weight.fill("0.5");
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+
+      const saved = await fetchOAuthKey(request, providerData.name, keyName);
+      expect(saved?.oauth_key_config?.grant_type).toBe("token_exchange");
+      expect(saved?.oauth_key_config?.subject_token_file).toBe("/var/run/secrets/openai/token");
+      expect(saved?.oauth_key_config?.request_encoding).toBe("json");
+      // Values come back masked; both entries must still be there.
+      expect(Object.keys(saved?.oauth_key_config?.extra_params ?? {}).sort()).toEqual(["identity_provider_id", "service_account_id"]);
+      expect(saved?.weight).toBe(0.5);
     });
 
     test("should edit an OAuth key without disturbing its masked credentials", async ({
