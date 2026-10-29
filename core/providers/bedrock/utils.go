@@ -1958,12 +1958,10 @@ func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.Ca
 	return cc
 }
 
-// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
-// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+// withoutTopLevelCacheControl returns a copy of extraParams minus "cache_control". The map belongs
+// to the Bifrost request, which retries and fallbacks reuse, and conversion deletes keys from the
+// copy (e.g. requestMetadata), so the original is never written.
 func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
-	if _, ok := extraParams["cache_control"]; !ok {
-		return extraParams
-	}
 	out := maps.Clone(extraParams)
 	delete(out, "cache_control")
 	return out
