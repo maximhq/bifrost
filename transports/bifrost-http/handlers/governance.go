@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -367,14 +368,21 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	}, nil
 }
 
-// errVirtualKeyBudgetRemoved refuses the singular budget field a virtual key no longer takes. The
-// decoder ignores unknown fields, so without this check the request returned 200 with no budget saved.
-var errVirtualKeyBudgetRemoved = errors.New("the 'budget' field is no longer supported on virtual keys; use 'budgets' (an array)")
+// errBudgetRemoved refuses the singular budget field that virtual keys, their provider configs and
+// teams no longer take. The decoder ignores unknown fields, so without this check the request returned
+// 200 with no budget saved.
+var errBudgetRemoved = errors.New("the 'budget' field is no longer supported; use 'budgets' (an array)")
 
-// virtualKeyBudgetFieldSent reports whether a request named the removed budget field. An explicit
-// null names nothing, like omitting the field.
-func virtualKeyBudgetFieldSent(raw json.RawMessage) bool {
-	return len(raw) > 0 && string(raw) != "null"
+// removedBudgetField records whether a request named the removed budget field. encoding/json calls
+// UnmarshalJSON once per occurrence of a key, so a later duplicate cannot undo an earlier one. An
+// explicit null names nothing, like omitting the field.
+type removedBudgetField struct{ sent bool }
+
+func (f *removedBudgetField) UnmarshalJSON(b []byte) error {
+	if !bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
+		f.sent = true
+	}
+	return nil
 }
 
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
@@ -386,6 +394,7 @@ type CreateVirtualKeyRequest struct {
 		Weight            *float64                `json:"weight,omitempty"`
 		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
 		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		Budget            removedBudgetField      `json:"budget"`                       // Removed: only read to refuse it, see errBudgetRemoved
 		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
 		ModelBudgets      []vkModelBudgetRequest  `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider
@@ -400,7 +409,7 @@ type CreateVirtualKeyRequest struct {
 	// BusinessUnitID is the third owner a key can have. Business units are an enterprise table this
 	// handler does not model, so the id is stored as given; whoever owns business units validates it.
 	BusinessUnitID    *string                 `json:"business_unit_id,omitempty"`
-	Budget            json.RawMessage         `json:"budget,omitempty"`  // Removed: only read to refuse it, see errVirtualKeyBudgetRemoved
+	Budget            removedBudgetField      `json:"budget"`            // Removed: only read to refuse it, see errBudgetRemoved
 	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive          *bool                   `json:"is_active,omitempty"`
@@ -453,6 +462,7 @@ type UpdateVirtualKeyRequest struct {
 		Weight            *float64                     `json:"weight,omitempty"`
 		AllowedModels     schemas.WhiteList            `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
 		BlacklistedModels schemas.BlackList            `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		Budget            removedBudgetField           `json:"budget"`                       // Removed: only read to refuse it, see errBudgetRemoved
 		Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`         // Provider-level rate limit
 		ModelBudgets      []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
@@ -466,7 +476,7 @@ type UpdateVirtualKeyRequest struct {
 	TeamID            schemas.OptionalJSON[string] `json:"team_id,omitempty"`
 	CustomerID        schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
 	BusinessUnitID    schemas.OptionalJSON[string] `json:"business_unit_id,omitempty"`
-	Budget            json.RawMessage              `json:"budget,omitempty"`  // Removed: only read to refuse it, see errVirtualKeyBudgetRemoved
+	Budget            removedBudgetField           `json:"budget"`            // Removed: only read to refuse it, see errBudgetRemoved
 	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
 	IsActive          *bool                        `json:"is_active,omitempty"`
@@ -1752,6 +1762,7 @@ func collectProviderConfigDeleteIDs(
 type CreateTeamRequest struct {
 	Name            string                  `json:"name" validate:"required"`
 	CustomerID      *string                 `json:"customer_id,omitempty"`      // Team can belong to a customer
+	Budget          removedBudgetField      `json:"budget"`                     // Removed: only read to refuse it, see errBudgetRemoved
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
@@ -1761,6 +1772,7 @@ type CreateTeamRequest struct {
 type UpdateTeamRequest struct {
 	Name            *string                 `json:"name,omitempty"`
 	CustomerID      *string                 `json:"customer_id,omitempty"`
+	Budget          removedBudgetField      `json:"budget"`            // Removed: only read to refuse it, see errBudgetRemoved
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all team budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"` // Team-wide setting; nil means "leave unchanged"
@@ -2175,9 +2187,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	if virtualKeyBudgetFieldSent(req.Budget) {
-		SendError(ctx, 400, errVirtualKeyBudgetRemoved.Error())
+	if req.Budget.sent {
+		SendError(ctx, 400, errBudgetRemoved.Error())
 		return
+	}
+	for i := range req.ProviderConfigs {
+		if req.ProviderConfigs[i].Budget.sent {
+			SendError(ctx, 400, errBudgetRemoved.Error())
+			return
+		}
 	}
 	// Validate required fields
 	if req.Name == "" {
@@ -2627,9 +2645,15 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
-	if virtualKeyBudgetFieldSent(req.Budget) {
-		SendError(ctx, 400, errVirtualKeyBudgetRemoved.Error())
+	if req.Budget.sent {
+		SendError(ctx, 400, errBudgetRemoved.Error())
 		return
+	}
+	for i := range req.ProviderConfigs {
+		if req.ProviderConfigs[i].Budget.sent {
+			SendError(ctx, 400, errBudgetRemoved.Error())
+			return
+		}
 	}
 	// A key belongs to at most one of a team, a customer or a business unit. Checked before anything
 	// is read or written; applyVirtualKeyOwnershipUpdate enforces the same rule where it applies it.
@@ -3392,6 +3416,10 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if req.Budget.sent {
+		SendError(ctx, 400, errBudgetRemoved.Error())
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Team name is required")
@@ -3525,6 +3553,10 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	var req UpdateTeamRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if req.Budget.sent {
+		SendError(ctx, 400, errBudgetRemoved.Error())
 		return
 	}
 	// The operator's explicit "reset usage" choice. Carried into budget

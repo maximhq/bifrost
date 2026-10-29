@@ -772,6 +772,93 @@ func TestVirtualKeyRefusesRemovedSingularBudget(t *testing.T) {
 	assert.Contains(t, string(read.Response.Body()), `"max_limit":5`, "a refused update must leave the budget as it was")
 }
 
+// TestRemovedSingularBudgetRefusedOnEveryRequestShape pins that the removed "budget" is refused wherever a
+// request struct would otherwise drop it: a duplicate key whose last value is null, provider_configs entries
+// on VK create and update, and team create and update (#5673).
+func TestRemovedSingularBudgetRefusedOnEveryRequestShape(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	createVK := newTestRequestCtx(`{"name":"vk-seed"}`)
+	handler.createVirtualKey(createVK)
+	require.Equal(t, fasthttp.StatusOK, createVK.Response.StatusCode(), "resp=%s", createVK.Response.Body())
+	var seeded struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createVK.Response.Body(), &seeded))
+
+	budget := `{"max_limit":1,"reset_duration":"1M"}`
+	cases := []struct {
+		name string
+		body string
+		run  func(body string) *fasthttp.RequestCtx
+	}{
+		{"vk create duplicate key, last null", `{"name":"vk-dup","budget":` + budget + `,"budget":null}`, func(b string) *fasthttp.RequestCtx {
+			c := newTestRequestCtx(b)
+			handler.createVirtualKey(c)
+			return c
+		}},
+		{"vk update duplicate key, last null", `{"budget":` + budget + `,"budget":null}`, func(b string) *fasthttp.RequestCtx {
+			c := newTestRequestCtx(b)
+			c.SetUserValue("vk_id", seeded.VirtualKey.ID)
+			handler.updateVirtualKey(c)
+			return c
+		}},
+		{"vk create provider_configs budget", `{"name":"vk-pc","provider_configs":[{"provider":"openai","budget":` + budget + `}]}`, func(b string) *fasthttp.RequestCtx {
+			c := newTestRequestCtx(b)
+			handler.createVirtualKey(c)
+			return c
+		}},
+		{"vk update provider_configs budget", `{"provider_configs":[{"provider":"openai","budget":` + budget + `}]}`, func(b string) *fasthttp.RequestCtx {
+			c := newTestRequestCtx(b)
+			c.SetUserValue("vk_id", seeded.VirtualKey.ID)
+			handler.updateVirtualKey(c)
+			return c
+		}},
+		{"team create budget", `{"name":"team-singular","budget":` + budget + `}`, func(b string) *fasthttp.RequestCtx {
+			c := newTestRequestCtx(b)
+			handler.createTeam(c)
+			return c
+		}},
+		{"team update budget", `{"budget":` + budget + `}`, func(b string) *fasthttp.RequestCtx {
+			c := newTestRequestCtx(b)
+			c.SetUserValue("team_id", "team-1")
+			handler.updateTeam(c)
+			return c
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := tc.run(tc.body)
+			assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "resp=%s", ctx.Response.Body())
+			assert.Contains(t, string(ctx.Response.Body()), "budgets", "the error must point at the replacement")
+		})
+	}
+}
+
+// TestRemovedBudgetFieldDecode pins that only a non-null value counts as naming the removed field, and
+// that a later duplicate cannot undo an earlier one.
+func TestRemovedBudgetFieldDecode(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{}`:                          false,
+		`{"budget":null}`:             false,
+		`{"budget": null }`:           false,
+		`{"budget":{"max_limit":1}}`:  true,
+		`{"budget":0}`:                true,
+		`{"budget":{},"budget":null}`: true,
+		`{"budget":null,"budget":{}}`: true,
+	} {
+		var req struct {
+			Budget removedBudgetField `json:"budget"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &req), body)
+		assert.Equal(t, want, req.Budget.sent, body)
+	}
+}
+
 func TestApplyVirtualKeyOwnershipUpdatePreservesOmittedAssociation(t *testing.T) {
 	teamID := "team-1"
 	customerID := "customer-1"

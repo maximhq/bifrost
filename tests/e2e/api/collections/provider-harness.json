@@ -298538,6 +298538,129 @@
           }
         },
         {
+          "name": "[EXPECT-400] openai virtual key create: the removed singular budget inside provider_configs is refused - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A build that still drops the field answers 200 and creates the object; keep its id so a cleanup case deletes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  var created = pm.response.json();",
+                  "  if (created && created.virtual_key.id) { pm.collectionVariables.set('vkLegacyBudgetPcStrayId', created.virtual_key.id); }",
+                  "}",
+                  "pm.test('vk-legacy-budget: virtual key create: the removed singular budget inside provider_configs is refused is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error does not point at budgets: ' + pm.response.text()).to.contain('budgets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-legacy-budget-pc-{{$guid}}\",\"provider_configs\":[{\"provider\":\"openai\",\"budget\":{\"max_limit\":0.0005,\"reset_duration\":\"1M\"}}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai virtual key create: a duplicate budget key whose last value is null is still refused - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A build that still drops the field answers 200 and creates the object; keep its id so a cleanup case deletes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  var created = pm.response.json();",
+                  "  if (created && created.virtual_key.id) { pm.collectionVariables.set('vkLegacyBudgetDupStrayId', created.virtual_key.id); }",
+                  "}",
+                  "pm.test('vk-legacy-budget: virtual key create: a duplicate budget key whose last value is null is still refused is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error does not point at budgets: ' + pm.response.text()).to.contain('budgets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-legacy-budget-dup-{{$guid}}\",\"budget\":{\"max_limit\":0.0005,\"reset_duration\":\"1M\"},\"budget\":null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai team create: the removed singular budget is refused - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A build that still drops the field answers 200 and creates the object; keep its id so a cleanup case deletes it.",
+                  "if (pm.response.code >= 200 && pm.response.code < 300) {",
+                  "  var created = pm.response.json();",
+                  "  if (created && created.team.id) { pm.collectionVariables.set('teamLegacyBudgetStrayId', created.team.id); }",
+                  "}",
+                  "pm.test('vk-legacy-budget: team create: the removed singular budget is refused is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error does not point at budgets: ' + pm.response.text()).to.contain('budgets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-team-legacy-budget-{{$guid}}\",\"budget\":{\"max_limit\":0.0005,\"reset_duration\":\"1M\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/teams"
+          }
+        },
+        {
           "name": "openai virtual key create: budgets, the array, is still saved - vk-legacy-budget - #5673",
           "event": [
             {
@@ -298728,6 +298851,102 @@
             "method": "DELETE",
             "header": [],
             "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkLegacyBudgetId}}"
+          }
+        },
+        {
+          "name": "openai cleanup: delete a provider-config key the refused create left behind - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The create was refused, so there is normally nothing to delete.",
+                  "if (!pm.collectionVariables.get('vkLegacyBudgetPcStrayId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: the stray provider-config key is deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('vkLegacyBudgetPcStrayId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkLegacyBudgetPcStrayId}}"
+          }
+        },
+        {
+          "name": "openai cleanup: delete a duplicate-key key the refused create left behind - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The create was refused, so there is normally nothing to delete.",
+                  "if (!pm.collectionVariables.get('vkLegacyBudgetDupStrayId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: the stray duplicate-key key is deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('vkLegacyBudgetDupStrayId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkLegacyBudgetDupStrayId}}"
+          }
+        },
+        {
+          "name": "openai cleanup: delete a team the refused create left behind - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The create was refused, so there is normally nothing to delete.",
+                  "if (!pm.collectionVariables.get('teamLegacyBudgetStrayId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: the stray team is deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('teamLegacyBudgetStrayId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/teams/{{teamLegacyBudgetStrayId}}"
           }
         }
       ]
