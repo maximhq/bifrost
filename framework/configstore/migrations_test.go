@@ -2400,8 +2400,9 @@ func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
 
 // TestMigrationAddMCPPerUserDiscoveries pins the upgrade path: the per_user_discovery flag column,
 // the mcp_per_user_discoveries table with its instructions column (a discovery carries the
-// server's instructions alongside its tools), and the per-mode partial unique indexes that keep
-// one row per (identity, client) binding.
+// server's instructions alongside its tools), the per-mode partial unique indexes that keep
+// one row per (identity, client) binding, and the (client, hash) index callers holding the same
+// discovery are grouped by.
 func TestMigrationAddMCPPerUserDiscoveries(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -2429,6 +2430,7 @@ func TestMigrationAddMCPPerUserDiscoveries(t *testing.T) {
 		"idx_mcp_per_user_discoveries_user_mcp",
 		"idx_mcp_per_user_discoveries_vk_mcp",
 		"idx_mcp_per_user_discoveries_session_mcp",
+		"idx_mcp_per_user_discoveries_client_hash",
 	} {
 		assert.True(t, mg.HasIndex(&tables.TableMCPPerUserDiscovery{}, index), "%s should exist after migration", index)
 	}
