@@ -297854,6 +297854,238 @@
           }
         }
       ]
+    },
+    {
+      "name": "296. Vertex Gemini streams tool-call arguments (vertex stream function call arguments)",
+      "description": "Gemini 3+ on Vertex streams a function call's arguments only when the request sets toolConfig.functionCallingConfig.streamFunctionCallArguments on streamGenerateContent; the chunks then carry functionCall.partialArgs (one JSON leaf per entry, addressed by JSONPath) and an empty functionCall ends the call. Without the flag the whole call arrives in one part after the model finished, so a long argument reaches the client as one burst. Bifrost now sets the flag on Vertex Gemini 3+ streams that declare functions (not Gemini 3.1 Flash-Lite, never on generateContent, an explicit caller value wins) and turns the leaves into OpenAI argument deltas. These cases pin: the flag on the wire for chat and Responses streams, several argument deltas that join into one valid JSON object, done/output_item.done equal to the joined deltas, and no flag on a unary call (Vertex answers 400 there).",
+      "item": [
+        {
+          "name": "vertex/gemini-3.7-flash /v1/chat/completions stream: tool arguments arrive as many deltas that join into one JSON object",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) { }",
+                  "});",
+                  "function rawRequestOf(list) {",
+                  "  for (var i = list.length - 1; i >= 0; i--) {",
+                  "    var ef = list[i].extra_fields || (list[i].response || {}).extra_fields || {};",
+                  "    var rr = ef.raw_request;",
+                  "    if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    if (rr) { return rr; }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function flagOf(rr) { return (((rr || {}).toolConfig || {}).functionCallingConfig || {}).streamFunctionCallArguments; }",
+                  "pm.test('vertex chat stream: 200', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+                  "var calls = {}; var finish = null; var nameless = 0;",
+                  "events.forEach(function (ev) {",
+                  "  var ch = (ev.choices || [])[0] || {};",
+                  "  if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "  ((ch.delta || {}).tool_calls || []).forEach(function (tc) {",
+                  "    var c = calls[tc.index] || (calls[tc.index] = { name: null, args: '', deltas: 0 });",
+                  "    var fn = tc.function || {};",
+                  "    if (fn.name !== undefined && fn.name !== null) { if (!fn.name) { nameless++; } c.name = c.name || fn.name; }",
+                  "    if (fn.arguments) { c.args += fn.arguments; c.deltas++; }",
+                  "  });",
+                  "});",
+                  "var first = calls[0] || {};",
+                  "pm.test('vertex chat stream: the request asked Vertex to stream arguments', function () {",
+                  "  pm.expect(flagOf(rawRequestOf(events)), 'toolConfig.functionCallingConfig.streamFunctionCallArguments missing from raw_request: ' + JSON.stringify(rawRequestOf(events)).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "pm.test('vertex chat stream: one write_note call, no nameless tool call', function () {",
+                  "  pm.expect(first.name, txt.slice(0, 600)).to.eql('write_note');",
+                  "  pm.expect(nameless, 'a tool call delta named \"\" was emitted (empty functionCall end marker leaked)').to.eql(0);",
+                  "  pm.expect(finish).to.eql('tool_calls');",
+                  "});",
+                  "pm.test('vertex chat stream: arguments streamed in several deltas', function () {",
+                  "  pm.expect(first.deltas, 'argument deltas for call 0 (1 means the call arrived as one burst): ' + first.args.slice(0, 300)).to.be.above(3);",
+                  "});",
+                  "pm.test('vertex chat stream: concatenated arguments are the complete JSON object', function () {",
+                  "  var parsed = null; try { parsed = JSON.parse(first.args); } catch (e) { }",
+                  "  pm.expect(parsed, 'concatenated arguments are not valid JSON: ' + first.args.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(parsed.title, first.args.slice(0, 300)).to.be.a('string');",
+                  "  pm.expect((parsed.content || '').split(/\\s+/).length, first.args.slice(0, 300)).to.be.above(40);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call write_note once. title: \\\"Lighthouses\\\". content: a 120-word paragraph about lighthouses.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_note\",\n        \"description\": \"Save a note\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"title\": {\n              \"type\": \"string\"\n            },\n            \"content\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"title\",\n            \"content\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash /v1/responses stream: function_call_arguments.delta events join into the done arguments",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var events = [];",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(data)); } catch (e) { }",
+                  "});",
+                  "function rawRequestOf(list) {",
+                  "  for (var i = list.length - 1; i >= 0; i--) {",
+                  "    var ef = list[i].extra_fields || (list[i].response || {}).extra_fields || {};",
+                  "    var rr = ef.raw_request;",
+                  "    if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    if (rr) { return rr; }",
+                  "  }",
+                  "  return null;",
+                  "}",
+                  "function flagOf(rr) { return (((rr || {}).toolConfig || {}).functionCallingConfig || {}).streamFunctionCallArguments; }",
+                  "pm.test('vertex responses stream: 200', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+                  "var deltas = ''; var deltaCount = 0; var maxDelta = 0; var done = null; var itemDone = null; var completed = null;",
+                  "events.forEach(function (ev) {",
+                  "  if (ev.type === 'response.function_call_arguments.delta') { deltas += ev.delta || ''; deltaCount++; maxDelta = Math.max(maxDelta, (ev.delta || '').length); }",
+                  "  if (ev.type === 'response.function_call_arguments.done' && done === null) { done = ev.arguments; }",
+                  "  if (ev.type === 'response.output_item.done' && ev.item && ev.item.type === 'function_call' && itemDone === null) { itemDone = ev.item.arguments; }",
+                  "  if (ev.type === 'response.completed') { completed = ev.response; }",
+                  "});",
+                  "pm.test('vertex responses stream: the request asked Vertex to stream arguments', function () {",
+                  "  pm.expect(flagOf(rawRequestOf(events)), 'streamFunctionCallArguments missing from raw_request: ' + JSON.stringify(rawRequestOf(events)).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "pm.test('vertex responses stream: arguments streamed in several deltas', function () {",
+                  "  pm.expect(deltaCount, 'function_call_arguments.delta count: ' + txt.slice(0, 400)).to.be.above(3);",
+                  "  // Complete calls are cut into synthetic 8-character deltas; a real streamed leaf is longer.",
+                  "  pm.expect(maxDelta, 'every delta is 8 characters or fewer: the call arrived complete and was sliced synthetically').to.be.above(8);",
+                  "});",
+                  "pm.test('vertex responses stream: done, output_item.done and the deltas agree', function () {",
+                  "  pm.expect(done, 'no function_call_arguments.done').to.be.a('string');",
+                  "  pm.expect(done).to.eql(deltas);",
+                  "  pm.expect(itemDone).to.eql(done);",
+                  "  var parsed = null; try { parsed = JSON.parse(done); } catch (e) { }",
+                  "  pm.expect(parsed, 'done arguments are not valid JSON: ' + String(done).slice(0, 400)).to.be.an('object');",
+                  "  pm.expect((parsed.content || '').split(/\\s+/).length).to.be.above(40);",
+                  "  pm.expect(completed, 'no response.completed').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"stream\": true,\n  \"input\": \"Call write_note once. title: \\\"Lighthouses\\\". content: a 120-word paragraph about lighthouses.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"write_note\",\n      \"description\": \"Save a note\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"title\": {\n            \"type\": \"string\"\n          },\n          \"content\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"title\",\n          \"content\"\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash /v1/chat/completions non-stream: the flag is not sent (Vertex rejects it on generateContent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('vertex chat unary: 200 (a 400 \"streaming function call is not supported in unary API\" means the flag leaked)', function () { pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex chat unary: raw_request has no streamFunctionCallArguments', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(JSON.stringify(rr)).to.not.include('streamFunctionCallArguments');",
+                  "});",
+                  "pm.test('vertex chat unary: tool call arguments parse', function () {",
+                  "  var tc = ((((body.choices || [])[0] || {}).message || {}).tool_calls || [])[0] || {};",
+                  "  pm.expect(JSON.parse((tc.function || {}).arguments || 'null'), txt.slice(0, 400)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call write_note once with title \\\"x\\\" and content \\\"short\\\".\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"write_note\",\n        \"description\": \"Save a note\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"title\": {\n              \"type\": \"string\"\n            },\n            \"content\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"title\",\n            \"content\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
