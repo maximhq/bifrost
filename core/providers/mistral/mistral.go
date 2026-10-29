@@ -291,6 +291,8 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	)
 }
 
+// mistralChatResponseHandler normalizes unary thinking chunks while retaining metadata
+// collected before decoding, including the provider's response headers.
 func mistralChatResponseHandler(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
@@ -308,7 +310,7 @@ func mistralChatResponseHandler(responseBody []byte, response *schemas.BifrostCh
 			if err != nil {
 				return rawRequest, rawResponse, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
-			*response = schemas.BifrostChatResponse{}
+			*response = schemas.BifrostChatResponse{ExtraFields: response.ExtraFields}
 			_, _, bifrostErr = providerUtils.HandleProviderResponse(normalized, response, nil, false, false)
 			return rawRequest, rawResponse, bifrostErr
 		}
@@ -336,6 +338,8 @@ func mistralChatStreamResponseHandler(responseBody []byte, response *schemas.Bif
 	return rawRequest, rawResponse, bifrostErr
 }
 
+// normalizeMistralContent joins text and thinking chunks into canonical fields
+// at the supplied message or delta paths, rejecting unsupported chunk shapes.
 func normalizeMistralContent(body []byte, contentPath, reasoningPath string) ([]byte, error) {
 	if !sonic.Valid(body) {
 		return nil, errors.New("invalid mistral response JSON")

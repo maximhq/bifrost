@@ -444,6 +444,7 @@ func TestMistralContentArray(t *testing.T) {
 	}
 }
 
+// TestMistralNonStreamingContentArray verifies reasoning, metadata, and raw bodies across unary APIs.
 func TestMistralNonStreamingContentArray(t *testing.T) {
 	cases := []struct {
 		name, message, text, reasoning string
@@ -510,6 +511,7 @@ func TestMistralNonStreamingContentArray(t *testing.T) {
 						result, err := provider.Responses(ctx, key, native.ToBifrostResponsesRequest(ctx))
 						bifrostErr = err
 						if err == nil {
+							require.Equal(t, "mistral-fixture-request", result.ExtraFields.ProviderResponseHeaders["X-Request-Id"])
 							response = anthropic.ToAnthropicResponsesResponse(ctx, result)
 						}
 					}
@@ -526,6 +528,9 @@ func TestMistralNonStreamingContentArray(t *testing.T) {
 					require.NoError(t, err)
 					wire := gjson.ParseBytes(encoded)
 					require.Equal(t, "mistral-unary", wire.Get("id").String())
+					if api != "Anthropic" || mode.raw {
+						require.Equal(t, "mistral-fixture-request", wire.Get("extra_fields.provider_response_headers.X-Request-Id").String())
+					}
 					if mode.raw {
 						require.JSONEq(t, body, wire.Get("extra_fields.raw_response").Raw)
 					} else {
@@ -589,14 +594,17 @@ func TestMistralNonStreamingContentArray(t *testing.T) {
 	}
 }
 
+// mistralUnaryResponse wraps an assistant message in a deterministic Mistral response.
 func mistralUnaryResponse(message string) string {
 	return `{"id":"mistral-unary","object":"chat.completion","created":1,"model":"mistral-small-latest","choices":[{"index":0,"message":` + message + `,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`
 }
 
+// mistralUnaryProvider serves an offline response with request-ID metadata and optional aliasing.
 func mistralUnaryProvider(t testing.TB, body string, raw, alias bool) (*mistral.MistralProvider, schemas.ModelProvider) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-Id", "mistral-fixture-request")
 		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(server.Close)
@@ -612,6 +620,7 @@ func mistralUnaryProvider(t testing.TB, body string, raw, alias bool) (*mistral.
 	return mistral.NewMistralProvider(config, mistralContentArrayLogger{t}), name
 }
 
+// BenchmarkMistralNonStreamingContent measures string and thinking replies over local HTTP.
 func BenchmarkMistralNonStreamingContent(b *testing.B) {
 	for _, tc := range []struct{ name, message string }{
 		{"String", `{"role":"assistant","content":"391"}`},
