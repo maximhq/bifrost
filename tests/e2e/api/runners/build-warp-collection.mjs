@@ -36,7 +36,7 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { url, events, request, item, resolveOutPath, writeCollection } from "./lib/collection-builder.mjs";
+import { url, events, request, item, resolveOutPath, writeCollection, setupTokenPrerequest } from "./lib/collection-builder.mjs";
 import { createWarpLib } from "./lib/warp-case.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -688,8 +688,9 @@ const collection = {
     { key: "warp_lib", value: createWarpLib.toString(), type: "string" },
     { key: "backfill_id", value: "", type: "string" },
     { key: "topics_id", value: "", type: "string" },
+    { key: "setup_token", value: "bifrost-e2e-setup-token", type: "string" },
   ],
-  event: events(COLLECTION_PREREQUEST, null),
+  event: events([...COLLECTION_PREREQUEST, ...setupTokenPrerequest()], null),
   item: [
     setupFolder(),
     validationFolder(),
