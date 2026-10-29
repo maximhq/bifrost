@@ -5,8 +5,27 @@ import (
 	"encoding/json"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// BedrockInvokeChatRequest reuses the OpenAI chat body for Mistral's native
+// Invoke API. The URL and operation carry model/stream, not the JSON body.
+type BedrockInvokeChatRequest struct {
+	*openai.OpenAIChatRequest
+}
+
+func (r *BedrockInvokeChatRequest) MarshalJSON() ([]byte, error) {
+	if r == nil || r.OpenAIChatRequest == nil {
+		return []byte("null"), nil
+	}
+	body, err := providerUtils.MarshalProviderRequest(r.OpenAIChatRequest)
+	if err != nil {
+		return nil, err
+	}
+	return providerUtils.DeleteJSONField(body, "model")
+}
 
 // DefaultBedrockRegion is the default region for Bedrock
 const DefaultBedrockRegion = "us-east-1"
@@ -1531,7 +1550,8 @@ type BedrockFileContentResponse struct {
 
 // ==================== INVOKE REQUEST TYPES ====================
 
-// BedrockInvokeRequest is a union struct covering ALL model families' InvokeModel request formats.
+// BedrockInvokeRequest covers the legacy/model-specific Invoke formats.
+// Mistral native chat messages use openai.OpenAIChatRequest to retain tool-call fields.
 // It uses detection methods (IsMessagesRequest, IsCohereCommandRRequest) to determine correct routing:
 // messages-based requests (Anthropic Messages, Nova, AI21) go through the Responses path,
 // while prompt-based requests (Anthropic legacy, Mistral, Llama, Cohere) go through Text Completions.

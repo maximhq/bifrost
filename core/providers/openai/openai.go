@@ -1286,7 +1286,16 @@ func HandleOpenAIChatCompletionStreaming(
 	signer providerUtils.BodySigner,
 	logger schemas.Logger,
 	postHookSpanFinalizer func(context.Context),
+	readerFactories ...*providerUtils.SSEReaderFactory,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Snapshot reader selection before asynchronous work; explicit nil selects SSE.
+	var streamReaderFactory *providerUtils.SSEReaderFactory
+	if len(readerFactories) > 0 {
+		streamReaderFactory = readerFactories[0]
+	} else {
+		streamReaderFactory, _ = ctx.Value(schemas.BifrostContextKeySSEReaderFactory).(*providerUtils.SSEReaderFactory)
+	}
+
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
 	isResponsesToChatCompletionsFallback := false
@@ -1455,14 +1464,25 @@ func HandleOpenAIChatCompletionStreaming(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		reader, nonSSE := providerUtils.DrainNonSSEStreamReader(resp, reader)
-		if nonSSE != nil {
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, logger, postHookSpanFinalizer)
-			return
+		// Bedrock Invoke uses this codec with an explicit AWS frame decoder.
+		// Bypass SSE sniffing only for that MIME type and an installed decoder;
+		// ordinary/custom SSE readers must still reject JSON/HTML responses.
+		binaryStream := false
+		if streamReaderFactory != nil && streamReaderFactory.NewDataReader != nil {
+			contentType, _, _ := strings.Cut(string(resp.Header.ContentType()), ";")
+			binaryStream = strings.EqualFold(strings.TrimSpace(contentType), "application/vnd.amazon.eventstream")
+		}
+		if !binaryStream {
+			var nonSSE *providerUtils.NonSSEStreamBody
+			reader, nonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+			if nonSSE != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, logger, postHookSpanFinalizer)
+				return
+			}
 		}
 
-		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		sseReader := providerUtils.GetSSEDataReader(ctx, reader, streamReaderFactory)
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}

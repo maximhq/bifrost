@@ -10,10 +10,19 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+func newBedrockInvokeRequest(ctx context.Context) interface{} {
+	if ctx.Value(schemas.BifrostContextKeyHTTPRequestType) == schemas.ChatCompletionRequest {
+		return &openai.OpenAIChatRequest{}
+	}
+	return &bedrock.BedrockInvokeRequest{}
+}
 
 // BedrockRouter handles AWS Bedrock-compatible API endpoints
 type BedrockRouter struct {
@@ -124,10 +133,13 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 			modelID, _ := ctx.UserValue("modelId").(string)
 			return bedrock.DetectInvokeRequestType(ctx.Request.Body(), modelID)
 		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &bedrock.BedrockInvokeRequest{}
-		},
+		GetRequestTypeInstance: newBedrockInvokeRequest,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if chatReq, ok := req.(*openai.OpenAIChatRequest); ok {
+				chatReq.Stream = schemas.Ptr(true)
+				ctx.SetValue(bedrock.BedrockContextKeyMistralInvokeIngress, true)
+				return &schemas.BifrostRequest{ChatRequest: chatReq.ToBifrostChatRequest(ctx)}, nil
+			}
 			if invokeReq, ok := req.(*bedrock.BedrockInvokeRequest); ok {
 				requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
 				switch requestType {
@@ -159,6 +171,16 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 		},
 		StreamConfig: &StreamConfig{
 			ErrorConverter: bedrockStreamErrorConverter,
+			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+				if resp == nil {
+					return "", nil, nil
+				}
+				body, err := providerUtils.MarshalSorted(bedrock.ToBedrockInvokeChatResponse(resp))
+				if err != nil {
+					return "", nil, err
+				}
+				return "", &bedrock.BedrockStreamEvent{InvokeModelRawChunks: [][]byte{body}}, nil
+			},
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
 				if resp == nil {
 					return "", nil, nil
@@ -190,13 +212,15 @@ func bedrockStreamErrorConverter(ctx *schemas.BifrostContext, err *schemas.Bifro
 
 // createBedrockInvokeRouteConfig creates a route configuration for the Bedrock Invoke API endpoint
 // Handles POST /bedrock/model/{modelId}/invoke
-// Uses BedrockInvokeRequest as a union type that supports all model families.
+// Selects the native OpenAI chat codec for Mistral messages, and the existing
+// BedrockInvokeRequest union for the other model-specific formats.
 // Request type is detected from the body + model ID and dispatched accordingly:
 //   - Embedding (Titan inputText, Cohere texts)
 //   - ImageGeneration (taskType=TEXT_IMAGE, Stability AI and other providers prompt-only)
 //   - ImageEdit (taskType=INPAINTING/OUTPAINTING/BACKGROUND_REMOVAL, Stability AI image+prompt)
 //   - ImageVariation (taskType=IMAGE_VARIATION)
-//   - ResponsesRequest (messages array — Anthropic Messages, Nova, AI21, Mistral)
+//   - ResponsesRequest (messages array — Anthropic Messages, Nova, AI21)
+//   - ChatCompletionRequest (Mistral native messages/tools)
 //   - TextCompletionRequest (prompt — Anthropic legacy, Mistral, Llama, Cohere)
 func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
 	return RouteConfig{
@@ -207,10 +231,14 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 			modelID, _ := ctx.UserValue("modelId").(string)
 			return bedrock.DetectInvokeRequestType(ctx.Request.Body(), modelID)
 		},
-		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &bedrock.BedrockInvokeRequest{}
-		},
+		GetRequestTypeInstance: newBedrockInvokeRequest,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if chatReq, ok := req.(*openai.OpenAIChatRequest); ok {
+				// This URL is unary even if the body happens to carry stream:true.
+				chatReq.Stream = nil
+				ctx.SetValue(bedrock.BedrockContextKeyMistralInvokeIngress, true)
+				return &schemas.BifrostRequest{ChatRequest: chatReq.ToBifrostChatRequest(ctx)}, nil
+			}
 			invokeReq, ok := req.(*bedrock.BedrockInvokeRequest)
 			if !ok {
 				return nil, errors.New("invalid request type")
@@ -265,6 +293,9 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 			return bedrock.ToBedrockTextCompletionResponse(resp), nil
+		},
+		ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
+			return bedrock.ToBedrockInvokeChatResponse(resp), nil
 		},
 		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 			return bedrock.ToBedrockInvokeMessagesResponse(ctx, resp)
@@ -1210,6 +1241,14 @@ func bedrockPreCallback(_ lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifro
 		switch r := req.(type) {
 		case *bedrock.BedrockConverseRequest:
 			r.ModelID = fullModelID
+		case *openai.OpenAIChatRequest:
+			r.Model = fullModelID
+			// Preserve native extra fields and the Invoke guardrail headers.
+			r.SetExtraParams(openai.OpenAIChatRequestUnknownFields(ctx.Request.Body()))
+			invoke := bedrock.BedrockInvokeRequest{ExtraParams: r.ExtraParams}
+			invoke.ApplyGuardrailHeaders(string(ctx.Request.Header.Peek(bedrock.GuardrailIdentifierHeader)),
+				string(ctx.Request.Header.Peek(bedrock.GuardrailVersionHeader)), string(ctx.Request.Header.Peek(bedrock.GuardrailTraceHeader)))
+			r.SetExtraParams(invoke.ExtraParams)
 		case *bedrock.BedrockTextCompletionRequest:
 			r.ModelID = fullModelID
 		case *bedrock.BedrockCountTokensRequest:

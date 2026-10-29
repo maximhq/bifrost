@@ -140,6 +140,69 @@ func basicChatRequest() *schemas.BifrostChatRequest {
 	}
 }
 
+func TestChatStreamEventStreamDecoderGate(t *testing.T) {
+	for _, tc := range []struct {
+		name, contentType string
+		data, event, ok   bool
+	}{
+		{"AWS with data decoder", "Application/Vnd.Amazon.Eventstream; charset=utf-8", true, false, true},
+		{"AWS without decoder", "application/vnd.amazon.eventstream", false, false, false},
+		{"AWS with event-only decoder", "application/vnd.amazon.eventstream", false, true, false},
+		{"JSON with data decoder", "application/json", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = io.WriteString(w, `{"unexpected":"not SSE"}`)
+			}))
+			defer server.Close()
+			ctx := newStreamTestContext()
+			defer ctx.Cancel()
+			var decoderCalls int
+			factory := &providerUtils.SSEReaderFactory{}
+			if tc.data {
+				factory.NewDataReader = func(io.Reader) providerUtils.SSEDataReader {
+					decoderCalls++
+					return &failingSSEDataReader{lines: [][]byte{
+						[]byte(`{"id":"chat_1","choices":[{"index":0,"delta":{"content":"ok"}}]}`),
+						[]byte(`{"id":"chat_1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`),
+					}, err: io.EOF}
+				}
+			}
+			if tc.event {
+				factory.NewEventReader = func(io.Reader) providerUtils.SSEEventReader { return nil }
+			}
+			ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, factory)
+			stream, err := newStreamTestProvider(server.URL).ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks := collectChunks(t, stream)
+			var streamErr *schemas.BifrostError
+			var content string
+			for _, chunk := range chunks {
+				if chunk.BifrostError != nil {
+					streamErr = chunk.BifrostError
+				}
+				if response := chunk.BifrostChatResponse; response != nil {
+					for _, choice := range response.Choices {
+						if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && choice.Delta.Content != nil {
+							content += *choice.Delta.Content
+						}
+					}
+				}
+			}
+			if tc.ok {
+				if streamErr != nil || decoderCalls != 1 || content != "ok" {
+					t.Fatalf("expected one decoded stream: calls=%d content=%q error=%+v", decoderCalls, content, streamErr)
+				}
+			} else if decoderCalls != 0 || streamErr == nil || streamErr.EffectiveHTTPStatus() != 502 || streamErr.Error == nil || !strings.Contains(streamErr.Error.Message, "non-SSE") {
+				t.Fatalf("non-SSE response must not reach the decoder: calls=%d error=%+v", decoderCalls, streamErr)
+			}
+		})
+	}
+}
+
 func chatChunk(content string, finishReason *string) string {
 	delta := `{}`
 	if content != "" {
