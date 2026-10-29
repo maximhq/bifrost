@@ -65,3 +65,9 @@ jobs:
 
       - name: Check Docker Compose installer
         run: bash ./.github/workflows/scripts/install-docker-compose.test.sh
+
+      - name: Check arm64 runner dependency installer
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.test.sh
+
+      - name: Check apt HTTPS source rewriter
+        run: bash ./.github/workflows/scripts/apt-sources-https.test.sh
