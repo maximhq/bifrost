@@ -377,6 +377,8 @@ MCPClientCreateRequestBase:
             PEM-encoded CA certificate to trust for MCP server connections.
             Use when the MCP server uses a self-signed or private CA certificate.
             Supports env.VAR_NAME syntax to read the certificate from an environment variable.
+            A value that does not parse as a PEM certificate is refused when the client is
+            created or edited, unless insecure_skip_verify is set.
     per_user_header_keys:
       type: array
       items:
@@ -909,6 +911,8 @@ MCPClientUpdateRequest:
             PEM-encoded CA certificate to trust for MCP server connections.
             Use when the MCP server uses a self-signed or private CA certificate.
             Supports env.VAR_NAME syntax to read the certificate from an environment variable.
+            A value that does not parse as a PEM certificate is refused when the client is
+            created or edited, unless insecure_skip_verify is set.
     vk_configs:
       type: array
       items:

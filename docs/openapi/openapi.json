@@ -45758,7 +45758,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46075,7 +46075,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46401,7 +46401,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -46747,7 +46747,7 @@
                               },
                               "ca_cert_pem": {
                                 "type": "string",
-                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                                "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                               }
                             }
                           },
@@ -47170,7 +47170,7 @@
                       },
                       "ca_cert_pem": {
                         "type": "string",
-                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\n"
+                        "description": "PEM-encoded CA certificate to trust for MCP server connections.\nUse when the MCP server uses a self-signed or private CA certificate.\nSupports env.VAR_NAME syntax to read the certificate from an environment variable.\nA value that does not parse as a PEM certificate is refused when the client is\ncreated or edited, unless insecure_skip_verify is set.\n"
                       }
                     }
                   },
