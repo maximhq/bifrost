@@ -153,14 +153,20 @@ clients:
         schema:
           type: string
           example: healthy
+      - name: allowed_by_default
+        in: query
+        description: When true, include clients that are open to all virtual keys (allow_by_default). ORs with virtual_keys.
+        schema:
+          type: boolean
       - name: all_virtual_keys
         in: query
-        description: When true, include clients that are open to all virtual keys (allow_on_all_virtual_keys). ORs with virtual_keys.
+        deprecated: true
+        description: Deprecated earlier name of allowed_by_default, still accepted. allowed_by_default decides when both are sent.
         schema:
           type: boolean
       - name: virtual_keys
         in: query
-        description: Comma-separated virtual key IDs; includes clients explicitly assigned to any of them. ORs with all_virtual_keys.
+        description: Comma-separated virtual key IDs; includes clients explicitly assigned to any of them. ORs with allowed_by_default.
         schema:
           type: string
       - name: code_mode
@@ -980,6 +986,67 @@ sessions:
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     tags: [MCP]
+    parameters:
+      - name: q
+        in: query
+        description: Free-text search term.
+        schema:
+          type: string
+      - name: identity
+        in: query
+        description: Exact-match identity key (bf_sub). Not trimmed.
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated statuses to include (active, orphaned, pending, needs_reauth, needs_update).
+        schema:
+          type: string
+          example: active,pending
+      - name: auth_mode
+        in: query
+        description: Comma-separated identity dimensions to include (user, vk, session).
+        schema:
+          type: string
+          example: user,vk
+      - name: mcp_client_id
+        in: query
+        description: Comma-separated MCP client IDs to include.
+        schema:
+          type: string
+      - name: virtual_key_id
+        in: query
+        description: Comma-separated virtual key IDs to include.
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        description: Comma-separated user IDs to include.
+        schema:
+          type: string
+      - name: kind
+        in: query
+        description: |
+          Comma-separated credential kinds to include: `token` (OAuth credentials and
+          pending OAuth flows) and/or `header` (header credentials and pending header
+          submission flows). Omit for both.
+        schema:
+          type: string
+          example: token
+      - name: limit
+        in: query
+        description: Maximum number of rows to return. Values above 500 are clamped to 500.
+        schema:
+          type: integer
+          minimum: 1
+          default: 50
+      - name: offset
+        in: query
+        description: Number of rows to skip.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -990,6 +1057,8 @@ sessions:
           application/json:
             schema:
               $ref: '../../schemas/management/mcp.yaml#/MCPSessionsListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '401':
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '500':
@@ -1347,3 +1416,255 @@ client-openapi-spec:
         description: No openapi client with this ID, or the client stores no document.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+library:
+  get:
+    operationId: listMCPLibrary
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List MCP library servers
+    description: |
+      Returns a paginated, searchable, filterable list of the MCP server library catalog,
+      with whether an MCP client already installs each entry. Multi-value filters accept a
+      comma-separated list and use OR semantics within a field. Returns an empty page when
+      the config store is disabled.
+    tags:
+      - MCP
+    parameters:
+      - name: limit
+        in: query
+        description: Maximum number of entries to return (default 25, values above 100 are clamped to 100).
+        schema:
+          type: integer
+          minimum: 0
+          default: 25
+      - name: offset
+        in: query
+        description: Number of entries to skip.
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Case-insensitive search over name, description and publisher.
+        schema:
+          type: string
+      - name: category
+        in: query
+        description: Comma-separated categories to include (OR semantics).
+        schema:
+          type: string
+      - name: connection_type
+        in: query
+        description: Comma-separated connection types to include (http, stdio, sse).
+        schema:
+          type: string
+          example: http,sse
+      - name: auth_type
+        in: query
+        description: Comma-separated auth types to include (OR semantics).
+        schema:
+          type: string
+          example: none,oauth
+      - name: tags
+        in: query
+        description: Comma-separated tags; includes entries carrying any of them.
+        schema:
+          type: string
+      - name: sort_by
+        in: query
+        description: Sort column. Unknown values sort by name.
+        schema:
+          type: string
+          enum: [name, category, publisher, created_at, updated_at]
+          default: name
+      - name: order
+        in: query
+        description: Sort direction.
+        schema:
+          type: string
+          enum: [asc, desc]
+          default: asc
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPLibraryListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  post:
+    operationId: createMCPLibraryEntry
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Publish an MCP server to the library
+    description: |
+      Publishes an organization-internal ("custom") MCP server into the library so other
+      members can discover and install it. Custom entries are never overwritten by the
+      catalog sync.
+    tags:
+      - MCP
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/CreateMCPLibraryEntryRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: MCP library server published successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: success
+                message:
+                  type: string
+                  example: MCP library server published successfully
+                entry:
+                  $ref: '../../schemas/management/mcp.yaml#/MCPLibraryEntry'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: An MCP library server with this name already exists
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+library-filterdata:
+  get:
+    operationId: getMCPLibraryFilterData
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get MCP library filter data
+    description: |
+      Returns the distinct categories, connection types, auth types and tags present in
+      the MCP library, for building filter controls. Returns empty lists when the config
+      store is disabled.
+    tags:
+      - MCP
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPLibraryFilterData'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+library-force-sync:
+  post:
+    operationId: forceSyncMCPLibrary
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Force MCP library sync
+    description: |
+      Triggers an immediate sync of the MCP server library catalog from the configured
+      source (framework_config.mcp_library_url, or the default catalog).
+    tags:
+      - MCP
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: MCP library synced successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+library-by-id:
+  delete:
+    operationId: deleteMCPLibraryEntry
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Remove an MCP library server
+    description: |
+      Hides a library entry (remote or custom) by ID. The row is excluded from listings
+      and the catalog sync does not bring a hidden remote entry back.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Numeric library entry ID
+        schema:
+          type: integer
+          minimum: 1
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: MCP library server removed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

@@ -228,6 +228,75 @@ ClientConfig:
       items:
         type: string
       description: Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required.
+    retain_content_in_object_storage:
+      type: boolean
+      default: false
+      description: When content logging is disabled (by config or per-request header), still offload request/response content to object storage as hidden instead of dropping it.
+    allow_direct_keys:
+      type: boolean
+      default: false
+      description: Allow callers to bypass the registered key pool by sending the x-bf-direct-key header.
+    disable_db_pings_in_health:
+      type: boolean
+      default: false
+      description: Skip database pings in the /health check.
+    dump_errors_in_console_logs:
+      type: boolean
+      default: false
+      description: Dump error details in console logs.
+    dual_credential_conflict_behavior:
+      type: string
+      enum: ['', prefer_idp, prefer_vk, error]
+      description: >
+        Behavior when an inference request carries both an identity-provider token and a
+        virtual key. Omit or send an empty string to keep the stored value (default
+        prefer_idp). 'error' is refused with 400 while any MCP client uses auth_type
+        token_exchange.
+    allowed_headers:
+      type: array
+      items:
+        type: string
+      description: Additional allowed headers for CORS and WebSocket. Changing it requires a restart.
+    mcp_disable_auto_tool_inject:
+      type: boolean
+      default: false
+      description: When true, MCP tools are not injected into requests by default.
+    mcp_enable_temp_token_auth:
+      type: boolean
+      default: false
+      description: When true, scoped temporary tokens can authorize the MCP per-user OAuth and per-user-headers auth pages.
+    async_job_result_ttl:
+      type: integer
+      minimum: 0
+      description: Default TTL for async job results in seconds (default 3600). 0 or omitted keeps the stored value.
+    whitelisted_routes:
+      type: array
+      items:
+        type: string
+      description: Routes that bypass the auth middleware. Applied without a restart.
+    hide_deleted_virtual_keys_in_filters:
+      type: boolean
+      default: false
+      description: Hide deleted virtual keys from logs and MCP logs filter data.
+    enforce_vk_object_ownership:
+      type: boolean
+      default: true
+      description: >
+        Restrict provider objects (files, batches, containers, ...) to the virtual key that
+        created them. Applied only when the field is sent; omit it to keep the stored value.
+    hidden_request_types:
+      type: array
+      items:
+        type: string
+      description: Request types excluded from dashboard and log API reads. Logs are still written.
+    routing_chain_max_depth:
+      type: integer
+      minimum: 0
+      description: Maximum depth for routing rule chain evaluation (default 10). 0 or omitted keeps the stored value.
+    a2a_store_raw_request_response:
+      type: boolean
+      default: false
+      description: Store raw Agent Gateway requests and responses. Applied only when the field is sent.
     a2a_external_client_url:
       anyOf:
       - type: string
@@ -368,6 +437,24 @@ FrameworkConfig:
       type: integer
       format: int64
       description: Pricing sync interval in seconds
+    model_parameters_url:
+      type: string
+      description: URL for model parameters data. An empty string resets it to the default.
+    mcp_library_url:
+      type: string
+      description: URL the MCP server library catalog is synced from. Empty falls back to the default.
+    mcp_library_sync_interval:
+      type: integer
+      format: int64
+      minimum: 1
+      description: MCP library catalog sync interval in seconds. Must be greater than 0.
+    live_models_sync_interval:
+      type: integer
+      format: int64
+      anyOf:
+        - const: 0
+        - minimum: 60
+      description: How often each provider's list-models response is re-fetched in the background, in seconds. 0 disables the refresher; otherwise at least 60.
 
 AuthConfig:
   type: object
@@ -514,3 +601,36 @@ UpdateConfigRequest:
       admin_password: env.BIFROST_ADMIN_PASSWORD
       is_enabled: true
       setup_token: <your-setup-token>
+
+FeatureFlagStatus:
+  type: object
+  description: A feature flag and its effective value
+  properties:
+    id:
+      type: string
+    display_name:
+      type: string
+    description:
+      type: string
+    default:
+      type: boolean
+      description: The value declared in code
+    enabled:
+      type: boolean
+      description: The effective value
+    source:
+      type: string
+      enum: [default, db, remote, file]
+      description: Where the effective value comes from
+    locked:
+      type: boolean
+      description: Pinned by config.json or Helm; cannot be changed through the API
+    registered:
+      type: boolean
+      description: False for a stored override of a flag this build no longer declares
+    enterprise_only:
+      type: boolean
+    updated_at:
+      type: integer
+      format: int64
+      description: When the override was last changed, in Unix nanoseconds

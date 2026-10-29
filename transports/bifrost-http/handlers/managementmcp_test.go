@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -86,15 +87,39 @@ func TestManagementMCPExposesEveryAPIOperation(t *testing.T) {
 	}
 }
 
-// Every deny-list entry names an operation the spec defines, and none is served.
+// repoSpecSources are the YAML files openapi.json is bundled from. CI rebundles
+// after merge, so an operation added in a PR is in these before it is in the bundle.
+const repoSpecSources = "../../../docs/openapi/paths"
+
+// Every deny-list entry names an operation the spec sources define, and none is
+// served.
 func TestManagementMCPDenyListMatchesSpec(t *testing.T) {
-	_, report, err := buildManagementMCPServer(readRepoSpec(t), "", managementTestOptions(true))
+	defined := map[string]bool{}
+	err := filepath.WalkDir(repoSpecSources, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".yaml" {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range regexp.MustCompile(`(?m)^\s*operationId:\s*["']?([A-Za-z0-9_]+)`).FindAllSubmatch(data, -1) {
+			defined[string(m[1])] = true
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("building server: %v", err)
+		t.Fatalf("reading %s: %v", repoSpecSources, err)
 	}
-	sort.Strings(report.unknown)
-	if len(report.unknown) > 0 {
-		t.Errorf("denied operationIds missing from %s: %v", repoOpenAPISpec, report.unknown)
+	var unknown []string
+	for id := range managementMCPDenied {
+		if !defined[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	sort.Strings(unknown)
+	if len(unknown) > 0 {
+		t.Errorf("denied operationIds missing from %s: %v", repoSpecSources, unknown)
 	}
 	tools := listManagementTools(t, managementTestOptions(true))
 	for id := range managementMCPDenied {

@@ -282,9 +282,269 @@ per-user-oauth-flow-start:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# The endpoints in this file cover upstream MCP OAuth only, Bifrost acting
-# as an OAuth *client* against external MCP servers (via the
-# per-user-oauth-flow-* endpoints above and the /api/mcp/client/* flows).
-# The inbound surface where Bifrost acts as an OAuth Authorization Server
-# for /mcp callers (/.well-known/*, /oauth2/*) is a separate feature and is
-# not documented in this file.
+# The endpoints above cover upstream MCP OAuth, Bifrost acting as an OAuth
+# *client* against external MCP servers (via the per-user-oauth-flow-*
+# endpoints above and the /api/mcp/client/* flows). The endpoints below are
+# the management side of the inbound surface, where Bifrost acts as an OAuth
+# Authorization Server for /mcp callers: the consent page APIs and the
+# grants list. The protocol endpoints themselves (/.well-known/*, /oauth2/*)
+# are a separate feature and are not documented in this file.
+
+oauth2-sessions:
+  get:
+    operationId: listOAuth2Sessions
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List OAuth2 grants
+    description: |
+      Lists the active OAuth2 grants Bifrost has issued to downstream /mcp clients and
+      that are visible to the caller, filtered and paginated.
+    tags:
+      - OAuth
+    parameters:
+      - name: q
+        in: query
+        description: Case-insensitive substring matched against the client name or ID and the bound identity.
+        schema:
+          type: string
+      - name: bf_mode
+        in: query
+        description: Comma-separated identity dimensions to include (user, vk, session). Any other value is rejected with 400.
+        schema:
+          type: string
+          example: user,vk
+      - name: virtual_key_id
+        in: query
+        description: Comma-separated virtual key IDs to include.
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        description: Comma-separated user IDs to include.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Maximum number of grants to return. Values above 500 are clamped to 500.
+        schema:
+          type: integer
+          minimum: 1
+          default: 50
+      - name: offset
+        in: query
+        description: Number of grants to skip.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Grants visible to the caller
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/OAuth2SessionsListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+oauth2-session-by-id:
+  delete:
+    operationId: revokeOAuth2Session
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Revoke an OAuth2 grant
+    description: |
+      Revokes a downstream OAuth2 grant the caller can see. Revocation is local: the
+      grant's tokens stop working on the next request or refresh.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Grant ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '204':
+        description: Grant revoked
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Grant not found, not visible to the caller, or already revoked
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+
+oauth2-consent-flow:
+  get:
+    operationId: getOAuth2ConsentFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | The consent flow's temporary token or a dashboard session - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get OAuth2 consent flow detail
+    description: |
+      Returns a pending OAuth2 authorization request for the consent page: the requesting
+      client, its redirect URI, the identity modes the caller may consent with, and the
+      signed-in user when a dashboard session is present. Returns 410 once the flow has
+      been completed or has expired.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Authorization flow ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Flow detail
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                redirect_uri:
+                  type: string
+                client_name:
+                  type: string
+                available_modes:
+                  type: array
+                  items:
+                    type: string
+                    enum: [vk, session, user]
+                logged_in_user:
+                  type: object
+                  description: Present when a valid dashboard session accompanies the request
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                expires_at:
+                  type: string
+                  format: date-time
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '410':
+        description: The flow has already been completed or has expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+  put:
+    operationId: submitOAuth2ConsentFlow
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | The consent flow's temporary token or a dashboard session - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Submit OAuth2 consent
+    description: |
+      Consents to a pending OAuth2 authorization request under the chosen identity and
+      mints the authorization code. Returns the URL to send the browser to, which carries
+      the code back to the client's redirect URI.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Authorization flow ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [mode]
+            properties:
+              mode:
+                type: string
+                enum: [vk, session, user]
+                description: Identity to bind the grant to. Must be one of the flow's available_modes.
+              value:
+                type: string
+                description: The virtual key value for mode `vk`; empty for `session` and `user`.
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Consent recorded
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                redirect_url:
+                  type: string
+                  description: Where to send the browser to complete the authorization
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Session mode was chosen without an authenticated consenting user
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The flow has already been completed
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '410':
+        description: The flow has already been completed or has expired
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

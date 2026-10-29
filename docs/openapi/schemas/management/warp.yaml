@@ -106,6 +106,17 @@ WarpConfig:
         Appended to Warp's built-in system prompt. Additive only: an operator
         can teach Warp local naming conventions, but cannot remove the tool-use
         and scoping instructions the built-in prompt establishes.
+    temperature:
+      type: [number, 'null']
+      minimum: 0
+      maximum: 2
+      description: |
+        Sampling temperature for Warp's model. Omitted or null leaves it unset, so
+        the provider applies its own default; 0 is a real, fully deterministic value.
+    reasoning_effort:
+      type: string
+      enum: ['', none, minimal, low, medium, high, xhigh, max]
+      description: Reasoning effort for a reasoning model. Omitted or empty sends none.
     embedding_provider:
       type: string
       description: Provider used to embed gateway conversations for semantic search.
@@ -277,6 +288,17 @@ WarpConfigInput:
         policy question with no technically correct ceiling.
     system_prompt_suffix:
       type: string
+    temperature:
+      type: [number, 'null']
+      minimum: 0
+      maximum: 2
+      description: |
+        Sampling temperature for Warp's model. Omitted or null leaves it unset, so
+        the provider applies its own default; 0 is a real, fully deterministic value.
+    reasoning_effort:
+      type: string
+      enum: ['', none, minimal, low, medium, high, xhigh, max]
+      description: Reasoning effort for a reasoning model. Omitted or empty sends none.
     embedding_provider:
       type: string
       description: Required when `enabled` is true.
@@ -360,6 +382,13 @@ WarpBackfillRequest:
     end_time:
       type: string
       format: date-time
+    restart:
+      type: boolean
+      default: false
+      description: |
+        Discard a resumable checkpoint left by a failed or cancelled run over the
+        same window and scan from the beginning. Omitted, a found checkpoint is
+        resumed automatically.
   required: [start_time, end_time]
 
 WarpBackfillStatus:
@@ -533,6 +562,9 @@ WarpSessionRequest:
             enum: [user, assistant]
           content:
             type: string
+          question:
+            type: boolean
+            description: Marks an assistant turn that was a clarifying question rather than an answer.
         required: [role, content]
     conversation_id:
       type: string
@@ -560,6 +592,20 @@ WarpSessionRequest:
       description: |
         Selects the transport, not the behaviour. `true` streams SSE frames;
         `false` returns one JSON body. Both run the same loop.
+    timezone:
+      type: string
+      description: |
+        The asker's IANA zone identifier (e.g. "Asia/Kolkata"), used to resolve
+        calendar days. An empty or unrecognized value falls back to
+        `utc_offset_minutes`.
+      example: Asia/Kolkata
+    utc_offset_minutes:
+      type: integer
+      minimum: -720
+      maximum: 840
+      description: |
+        The asker's current UTC offset in minutes east of UTC (e.g. 330 for IST).
+        Used only when no usable `timezone` is sent. Omitted or out-of-range means UTC.
   required:
     - messages
 

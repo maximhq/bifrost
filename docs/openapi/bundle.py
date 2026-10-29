@@ -17,6 +17,7 @@ Usage:
     python bundle.py                    # Output to openapi.json
     python bundle.py --output spec.json # Output to custom file
     python bundle.py --format yaml      # Output as YAML
+    python bundle.py --edition oss --output openapi-oss.json  # OSS operations only
 
 Requirements:
     pip install pyyaml
@@ -404,6 +405,49 @@ def annotate_deprecated_operations(spec: Dict[str, Any]) -> int:
 
 
 # -----------------------------------------------------------------------------
+# Editions
+# -----------------------------------------------------------------------------
+
+ENTERPRISE_TAG = "Enterprise"
+
+
+def is_enterprise_operation(operation: Dict[str, Any]) -> bool:
+    """An operation marked enterprise-only with `x-mint.metadata.tag: Enterprise`."""
+    metadata = (operation.get("x-mint") or {}).get("metadata") or {}
+    return metadata.get("tag") == ENTERPRISE_TAG
+
+
+def filter_oss_edition(spec: Dict[str, Any]) -> int:
+    """
+    Drop the enterprise-only operations, leaving the OSS gateway's API.
+
+    A deprecated alias carries the deprecation tag rather than its successor's
+    (see annotate_deprecated_operations), so it goes with its successor: it is
+    dropped when the operation it redirects to is enterprise-only. Paths left
+    with no operation are removed. Returns the number of operations dropped.
+    """
+    paths = spec.get("paths", {})
+
+    def successor_is_enterprise(operation: Dict[str, Any], method: str) -> bool:
+        successor = paths.get(str(operation.get("x-bifrost-successor") or ""))
+        return isinstance(successor, dict) and isinstance(successor.get(method), dict) and is_enterprise_operation(successor[method])
+
+    dropped = [
+        (path, method)
+        for path, item in paths.items()
+        if isinstance(item, dict)
+        for method in HTTP_METHODS
+        if isinstance(item.get(method), dict)
+        and (is_enterprise_operation(item[method]) or successor_is_enterprise(item[method], method))
+    ]
+    for path, method in dropped:
+        del paths[path][method]
+    for path in [p for p, item in paths.items() if isinstance(item, dict) and not any(m in item for m in HTTP_METHODS)]:
+        del paths[path]
+    return len(dropped)
+
+
+# -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 
@@ -428,6 +472,10 @@ def main() -> None:
         "--indent", type=int, default=2,
         help="Indentation level for output (default: 2)",
     )
+    parser.add_argument(
+        "--edition", choices=["full", "oss"], default="full",
+        help="full: every operation (default); oss: enterprise-only operations removed",
+    )
 
     args = parser.parse_args()
 
@@ -437,6 +485,8 @@ def main() -> None:
     try:
         bundler = OpenAPIBundler(base_path)
         spec = bundler.bundle(args.input)
+        if args.edition == "oss":
+            print(f"  - Enterprise-only operations removed: {filter_oss_edition(spec)}")
 
         output_path = base_path / args.output
         with open(output_path, "w", encoding="utf-8") as f:
