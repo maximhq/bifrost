@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -368,4 +370,38 @@ func discoveryParts(discovery *schemas.MCPDiscovery, err error) (map[string]sche
 		return nil, "", err
 	}
 	return discovery.Tools, discovery.Instructions, err
+}
+
+// TestVerifyHeadersConnection_DialsAnSSEClientOverSSE: verifying an SSE
+// client's headers dials it over SSE with the headers attached, as its live
+// connection does. A streamable-HTTP dial cannot reach an SSE-only server, so
+// an edit to an SSE client could not be tried before it was stored.
+func TestVerifyHeadersConnection_DialsAnSSEClientOverSSE(t *testing.T) {
+	s := server.NewMCPServer("sse-verify", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("echo"), func(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return mcpgo.NewToolResultText("ok"), nil
+	})
+	sse := server.NewSSEServer(s)
+	var sawHeader atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Key") == "v2" {
+			sawHeader.Store(true)
+		}
+		sse.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+
+	discovery, err := m.VerifyHeadersConnection(context.Background(), &schemas.MCPClientConfig{
+		ID:               "sse-verify",
+		Name:             "sse_verify",
+		ConnectionType:   schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar(ts.URL + "/sse"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		Headers:          map[string]schemas.SecretVar{"X-Key": *schemas.NewSecretVar("v2")},
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, discovery.Tools, "sse_verify-echo")
+	assert.True(t, sawHeader.Load(), "the headers reach the SSE server")
 }

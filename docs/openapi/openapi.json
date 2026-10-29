@@ -47162,7 +47162,7 @@
                   },
                   "tls_config": {
                     "type": "object",
-                    "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\n",
+                    "description": "TLS configuration for HTTP and SSE connections.\nNot applicable to stdio or inprocess connection types.\nA change takes effect on the live connection at once: the client reconnects with\nit. For headers and none auth it is first tried against the server, and a failure\nanswers 422 with nothing changed.\n",
                     "properties": {
                       "insecure_skip_verify": {
                         "type": "boolean",

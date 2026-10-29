@@ -899,6 +899,9 @@ MCPClientUpdateRequest:
       description: |
         TLS configuration for HTTP and SSE connections.
         Not applicable to stdio or inprocess connection types.
+        A change takes effect on the live connection at once: the client reconnects with
+        it. For headers and none auth it is first tried against the server, and a failure
+        answers 422 with nothing changed.
       properties:
         insecure_skip_verify:
           type: boolean
