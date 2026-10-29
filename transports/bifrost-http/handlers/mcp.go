@@ -4088,17 +4088,20 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			message += ". This client now connects per call instead of maintaining a persistent connection: the existing shared connection was closed."
 		}
 	}
+	// The partial-success sentences follow message as sentences of their own,
+	// whether or not message already ends with one.
+	partial := strings.TrimSuffix(message, ".") + "."
 	if sharedConnectErr != nil {
 		SendJSON(ctx, map[string]any{
 			"status":  "partial_success",
-			"message": fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", message, sharedConnectErr),
+			"message": fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", partial, sharedConnectErr),
 		})
 		return
 	}
 	if toolRefreshErr != nil {
 		SendJSON(ctx, map[string]any{
 			"status":  "partial_success",
-			"message": fmt.Sprintf("%s However, refreshing the client's tools with the new headers failed: %v. The periodic tool sync will retry automatically.", message, toolRefreshErr),
+			"message": fmt.Sprintf("%s However, refreshing the client's tools with the new headers failed: %v. The periodic tool sync will retry automatically.", partial, toolRefreshErr),
 		})
 		return
 	}

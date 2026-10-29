@@ -19,6 +19,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	bifrost "github.com/maximhq/bifrost/core"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -1786,6 +1787,45 @@ func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
 	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), second.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "petstore_b", stored.Name, "the stored row keeps its name")
+}
+
+// dialFailingUpdateManager applies every update and then reports the dial that
+// followed as failed, as the runtime does for an enable whose upstream is down.
+type dialFailingUpdateManager struct {
+	*openAPIRecordingManager
+}
+
+// UpdateMCPClient records the update and reports its dial as failed.
+func (m *dialFailingUpdateManager) UpdateMCPClient(ctx context.Context, id string, c *schemas.MCPClientConfig) error {
+	_ = m.openAPIRecordingManager.UpdateMCPClient(ctx, id, c)
+	return fmt.Errorf("%w for '%s': connection refused", coremcp.ErrMCPEnableConnectFailed, c.Name)
+}
+
+// TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences pins that an update
+// whose dial failed after it applied reads as two sentences: "MCP client edited
+// successfully. However, establishing the shared connection failed: ...". It
+// used to read "edited successfully However".
+func TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	h.mcpManager = &dialFailingUpdateManager{openAPIRecordingManager: mgr}
+
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore_renamed"}`, mgr.added[0].ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "partial_success", resp.Status)
+	assert.True(t, strings.HasPrefix(resp.Message, "MCP client edited successfully. However, establishing the shared connection failed: "), resp.Message)
 }
 
 // reconnectRecordingMCPManager records reconnect calls and answers them as the
