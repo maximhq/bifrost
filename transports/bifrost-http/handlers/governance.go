@@ -1979,6 +1979,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
+	excludeUserAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_user_access_profile_managed_virtual")) == "true"
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 	metadataFilters, err := parseVirtualKeyMetadataFilters(ctx)
@@ -1987,21 +1988,22 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment || len(metadataFilters) > 0 {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeUserAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment || len(metadataFilters) > 0 {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
-			Search:                             search,
-			CustomerID:                         customerID,
-			TeamID:                             teamID,
-			BusinessUnitID:                     businessUnitID,
-			UserID:                             userID,
-			SortBy:                             sortBy,
-			Order:                              order,
-			Export:                             isExport,
-			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
-			ExcludeAssignedVirtualKeys:         excludeAssignedVirtualKeys,
-			ForUserAssignment:                  forUserAssignment,
-			MetadataFilters:                    metadataFilters,
+			Search:                                 search,
+			CustomerID:                             customerID,
+			TeamID:                                 teamID,
+			BusinessUnitID:                         businessUnitID,
+			UserID:                                 userID,
+			SortBy:                                 sortBy,
+			Order:                                  order,
+			Export:                                 isExport,
+			ExcludeAccessProfileManagedVirtual:     excludeAccessProfileManagedVirtual,
+			ExcludeUserAccessProfileManagedVirtual: excludeUserAccessProfileManagedVirtual,
+			ExcludeAssignedVirtualKeys:             excludeAssignedVirtualKeys,
+			ForUserAssignment:                      forUserAssignment,
+			MetadataFilters:                        metadataFilters,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)

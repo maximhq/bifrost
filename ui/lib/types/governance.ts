@@ -379,7 +379,10 @@ export interface GetVirtualKeysParams {
 	business_unit_id?: string;
 	/** Enterprise-only: filters to virtual keys assigned to this user. */
 	user_id?: string;
+	/** Enterprise-only: hides keys an access profile governs, a user's key while the user holds one and a key whose owner holds one. */
 	exclude_access_profile_managed_virtual?: boolean;
+	/** Enterprise-only: hides only a user's key while the user holds an access profile. */
+	exclude_user_access_profile_managed_virtual?: boolean;
 	exclude_assigned_virtual_keys?: boolean;
 	for_user_assignment?: boolean;
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
