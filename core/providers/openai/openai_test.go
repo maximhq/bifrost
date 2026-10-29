@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,7 @@ import (
 	"time"
 	"weak"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/openai"
 
@@ -778,6 +781,160 @@ func BenchmarkOpenAIStreamSetup(b *testing.B) {
 			b.Fatal(err)
 		}
 		for range stream {
+		}
+	}
+}
+
+type streamHeapAccount struct {
+	config schemas.ProviderConfig
+}
+
+func (a *streamHeapAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (a *streamHeapAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "heap-test", Value: *schemas.NewSecretVar("local-test"), Models: []string{"gpt-4o"}, Weight: 1}}, nil
+}
+
+func (a *streamHeapAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	config := a.config
+	return &config, nil
+}
+
+// BenchmarkOpenAIConcurrentStreamHeap measures live heap, not allocation throughput.
+// Run each selected leaf in a fresh process with -benchtime=1x. All uploads have
+// finished and every stream has delivered content before the heap is sampled.
+// The upstream keeps streams open with heartbeats until measurement is complete.
+// BIFROST_HEAP_HOLD overrides the default 3s hold; it must be below 60s.
+func BenchmarkOpenAIConcurrentStreamHeap(b *testing.B) {
+	hold := 3 * time.Second
+	if value := os.Getenv("BIFROST_HEAP_HOLD"); value != "" {
+		var err error
+		hold, err = time.ParseDuration(value)
+		if err != nil || hold <= 0 || hold >= 60*time.Second {
+			b.Fatal("BIFROST_HEAP_HOLD must be a positive duration below 60s")
+		}
+	}
+	for _, path := range []string{"sdk-raw", "sdk-typed"} {
+		for _, size := range []struct{ streams, mib int }{{32, 1}, {128, 1}, {32, 4}} {
+			for _, capture := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%dx%dMiB/capture=%v", path, size.streams, size.mib, capture)
+				b.Run(name, func(b *testing.B) {
+					if b.N != 1 {
+						b.Skip("use -benchtime=1x for a retained-heap measurement")
+					}
+					ctx, cancel := context.WithTimeout(b.Context(), 90*time.Second)
+					defer cancel()
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if _, err := io.Copy(io.Discard, r.Body); err != nil {
+							return
+						}
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"id\":\"heap\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ready\"}}]}\n\n")
+						w.(http.Flusher).Flush()
+						ticker := time.NewTicker(200 * time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case <-r.Context().Done():
+								return
+							case <-ticker.C:
+								if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
+									return
+								}
+								w.(http.Flusher).Flush()
+							}
+						}
+					}))
+					defer upstream.Close()
+					defer cancel() // Close active streams before waiting for the server.
+					gateway, err := bifrost.Init(ctx, schemas.BifrostConfig{
+						Account: &streamHeapAccount{config: schemas.ProviderConfig{
+							NetworkConfig: schemas.NetworkConfig{
+								BaseURL: upstream.URL, AllowPrivateNetwork: true,
+								StreamIdleTimeoutInSeconds: 60, MaxConnsPerHost: size.streams + 1,
+							},
+							ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 4, BufferSize: size.streams},
+							SendBackRawRequest:       capture,
+						}},
+						Logger: oauthTestLogger{}, InitialPoolSize: 4,
+					})
+					if err != nil {
+						b.Fatal(err)
+					}
+					defer gateway.Shutdown()
+					var streams []chan *schemas.BifrostStreamChunk
+					defer func() {
+						cancel()
+						for _, stream := range streams {
+							for range stream {
+							}
+						}
+					}()
+					snapshot := func(label string) uint64 {
+						runtime.GC()
+						runtime.GC() // Also clear sync.Pool victim buffers from uploads.
+						var stats runtime.MemStats
+						runtime.ReadMemStats(&stats)
+						if dir := os.Getenv("BIFROST_HEAP_PROFILE_DIR"); dir != "" {
+							file, err := os.Create(filepath.Join(dir, label+".pprof"))
+							if err != nil {
+								b.Fatal(err)
+							}
+							err = pprof.WriteHeapProfile(file)
+							closeErr := file.Close()
+							if err != nil || closeErr != nil {
+								b.Fatalf("heap profile: write=%v close=%v", err, closeErr)
+							}
+						}
+						return stats.HeapAlloc
+					}
+					idle := snapshot("idle")
+					// Keep request construction in a separate frame. The benchmark owns
+					// only the returned channel, just as a caller that drops its request.
+					start := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+						requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+						request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+						if path == "sdk-typed" {
+							content := strings.Repeat("x", size.mib<<20)
+							request.Input = []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}}
+						} else {
+							request.RawRequestBody = []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"` + strings.Repeat("x", size.mib<<20) + `"}]}`)
+							request.Input = []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("raw input")}}}
+							requestCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+						}
+						return gateway.ChatCompletionStreamRequest(requestCtx, request)
+					}
+					for range size.streams {
+						stream, err := start()
+						if err != nil {
+							b.Fatalf("stream setup: %v", err)
+						}
+						streams = append(streams, stream)
+						select {
+						case chunk, ok := <-stream:
+							if !ok || chunk == nil || chunk.BifrostError != nil {
+								b.Fatalf("stream did not deliver initial content: %+v", chunk)
+							}
+						case <-ctx.Done():
+							b.Fatal(ctx.Err())
+						}
+					}
+					select {
+					case <-time.After(hold):
+					case <-ctx.Done():
+						b.Fatal(ctx.Err())
+					}
+					active := snapshot("active")
+					b.ReportMetric(float64(idle), "idle-heap-B")
+					b.ReportMetric(float64(active), "active-heap-B")
+					b.ReportMetric(float64(int64(active)-int64(idle)), "retained-heap-B")
+					b.ReportMetric(float64(int64(active)-int64(idle))/float64(size.streams), "retained-B/stream")
+				})
+			}
 		}
 	}
 }
