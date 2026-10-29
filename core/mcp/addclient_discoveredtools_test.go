@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -23,14 +25,14 @@ func snapshotAddClientState(m *MCPManager, id string) (state schemas.MCPClientSt
 
 // TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection covers
 // AddClient's per_user_headers registration path, where nil vs. non-nil
-// DiscoveredTools carries a real lifecycle distinction, but non-nil-empty vs.
-// populated does not: a nil map means admin verification has never run (park
-// in pending_verification, before ever reaching the RequiresPerCallConnection
-// branch below); any non-nil map (empty or populated) means verification ran
-// and lands in Healthy — an empty ToolMap already says "no tools discovered
-// yet" (or "server legitimately exposes zero tools") on its own, no dedicated
-// pending_tools state needed. All three cases must also preserve
-// ConnectionURL from ConnectionString.
+// DiscoveredTools carries a real lifecycle distinction: a nil map means admin
+// verification has never run (park in pending_verification, before ever
+// reaching the RequiresPerCallConnection branch below); any non-nil map means
+// verification ran and the client is not parked. A populated map is restored
+// as Healthy. An empty one gets a first discovery pass, which fails against
+// this test's unreachable host and so leaves the client Unstable, as its
+// checker would. All three cases must also preserve ConnectionURL from
+// ConnectionString.
 func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -49,11 +51,11 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 			wantToolCount:   0,
 		},
 		{
-			name:            "non-nil empty DiscoveredTools is healthy with zero tools",
+			name:            "non-nil empty DiscoveredTools is not parked and records its failed first discovery",
 			clientID:        "discovered-tools-empty",
 			clientName:      "discovered_tools_empty",
 			discoveredTools: map[string]schemas.ChatTool{},
-			wantState:       schemas.MCPConnectionStateHealthy,
+			wantState:       schemas.MCPConnectionStateUnstable,
 			wantToolCount:   0,
 		},
 		{
@@ -166,4 +168,37 @@ func TestAddClient_PerCallConnection_SharedType_DiscoversToolsSynchronously(t *t
 	require.True(t, ok)
 	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
 	assert.Contains(t, state.ToolMap, "shared_sync_discovery_client-echo", "tools must be discovered synchronously during AddClient, not deferred entirely to the periodic checker")
+}
+
+// TestAddClient_PerCallConnection_FailedFirstDiscoveryIsUnstable: a per-call
+// client whose first discovery fails is recorded as Unstable at the
+// tool_discovery stage, as its connection checker records a failed check,
+// rather than reported Healthy with no tools. Unstable also starts its checker
+// on the fast interval, so it retries soon rather than a healthy interval later.
+func TestAddClient_PerCallConnection_FailedFirstDiscoveryIsUnstable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+
+	config := &schemas.MCPClientConfig{
+		ID:               "per-call-failed-discovery",
+		Name:             "per_call_failed_discovery",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer BAD")},
+	}
+
+	require.NoError(t, m.AddClient(context.Background(), config), "the add stands; only its first discovery failed")
+
+	state, ok := snapshotAddClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
+	require.NotNil(t, state.LastFailure)
+	assert.Equal(t, schemas.MCPConnectionFailureStageToolDiscovery, state.LastFailure.Stage)
+	assert.Empty(t, state.ToolMap)
 }
