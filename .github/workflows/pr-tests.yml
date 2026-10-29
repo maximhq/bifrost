@@ -20,7 +20,7 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     outputs:
@@ -50,7 +50,7 @@ jobs:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
     name: Run Tests (Awaiting Approval)
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
 
     # Environment with protection rules - requires admin approval
     # Note: You need to configure this environment in repo settings
