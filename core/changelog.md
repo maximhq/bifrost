@@ -1,4 +1,5 @@
 - fix: anthropic - native Sonnet 5.5 requests keep the caller's thinking settings on both the typed and raw paths (#7895) [@valentinyanakiev](https://github.com/valentinyanakiev)
+- fix: read `context_length` from OpenAI-compatible list models envelopes, as returned by OpenRouter-style providers
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)

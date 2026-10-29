@@ -297854,6 +297854,67 @@
           }
         }
       ]
+    },
+    {
+      "name": "296. OpenAI-compatible list models envelope keeps context_length (PR #7541)",
+      "description": "A custom provider with base_provider_type openai pointed at an OpenAI-compatible upstream that returns context_length inside the standard {\"data\": [...]} envelope (OpenRouter-style). Before PR #7541 context_length was only read from top-level array responses (Together), so /v1/models dropped the upstream value and only the model catalog enrichment could fill it in. The profile declares openrouter_openai_compat (base openai, base_url https://openrouter.ai/api). The case fetches OpenRouter's public /api/v1/models and asserts that every model the gateway lists carries exactly the upstream context_length. Listing is free.",
+      "item": [
+        {
+          "name": "/v1/models - openai-compatible envelope context_length matches upstream - openrouter_openai_compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var prefix = 'openrouter_openai_compat/';",
+                  "pm.test('gateway listed models', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().data, 'no models listed').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.sendRequest({ url: 'https://openrouter.ai/api/v1/models', method: 'GET' }, function (err, res) {",
+                  "  pm.test('every listed model keeps the upstream context_length', function () {",
+                  "    pm.expect(err, 'upstream listing failed').to.not.be.ok;",
+                  "    pm.expect(res.code, 'upstream listing failed: ' + res.text()).to.eql(200);",
+                  "    var upstream = {};",
+                  "    res.json().data.forEach(function (m) { upstream[m.id] = m.context_length; });",
+                  "    var compared = 0, mismatches = [];",
+                  "    pm.response.json().data.forEach(function (m) {",
+                  "      var want = upstream[m.id.slice(prefix.length)];",
+                  "      if (!want) { return; }",
+                  "      compared++;",
+                  "      if (m.context_length !== want) { mismatches.push(m.id + ': got ' + m.context_length + ', want ' + want); }",
+                  "    });",
+                  "    pm.expect(compared, 'no listed model found upstream').to.be.above(0);",
+                  "    pm.expect(mismatches, 'context_length differs from upstream').to.eql([]);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=openrouter_openai_compat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter_openai_compat"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
