@@ -9628,9 +9628,16 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			}
 		}
 	}
-	// Find and remove client from in-memory config
+	// Find and remove client from in-memory config, and its prices from the
+	// catalog: the catalog is keyed by client name, so prices left there would
+	// apply to the next client registered under the same name.
 	for i, clientConfig := range c.MCPConfig.ClientConfigs {
 		if clientConfig.ID == id {
+			if c.MCPCatalog != nil {
+				for toolName := range clientConfig.ToolPricing {
+					c.MCPCatalog.DeletePricingData(clientConfig.Name, toolName)
+				}
+			}
 			c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs[:i], c.MCPConfig.ClientConfigs[i+1:]...)
 			break
 		}

@@ -381,6 +381,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -26030,6 +26031,26 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	update.RequirePublicTarget = false
 	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
 	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+}
+
+// TestRemoveMCPClient_DropsItsCatalogPricing: the pricing catalog is keyed by
+// client name, so a deleted client's prices must leave it with the client.
+// Left behind, they priced the next client registered under the same name.
+func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	stored.ToolPricing = map[string]float64{"listPets": 0.25}
+	catalog, err := mcpcatalog.Init(context.Background(), &mcpcatalog.Config{PricingData: mcpcatalog.MCPPricingData{
+		"petstore/listPets": {Server: "petstore", ToolName: "listPets", CostPerExecution: 0.25},
+		"other/listPets":    {Server: "other", ToolName: "listPets", CostPerExecution: 0.5},
+	}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	cfg.MCPCatalog = catalog
+
+	require.NoError(t, cfg.RemoveMCPClient(context.Background(), stored.ID))
+	_, priced := catalog.GetPricingData("petstore", "listPets")
+	assert.False(t, priced, "the deleted client's price is gone")
+	_, priced = catalog.GetPricingData("other", "listPets")
+	assert.True(t, priced, "another client's price stays")
 }
 
 // TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out
