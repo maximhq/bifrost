@@ -311,13 +311,28 @@ var logger atomic.Pointer[schemas.Logger]
 // noopLogger is a no-op implementation of schemas.Logger.
 type noopLogger struct{}
 
-func (noopLogger) Debug(string, ...any)                   {}
-func (noopLogger) Info(string, ...any)                    {}
-func (noopLogger) Warn(string, ...any)                    {}
-func (noopLogger) Error(string, ...any)                   {}
-func (noopLogger) Fatal(string, ...any)                   {}
-func (noopLogger) SetLevel(schemas.LogLevel)              {}
+// Debug discards debug log events.
+func (noopLogger) Debug(string, ...any) {}
+
+// Info discards informational log events.
+func (noopLogger) Info(string, ...any) {}
+
+// Warn discards warning log events.
+func (noopLogger) Warn(string, ...any) {}
+
+// Error discards error log events.
+func (noopLogger) Error(string, ...any) {}
+
+// Fatal discards fatal log events for callers without a logger.
+func (noopLogger) Fatal(string, ...any) {}
+
+// SetLevel accepts logger configuration without retaining state.
+func (noopLogger) SetLevel(schemas.LogLevel) {}
+
+// SetOutputType accepts logger configuration without retaining state.
 func (noopLogger) SetOutputType(schemas.LoggerOutputType) {}
+
+// LogHTTPRequest returns a no-op event builder.
 func (noopLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
 }
@@ -519,6 +534,7 @@ type upstreamTimingBody struct {
 	ctx   context.Context
 }
 
+// Read delegates to the response body while tracking upstream timing.
 func (b *upstreamTimingBody) Read(p []byte) (int, error) {
 	start := time.Now()
 	n, err := b.inner.Read(p)
@@ -526,6 +542,7 @@ func (b *upstreamTimingBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Close releases the upstream response body.
 func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 
 // DoHTTPRequest performs a net/http request and records the wait as upstream
@@ -1235,6 +1252,7 @@ func dialAddr(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
+// RoundTrip adapts an HTTP request to the pooled FastHTTP transport.
 func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	var body []byte
 	if req.Body != nil && req.Body != http.NoBody {
@@ -1471,6 +1489,7 @@ func envProxyDialFunc(proxyTLS *tls.Config, schemeFor func(addr string) string) 
 // clients, the SSRF dialer for URL fetches, directForLocalTargets for auth clients.
 var errBypassProxy = errors.New("target matches no_proxy: dial directly")
 
+// dialErrorFunc creates a dialer that consistently reports the supplied failure.
 func dialErrorFunc(message string) fasthttp.DialFunc {
 	return func(_ string) (net.Conn, error) {
 		return nil, fmt.Errorf("%s", message)
@@ -1711,6 +1730,7 @@ var supportedStreamingContentEncodings = map[string]struct{}{
 	"x-gzip":   {},
 }
 
+// filterSupportedAcceptEncodings retains only encodings supported by the upstream transport.
 func filterSupportedAcceptEncodings(values []string, supportedEncodings map[string]struct{}) []string {
 	filtered := make([]string, 0, len(values))
 	for _, value := range values {
@@ -1750,6 +1770,7 @@ func SetPassthroughHeadersForStreaming(ctx context.Context, req *fasthttp.Reques
 	setPassthroughHeaders(ctx, req, provider, skipHeaders, supportedStreamingContentEncodings)
 }
 
+// setPassthroughHeaders copies permitted request headers without overriding transport-owned headers.
 func setPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string, supportedEncodings map[string]struct{}) {
 	// Gate on the provider here rather than at the call sites: the Anthropic request handlers
 	// are shared with azure, vertex, bedrockmantle, vllm, sgl, deepseek and fireworks, so a
@@ -1820,6 +1841,7 @@ func StripCallerAuthForInsecureURL(requestURL string, safeHeaders map[string]str
 	}
 }
 
+// isLoopbackHost recognizes hosts that route back to this machine.
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
@@ -2035,6 +2057,7 @@ func RewriteLargePayloadModelInJSONPrefix(reader io.Reader, fromModel, toModel s
 	return io.MultiReader(bytes.NewReader(rewrittenPrefix), reader), len(rewrittenPrefix) - len(prefix)
 }
 
+// rewriteJSONModelValue updates matching model fields without rewriting unrelated JSON values.
 func rewriteJSONModelValue(data []byte, fromModel, toModel string) ([]byte, bool) {
 	if len(data) == 0 || fromModel == "" || toModel == "" || fromModel == toModel {
 		return data, false
@@ -2315,6 +2338,7 @@ const (
 	StreamBodyReadError
 )
 
+// String returns the stream body kind label.
 func (k StreamBodyKind) String() string {
 	switch k {
 	case StreamBodyNonSSE:
@@ -3455,6 +3479,7 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 // caller cannot fix a 5xx by retrying, and 5xx is what infrastructure alerting pages on.
 type invalidRequestError struct{ msg string }
 
+// Error returns the invalid-request diagnostic.
 func (e *invalidRequestError) Error() string { return e.msg }
 
 // InvalidRequestErrorf builds the error a request converter returns when the caller's own
@@ -4123,6 +4148,7 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	return r, r.cleanup
 }
 
+// cleanup releases the idle reader resources once.
 func (r *idleTimeoutReader) cleanup() {
 	r.cleanupOnce.Do(func() {
 		if r.timer.Stop() {
@@ -4133,6 +4159,7 @@ func (r *idleTimeoutReader) cleanup() {
 	})
 }
 
+// connectionClosed reports whether the idle reader connection is already closed.
 func (r *idleTimeoutReader) connectionClosed() bool {
 	if r.ctx == nil {
 		return false
@@ -4141,6 +4168,7 @@ func (r *idleTimeoutReader) connectionClosed() bool {
 	return ok && closed
 }
 
+// closedReadError returns the failure that stopped the idle reader.
 func (r *idleTimeoutReader) closedReadError() error {
 	if r.fired.Load() {
 		return ErrStreamIdleTimeout
@@ -4148,6 +4176,7 @@ func (r *idleTimeoutReader) closedReadError() error {
 	return ErrStreamClosed
 }
 
+// Read enforces the configured stream idle timeout.
 func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -4369,6 +4398,7 @@ type BifrostErrorCarrier interface {
 	BifrostError() *schemas.BifrostError
 }
 
+// ProcessAndSendError sends a stream failure through the configured post-hook path.
 func ProcessAndSendError(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -4577,6 +4607,7 @@ func WaitForStreamUsage(ctx *schemas.BifrostContext) bool {
 	return ok && waitForUsage
 }
 
+// ProviderIsResponsesAPINative reports whether a provider serves Responses requests natively.
 func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	switch providerName {
 	case schemas.OpenAI, schemas.OpenRouter, schemas.Azure:
@@ -4888,6 +4919,13 @@ func HandleMultipleListModelsRequests(
 
 	// Aggregate all successful responses
 	response := aggregateListModelsResponses(successfulResponses)
+	// Internal single-key discovery must not lose a provider's incompleteness marker
+	// before deciding whether its response can replace a last-known-good snapshot.
+	if request.KeyID != nil && request.PageSize <= 0 && request.PageToken == "" &&
+		len(successfulResponses) == 1 && successfulResponses[0] != nil {
+		response.NextPageToken = successfulResponses[0].NextPageToken
+		response.HasMore = successfulResponses[0].HasMore
+	}
 	response = response.ApplyPagination(request.PageSize, request.PageToken)
 
 	// Attach key statuses to response

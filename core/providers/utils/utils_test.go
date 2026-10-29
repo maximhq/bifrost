@@ -23,6 +23,75 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// TestListModelsDiscoveryPagination preserves native incompleteness only for an unpaged, scoped discovery.
+func TestListModelsDiscoveryPagination(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		scoped     bool
+		pageSize   int
+		pageToken  string
+		wantNative bool
+	}{
+		{"internal discovery", true, 0, "", true},
+		{"provider aggregation", false, 0, "", false},
+		{"explicit pagination", true, 1, "", false},
+		{"explicit token", true, 0, "openai/a", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			request := &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI, PageSize: tc.pageSize, PageToken: tc.pageToken}
+			if tc.scoped {
+				request.KeyID = schemas.Ptr("key")
+			}
+			resp, err := HandleMultipleListModelsRequests(ctx, []schemas.Key{{ID: "key"}}, request,
+				func(*schemas.BifrostContext, schemas.Key, *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+					return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/a"}, {ID: "openai/b"}},
+						NextPageToken: "native-next", HasMore: schemas.Ptr(true)}, nil
+				})
+			if err != nil {
+				t.Fatalf("list models: %v", err)
+			}
+			if (resp.NextPageToken == "native-next") != tc.wantNative {
+				t.Fatalf("native token = %q, want preservation %t", resp.NextPageToken, tc.wantNative)
+			}
+			if tc.wantNative && (resp.HasMore == nil || !*resp.HasMore) {
+				t.Fatal("discovery lost the provider's incomplete-listing marker")
+			}
+			if tc.pageSize == 1 && (len(resp.Data) != 1 || resp.NextPageToken == "" || resp.HasMore != nil) {
+				t.Fatalf("explicit pagination changed: %+v", resp)
+			}
+			if len(resp.KeyStatuses) != 1 || resp.KeyStatuses[0].Status != schemas.KeyStatusSuccess {
+				t.Fatalf("key status changed: %v", resp.KeyStatuses)
+			}
+		})
+	}
+}
+
+// BenchmarkListModelsDiscovery measures the scoped completeness check without network latency.
+func BenchmarkListModelsDiscovery(b *testing.B) {
+	for _, scoped := range []bool{false, true} {
+		b.Run(fmt.Sprintf("scoped=%t", scoped), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(b.Context(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			request := &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI}
+			if scoped {
+				request.KeyID = schemas.Ptr("key")
+			}
+			keys := []schemas.Key{{ID: "key"}}
+			fetch := func(*schemas.BifrostContext, schemas.Key, *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+				return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/a"}}, NextPageToken: "native-next", HasMore: schemas.Ptr(true)}, nil
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := HandleMultipleListModelsRequests(ctx, keys, request, fetch); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestRewriteJSONModelValue(t *testing.T) {
 	in := []byte(`{"model":"openai/gpt-5","messages":[{"role":"user","content":"x"}]}`)
 	out, changed := rewriteJSONModelValue(in, "openai/gpt-5", "gpt-5")
