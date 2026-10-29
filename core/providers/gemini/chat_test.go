@@ -747,6 +747,16 @@ func TestToBifrostChatCompletionStream_StreamedCallEndings(t *testing.T) {
 			wantFinish: "tool_calls",
 		},
 		{
+			name: "complete args on a part that also says willContinue win",
+			chunks: []*gemini.GenerateContentResponse{
+				chunk("", &gemini.Part{FunctionCall: &gemini.FunctionCall{Name: "write", ID: "c1", Args: []byte(`{"a":1}`), WillContinue: &yes}}),
+				chunk("", &gemini.Part{FunctionCall: &gemini.FunctionCall{}}),
+				chunk(gemini.FinishReasonStop, &gemini.Part{Text: ""}),
+			},
+			wantArgs:   `{"a":1}`,
+			wantFinish: "tool_calls",
+		},
+		{
 			name: "text after the call closes it and later leaves are dropped",
 			chunks: []*gemini.GenerateContentResponse{
 				chunk("", start(&gemini.PartialArg{JSONPath: "$.a", StringValue: str("x"), WillContinue: &yes})),

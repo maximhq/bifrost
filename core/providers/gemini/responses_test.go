@@ -2397,6 +2397,7 @@ func TestGeminiResponsesStreamStreamedCallEndings(t *testing.T) {
 		wantArgs     string
 		wantStatus   string
 		wantTerminal schemas.ResponsesStreamResponseType
+		wantNoDone   bool // a truncated call gets no function_call_arguments.done
 	}{
 		{
 			name: "MAX_TOKENS",
@@ -2404,7 +2405,16 @@ func TestGeminiResponsesStreamStreamedCallEndings(t *testing.T) {
 				chunk("", start(&PartialArg{JSONPath: "$.path", StringValue: str("/etc/x")}, &PartialArg{JSONPath: "$.content", StringValue: str("half of the fi"), WillContinue: &yes})),
 				chunk(FinishReasonMaxTokens, &Part{Text: ""}),
 			},
-			wantArgs: `{"path":"/etc/x","content":"half of the fi`, wantStatus: "incomplete", wantTerminal: schemas.ResponsesStreamResponseTypeIncomplete,
+			wantArgs: `{"path":"/etc/x","content":"half of the fi`, wantStatus: "incomplete", wantTerminal: schemas.ResponsesStreamResponseTypeIncomplete, wantNoDone: true,
+		},
+		{
+			name: "complete args on a part that also says willContinue",
+			chunks: []*GenerateContentResponse{
+				chunk("", &Part{FunctionCall: &FunctionCall{Name: "write", ID: "c1", Args: json.RawMessage(`{"a":1}`), WillContinue: &yes}}),
+				chunk("", &Part{FunctionCall: &FunctionCall{}}),
+				chunk(FinishReasonStop, &Part{Text: ""}),
+			},
+			wantArgs: `{"a":1}`, wantStatus: "completed", wantTerminal: schemas.ResponsesStreamResponseTypeCompleted,
 		},
 		{
 			name: "STOP",
@@ -2457,12 +2467,80 @@ func TestGeminiResponsesStreamStreamedCallEndings(t *testing.T) {
 				}
 			}
 			assert.Equal(t, tt.wantArgs, deltas)
-			assert.Equal(t, deltas, done)
-			assert.Equal(t, done, itemArgs)
+			assert.Equal(t, tt.wantArgs, itemArgs)
+			if tt.wantNoDone {
+				assert.Empty(t, done, "a truncated call must not get function_call_arguments.done")
+			} else {
+				assert.Equal(t, deltas, done)
+			}
 			assert.Equal(t, tt.wantStatus, itemStatus)
 			assert.Equal(t, tt.wantTerminal, terminal)
 			if messageOpenedAt >= 0 {
 				assert.Less(t, callClosedAt, messageOpenedAt, "the function_call item must close before the message item opens")
+			}
+		})
+	}
+}
+
+// TestGeminiResponsesStreamTruncatedStreamedCallNeverReachesGenAIAsComplete pins the typed
+// /genai egress for a streamed call that was cut off: the GenAI client must not receive a
+// functionCall at all (before the fix it got one with args {}, losing even the finished
+// leaves, which a client such as ADK would execute), and the finishReason must still reach
+// it. Covers both a MAX_TOKENS finish and an upstream EOF mid-call.
+func TestGeminiResponsesStreamTruncatedStreamedCallNeverReachesGenAIAsComplete(t *testing.T) {
+	yes := true
+	str := func(s string) *string { return &s }
+	opening := &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{
+		FunctionCall: &FunctionCall{Name: "write", ID: "c1", WillContinue: &yes, PartialArgs: []*PartialArg{
+			{JSONPath: "$.path", StringValue: str("/etc/x")},
+			{JSONPath: "$.body", StringValue: str("partial"), WillContinue: &yes},
+		}},
+	}}}}}}
+	maxTokens := &GenerateContentResponse{
+		Candidates:    []*Candidate{{FinishReason: FinishReasonMaxTokens, Content: &Content{Role: "model", Parts: []*Part{{Text: ""}}}}},
+		UsageMetadata: &GenerateContentResponseUsageMetadata{TotalTokenCount: 5},
+	}
+	for _, tc := range []struct {
+		name       string
+		finish     func(state *GeminiResponsesStreamState, seq int) []*schemas.BifrostResponsesStreamResponse
+		wantFinish FinishReason // "" means only "no functionCall" is asserted
+	}{
+		{"MAX_TOKENS", func(state *GeminiResponsesStreamState, seq int) []*schemas.BifrostResponsesStreamResponse {
+			out, bErr := maxTokens.ToBifrostResponsesStream(seq, state)
+			require.Nil(t, bErr)
+			return out
+		}, FinishReasonMaxTokens},
+		{"upstream EOF mid-call", func(state *GeminiResponsesStreamState, seq int) []*schemas.BifrostResponsesStreamResponse {
+			return FinalizeGeminiResponsesStream(state, nil, seq)
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := acquireGeminiResponsesStreamState()
+			defer releaseGeminiResponsesStreamState(state)
+			events, bErr := opening.ToBifrostResponsesStream(0, state)
+			require.Nil(t, bErr)
+			events = append(events, tc.finish(state, len(events))...)
+
+			out := NewBifrostToGeminiStreamState()
+			var finishes []FinishReason
+			for _, ev := range events {
+				g := ToGeminiResponsesStreamResponse(ev, out)
+				if g == nil || len(g.Candidates) == 0 {
+					continue
+				}
+				c := g.Candidates[0]
+				if c.FinishReason != "" {
+					finishes = append(finishes, c.FinishReason)
+				}
+				if c.Content == nil {
+					continue
+				}
+				for _, p := range c.Content.Parts {
+					assert.Nil(t, p.FunctionCall, "a truncated streamed call reached /genai as a complete functionCall: %s %s", p.FunctionCall.Name, p.FunctionCall.Args)
+				}
+			}
+			if tc.wantFinish != "" {
+				assert.Contains(t, finishes, tc.wantFinish, "the finish reason must still reach /genai")
 			}
 		})
 	}

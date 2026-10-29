@@ -377,10 +377,11 @@ func appendGeminiJSONStringContent(dst []byte, s string) []byte {
 	return append(dst, s[start:]...)
 }
 
-// isStreamStart reports whether fc opens a streamed call: it names the function and
-// either already carries partialArgs or announces more parts.
+// isStreamStart reports whether fc opens a streamed call: it names the function, carries
+// no complete args (complete args always win), and either already carries partialArgs or
+// announces more parts.
 func (fc *FunctionCall) isStreamStart() bool {
-	return fc.Name != "" && (fc.PartialArgs != nil || (fc.WillContinue != nil && *fc.WillContinue))
+	return fc.Name != "" && len(fc.Args) == 0 && (fc.PartialArgs != nil || (fc.WillContinue != nil && *fc.WillContinue))
 }
 
 // isStreamContinuation reports whether fc carries more of the open streamed call. A bare

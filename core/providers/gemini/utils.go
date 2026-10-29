@@ -2003,10 +2003,15 @@ func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage,
 	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 }
 
-// streamFunctionCallArgumentsExtraParamKey carries a caller's explicit
-// streamFunctionCallArguments through the neutral request (from the typed GenAI ingress, or
-// as an extra param on /v1 routes) to the Gemini request builders.
+// streamFunctionCallArgumentsExtraParamKey is the extra param a /v1 caller sets to choose
+// streamFunctionCallArguments explicitly; the Gemini request builders consume it.
 const streamFunctionCallArgumentsExtraParamKey = "stream_function_call_arguments"
+
+// streamFunctionCallArgumentsContextKey carries a typed /genai caller's explicit
+// toolConfig.functionCallingConfig.streamFunctionCallArguments (a bool) from
+// ToBifrostResponsesRequest to ToGeminiResponsesRequest. It rides on the context rather than
+// ExtraParams so a /genai request routed to a non-Gemini provider never forwards it.
+const streamFunctionCallArgumentsContextKey schemas.BifrostContextKey = "bifrost-gemini-stream-function-call-arguments"
 
 // takeStreamFunctionCallArgumentsParam moves an explicit stream_function_call_arguments
 // extra param onto req, removing it from req.ExtraParams so passthrough never sends it as

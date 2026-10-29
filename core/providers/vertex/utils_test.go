@@ -1977,12 +1977,17 @@ func TestVertexGeminiStreamFunctionCallArgumentsOnTheWire(t *testing.T) {
 			Params:   params,
 		}
 	}
-	genai := func(body string) *schemas.BifrostResponsesRequest {
+	// The GenAI integration converts with the same context the provider call later runs on.
+	genaiOn := func(ctx *schemas.BifrostContext, body string) *schemas.BifrostResponsesRequest {
 		var in gemini.GeminiGenerationRequest
 		if err := in.UnmarshalJSON([]byte(body)); err != nil {
 			t.Fatalf("genai body: %v", err)
 		}
-		return in.ToBifrostResponsesRequest(newCtx())
+		return in.ToBifrostResponsesRequest(ctx)
+	}
+	genai := func(body string) *schemas.BifrostResponsesRequest { return genaiOn(newCtx(), body) }
+	genaiStream := func(ctx *schemas.BifrostContext, body string) *schemas.BifrostError {
+		return drain(provider.ResponsesStream(ctx, noHooks, nil, key, genaiOn(ctx, body)))
 	}
 	genaiBody := func(model, toolConfig string) string {
 		return `{"model":"vertex/` + model + `","contents":[{"role":"user","parts":[{"text":"write it"}]}],` +
@@ -2055,11 +2060,18 @@ func TestVertexGeminiStreamFunctionCallArgumentsOnTheWire(t *testing.T) {
 			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-3.8-flash", ""))))
 		}, ":streamGenerateContent", "true", "", nil},
 		{"/genai stream explicit false is kept", func() *schemas.BifrostError {
-			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-3.8-flash", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`))))
+			return genaiStream(newCtx(), genaiBody("gemini-3.8-flash", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`))
 		}, ":streamGenerateContent", "false", `"AUTO"`, nil},
 		{"/genai stream explicit snake_case true reaches a model outside the default", func() *schemas.BifrostError {
-			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-2.5-pro", `,"tool_config":{"function_calling_config":{"stream_function_call_arguments":true}}`))))
+			return genaiStream(newCtx(), genaiBody("gemini-2.5-pro", `,"tool_config":{"function_calling_config":{"stream_function_call_arguments":true}}`))
 		}, ":streamGenerateContent", "true", `"AUTO"`, nil},
+		{"/genai to Claude on Vertex with extra-param passthrough does not leak the flag", func() *schemas.BifrostError {
+			ctx := passthroughCtx()
+			_, e := provider.Responses(ctx, key, genaiOn(ctx, `{"model":"vertex/claude-sonnet-4-6","contents":[{"role":"user","parts":[{"text":"write it"}]}],`+
+				`"tools":[{"functionDeclarations":[{"name":"write","parameters":{"type":"OBJECT","properties":{"content":{"type":"STRING"}}}}]}],`+
+				`"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":true}}}`))
+			return e
+		}, ":rawPredict", "", "", nil},
 		{"/v1/chat/completions stream extra param false is kept and not forwarded", func() *schemas.BifrostError {
 			params := &schemas.ChatParameters{Tools: chatTools(), ExtraParams: map[string]interface{}{"stream_function_call_arguments": false}}
 			return drain(provider.ChatCompletionStream(passthroughCtx(), noHooks, nil, key, chat("gemini-3.8-flash", params)))
@@ -2075,7 +2087,8 @@ func TestVertexGeminiStreamFunctionCallArgumentsOnTheWire(t *testing.T) {
 			return e
 		}, ":generateContent", "", "", nil},
 		{"/genai unary explicit true is not sent", func() *schemas.BifrostError {
-			_, e := provider.Responses(newCtx(), key, genai(genaiBody("gemini-3.8-flash", `,"toolConfig":{"functionCallingConfig":{"streamFunctionCallArguments":true}}`)))
+			ctx := newCtx()
+			_, e := provider.Responses(ctx, key, genaiOn(ctx, genaiBody("gemini-3.8-flash", `,"toolConfig":{"functionCallingConfig":{"streamFunctionCallArguments":true}}`)))
 			return e
 		}, ":generateContent", "", `"AUTO"`, nil},
 
@@ -2091,7 +2104,7 @@ func TestVertexGeminiStreamFunctionCallArgumentsOnTheWire(t *testing.T) {
 			return legacyResponsesBody(responses("gemini-3.1-flash-lite", &schemas.ResponsesParameters{Tools: responsesTools(writeResponsesTool)}))
 		}},
 		{"/genai stream explicit false on Gemini 2.5 (nothing to opt out of)", func() *schemas.BifrostError {
-			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, key, genai(genaiBody("gemini-2.5-pro", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`))))
+			return genaiStream(newCtx(), genaiBody("gemini-2.5-pro", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`))
 		}, ":streamGenerateContent", "", `"AUTO"`, func() string {
 			return legacyResponsesBody(genai(genaiBody("gemini-2.5-pro", `,"toolConfig":{"functionCallingConfig":{"mode":"AUTO","streamFunctionCallArguments":false}}`)))
 		}},

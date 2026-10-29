@@ -426,6 +426,7 @@ func TestFunctionCallStreamClassification(t *testing.T) {
 		{"complete call", FunctionCall{Name: "f", Args: json.RawMessage(`{"a":1}`)}, false, false, true},
 		{"complete call without args", FunctionCall{Name: "f"}, false, false, true},
 		{"streamed start without leaves", FunctionCall{Name: "f", ID: "1", WillContinue: &yes}, true, false, false},
+		{"complete args win over willContinue", FunctionCall{Name: "f", Args: json.RawMessage(`{"a":1}`), WillContinue: &yes}, false, false, false},
 		{"streamed start with leaves", FunctionCall{Name: "f", PartialArgs: []*PartialArg{numArg("$.a", "1")}, WillContinue: &yes}, true, false, false},
 		{"single-part streamed call", FunctionCall{Name: "f", PartialArgs: []*PartialArg{numArg("$.a", "1")}}, true, false, true},
 		{"continuation", FunctionCall{PartialArgs: []*PartialArg{numArg("$.a", "1")}, WillContinue: &yes}, false, true, false},
@@ -557,6 +558,15 @@ func BenchmarkApplyStreamFunctionCallArguments(b *testing.B) {
 			}
 		})
 	}
+	// The common Vertex Gemini 3 shape: tools without tool_choice, so no toolConfig yet.
+	b.Run("vertex gemini 3 applies without toolConfig", func(b *testing.B) {
+		req := &GeminiGenerationRequest{Tools: declarations}
+		b.ReportAllocs()
+		for b.Loop() {
+			req.ToolConfig = nil
+			ApplyStreamFunctionCallArguments(req, schemas.Vertex, "gemini-3.8-flash")
+		}
+	})
 }
 
 // BenchmarkGeminiChatStreamFunctionCallChunk compares the per-chunk conversion cost of a

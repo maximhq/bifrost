@@ -92,8 +92,10 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 			params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
 		}
 		params.IncludeServerSideToolInvocations = request.ToolConfig.IncludeServerSideToolInvocations
-		if fc := request.ToolConfig.FunctionCallingConfig; fc != nil && fc.StreamFunctionCallArguments != nil {
-			params.ExtraParams[streamFunctionCallArgumentsExtraParamKey] = *fc.StreamFunctionCallArguments
+		// Carried on the context, not ExtraParams, so it can only reach the Gemini request
+		// builders and never another provider's body through extra-param passthrough.
+		if fc := request.ToolConfig.FunctionCallingConfig; fc != nil && fc.StreamFunctionCallArguments != nil && ctx != nil {
+			ctx.SetValue(streamFunctionCallArgumentsContextKey, *fc.StreamFunctionCallArguments)
 		}
 
 		// Search localization rides on the web_search tool, the only tool it applies to.
@@ -229,6 +231,13 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 
 		if bifrostReq.Params.ServiceTier != nil {
 			geminiReq.ServiceTier = mapBifrostServiceTierToGemini(*bifrostReq.Params.ServiceTier)
+		}
+	}
+
+	// A typed /genai caller's explicit streamFunctionCallArguments (see ToBifrostResponsesRequest).
+	if geminiReq.streamFunctionCallArguments == nil && ctx != nil {
+		if enabled, ok := ctx.Value(streamFunctionCallArgumentsContextKey).(bool); ok {
+			geminiReq.streamFunctionCallArguments = &enabled
 		}
 	}
 
@@ -2241,15 +2250,17 @@ func (state *GeminiResponsesStreamState) appendStreamedFunctionCallArgs(fc *Func
 // closeStreamedFunctionCall ends the open streamed call, if any, when the stream moves on
 // without Vertex's end marker. complete is true when the call is finished (another call or
 // other content starts, or the candidate stops cleanly): its JSON is closed and the item
-// completed. Otherwise (MAX_TOKENS and the like) the arguments stay as far as they got and
-// the item is incomplete, so a truncated call never reads as a complete one.
+// completed. Otherwise (MAX_TOKENS, an error finish, upstream EOF) the arguments stay as far
+// as they got, no function_call_arguments.done is emitted, and output_item.done reports the
+// item incomplete. Egresses that build a call from the done event (typed /genai) therefore
+// never see a truncated call as a complete one.
 func (state *GeminiResponsesStreamState) closeStreamedFunctionCall(sequenceNumber int, complete bool) []*schemas.BifrostResponsesStreamResponse {
 	if state.streamedCallOutputIndex < 0 {
 		return nil
 	}
 	if !complete {
 		state.streamedCallWriter.reset()
-		return state.finishStreamedFunctionCallWithStatus(sequenceNumber, "incomplete")
+		return state.endStreamedFunctionCall(sequenceNumber, false)
 	}
 	state.streamedCallBuf = state.streamedCallWriter.appendClose(state.streamedCallBuf[:0])
 	responses := state.streamedFunctionCallDelta(sequenceNumber)
@@ -2276,10 +2287,13 @@ func (state *GeminiResponsesStreamState) streamedFunctionCallDelta(sequenceNumbe
 // finishStreamedFunctionCall emits function_call_arguments.done and output_item.done for
 // the open streamed call, both carrying the concatenation of its deltas, and forgets it.
 func (state *GeminiResponsesStreamState) finishStreamedFunctionCall(sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
-	return state.finishStreamedFunctionCallWithStatus(sequenceNumber, "completed")
+	return state.endStreamedFunctionCall(sequenceNumber, true)
 }
 
-func (state *GeminiResponsesStreamState) finishStreamedFunctionCallWithStatus(sequenceNumber int, status string) []*schemas.BifrostResponsesStreamResponse {
+// endStreamedFunctionCall emits the closing events of the open streamed call and forgets
+// it: function_call_arguments.done and a completed output_item.done when complete, only an
+// incomplete output_item.done otherwise.
+func (state *GeminiResponsesStreamState) endStreamedFunctionCall(sequenceNumber int, complete bool) []*schemas.BifrostResponsesStreamResponse {
 	outputIndex := state.streamedCallOutputIndex
 	itemID := state.streamedCallItemID
 	name := state.streamedCallName
@@ -2289,31 +2303,34 @@ func (state *GeminiResponsesStreamState) finishStreamedFunctionCallWithStatus(se
 	state.streamedCallName = ""
 	state.streamedCallArgs.Reset()
 
-	return []*schemas.BifrostResponsesStreamResponse{
-		{
+	var responses []*schemas.BifrostResponsesStreamResponse
+	status := "incomplete"
+	if complete {
+		status = "completed"
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 			SequenceNumber: sequenceNumber,
 			OutputIndex:    &outputIndex,
 			ItemID:         &itemID,
 			Arguments:      &args,
-		},
-		{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-			SequenceNumber: sequenceNumber + 1,
-			OutputIndex:    &outputIndex,
-			ItemID:         &itemID,
-			Item: &schemas.ResponsesMessage{
-				ID:     &itemID,
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: &status,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID:    &itemID,
-					Name:      &name,
-					Arguments: &args,
-				},
+		})
+	}
+	return append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ItemID:         &itemID,
+		Item: &schemas.ResponsesMessage{
+			ID:     &itemID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Status: &status,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    &itemID,
+				Name:      &name,
+				Arguments: &args,
 			},
 		},
-	}
+	})
 }
 
 // geminiCodeInterpreterItem rebuilds the code_interpreter_call item for the currently
