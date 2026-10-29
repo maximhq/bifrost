@@ -3,6 +3,7 @@ package cohere
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -109,7 +110,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Coh
 		cohereReq.OutputDimension = bifrostReq.Params.Dimensions
 
 		if bifrostReq.Params.ExtraParams != nil {
-			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
+			cohereReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 
 			if embeddingTypes, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["embedding_types"]); ok {
 				delete(cohereReq.ExtraParams, "embedding_types")

@@ -2,6 +2,7 @@ package cohere
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -1302,7 +1303,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 			cohereReq.ResponseFormat = responseFormat
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
+			cohereReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 				delete(cohereReq.ExtraParams, "top_k")
 				cohereReq.K = topK
@@ -1321,6 +1322,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 			}
 			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
 				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
+					thinkingMap = maps.Clone(thinkingMap)
 					thinking := &CohereThinking{}
 					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
 						delete(thinkingMap, "type")
@@ -1331,7 +1333,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 						thinking.TokenBudget = tokenBudget
 					}
 					cohereReq.Thinking = thinking
-					bifrostReq.Params.ExtraParams["thinking"] = thinkingMap
+					cohereReq.ExtraParams["thinking"] = thinkingMap
 				}
 			}
 		}
