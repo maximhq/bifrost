@@ -63,6 +63,74 @@ func TestIsAuthFailureErrorText_OpposesIsTransientErrorOnAuthText(t *testing.T) 
 	}
 }
 
+// isAuthFailure matches mcp-go's typed 401 through any wrapping, and falls back to the text.
+func TestIsAuthFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"typed 401", &transport.AuthorizationRequiredError{}, true},
+		{"typed oauth 401", &transport.OAuthAuthorizationRequiredError{}, true},
+		{"transport-wrapped 401", transport.NewError(&transport.AuthorizationRequiredError{}), true},
+		{"fmt-wrapped 401", fmt.Errorf("call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{})), true},
+		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), true},
+		{"status text", errors.New("tool call failed: 401 Unauthorized"), true},
+		{"unrelated", errors.New("connection refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAuthFailure(tc.err); got != tc.want {
+				t.Errorf("isAuthFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// BenchmarkIsAuthFailure measures classifying a failed tool call: mcp-go's typed 401, the same
+// wrapped, one that reaches us only as text, and an unrelated error. Runs on failed calls only.
+func BenchmarkIsAuthFailure(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"typed", &transport.AuthorizationRequiredError{}},
+		{"wrapped", fmt.Errorf("MCP tool call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{}))},
+		{"text-only", errors.New("MCP tool call failed: transport error: 401 Unauthorized")},
+		{"not-auth", fmt.Errorf("MCP tool call failed: %w", transport.NewError(errors.New("connection refused")))},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = isAuthFailure(tc.err)
+			}
+		})
+	}
+}
+
+// mcp-go v1.3.0 reports a 401 as AuthorizationRequiredError ("authorization required"), with no
+// status code in the text: dials and probes must not retry it.
+func TestAuthorizationRequiredIsPermanentForDialAndProbe(t *testing.T) {
+	for name, err := range map[string]error{
+		"plain":   transport.NewError(&transport.AuthorizationRequiredError{}),
+		"oauth":   transport.NewError(&transport.OAuthAuthorizationRequiredError{}),
+		"wrapped": fmt.Errorf("failed to initialize MCP client: %w", transport.NewError(&transport.AuthorizationRequiredError{})),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if isTransientError(err) {
+				t.Errorf("isTransientError(%q) = true, want false", err)
+			}
+			if isTransientProbeError(err) {
+				t.Errorf("isTransientProbeError(%q) = true, want false", err)
+			}
+			if isTransientToolCallError(err) {
+				t.Errorf("isTransientToolCallError(%q) = true, want false", err)
+			}
+		})
+	}
+}
+
 // isAuthFailureErrorText must NOT match Bifrost's own internal
 // ErrOAuth2TokenExpired sentinel text (schemas.ErrOAuth2TokenExpired says
 // "oauth2 token expired") — that sentinel is a genuinely different failure
@@ -440,6 +508,30 @@ func TestExecuteTool_AuthFailureRetry_PerUser_SucceedsOnSecondAttempt(t *testing
 	}
 	if got := cm.reconnectCalls.Load(); got != 0 {
 		t.Errorf("per-user path must never call ReconnectClient, got %d calls", got)
+	}
+}
+
+// The 401 mcp-go v1.3.0 returns carries no status code in its text, only "authorization
+// required"; it must still force a refresh and one retry.
+func TestExecuteTool_AuthFailureRetry_PerUser_AuthorizationRequiredError(t *testing.T) {
+	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+
+	ft := &fakeCallToolTransport{callErrs: []error{transport.NewError(&transport.AuthorizationRequiredError{})}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cs := &authRetryCredStore{requiresPerCall: true}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig, state.ToolNameMapping); err != nil {
+		t.Fatalf("expected the retry to succeed, got error: %v", err)
+	}
+	if got := ft.CallCount(); got != 2 {
+		t.Errorf("expected 2 CallTool invocations (original + 1 retry), got %d", got)
+	}
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("expected ForceRefresh to be called once, got %d", got)
 	}
 }
 
