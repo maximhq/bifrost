@@ -1647,7 +1647,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// would make polling consume a caller's request allowance for nothing. Charging what was measured
 	// keeps the two apart without this having to know one provider's route shapes from another's.
 	chargeablePassthrough := result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil
-	if requestedModel != "" || chargeablePassthrough {
+	// A request told not to be checked against its limits is not charged against them either.
+	if (requestedModel != "" || chargeablePassthrough) && !spendingChecksSkipped(ctx) {
 		// Collect the affected budget and rate-limit IDs synchronously (fast in-memory
 		// lookups) and attach them to the context. The logging plugin reads these keys
 		// when building the log entry, enabling ghost-node usage reconciliation to
