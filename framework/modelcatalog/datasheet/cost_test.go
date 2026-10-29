@@ -2210,6 +2210,23 @@ func TestCalculateCost_VertexPrefixedImageModelOverChatUsesImageRow(t *testing.T
 	assert.InDelta(t, 0.067204, s.CalculateCost(resp, nil), 1e-12)
 }
 
+func TestCalculateBatchCostDetails_ImageRowFallbackStaysUnpriced(t *testing.T) {
+	// Batch settlement has no image-token batch rate, so the chat/responses image fallback must not price the row as text
+	s := geminiFlashImageStore()
+	imageTokens := 1120
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1120,
+		TotalTokens:             1128,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	}
+	for _, rt := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ResponsesRequest} {
+		details := s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-3.1-flash-image", rt, nil)
+		assert.False(t, details.Priced, "request type %s", rt)
+		assert.Zero(t, details.Cost, "request type %s", rt)
+	}
+}
+
 func TestCalculateCost_TextModelMissStaysUnpriced(t *testing.T) {
 	// The image_generation fallback must not invent a price for a model with no row at all
 	resp := makeChatResponse(schemas.Gemini, "gemini-unknown", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20})

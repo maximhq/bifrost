@@ -345,6 +345,10 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	if pricing == nil {
 		return BatchCostDetails{}
 	}
+	// An image row reached through the chat/responses fallback has no batch image-token rate; leave it unpriced
+	if pricing.Mode == normalizeRequestType(schemas.ImageGenerationRequest) {
+		return BatchCostDetails{}
+	}
 
 	switch normalizeStreamRequestType(requestType) {
 	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
