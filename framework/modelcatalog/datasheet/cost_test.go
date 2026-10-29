@@ -2227,6 +2227,26 @@ func TestCalculateBatchCostDetails_ImageRowFallbackStaysUnpriced(t *testing.T) {
 	}
 }
 
+func TestCalculateBatchCostDetails_ImageRowFallbackKeepsOverrideOnlyPricing(t *testing.T) {
+	// Before the image fallback, a chat override for an image-only model priced batch rows on its own
+	s := geminiFlashImageStore()
+	providerID := "gemini"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "flash-image-chat-batch",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          "gemini-3.1-flash-image",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token_batches":0.000001,"output_cost_per_token_batches":0.00002}`,
+	}}))
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 1000, TotalTokens: 1100}
+	details := s.CalculateBatchCostDetailsForUsage(usage, schemas.Gemini, "gemini-3.1-flash-image", schemas.ChatCompletionRequest, nil)
+	require.True(t, details.Priced)
+	// Override rates only, not the catalog image row: 100*0.000001 + 1000*0.00002
+	assert.InDelta(t, 0.0201, details.Cost, 1e-12)
+}
+
 func TestCalculateCost_TextModelMissStaysUnpriced(t *testing.T) {
 	// The image_generation fallback must not invent a price for a model with no row at all
 	resp := makeChatResponse(schemas.Gemini, "gemini-unknown", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20})

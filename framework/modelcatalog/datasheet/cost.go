@@ -345,9 +345,17 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	if pricing == nil {
 		return BatchCostDetails{}
 	}
-	// An image row reached through the chat/responses fallback has no batch image-token rate; leave it unpriced
+	// An image row reached through the chat/responses fallback has no batch image-token rate: price from a
+	// custom override alone, as before that fallback existed, or leave the row unpriced
 	if pricing.Mode == normalizeRequestType(schemas.ImageGenerationRequest) {
-		return BatchCostDetails{}
+		if lookupScopes.Provider == "" {
+			lookupScopes.Provider = string(provider)
+		}
+		overridden, applied := s.applyPricingOverrides(model, normalizeStreamRequestType(requestType), configstoreTables.TableModelPricing{}, lookupScopes)
+		if !applied {
+			return BatchCostDetails{}
+		}
+		pricing = &overridden
 	}
 
 	switch normalizeStreamRequestType(requestType) {
