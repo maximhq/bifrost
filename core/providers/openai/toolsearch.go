@@ -44,13 +44,8 @@ func (req *OpenAIResponsesRequest) provisionToolSearch(supported, disableBuiltin
 			searchIdx = i
 		}
 	}
-	if !hasDeferred && searchIdx < 0 {
-		req.dropTypedToolSearchCalls()
-		return
-	}
-	// An explicit search tool keeps its semantics. Without one, opting out leaves
-	// functions (including a client search function) eager instead of adding a built-in.
-	if disableBuiltinToolRewriting && searchIdx < 0 {
+	// Without an explicit search tool, opted-out functions go out eagerly.
+	if searchIdx < 0 && (!hasDeferred || disableBuiltinToolRewriting) {
 		req.dropTypedToolSearchCalls()
 		return
 	}

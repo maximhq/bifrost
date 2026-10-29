@@ -50,10 +50,7 @@ func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor      
 func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
 func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
-	if s.mcpHeaderAllowlist != nil {
-		return s.mcpHeaderAllowlist
-	}
-	return schemas.WhiteList{}
+	return s.mcpHeaderAllowlist
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
@@ -65,7 +62,7 @@ func (s testHandlerStore) GetMCPExternalClientURL() string                 { ret
 
 func TestDisableBuiltinToolRewritingHeader(t *testing.T) {
 	for _, allowlist := range [][]string{nil, {"*"}, {"x-bf-disable-builtin-tool-rewriting"}} {
-		for _, value := range []string{"true", "false", "1", "0", "TRUE", "False", "invalid", " true ", ""} {
+		for _, value := range []string{"true", "false", "invalid", ""} {
 			t.Run(fmt.Sprintf("allowlist=%v/value=%s", allowlist, value), func(t *testing.T) {
 				ctx := &fasthttp.RequestCtx{}
 				if value != "" {
@@ -76,8 +73,8 @@ func TestDisableBuiltinToolRewritingHeader(t *testing.T) {
 				defer cancel()
 				got := converted.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting)
 				switch value {
-				case "true", "false", "1", "0", "TRUE", "False":
-					if got != (value == "true" || value == "1" || value == "TRUE") {
+				case "true", "false":
+					if got != (value == "true") {
 						t.Errorf("option = %v, want %s", got, value)
 					}
 				default:

@@ -83,28 +83,16 @@ var reservedToolNamespaces = map[schemas.ModelProvider][]string{
 	schemas.BedrockMantle: {"web", "image_gen", "browser", "python"},
 }
 
-// resolveReservedToolNamespaces returns the reserved-name set for one attempt:
-// the datasheet row for (toolProvider, capModel) when it publishes one, else the
-// hardcoded fallback. toolProvider is the BASE provider, so a custom provider
-// wrapping Mantle reads the bedrock_mantle row and the bedrock_mantle fallback.
-func resolveReservedToolNamespaces(toolProvider schemas.ModelProvider, capModel string) map[string]bool {
-	names := ReservedToolNamespaces(toolProvider, capModel)
-	if len(names) == 0 {
-		return nil
-	}
-	reserved := make(map[string]bool, len(names))
+// ReservedToolNamespaces returns the read-only reserved names for a base provider,
+// honoring the model datasheet override.
+func ReservedToolNamespaces(toolProvider schemas.ModelProvider, capModel string) []string {
+	names := schemas.ResolveModelCaps(toolProvider, capModel).ReservedToolNamespaces(reservedToolNamespaces[toolProvider])
 	for _, name := range names {
 		if name != "" {
-			reserved[name] = true
+			return names
 		}
 	}
-	return reserved
-}
-
-// ReservedToolNamespaces returns the provider's reserved namespace names for one
-// attempt, honoring the datasheet override. The returned slice is read-only.
-func ReservedToolNamespaces(provider schemas.ModelProvider, model string) []string {
-	return schemas.ResolveModelCaps(provider, model).ReservedToolNamespaces(reservedToolNamespaces[provider])
+	return nil
 }
 
 // dropReservedNamespaceTools returns a copy of tools without the namespace tools
@@ -115,14 +103,14 @@ func ReservedToolNamespaces(provider schemas.ModelProvider, model string) []stri
 // external_web_access=false, matching what Codex sends to non-OpenAI providers and
 // what AWS documents for Codex on Mantle
 // (https://docs.aws.amazon.com/bedrock/latest/userguide/web-search.html).
-func dropReservedNamespaceTools(tools []schemas.ResponsesTool, reserved map[string]bool, substituteWebSearch bool) []schemas.ResponsesTool {
+func dropReservedNamespaceTools(tools []schemas.ResponsesTool, reserved []string, substituteWebSearch bool) []schemas.ResponsesTool {
 	out := make([]schemas.ResponsesTool, 0, len(tools)+1)
 	droppedWeb, hasWebSearch := false, false
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeWebSearch {
 			hasWebSearch = true
 		}
-		if tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && reserved[*tool.Name] {
+		if tool.Type == schemas.ResponsesToolTypeNamespace && tool.Name != nil && *tool.Name != "" && slices.Contains(reserved, *tool.Name) {
 			if *tool.Name == "web" {
 				droppedWeb = true
 			}
@@ -1121,7 +1109,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.Tools = append(append(make([]schemas.ResponsesTool, 0, len(req.Tools)+len(hoistedTools)), req.Tools...), hoistedTools...)
 	}
 
-	// Drop namespace tools the provider reserves; they are a hard 400. Runs after
+	// Unless opted out, drop reserved namespaces; core flattens them on opt-out. Runs after
 	// the hoist so additional_tools namespaces get the same treatment, and before
 	// filterUnsupportedTools so a substituted web_search goes through its copy path.
 	// Match on the base provider: a custom provider built on bedrock reports its own
@@ -1129,9 +1117,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// namespace would reach AWS.
 	toolProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	disableBuiltinToolRewriting := len(req.Tools) > 0 && ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting) == true
-	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
-		substitute := !disableBuiltinToolRewriting && toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
-		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
+	if len(req.Tools) > 0 && !disableBuiltinToolRewriting {
+		if reserved := ReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 {
+			substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
+			req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
+		}
 	}
 
 	// Runs before the normalization below so the rewritten tools are normalized too.

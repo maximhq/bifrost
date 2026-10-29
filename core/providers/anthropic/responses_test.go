@@ -34,30 +34,6 @@ func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
 	}
 }
 
-func TestBuiltinToolRewritingCustomTypesAreNotPromoted(t *testing.T) {
-	for _, typ := range []string{"web_search_custom", "web_fetch_custom", "computer_custom", "text_editor_custom", "bash_custom"} {
-		t.Run(typ, func(t *testing.T) {
-			name := "my_custom_tool"
-			tool := &AnthropicTool{Type: schemas.Ptr(AnthropicToolType(typ)), Name: name, InputSchema: &schemas.ToolFunctionParameters{Type: "object"}}
-			neutral := convertAnthropicToolToBifrost(tool)
-			if neutral.Type != schemas.ResponsesToolTypeFunction || neutral.Name == nil || *neutral.Name != name || neutral.ResponsesToolFunction == nil {
-				t.Fatalf("custom tool promoted: %+v", neutral)
-			}
-			raw := []byte(fmt.Sprintf(`{"model":"claude-sonnet-4-5","tools":[{"type":%q,"name":%q,"display_width_px":1024,"display_height_px":768,"input_schema":{"type":"object"}}]}`, typ, name))
-			out, err := RemapRawToolVersionsForProvider(raw, schemas.Vertex, "claude-sonnet-4-5")
-			if typ == "web_fetch_custom" {
-				if err == nil {
-					t.Fatal("unsupported native type must be rejected, not promoted")
-				}
-				return
-			}
-			if err != nil || string(out) != string(raw) {
-				t.Fatalf("unknown native type must not be remapped: %s, err=%v", out, err)
-			}
-		})
-	}
-}
-
 // TestAnthropicContainerRoundTrip covers issue #5707: the "container" request
 // param (string id for container reuse, or object with skills[]) must survive
 // the /v1/messages ingress-to-egress round trip. Both forms were silently

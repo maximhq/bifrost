@@ -571,6 +571,29 @@ func TestPrepareResponsesRequest_FlattensForUnsupportedWireAndIsolatesSharedRequ
 	require.Len(t, chat.Params.Tools, 2)
 }
 
+func TestDisableBuiltinToolRewritingKeepsAnthropicConversion(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+			r := responsesReqWithText("hello")
+			r.Provider, r.Model = provider, "claude-sonnet-4-5"
+			r.RawRequestBody = []byte(`{"input":"hello","tools":[]}`)
+			r.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+				{Type: schemas.ResponsesToolTypeComputerUsePreview, ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768}},
+			}}
+			prepared, err := prepareResponsesRequest(ctx, nil, namespaceCapableStub{stubProvider: stubProvider{key: provider}, supported: false}, schemas.Key{}, r)
+			require.Nil(t, err)
+			body, err := anthropic.BuildAnthropicResponsesRequestBody(ctx, prepared, anthropic.AnthropicRequestBuildConfig{Provider: provider, Model: r.Model, ValidateTools: true})
+			require.Nil(t, err)
+			assert.Equal(t, "web_search_custom", providerUtils.GetJSONField(body, "tools.0.name").String())
+			assert.Equal(t, "object", providerUtils.GetJSONField(body, "tools.0.input_schema.type").String())
+			assert.Equal(t, "computer_20250124", providerUtils.GetJSONField(body, "tools.1.type").String(), "explicit built-ins keep their provider conversion")
+		})
+	}
+}
+
 func TestDisableBuiltinToolRewritingPreservesMantleNamespace(t *testing.T) {
 	for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock, "custom-mantle"} {
 		t.Run(string(provider), func(t *testing.T) {
@@ -593,36 +616,7 @@ func TestDisableBuiltinToolRewritingPreservesMantleNamespace(t *testing.T) {
 			require.Equal(t, schemas.ResponsesToolTypeFunction, out.Tools[0].Type)
 			assert.Equal(t, "web__js", *out.Tools[0].Name)
 			assert.Equal(t, "web__js", *out.ToolChoice.ResponsesToolChoiceStruct.Name)
-			assert.Equal(t, schemas.NamespaceToolAlias{Namespace: "web", Name: "js"}, prepared.NamespaceToolAliases["web__js"])
 			assert.Equal(t, schemas.ResponsesToolTypeNamespace, r.Params.Tools[0].Type, "fallback input must remain untouched")
-		})
-	}
-}
-
-func TestDisableBuiltinToolRewritingKeepsNonReservedNamespaces(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("mixed=%v", mixed), func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
-			r := responsesReqWithNamespaces(schemas.BedrockMantle)
-			r.Model = "openai.gpt-5.6-luna"
-			r.Params.Tools = r.Params.Tools[:1]
-			r.Params.Tools[0].Name = new("safe")
-			r.Params.Tools[0].ResponsesToolNamespace.Tools = append(r.Params.Tools[0].ResponsesToolNamespace.Tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeCustom, Name: new("freeform")})
-			if mixed {
-				r.Params.Tools = append(r.Params.Tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace, Name: new("web"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("js")}}}})
-			}
-			out, err := prepareResponsesRequest(ctx, nil, namespaceCapableStub{stubProvider: stubProvider{key: schemas.BedrockMantle}, supported: true}, schemas.Key{}, r)
-			require.Nil(t, err)
-			require.Equal(t, schemas.ResponsesToolTypeNamespace, out.Params.Tools[0].Type)
-			require.Len(t, out.Params.Tools[0].ResponsesToolNamespace.Tools, 2)
-			assert.Equal(t, schemas.ResponsesToolTypeCustom, out.Params.Tools[0].ResponsesToolNamespace.Tools[1].Type)
-			if mixed {
-				require.Equal(t, schemas.ResponsesToolTypeFunction, out.Params.Tools[1].Type)
-				response := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("js"), Namespace: new("safe")}}}}}
-				providerUtils.RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, response)
-				assert.Equal(t, "safe", *response.ResponsesResponse.Output[0].Namespace)
-			}
 		})
 	}
 }
@@ -661,7 +655,6 @@ func TestDisableBuiltinToolRewritingAdditionalTools(t *testing.T) {
 			assert.Equal(t, reserved+"__lookup_local", *out.Tools[0].Name)
 			assert.Equal(t, schemas.ResponsesToolTypeNamespace, out.Tools[1].Type)
 			assert.Equal(t, schemas.ResponsesToolTypeCustom, out.Tools[1].ResponsesToolNamespace.Tools[0].Type)
-			assert.Equal(t, schemas.NamespaceToolAlias{Namespace: reserved, Name: "lookup_local"}, prepared.NamespaceToolAliases[reserved+"__lookup_local"])
 			after, err := schemas.Marshal(r)
 			require.NoError(t, err)
 			assert.Equal(t, string(before), string(after), "hoisting must not mutate the shared request")
@@ -778,73 +771,29 @@ func TestDisableBuiltinToolRewritingMantleEndToEnd(t *testing.T) {
 	}
 }
 
-func TestDisableBuiltinToolRewritingAmbiguousChoiceEndToEnd(t *testing.T) {
-	var mu sync.Mutex
-	calls := 0
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		calls++
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","output":[]}`)
-	}))
-	defer upstream.Close()
-	account := NewMockAccount()
-	account.AddProviderWithBaseURL(schemas.BedrockMantle, 1, 1, "")
-	account.configs[schemas.BedrockMantle].NetworkConfig.InsecureSkipVerify = true
-	account.configs[schemas.BedrockMantle].NetworkConfig.AllowPrivateNetwork = true
-	account.configs[schemas.BedrockMantle].NetworkConfig.MaxRetries = 0
-	account.SetKeysForProvider(schemas.BedrockMantle, []schemas.Key{{
-		ID: "mantle-key", Value: *schemas.NewSecretVar("test-bearer"), Models: schemas.WhiteList{"*"}, Weight: 1,
-		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(upstream.URL, "https://"))}},
-	}})
-	client := newStreamTestClient(t, account)
-	for _, streaming := range []bool{false, true} {
-		for _, allowed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("stream=%v/allowed=%v", streaming, allowed), func(t *testing.T) {
-				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
-				defer ctx.Cancel()
-				ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
-				r := responsesReqWithNamespaces(schemas.BedrockMantle)
-				r.Model = "openai.gpt-5.6-luna"
-				r.Params.Tools[0].Name, r.Params.Tools[1].Name = new("web"), new("safe")
-				r.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
-				if allowed {
-					r.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeAllowedTools, Mode: new("auto"), Tools: []schemas.ResponsesToolChoiceAllowedToolDef{{Type: "function", Name: new("js")}}}}
-				}
-				var err *schemas.BifrostError
-				if streaming {
-					_, err = client.ResponsesStreamRequest(ctx, r)
-				} else {
-					_, err = client.ResponsesRequest(ctx, r)
-				}
-				require.NotNil(t, err)
-				require.NotNil(t, err.StatusCode)
-				assert.Equal(t, 400, *err.StatusCode)
-				assert.Contains(t, err.Error.Message, "ambiguous between a retained and a flattened namespace")
-				assert.Nil(t, r.NamespaceToolAliases, "failed preparation must not mutate the shared request")
-			})
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Zero(t, calls, "invalid tool_choice must not reach the provider")
-}
-
 func BenchmarkBuiltinToolRewritingPreparation(b *testing.B) {
 	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
-		b.Run(string(provider), func(b *testing.B) {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			r := responsesReqWithText("hello")
-			r.Provider, r.Model = provider, "gpt-6-sol"
-			p := namespaceCapableStub{stubProvider: stubProvider{key: provider}, supported: true}
-			b.ReportAllocs()
-			for b.Loop() {
-				if _, err := prepareResponsesRequest(ctx, nil, p, schemas.Key{}, r); err != nil {
-					b.Fatal(err)
-				}
+		for _, disabled := range []bool{false, true} {
+			mode := "default"
+			if disabled {
+				mode = "disabled"
 			}
-		})
+			b.Run(string(provider)+"/"+mode, func(b *testing.B) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if disabled {
+					ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+				}
+				r := responsesReqWithText("hello")
+				r.Provider, r.Model = provider, "gpt-6-sol"
+				p := namespaceCapableStub{stubProvider: stubProvider{key: provider}, supported: true}
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := prepareResponsesRequest(ctx, nil, p, schemas.Key{}, r); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }
 

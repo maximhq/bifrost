@@ -821,7 +821,7 @@ bfCtx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
 // Pass bfCtx to ChatCompletionRequest, ResponsesRequest, or their streaming variants.
 ```
 
-Always declare application tools with `"type": "function"`. Names such as `web_search_custom` or `computer_custom` remain function names. Provider type aliases such as `web_search_20250305` are explicit built-in declarations; unrelated types that merely share a prefix are not recognized as those aliases.
+Declare application tools with `"type": "function"`; the option does not change tool-type parsing. Names such as `web_search_custom` or `computer_custom` remain function names. Tool types such as `web_search_20250305` are provider-native built-in declarations, not application function names; this option does not reinterpret them as functions.
 
 ### Raw Request Body (Go SDK Only)
 
@@ -830,7 +830,7 @@ Always declare application tools with `"type": "function"`. Names such as `web_s
 **Type:** `bool`  
 **Required:** No
 
-Send a provider-native request body instead of Bifrost's standardized format. You must both enable the context key AND set the `RawRequestBody` field on your request. Provider-specific compatibility processing, including native tool-version normalization on Vertex and Bedrock, still applies.
+Send a raw request body instead of Bifrost's standardized format. The provider receives your payload as-is. You must both enable the context key AND set the `RawRequestBody` field on your request.
 
 ```go
 // Prepare your raw JSON payload
@@ -851,10 +851,9 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 ```
 
 <Note>
-  When using raw request body, Bifrost skips its standard request conversion.
-  Provider-specific compatibility processing, such as native tool-version
-  normalization on Vertex and Bedrock, still applies. You're responsible for
-  ensuring the payload matches the provider's expected format.
+  When using raw request body, Bifrost bypasses its request conversion and sends
+  your payload directly to the provider. You're responsible for ensuring the
+  payload matches the provider's expected format.
 </Note>
 
 ## Custom Headers

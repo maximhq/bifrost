@@ -3323,30 +3323,31 @@ const ResponsesToolTypeOpenRouterPrefix = "openrouter:"
 // to their canonical ResponsesToolType. For example, "web_search_20250305" → "web_search".
 // Returns the input unchanged if it's already canonical or unrecognized.
 func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
-	// Canonical tools, especially functions, need no provider-alias recognition.
-	switch t {
-	case ResponsesToolTypeFunction, ResponsesToolTypeCustom, ResponsesToolTypeWebSearch,
-		ResponsesToolTypeWebSearchPreview, ResponsesToolTypeWebFetch, ResponsesToolTypeComputer,
-		ResponsesToolTypeComputerUsePreview, ResponsesToolTypeCodeInterpreter, ResponsesToolTypeMemory,
-		ResponsesToolTypeAdvisor, ResponsesToolTypeToolSearch:
-		return t
-	}
 	s := string(t)
 	switch {
-	case IsVersionedToolType(s, "web_search_preview"):
+	// web_search_preview must be checked before web_search (prefix overlap)
+	case t == ResponsesToolTypeWebSearchPreview:
+		return t
+	case strings.HasPrefix(s, "web_search_preview"):
 		return ResponsesToolTypeWebSearchPreview
-	case IsVersionedToolType(s, "web_search"):
+	case t == ResponsesToolTypeWebSearch:
+		return t
+	case strings.HasPrefix(s, "web_search"):
 		return ResponsesToolTypeWebSearch
-	case IsVersionedToolType(s, "web_fetch"):
+	case t == ResponsesToolTypeWebFetch:
+		return t
+	case strings.HasPrefix(s, "web_fetch"):
 		return ResponsesToolTypeWebFetch
-	case IsVersionedToolType(s, "computer") || IsVersionedToolType(s, "computer_toolset"):
+	case t == ResponsesToolTypeComputer:
+		return t
+	case strings.HasPrefix(s, "computer") && t != ResponsesToolTypeComputerUsePreview:
 		// Covers "computer_20250124", "computer_20251124", etc.
 		return ResponsesToolTypeComputerUsePreview
-	case s == "code_execution" || IsVersionedToolType(s, "code_execution"):
+	case strings.HasPrefix(s, "code_execution"):
 		return ResponsesToolTypeCodeInterpreter
-	case IsVersionedToolType(s, "memory"):
+	case strings.HasPrefix(s, "memory") && t != ResponsesToolTypeMemory:
 		return ResponsesToolTypeMemory
-	case IsVersionedToolType(s, "advisor"):
+	case strings.HasPrefix(s, "advisor") && t != ResponsesToolTypeAdvisor:
 		// Covers "advisor_20260301" and future dated versions.
 		return ResponsesToolTypeAdvisor
 	case ToolSearchVariantName(s) != "":
@@ -3367,28 +3368,6 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	default:
 		return t
 	}
-}
-
-// IsVersionedToolType recognizes family_YYYYMMDD and family_YYYY_MM_DD aliases,
-// including future versions, without claiming unrelated types that share a prefix.
-func IsVersionedToolType(toolType, family string) bool {
-	if len(toolType) != len(family)+9 && len(toolType) != len(family)+11 {
-		return false
-	}
-	if !strings.HasPrefix(toolType, family) || toolType[len(family)] != '_' {
-		return false
-	}
-	version := toolType[len(family)+1:]
-	for i := 0; i < len(version); i++ {
-		if len(version) == 10 && (i == 4 || i == 7) {
-			if version[i] != '_' {
-				return false
-			}
-		} else if version[i] < '0' || version[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // ToolSearchVariantName recovers the tool-search variant name from a raw tool
@@ -3417,9 +3396,9 @@ func ToolSearchVariantName(rawType string) string {
 	// keeps a future sibling variant from being misreported as one of these two.
 	variant := strings.TrimPrefix(rawType, prefix)
 	switch {
-	case variant == "regex" || IsVersionedToolType(variant, "regex"):
+	case variant == "regex" || strings.HasPrefix(variant, "regex_"):
 		return "tool_search_tool_regex"
-	case variant == "bm25" || IsVersionedToolType(variant, "bm25"):
+	case variant == "bm25" || strings.HasPrefix(variant, "bm25_"):
 		return "tool_search_tool_bm25"
 	default:
 		return ""

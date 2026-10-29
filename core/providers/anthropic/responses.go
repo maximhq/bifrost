@@ -9375,11 +9375,14 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 	// Handle special tool types first
 	if tool.Type != nil {
-		// Recognize future dated search-tool versions without promoting custom types
-		// that merely share their prefix. Tools that must round-trip their exact
-		// version (code_execution, text_editor) stay in the exact switch below.
+		// Version-dated server search tools ship new versions regularly; match them by
+		// prefix so a newer version (e.g. web_fetch_20260318) is recognized as a server
+		// tool instead of falling through to the client-function default at the end of
+		// this function. Mirrors applySharedServerToolFields and the chat path. Tools
+		// that must round-trip their exact version (code_execution, text_editor) stay in
+		// the exact switch below.
 		switch typeStr := string(*tool.Type); {
-		case schemas.IsVersionedToolType(typeStr, "web_search"):
+		case strings.HasPrefix(typeStr, "web_search_"):
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
 			}
@@ -9405,7 +9408,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 			return bifrostTool
 
-		case schemas.IsVersionedToolType(typeStr, "web_fetch"):
+		case strings.HasPrefix(typeStr, "web_fetch_"):
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebFetch,
 			}

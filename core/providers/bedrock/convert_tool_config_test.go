@@ -101,38 +101,6 @@ func TestConvertToolConfig_KeepsBedrockSupportedServerTools(t *testing.T) {
 	}
 }
 
-func TestBuiltinToolRewritingNovaRejectsCustomPrefixes(t *testing.T) {
-	for _, typ := range []schemas.ChatToolType{"web_search_custom", "code_execution_custom"} {
-		t.Run(string(typ), func(t *testing.T) {
-			params := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: typ, Name: "my_custom_tool"}}}
-			if out := convertToolConfig("amazon.nova-2-lite-v1:0", params); out != nil {
-				t.Fatalf("custom type became a Nova built-in: %+v", out)
-			}
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			request := &schemas.BifrostChatRequest{
-				Provider: schemas.Bedrock, Model: "amazon.nova-2-lite-v1:0", Params: params,
-				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hello")}}},
-			}
-			out, err := ToBedrockChatCompletionRequest(ctx, request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if out.ToolConfig != nil {
-				t.Fatalf("complete request promoted an unknown native type to a Nova tool: %+v", out.ToolConfig)
-			}
-			// Unknown native declarations are left for provider validation, not
-			// reinterpreted as hosted tools. Applications must declare type:function.
-			body, err := providerUtils.MarshalSorted(out)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := providerUtils.GetJSONField(body, "additionalModelRequestFields.tools.0.type").String(); got != string(typ) {
-				t.Fatalf("unknown native type was silently replaced: %s", body)
-			}
-		})
-	}
-}
-
 // TestConvertToolConfig_NovaGetsWebSearchAndCodeExecution is a regression test:
 // the chat-completions Bedrock builder had no branch converting web_search/
 // code_execution into Bedrock's Nova system-tool shape at all — only the

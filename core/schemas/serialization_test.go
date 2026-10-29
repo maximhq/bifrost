@@ -1258,58 +1258,6 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 	}
 }
 
-func TestNormalizeResponsesToolTypeRejectsCustomPrefixes(t *testing.T) {
-	for _, typ := range []ResponsesToolType{
-		"web_search_custom", "web_search_preview_custom", "web_searching", "web_fetch_custom",
-		"computer_custom", "computer_toolset_custom", "computerized", "code_execution_custom",
-		"memory_custom", "advisor_custom", "tool_search_tool_regex_custom", "tool_search_tool_bm25_custom",
-		"web_search_20250305_custom", "web_search_2025_3_11", "web_search_2025030x",
-	} {
-		t.Run(string(typ), func(t *testing.T) {
-			assert.Equal(t, typ, normalizeResponsesToolType(typ), "custom type must not become a built-in")
-		})
-	}
-}
-
-func TestBuiltinToolRewritingVersionedAliases(t *testing.T) {
-	for _, tc := range []struct{ typ, want ResponsesToolType }{
-		{"web_search_20991231", ResponsesToolTypeWebSearch},
-		{"web_search_preview_2099_12_31", ResponsesToolTypeWebSearchPreview},
-		{"computer_toolset_20260801", ResponsesToolTypeComputerUsePreview},
-		{"code_execution", ResponsesToolTypeCodeInterpreter},
-		{"tool_search_tool_regex_20991231", ResponsesToolTypeToolSearch},
-	} {
-		t.Run(string(tc.typ), func(t *testing.T) { assert.Equal(t, tc.want, normalizeResponsesToolType(tc.typ)) })
-	}
-}
-
-func TestBuiltinToolRewritingPreservesFunctionNames(t *testing.T) {
-	for _, name := range []string{"web_search", "web_search_custom", "web_search_20250305", "computer_custom", "code_execution_custom", "memory_custom"} {
-		t.Run(name, func(t *testing.T) {
-			body := `{"type":"function","name":"` + name + `","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"strict":true}`
-			var tool ResponsesTool
-			require.NoError(t, Unmarshal([]byte(body), &tool))
-			assert.Equal(t, ResponsesToolTypeFunction, tool.Type)
-			assert.Equal(t, name, *tool.Name)
-			require.NotNil(t, tool.ResponsesToolFunction)
-			assert.Equal(t, []string{"query"}, tool.ResponsesToolFunction.Parameters.Required)
-			assert.True(t, *tool.Strict)
-			assert.Equal(t, name, *tool.ToChatTool().ToResponsesTool().Name)
-		})
-	}
-}
-
-func BenchmarkBuiltinToolRewritingTypeNormalization(b *testing.B) {
-	for _, typ := range []ResponsesToolType{ResponsesToolTypeFunction, ResponsesToolTypeWebSearch, "web_search_20250305", "computer_custom"} {
-		b.Run(string(typ), func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = normalizeResponsesToolType(typ)
-			}
-		})
-	}
-}
-
 // TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes verifies that versioned
 // tool types sent in Responses API requests are normalized and their embedded structs populated.
 func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) {

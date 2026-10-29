@@ -1319,21 +1319,35 @@ func TestDisableBuiltinToolRewritingToolSearchHistory(t *testing.T) {
 }
 
 func BenchmarkBuiltinToolRewritingResponses(b *testing.B) {
-	for _, count := range []int{0, 1} {
-		name := "no_tools"
-		var tools []schemas.ResponsesTool
-		if count > 0 {
-			name = "function"
-			tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
-		}
-		b.Run(name, func(b *testing.B) {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			r := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: []schemas.ResponsesMessage{toolSearchUserTurn()}, Params: &schemas.ResponsesParameters{Tools: tools}}
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = ToOpenAIResponsesRequest(ctx, r)
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
+		for _, count := range []int{0, 1} {
+			name := "no_tools"
+			var tools []schemas.ResponsesTool
+			if count > 0 {
+				name = "function"
+				tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
 			}
-		})
+			for _, disabled := range []bool{false, true} {
+				mode := "default"
+				if disabled {
+					mode = "disabled"
+				}
+				b.Run(string(provider)+"/"+name+"/"+mode, func(b *testing.B) {
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					if disabled {
+						ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+					}
+					r := &schemas.BifrostResponsesRequest{Provider: provider, Model: "gpt-6-sol", Input: []schemas.ResponsesMessage{toolSearchUserTurn()}, Params: &schemas.ResponsesParameters{Tools: tools}}
+					if provider == schemas.BedrockMantle {
+						r.Model = "openai.gpt-6-sol"
+					}
+					b.ReportAllocs()
+					for b.Loop() {
+						_ = ToOpenAIResponsesRequest(ctx, r)
+					}
+				})
+			}
+		}
 	}
 }
 

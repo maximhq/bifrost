@@ -8727,8 +8727,7 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	} else {
 		supported = providerUtils.ResponsesNamespaceToolsSupported(ctx, schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), r.Model)
 	}
-	// Preserve reserved client namespace functions instead of substituting built-ins.
-	// Supported, non-reserved namespaces must retain their native tool definitions.
+	// Reserved namespaces must become functions on opt-out; other namespaces stay native.
 	var reservedNamespaces []string
 	if supported && ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting) == true {
 		reservedNamespaces = openai.ReservedToolNamespaces(schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), schemas.ResolveCanonicalModel(ctx, r.Model))
@@ -8747,7 +8746,7 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	// When supported, namespaces pass through and the request carries no alias map.
+	// Unsupported wires flatten all namespaces; supported wires flatten only reserved names.
 	if !supported {
 		if r, bifrostErr = providerUtils.FlattenResponsesNamespaceTools(ctx, r); bifrostErr != nil {
 			return nil, bifrostErr
