@@ -9788,14 +9788,14 @@
           "items": {
             "type": "string"
           },
-          "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway. Omit or ['*'] for all, [] for none."
+          "description": "Prompts (by the server's own name) served through Bifrost's MCP gateway. ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list."
         },
         "resources_to_expose": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Resource URIs and URI templates served through Bifrost's MCP gateway. Omit or ['*'] for all, [] for none."
+          "description": "Resource URIs and URI templates served through Bifrost's MCP gateway. ['*'] for all, [] for none. Omitted, a new server serves all and an existing one keeps its stored list."
         },
         "max_protocol_version": {
           "$ref": "#/$defs/mcp_max_protocol_version",
@@ -11178,6 +11178,15 @@
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
         },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -11274,6 +11283,15 @@
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
         },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -11353,6 +11371,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11446,6 +11473,15 @@
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
         },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
+        },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
         },
@@ -11524,6 +11560,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11620,6 +11665,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -11755,6 +11809,15 @@
         },
         "claimsSyncMode": {
           "$ref": "#/$defs/scim_claims_sync_mode"
+        },
+        "accessProfileResolutionStrategy": {
+          "$ref": "#/$defs/scim_access_profile_resolution_strategy"
+        },
+        "tokenExchangeHosts": {
+          "$ref": "#/$defs/scim_token_exchange_hosts"
+        },
+        "crossAppAccess": {
+          "$ref": "#/$defs/scim_cross_app_access"
         },
         "attributeTeamMappings": {
           "$ref": "#/$defs/scim_attribute_team_mappings"
@@ -14251,6 +14314,51 @@
       ],
       "default": "highestPermissionCount",
       "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
+    },
+    "scim_access_profile_resolution_strategy": {
+      "type": "string",
+      "enum": [
+        "all",
+        "order"
+      ],
+      "default": "all",
+      "description": "How many attribute-access-profile grants a user receives when several attributeAccessProfileMappings match: 'all' (default) grants every matching rule's profile; 'order' grants only the profiles of the first rule, in list order, that the user matches. Profiles granted through roles are unaffected."
+    },
+    "scim_token_exchange_hosts": {
+      "type": "array",
+      "description": "Hosts besides the issuer's own that an MCP client's token exchange may be sent to through its authorization_server_url (for example an Okta custom authorization server on another domain). The exchange carries the caller's identity-provider token, so only these hosts may be named. Each entry is a bare host name, with a port only when it needs one; entries are lowercased and deduplicated.",
+      "items": {
+        "type": "string",
+        "pattern": "^\\s*[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[1-9][0-9]{0,4})?\\s*$"
+      }
+    },
+    "scim_cross_app_access": {
+      "type": "object",
+      "description": "Cross App Access (XAA, the ID-JAG profile), inbound: AI clients this identity provider admits for a user exchange a provider-signed ID-JAG at Bifrost's /oauth2/token for a Bifrost token that acts as that user. Needs the governance plugin and client.oauth2_server_config.issuer_url. Client IDs are registered in the dashboard.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn Cross App Access on for this provider."
+        },
+        "accessTokenTtl": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 60,
+              "maximum": 86400
+            }
+          ],
+          "description": "Lifetime in seconds of the Bifrost tokens issued for an ID-JAG, 60 to 86400. 0 or omitted uses the default of 86400 (one day), since Okta caps ID-JAGs per user per resource app per month."
+        },
+        "provisionUsers": {
+          "type": "boolean",
+          "description": "Create a Bifrost user for an assertion that names someone who has none, instead of refusing the grant. Off by default: an ID-JAG carries only an ID and email, so most new users would resolve no role."
+        }
+      },
+      "additionalProperties": false
     },
     "scim_claims_sync_mode": {
       "type": "string",

@@ -1,3 +1,4 @@
+- fix: anthropic - native Sonnet 5.5 requests keep the caller's thinking settings on both the typed and raw paths (#7895) [@valentinyanakiev](https://github.com/valentinyanakiev)
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
@@ -28,6 +29,7 @@
 - fix: Agent Gateway OAuth caches bounded at 5,000 entries, A2A relay goroutine leak, destination permissions and credential boundaries (#8552, #8596, #8608, #8657)
 - fix: code mode stubs render restored tool schemas, and nested tool results arrive as structured values (#8603, #8604)
 - chore: Go 1.27.2 (#8570)
+- chore: upgraded Go to 1.27.3
 - [fix]: Gemini and Vertex batch results include thinking tokens (thoughtsTokenCount) in completion_tokens and report reasoning_tokens (#8684) [@Shashank2985](https://github.com/Shashank2985)
 - [fix]: Gemini/Vertex tool-call ids reach the provider without the embedded thought signature - functionCall.id and functionResponse.id are sent as the base id Gemini issued, so the model no longer sees (and copies) a ~500-char id carrying the base64 signature as text; the signature still travels in thoughtSignature (#8546) [@Vivek1898](https://github.com/Vivek1898)
 - [fix]: Anthropic-compatible requests keep a client tool_use named web_search or web_fetch as a function call. Only server_tool_use blocks become web_search_call / web_fetch_call, so the tool_result is no longer orphaned and Bedrock stops rejecting the replay with "toolResult blocks ... exceeds the number of toolUse blocks" [@jacob-pattern](https://github.com/jacob-pattern)

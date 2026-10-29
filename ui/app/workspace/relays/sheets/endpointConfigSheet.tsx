@@ -1,6 +1,6 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -16,11 +16,13 @@ import { cn } from "@/lib/utils";
 import { toRelayConfig, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Info, Plus, Trash2, Waypoints } from "lucide-react";
+import { AlertTriangle, Info, Waypoints } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useFieldArray, useForm, type Control, type FieldValues } from "react-hook-form";
+import { useForm, type Control, type FieldValues } from "react-hook-form";
+import { secondsToHumanReadable } from "@/lib/utils/strings";
 import { toast } from "sonner";
 import { CredentialFields } from "../fragments/credentialFields";
+import { HeaderPairsTable } from "../fragments/headerPairsTable";
 import { InfoLabel } from "../fragments/infoLabel";
 import { UsageFields } from "../fragments/usageFields";
 
@@ -88,7 +90,6 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 		mode: "onChange",
 		defaultValues: toRelayForm(endpoint),
 	});
-	const headers = useFieldArray({ control: form.control, name: "extra_headers" });
 	const proxyType = form.watch("proxy.type");
 	// A relay with no proxy set uses the global proxy only when it is on for inference (as providers
 	// do); otherwise it connects directly, so that is what the unset select shows.
@@ -127,7 +128,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 	};
 
 	const saveButton = (label: string) => (
-		<div className="mb-6 flex justify-end space-x-2">
+		<div className="bg-card sticky bottom-0 z-10 -mx-4 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:-mx-6 md:px-6">
 			<Button
 				type="submit"
 				disabled={!form.formState.isDirty || !canUpdate || isLoading}
@@ -367,54 +368,16 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												info="Sent on every request; a caller's copy of the same header is dropped."
 												inForm={false}
 											/>
-											{headers.fields.map((field, i) => (
-												<div key={field.id} className="flex items-start gap-2">
-													<FormField
-														control={form.control}
-														name={`extra_headers.${i}.name`}
-														render={({ field: f }) => (
-															<FormItem className="flex-1">
-																<FormControl>
-																	<Input placeholder="X-Tenant" disabled={!canUpdate} data-testid={`relay-extra-header-name-${i}`} {...f} />
-																</FormControl>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-													<FormField
-														control={form.control}
-														name={`extra_headers.${i}.value`}
-														render={({ field: f }) => (
-															<FormItem className="flex-1">
-																<FormControl>
-																	<SecretVarInput placeholder="value or env.HEADER_VALUE" disabled={!canUpdate} {...f} value={f.value} />
-																</FormControl>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-													<Button
-														type="button"
-														variant="ghost"
-														size="icon"
-														aria-label="Remove header"
-														disabled={!canUpdate}
-														onClick={() => headers.remove(i)}
-													>
-														<Trash2 className="h-4 w-4" />
-													</Button>
-												</div>
-											))}
-											<Button
-												type="button"
-												variant="outline"
-												size="sm"
+											<HeaderPairsTable
+												value={form.watch("extra_headers")}
+												onChange={(pairs) => form.setValue("extra_headers", pairs, { shouldDirty: true, shouldValidate: true })}
+												errors={form.formState.errors.extra_headers}
+												keyPlaceholder="X-Tenant"
+												valuePlaceholder="value or env.HEADER_VALUE"
 												disabled={!canUpdate}
-												onClick={() => headers.append({ name: "", value: { value: "" } })}
-												data-testid="relay-extra-header-add"
-											>
-												<Plus className="h-4 w-4" /> Add header
-											</Button>
+												useSecretVarInput
+												testIdPrefix="relay-extra-header"
+											/>
 										</div>
 										{saveButton("Advanced")}
 									</TabsContent>
@@ -427,44 +390,94 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												the traffic through a forward proxy instead, use the Proxy tab.
 											</AlertDescription>
 										</Alert>
+										{/* Laid out as the provider config's Network tab: plain labels, the help text under each input. */}
 										<div className="flex w-full flex-row items-start gap-4">
-											{(
-												[
-													["timeout_seconds", "Timeout (seconds)", "60", "Longest a buffered call may take, end to end."],
-													[
-														"stream_idle_timeout_in_seconds",
-														"Stream Idle Timeout (seconds)",
-														"60",
-														"A stream is closed when no data arrives for this long.",
-													],
-													["max_conns_per_host", "Max Connections per Host", "5000", "Upper bound on open connections to the upstream."],
-												] as const
-											).map(([key, label, placeholder, info]) => (
-												<FormField
-													key={key}
-													control={form.control}
-													name={`network.${key}`}
-													render={({ field }) => (
-														<FormItem className="flex-1">
-															<InfoLabel label={label} info={info} />
-															<FormControl>
-																<Input
-																	type="number"
-																	min={0}
-																	placeholder={placeholder}
-																	disabled={!canUpdate}
-																	value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
-																	onChange={(e) => {
-																		const n = e.target.value === "" ? undefined : Number(e.target.value);
-																		field.onChange(n === undefined || Number.isNaN(n) ? undefined : n);
-																	}}
-																/>
-															</FormControl>
-															<FormMessage />
-														</FormItem>
-													)}
-												/>
-											))}
+											<FormField
+												control={form.control}
+												name="network.timeout_seconds"
+												render={({ field }) => (
+													<FormItem className="flex-1">
+														<FormLabel>Timeout (seconds)</FormLabel>
+														<FormControl>
+															<Input
+																placeholder="60"
+																disabled={!canUpdate}
+																value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+																onChange={(e) => {
+																	const value = e.target.value;
+																	if (value === "") {
+																		field.onChange(undefined);
+																		return;
+																	}
+																	const parsed = Number(value);
+																	if (!Number.isNaN(parsed)) field.onChange(parsed);
+																}}
+															/>
+														</FormControl>
+														<FormDescription>
+															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}Longest a buffered call may take, end to end.
+														</FormDescription>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											<FormField
+												control={form.control}
+												name="network.stream_idle_timeout_in_seconds"
+												render={({ field }) => (
+													<FormItem className="flex-1">
+														<FormLabel>Stream Idle Timeout (seconds)</FormLabel>
+														<FormControl>
+															<Input
+																placeholder="60"
+																disabled={!canUpdate}
+																value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+																onChange={(e) => {
+																	const value = e.target.value;
+																	if (value === "") {
+																		field.onChange(undefined);
+																		return;
+																	}
+																	const parsed = Number(value);
+																	if (!Number.isNaN(parsed)) field.onChange(parsed);
+																}}
+															/>
+														</FormControl>
+														<FormDescription>
+															{field.value ? `${secondsToHumanReadable(field.value)}. ` : ""}A stream is closed when no data arrives for
+															this long.
+														</FormDescription>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											<FormField
+												control={form.control}
+												name="network.max_conns_per_host"
+												render={({ field }) => (
+													<FormItem className="flex-1">
+														<FormLabel>Max Connections per Host</FormLabel>
+														<FormControl>
+															<Input
+																placeholder="5000"
+																disabled={!canUpdate}
+																value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+																onChange={(e) => {
+																	const value = e.target.value;
+																	if (value === "") {
+																		field.onChange(undefined);
+																		return;
+																	}
+																	const parsed = Number(value);
+																	if (!Number.isNaN(parsed)) field.onChange(parsed);
+																}}
+															/>
+														</FormControl>
+														<FormDescription>Upper bound on open connections to the upstream.</FormDescription>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
 										</div>
 										<SwitchField
 											control={form.control}
@@ -632,7 +645,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 												)}
 											/>
 										</div>
-										<div className="mb-6 flex justify-end space-x-2">
+										<div className="bg-card sticky bottom-0 z-10 -mx-4 flex justify-end space-x-2 rounded-b-sm border-t px-4 py-4 md:-mx-6 md:px-6">
 											<Button
 												type="button"
 												variant="outline"

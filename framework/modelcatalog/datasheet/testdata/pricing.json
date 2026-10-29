@@ -153,5 +153,10 @@
     "output_cost_per_video_per_second": 0.3,
     "output_cost_per_video_per_second_720p": 0.3,
     "output_cost_per_video_per_second_1024p": 0.5
+  },
+  "dreamina-seedance-2-0-260128": {
+    "provider": "byteplus",
+    "mode": "video_generation",
+    "output_cost_per_video_token": 0.000007
   }
 }
