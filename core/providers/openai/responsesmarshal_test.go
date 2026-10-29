@@ -14,6 +14,76 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAIResponsesRequest_MarshalJSON_NilSummaryOmitted(t *testing.T) {
+	// Ark's Responses schema has no reasoning.summary field and rejects the key
+	// itself ("json: unknown field \"summary\""), so a nil Summary must be absent
+	// from the upstream body, not serialized as "summary": null. A set Summary
+	// (auto/concise/detailed) must still be forwarded.
+	t.Run("effort only", func(t *testing.T) {
+		req := &OpenAIResponsesRequest{
+			Model: "doubao-seed-2-1-pro-260915",
+			Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("hi")},
+			ResponsesParameters: schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")},
+			},
+		}
+		data, err := req.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON: %v", err)
+		}
+		reasoning := gjson.GetBytes(data, "reasoning")
+		if !reasoning.Exists() {
+			t.Fatalf("reasoning object missing: %s", data)
+		}
+		if reasoning.Get("summary").Exists() {
+			t.Errorf("nil Summary must be omitted, got: %s", reasoning.Raw)
+		}
+		if reasoning.Get("effort").String() != "low" {
+			t.Errorf("effort = %q, want low: %s", reasoning.Get("effort").String(), reasoning.Raw)
+		}
+	})
+
+	t.Run("summary none stripped", func(t *testing.T) {
+		// summary:"none" is Anthropic-specific; ToOpenAIResponsesRequest nils it, and the
+		// wire must then drop the field rather than emit "summary": null.
+		// A custom provider: the OpenAI/Azure branch drops reasoning entirely for a
+		// model it does not recognise, which would hide the nil Summary this pins.
+		out := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: schemas.ModelProvider("ark"),
+			Model:    "doubao-seed-2-1-pro-260915",
+			Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low"), Summary: schemas.Ptr("none")}},
+		})
+		if out == nil || out.Reasoning == nil || out.Reasoning.Summary != nil {
+			t.Fatalf("summary:none was not stripped before marshaling: %+v", out)
+		}
+		data, err := out.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON: %v", err)
+		}
+		if gjson.GetBytes(data, "reasoning.summary").Exists() {
+			t.Errorf("stripped Summary must be omitted, got: %s", gjson.GetBytes(data, "reasoning").Raw)
+		}
+	})
+
+	t.Run("summary set", func(t *testing.T) {
+		req := &OpenAIResponsesRequest{
+			Model: "gpt-5",
+			Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("hi")},
+			ResponsesParameters: schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low"), Summary: schemas.Ptr("detailed")},
+			},
+		}
+		data, err := req.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON: %v", err)
+		}
+		if got := gjson.GetBytes(data, "reasoning.summary").String(); got != "detailed" {
+			t.Errorf("summary = %q, want detailed: %s", got, data)
+		}
+	})
+}
+
 func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.T) {
 	tests := []struct {
 		name        string
