@@ -4,6 +4,7 @@ import i18n, { getLocale } from "@/lib/i18n";
 // read-only view sheet shows in place of the edit sheet's form fields.
 
 import { mcpMaxProtocolVersionLabel } from "@/lib/constants/mcp";
+import type { MCPClientAccessGrantLabels } from "@/lib/registries/mcpClientAccessGrants";
 import type { CoreConfig } from "@/lib/types/config";
 import type { MCPClient, MCPClientConfig, MCPClientTool } from "@/lib/types/mcp";
 import type { MCPSessionKind, MCPSessionRow, MCPSessionStatus } from "@/lib/types/mcpSessions";
@@ -472,22 +473,47 @@ export function toolStat(client: Pick<MCPClient, "config" | "tools" | "state">):
 	};
 }
 
-/** accessStat is the Access figure at the top of the view: what reaches the server besides its own endpoint. */
-export function accessStat(config: MCPClientConfig, virtualKeys: number, virtualMcps: number): { value: string; sub: string } {
+/** MCPClientAccessGrantCount is a kind of grant a build adds to the Access figure, counted and worded by the build. */
+export interface MCPClientAccessGrantCount {
+	count: number | undefined; // undefined while the build is still counting them
+	labels: MCPClientAccessGrantLabels;
+}
+
+/**
+ * accessStat is the Access figure at the top of the view: what reaches the
+ * server besides its own endpoint. Grants a build adds are counted beside the
+ * keys, which then read as "keys" to keep the figure short.
+ */
+export function accessStat(
+	config: MCPClientConfig,
+	virtualKeys: number,
+	virtualMcps: number,
+	grants?: MCPClientAccessGrantCount,
+): { value: string; sub: string } {
 	const keys = i18n.t("registry.view.virtualKeyCount", { ns: "mcp", count: virtualKeys });
 	const vmcps = i18n.t("registry.view.virtualMcpCount", { ns: "mcp", count: virtualMcps });
+	// Until the grants are counted, no conclusion about who has access is drawn.
+	if (grants && grants.count === undefined) {
+		const loading = grants.labels.loading;
+		return config.allow_by_default
+			? { value: i18n.t("registry.filter.allowedByDefault", { ns: "mcp" }), sub: loading }
+			: { value: "…", sub: loading };
+	}
+	const granted = grants?.count ? grants.labels.count(grants.count) : "";
 	if (config.allow_by_default) {
-		const extras = [virtualKeys > 0 ? keys : "", virtualMcps > 0 ? vmcps : ""].filter(Boolean);
+		const extras = [virtualKeys > 0 ? keys : "", granted, virtualMcps > 0 ? vmcps : ""].filter(Boolean);
+		const none = grants ? grants.labels.noOverrides : i18n.t("registry.view.noKeyOverrides", { ns: "mcp" });
 		return {
 			value: i18n.t("registry.filter.allowedByDefault", { ns: "mcp" }),
-			sub:
-				extras.length > 0
-					? i18n.t("registry.view.andAlso", { ns: "mcp", items: extras.join(" · ") })
-					: i18n.t("registry.view.noKeyOverrides", { ns: "mcp" }),
+			sub: extras.length > 0 ? i18n.t("registry.view.andAlso", { ns: "mcp", items: extras.join(" · ") }) : none,
 		};
 	}
+	let value = virtualKeys > 0 ? keys : i18n.t("registry.view.noAccess", { ns: "mcp" });
+	if (granted) {
+		value = virtualKeys > 0 ? `${i18n.t("registry.view.keyCount", { ns: "mcp", count: virtualKeys })} · ${granted}` : granted;
+	}
 	return {
-		value: virtualKeys > 0 ? keys : i18n.t("registry.view.noAccess", { ns: "mcp" }),
+		value,
 		sub: [
 			virtualMcps > 0 ? i18n.t("registry.view.andAlso", { ns: "mcp", items: vmcps }) : "",
 			i18n.t("registry.view.notAllowedByDefault", { ns: "mcp" }),
@@ -495,6 +521,14 @@ export function accessStat(config: MCPClientConfig, virtualKeys: number, virtual
 			.filter(Boolean)
 			.join(" · "),
 	};
+}
+
+/** accessExplanation is the sentence beside Allow by Default on the Access tab: who may reach the server, in the build's own words when it registers grants. */
+export function accessExplanation(allowByDefault: boolean, grantLabels?: MCPClientAccessGrantLabels): string {
+	if (allowByDefault) {
+		return i18n.t("registry.view.allowByDefaultOnDesc", { ns: "mcp" });
+	}
+	return grantLabels ? grantLabels.restrictedExplanation : i18n.t("registry.view.allowByDefaultOffDesc", { ns: "mcp" });
 }
 
 /**

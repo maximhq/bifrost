@@ -511,6 +511,8 @@
 			"noneAutoExecute": "自動実行なし",
 			"virtualKeyCount_one": "仮想キー {{count}} 件",
 			"virtualKeyCount_other": "仮想キー {{count}} 件",
+			"keyCount_one": "キー {{count}} 件",
+			"keyCount_other": "キー {{count}} 件",
 			"virtualMcpCount_one": "仮想 MCP {{count}} 件",
 			"virtualMcpCount_other": "仮想 MCP {{count}} 件",
 			"andAlso": "および {{items}}",
