@@ -1,0 +1,1 @@
+- [fix]: fail an OpenAI-family stream with a distinct error when a chunk cannot be decoded, instead of dropping the chunk and completing with HTTP 200 [@citrocat](https://github.com/citrocat)
