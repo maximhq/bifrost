@@ -3657,3 +3657,107 @@ func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
 		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
 	}
 }
+
+func TestSearchToolVersionRoundTrip(t *testing.T) {
+	for _, version := range []AnthropicToolType{
+		AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209,
+		AnthropicToolTypeWebFetch20250910, AnthropicToolTypeWebFetch20260209,
+		AnthropicToolTypeWebFetch20260309, AnthropicToolTypeWebFetch20260318,
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", version, stream), func(t *testing.T) {
+				name := "web_search"
+				if strings.HasPrefix(string(version), "web_fetch_") {
+					name = "web_fetch"
+				}
+				request := &AnthropicMessageRequest{
+					Model: "claude-sonnet-4-6", MaxTokens: 32, Stream: &stream,
+					Tools: []AnthropicTool{{Type: &version, Name: name}},
+				}
+				neutral := request.ToBifrostResponsesRequest(nil)
+				neutral.Provider = schemas.Anthropic
+				out, err := ToAnthropicResponsesRequest(nil, neutral)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(out.Tools) != 1 || out.Tools[0].Type == nil {
+					t.Fatalf("tools = %+v", out.Tools)
+				}
+				if got := *out.Tools[0].Type; got != version {
+					t.Errorf("tool version = %s, want %s", got, version)
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkSearchToolVersionConversion(b *testing.B) {
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6")
+	b.Run("neutral", func(b *testing.B) {
+		tool := &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = convertBifrostToolToAnthropic(caps, tool, schemas.Anthropic, false)
+		}
+	})
+	b.Run("roundtrip", func(b *testing.B) {
+		tool := &AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeWebSearch20250305), Name: "web_search"}
+		b.ReportAllocs()
+		for b.Loop() {
+			neutral := convertAnthropicToolToBifrost(tool)
+			_ = convertBifrostToolToAnthropic(caps, neutral, schemas.Anthropic, false)
+		}
+	})
+}
+
+func TestSearchToolVersionDefaultsAndOpenAIWire(t *testing.T) {
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6")
+	for _, tool := range []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeWebSearch},
+		{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: schemas.Ptr("")}},
+		{Type: schemas.ResponsesToolTypeWebFetch},
+		{Type: schemas.ResponsesToolTypeWebFetch, ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{Version: schemas.Ptr("")}},
+	} {
+		got := convertBifrostToolToAnthropic(caps, &tool, schemas.Anthropic, false)
+		want := AnthropicToolTypeWebSearch20260209
+		if tool.Type == schemas.ResponsesToolTypeWebFetch {
+			want = AnthropicToolTypeWebFetch20260309
+		}
+		if got == nil || got.Type == nil || *got.Type != want {
+			t.Errorf("default %s = %+v, want %s", tool.Type, got, want)
+		}
+	}
+	tool := convertAnthropicToolToBifrost(&AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeWebSearch20250305), Name: "web_search"})
+	// Persisting the neutral shape must retain the version, including SDK/Responses input.
+	encoded, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored schemas.ResponsesTool
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.ResponsesToolWebSearch == nil || restored.ResponsesToolWebSearch.Version == nil || *restored.ResponsesToolWebSearch.Version != string(AnthropicToolTypeWebSearch20250305) {
+		t.Fatalf("version lost: %s", encoded)
+	}
+	request := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Input: makeSimpleInput("hello"), Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{restored}}}
+	for _, direct := range []bool{false, true} {
+		out := openai.ToOpenAIResponsesRequest(nil, request)
+		if direct {
+			out.Tools = request.Params.Tools
+		} // The serializer also accepts SDK-built requests directly.
+		body, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "web_search_version") {
+			t.Errorf("Anthropic version leaked to OpenAI: %s", body)
+		}
+		if !strings.Contains(string(body), `"type":"web_search"`) {
+			t.Errorf("web search dropped: %s", body)
+		}
+	}
+	if restored.ResponsesToolWebSearch.Version == nil {
+		t.Fatal("OpenAI conversion mutated the caller's tool")
+	}
+}

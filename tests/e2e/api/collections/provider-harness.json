@@ -297854,6 +297854,173 @@
           }
         }
       ]
+    },
+    {
+      "name": "296. Preserve explicit Anthropic server tool versions (server-tool-version) (#9150)",
+      "description": "Native /anthropic/v1/messages used to discard the explicit web_search/web_fetch version, then select a newer version that implicitly enables code execution. These cases disable tool execution and inspect extra_fields.raw_request, since HTTP 200 alone cannot detect that substitution. The neutral /v1/responses case pins SDK/Responses serialization of web_search_version. Streaming uses the same request builder and is covered alongside non-streaming by Go wire tests. Azure and Vertex share that builder and have Go wire coverage, including the Vertex version downgrade. Bedrock and Bedrock Mantle reject these server tools before egress. The /v1/chat/completions server-tool route retains the dated tool type directly and does not use this neutral Responses conversion.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages: explicit web_search version - server-tool-version - #9150",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('explicit server tool version reaches Anthropic unchanged', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.tools, 'tools missing: ' + JSON.stringify(raw)).to.have.lengthOf(1);",
+                  "  pm.expect(raw.tools[0].type, 'requested version replaced: ' + JSON.stringify(raw.tools)).to.equal('web_search_20250305');",
+                  "  pm.expect(JSON.stringify(raw.tools)).to.not.contain('web_search_version');",
+                  "  pm.expect(JSON.stringify(raw.tools)).to.not.contain('web_fetch_version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"none\"\n  },\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply hello without using tools.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages: explicit web_fetch version - server-tool-version - #9150",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('explicit server tool version reaches Anthropic unchanged', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.tools, 'tools missing: ' + JSON.stringify(raw)).to.have.lengthOf(1);",
+                  "  pm.expect(raw.tools[0].type, 'requested version replaced: ' + JSON.stringify(raw.tools)).to.equal('web_fetch_20250910');",
+                  "  pm.expect(JSON.stringify(raw.tools)).to.not.contain('web_search_version');",
+                  "  pm.expect(JSON.stringify(raw.tools)).to.not.contain('web_fetch_version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"tools\": [\n    {\n      \"type\": \"web_fetch_20250910\",\n      \"name\": \"web_fetch\"\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"none\"\n  },\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply hello without using tools.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses: explicit web_search version - server-tool-version - #9150",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('explicit server tool version reaches Anthropic unchanged', function () {",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.tools, 'tools missing: ' + JSON.stringify(raw)).to.have.lengthOf(1);",
+                  "  pm.expect(raw.tools[0].type, 'requested version replaced: ' + JSON.stringify(raw.tools)).to.equal('web_search_20250305');",
+                  "  pm.expect(JSON.stringify(raw.tools)).to.not.contain('web_search_version');",
+                  "  pm.expect(JSON.stringify(raw.tools)).to.not.contain('web_fetch_version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"web_search_version\": \"web_search_20250305\"\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"max_output_tokens\": 32,\n  \"input\": \"Reply hello without using tools.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

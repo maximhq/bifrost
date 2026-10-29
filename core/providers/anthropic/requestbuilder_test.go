@@ -3444,3 +3444,51 @@ func TestThinkingDisplayUpdatesRequestBuilders(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchToolVersionsOnProviderWire(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex} {
+		for _, version := range []AnthropicToolType{AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209, AnthropicToolTypeWebFetch20250910} {
+			// Vertex does not support web fetch.
+			if provider == schemas.Vertex && strings.HasPrefix(string(version), "web_fetch_") {
+				continue
+			}
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", provider, version, stream), func(t *testing.T) {
+					name := "web_search"
+					if strings.HasPrefix(string(version), "web_fetch_") {
+						name = "web_fetch"
+					}
+					client := &AnthropicMessageRequest{Model: "claude-sonnet-4-6", MaxTokens: 32,
+						Tools: []AnthropicTool{{Type: &version, Name: name}}}
+					request := client.ToBifrostResponsesRequest(nil)
+					request.Provider = provider
+					request.Input = makeSimpleInput("Reply hello without using tools.")
+					ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+					body, err := BuildAnthropicResponsesRequestBody(ctx, request,
+						AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, IsStreaming: stream, ValidateTools: true})
+					if err != nil {
+						t.Fatalf("build: %v", err)
+					}
+					want := string(version)
+					if provider == schemas.Vertex && version == AnthropicToolTypeWebSearch20260209 {
+						want = string(AnthropicToolTypeWebSearch20250305)
+					}
+					if got := gjson.GetBytes(body, "tools.0.type").String(); got != want {
+						t.Errorf("tool = %s, want %s; body=%s", got, want, body)
+					}
+					if gjson.GetBytes(body, "tools.#").Int() != 1 {
+						t.Errorf("unexpected tools: %s", body)
+					}
+					if strings.Contains(string(body), "web_search_version") || strings.Contains(string(body), "web_fetch_version") {
+						t.Errorf("neutral metadata leaked: %s", body)
+					}
+					if want == string(AnthropicToolTypeWebSearch20250305) || want == string(AnthropicToolTypeWebFetch20250910) {
+						if doesWebSearchOrFetchAutoInjectCodeExecution(gjson.GetBytes(body, "tools.0.type").String()) {
+							t.Errorf("old version now enables code execution: %s", body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
