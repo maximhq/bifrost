@@ -1148,12 +1148,11 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		// until the periodic checker's first tick — which, since Start()
 		// uses the slow healthyInterval (not the fast Unstable one) for a
 		// client that already starts Healthy, could be minutes away.
-		// Best-effort: a failure here just means the periodic checker's own
-		// retries pick it up shortly instead — not a reason to fail the
-		// whole add/connect.
+		// A failure does not fail the add: it is recorded as the client's
+		// state, and the checker started below retries it.
 		if len(config.DiscoveredTools) == 0 {
 			if discovery, discErr := m.performAdminToolDiscovery(requestCtx, config, 0); discErr != nil {
-				m.logger.Debug("%s Initial per-call tool discovery failed for MCP client '%s': %v — the periodic checker will retry", MCPLogPrefix, config.Name, discErr)
+				m.recordFailedFirstDiscovery(config.ID, config.Name, discErr)
 			} else {
 				m.SetClientDiscovery(config.ID, discovery)
 			}
@@ -2495,6 +2494,28 @@ func (m *MCPManager) markUnstableAfterFailedUpdateDial(id string, newConfig *sch
 	m.checkerManager.StartChecking(NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger))
 }
 
+// recordFailedFirstDiscovery records a per-call client's failed first tool
+// discovery the way its connection checker records a failed check: Unstable,
+// with the failure at the tool_discovery stage. Left Healthy, the client listed
+// no tools as if discovery had succeeded, and its checker started on the slow
+// healthy interval instead of retrying soon. A state another flow owns
+// (Disabled, NeedsReauth, PendingVerification) is kept.
+func (m *MCPManager) recordFailedFirstDiscovery(id, name string, err error) {
+	m.logger.Debug("%s Initial per-call tool discovery failed for MCP client '%s': %v", MCPLogPrefix, name, err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cs, exists := m.clientMap[id]
+	if !exists {
+		return
+	}
+	switch cs.State {
+	case schemas.MCPConnectionStateDisabled, schemas.MCPConnectionStateNeedsReauth, schemas.MCPConnectionStatePendingVerification:
+		return
+	}
+	cs.State = schemas.MCPConnectionStateUnstable
+	recordClientFailure(cs, schemas.MCPConnectionFailureStageToolDiscovery, err)
+}
+
 // openAPIConfigChanged reports whether two openapi_config values differ in any
 // field the synthesized server is built from: spec source, base URL,
 // credentials, deprecated inclusion or the response cap. Server-computed
@@ -2647,11 +2668,11 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			// would sit at Healthy/0-tools until the periodic checker's
 			// first tick, which could be minutes away (Start() uses the slow
 			// healthyInterval, not the fast Unstable one, for an
-			// already-Healthy client). Best-effort: a failure here just
-			// means the periodic checker's own retries pick it up shortly.
+			// already-Healthy client). A failure is recorded as the client's
+			// state, and the checker started below retries it.
 			if len(newConfig.DiscoveredTools) == 0 {
 				if discovery, discErr := m.performAdminToolDiscovery(m.ctx, newConfig, 0); discErr != nil {
-					m.logger.Debug("%s Initial per-call tool discovery failed for MCP client '%s': %v — the periodic checker will retry", MCPLogPrefix, newConfig.Name, discErr)
+					m.recordFailedFirstDiscovery(id, newConfig.Name, discErr)
 				} else {
 					m.SetClientDiscovery(id, discovery)
 				}
