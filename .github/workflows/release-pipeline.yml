@@ -2680,10 +2680,12 @@ jobs:
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
+            azure.ports.ubuntu.com:80
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
+            esm.ubuntu.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
@@ -2696,6 +2698,7 @@ jobs:
             oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
+            ports.ubuntu.com:80
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -2717,6 +2720,15 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
+
+      # The arm64 base image does not ship libatomic1, which the official
+      # linux-arm64 Node binary links against; without it node exits 127.
+      - name: Install libatomic1 for Node.js
+        run: |
+          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libatomic1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -3347,11 +3359,14 @@ jobs:
           allowed-endpoints: >
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.github.com:443
+            azure.ports.ubuntu.com:80
+            esm.ubuntu.com:443
             files.pythonhosted.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             github.com:443
             nodejs.org:443
+            ports.ubuntu.com:80
             proxy.golang.org:443
             pypi.org:443
             registry.npmjs.org:443
@@ -3372,6 +3387,15 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
+
+      # The arm64 base image does not ship libatomic1, which the official
+      # linux-arm64 Node binary links against; without it node exits 127.
+      - name: Install libatomic1 for Node.js
+        run: |
+          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libatomic1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
