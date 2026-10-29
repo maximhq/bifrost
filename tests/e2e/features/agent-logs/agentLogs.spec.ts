@@ -138,7 +138,8 @@ test("push configurations retain distinct tenant rows and delete the selected te
     agent_name: "shared-agent",
     task_id: "shared-task",
     config_id: "shared-config",
-    url: "https://callback.example/events",
+    // Tenant identity must not be confused with matching text in another cell.
+    url: "https://callback.example/tenant-b",
     created_at: "2026-10-01T00:00:00Z",
     updated_at: "2026-10-01T00:00:00Z",
   };
@@ -172,11 +173,11 @@ test("push configurations retain distinct tenant rows and delete the selected te
   const rows = page.getByRole("row").filter({ hasText: "shared-config" });
   await expect(rows).toHaveCount(2);
   await rows
-    .filter({ hasText: "tenant-b" })
+    .filter({ has: page.getByTestId("push-config-tenant").filter({ hasText: /^tenant-b$/ }) })
     .getByRole("button", { name: "Delete push configuration" })
     .click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Delete", exact: true }).click();
   await expect(rows).toHaveCount(1);
-  await expect(rows).toContainText("tenant-a");
+  await expect(rows.getByTestId("push-config-tenant")).toHaveText("tenant-a");
   expect(deletedTenants).toEqual(["tenant-b"]);
 });

@@ -88,7 +88,31 @@ func TestAgentPushTenantMigration(t *testing.T) {
 			}
 			require.NoError(t, db.Exec("UPDATE config_agent_push_deliveries SET claimed_by = ?, claimed_until = ? WHERE status = ?",
 				"old-runner", now.Add(time.Hour), schemas.AgentPushDeliveryStatusPending).Error)
+			concurrentBuilds := 0
+			if backend.name == "postgres" {
+				forceConcurrentIndexBuilds(t)
+				failDeliveryUpdate := true
+				require.NoError(t, db.Callback().Raw().Before("gorm:raw").Register("test:push_tenant_migration", func(tx *gorm.DB) {
+					stmt := tx.Statement.SQL.String()
+					if strings.Contains(stmt, "CREATE UNIQUE INDEX CONCURRENTLY") && strings.Contains(stmt, "config_agent_push_configs") {
+						concurrentBuilds++
+					}
+					if failDeliveryUpdate && strings.HasPrefix(stmt, "UPDATE config_agent_push_deliveries SET status") {
+						failDeliveryUpdate = false
+						_ = tx.AddError(errors.New("interrupted delivery update"))
+					}
+				}))
+				t.Cleanup(func() { db.Callback().Raw().Remove("test:push_tenant_migration") })
+				require.ErrorContains(t, migrationScopeAgentPushIdentity(t.Context(), db, testMigrationLogger), "interrupted delivery update")
+				require.Equal(t, 1, concurrentBuilds, "large PostgreSQL tables must build the replacement index concurrently")
+				var definition string
+				require.NoError(t, db.Raw("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = ?::regclass AND contype = 'p'", "config_agent_push_configs").Scan(&definition).Error)
+				require.Equal(t, "PRIMARY KEY (agent_name, tenant, task_id, config_id)", definition, "the completed key swap must survive a later interruption")
+			}
 			require.NoError(t, migrationScopeAgentPushIdentity(context.Background(), db, testMigrationLogger))
+			if backend.name == "postgres" {
+				require.Equal(t, 1, concurrentBuilds, "retry must reuse the completed concurrent key swap")
+			}
 			var config struct {
 				Tenant, Token, AuthCredentials, IngressTokenHash, EncryptionStatus string
 			}

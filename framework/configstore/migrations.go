@@ -578,41 +578,34 @@ var configstoreMigrationSteps = []migrationStep{
 // replacing their primary key. Legacy queued events have no tenant namespace;
 // guessing from the current callback could deliver another tenant's payload.
 func migrationScopeAgentPushIdentity(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+	options := *migrator.DefaultOptions
+	options.UseTransaction = db.Dialector.Name() != "postgres"
+	return RunSingleMigration(ctx, &options, db, logger, &migrator.Migration{
 		ID: "scope_agent_push_identity",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if err := tx.Exec("UPDATE config_agent_push_configs SET tenant = '' WHERE tenant IS NULL").Error; err != nil {
-				return err
-			}
 			switch tx.Dialector.Name() {
 			case "sqlite":
+				if err := tx.Exec("UPDATE config_agent_push_configs SET tenant = '' WHERE tenant IS NULL").Error; err != nil {
+					return err
+				}
 				if err := migrateSQLiteAgentPushPrimaryKey(tx); err != nil {
 					return err
 				}
 			case "postgres":
-				var name string
-				if err := tx.Raw("SELECT conname FROM pg_constraint WHERE conrelid = ?::regclass AND contype = 'p'", "config_agent_push_configs").Scan(&name).Error; err != nil {
+				if err := migratePostgresAgentPushPrimaryKey(tx); err != nil {
 					return err
-				}
-				if name == "" {
-					return fmt.Errorf("agent push configuration primary key is missing")
-				}
-				quoted := `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-				for _, sql := range []string{
-					"ALTER TABLE config_agent_push_configs ALTER COLUMN tenant SET DEFAULT ''",
-					"ALTER TABLE config_agent_push_configs ALTER COLUMN tenant SET NOT NULL",
-					"ALTER TABLE config_agent_push_configs DROP CONSTRAINT " + quoted,
-					"ALTER TABLE config_agent_push_configs ADD PRIMARY KEY (agent_name, tenant, task_id, config_id)",
-				} {
-					if err := tx.Exec(sql).Error; err != nil {
-						return err
-					}
 				}
 			default:
 				return fmt.Errorf("unsupported agent push config database: %s", tx.Dialector.Name())
 			}
-			if err := addColumnIfNotExists(tx, logger, &tables.TableAgentPushDelivery{}, "tenant"); err != nil {
+			// On Postgres, release the delivery-table DDL lock before its backfill.
+			if err := tx.Transaction(func(tx *gorm.DB) error {
+				if err := setMigrationLockTimeout(tx); err != nil {
+					return err
+				}
+				return addColumnIfNotExists(tx, logger, &tables.TableAgentPushDelivery{}, "tenant")
+			}); err != nil {
 				return err
 			}
 			return tx.Exec("UPDATE config_agent_push_deliveries SET status = ?, last_error = ?, updated_at = ?, claimed_by = '', claimed_until = NULL WHERE status = ?",
@@ -622,6 +615,48 @@ func migrationScopeAgentPushIdentity(ctx context.Context, db *gorm.DB, logger sc
 			return fmt.Errorf("scope_agent_push_identity is non-rollbackable: removing tenant identity could merge callbacks and misroute notifications")
 		},
 	})
+}
+
+func migratePostgresAgentPushPrimaryKey(db *gorm.DB) error {
+	const table = "config_agent_push_configs"
+	const index = "idx_agent_push_configs_tenant_identity"
+	const check = "chk_agent_push_configs_tenant_not_null"
+	var key struct{ Name, Definition string }
+	if err := db.Raw("SELECT conname AS name, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = ?::regclass AND contype = 'p'", table).Scan(&key).Error; err != nil {
+		return err
+	}
+	if key.Name == "" {
+		return fmt.Errorf("agent push configuration primary key is missing")
+	}
+	if key.Definition == "PRIMARY KEY (agent_name, tenant, task_id, config_id)" {
+		return nil // Fresh schema, or a completed swap before a later migration failure.
+	}
+
+	// Validate outside the exclusive-lock transaction so SET NOT NULL can use
+	// the proof instead of scanning the table while holding its strongest lock.
+	statements := []string{"ALTER TABLE " + table + " ALTER COLUMN tenant SET DEFAULT ''"}
+	if !db.Migrator().HasConstraint(table, check) {
+		statements = append(statements, "ALTER TABLE "+table+" ADD CONSTRAINT "+check+" CHECK (tenant IS NOT NULL) NOT VALID")
+	}
+	if err := ExecWithBoundedLock(db, "prepare agent push tenant", statements...); err != nil {
+		return err
+	}
+	if err := db.Exec("UPDATE " + table + " SET tenant = '' WHERE tenant IS NULL").Error; err != nil {
+		return err
+	}
+	if err := db.Exec("ALTER TABLE " + table + " VALIDATE CONSTRAINT " + check).Error; err != nil {
+		return err
+	}
+	if err := ensureIndexConcurrently(db, table, index, "agent_name, tenant, task_id, config_id", true); err != nil {
+		return err
+	}
+	quoted := `"` + strings.ReplaceAll(key.Name, `"`, `""`) + `"`
+	return ExecWithBoundedLock(db, "swap agent push primary key",
+		"ALTER TABLE "+table+" ALTER COLUMN tenant SET NOT NULL",
+		"ALTER TABLE "+table+" DROP CONSTRAINT "+quoted,
+		"ALTER TABLE "+table+" ADD CONSTRAINT "+quoted+" PRIMARY KEY USING INDEX "+index,
+		"ALTER TABLE "+table+" DROP CONSTRAINT "+check,
+	)
 }
 
 func migrateSQLiteAgentPushPrimaryKey(tx *gorm.DB) error {
