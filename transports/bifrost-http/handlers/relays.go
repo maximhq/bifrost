@@ -445,7 +445,7 @@ func (h *RelaysHandler) fetchOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "spec_url must be an absolute http(s) URL")
 		return
 	}
-	data, finalURL, status, err := fetchOpenAPISpecForCaller(ctx, specURL)
+	data, finalURL, status, err := fetchOpenAPISpecForCaller(ctx, specURL, h.config.MCPOpenAPIMaxSpecBytes())
 	if err != nil {
 		SendError(ctx, status, err.Error())
 		return

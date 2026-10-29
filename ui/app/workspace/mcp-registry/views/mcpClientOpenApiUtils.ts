@@ -12,8 +12,13 @@ import type {
 /** How the user supplied the document in the create/replace sheet. */
 export type OpenAPISourceMode = "paste" | "url" | "upload";
 
-/** Client-side cap on a pasted or uploaded document, mirroring the server's 5 MiB limit. */
-export const OPENAPI_MAX_SPEC_BYTES = 5 * 1024 * 1024;
+/** Client-side cap on a pasted or uploaded document, mirroring the server's default 32 MiB limit. */
+export const OPENAPI_MAX_SPEC_BYTES = 32 * 1024 * 1024;
+
+/** The spec size limit for client_config.mcp_openapi_max_spec_mb, where 0 or unset is the default. */
+export function openAPIMaxSpecBytes(mb: number | undefined): number {
+	return mb && mb > 0 ? mb * 1024 * 1024 : OPENAPI_MAX_SPEC_BYTES;
+}
 
 /** Picks the editor language from the document's first non-blank character. */
 export function detectSpecLanguage(text: string | undefined): "json" | "yaml" {
@@ -387,14 +392,17 @@ export function applyParsedPreview(
 }
 
 /** Reads an uploaded spec file, returning its text or the error to show. */
-export async function readUploadedSpec(file: {
-	size: number;
-	text: () => Promise<string>;
-}): Promise<{ text: string; error: string | null }> {
-	if (isSpecTooLarge(file.size)) {
+export async function readUploadedSpec(
+	file: {
+		size: number;
+		text: () => Promise<string>;
+	},
+	maxBytes: number = OPENAPI_MAX_SPEC_BYTES,
+): Promise<{ text: string; error: string | null }> {
+	if (isSpecTooLarge(file.size, maxBytes)) {
 		return {
 			text: "",
-			error: `The file exceeds the ${formatBytes(OPENAPI_MAX_SPEC_BYTES)} limit for OpenAPI documents.`,
+			error: `The file exceeds the ${formatBytes(maxBytes)} limit for OpenAPI documents.`,
 		};
 	}
 	let text: string;

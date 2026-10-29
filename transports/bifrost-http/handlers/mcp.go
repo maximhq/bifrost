@@ -2363,7 +2363,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
 		}
-		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -3224,7 +3224,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// later connects from the document fresh.
 		rebuildOpenAPIServer = !disabled && req.OpenAPIConfig == nil && existingConfig.OpenAPIConfig != nil &&
 			strings.TrimSpace(existingConfig.OpenAPIConfig.Spec) == "" && existingConfig.OpenAPIConfig.SpecURL != nil
-		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return

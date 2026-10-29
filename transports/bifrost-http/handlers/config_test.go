@@ -594,6 +594,56 @@ func TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence(t *testin
 	}
 }
 
+// mcp_openapi_max_spec_mb is copied only when sent, so a partial save keeps the stored limit, 0
+// resets it to the default, and a value outside 0..maxMCPOpenAPISpecMB is refused before anything
+// changes.
+func TestUpdateConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.MCPOpenAPIMaxSpecMB = 64
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() int {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MCPOpenAPIMaxSpecMB
+	}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, 64, cfg.ClientConfig.MCPOpenAPIMaxSpecMB, "an omitted field keeps the live value")
+	assert.Equal(t, 64, stored(), "an omitted field keeps the stored value")
+	assert.Equal(t, 64<<20, cfg.MCPOpenAPIMaxSpecBytes())
+
+	raised := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_openapi_max_spec_mb":128}}`)
+	h.updateConfig(raised)
+	require.Equal(t, fasthttp.StatusOK, raised.Response.StatusCode(), string(raised.Response.Body()))
+	assert.Equal(t, 128, cfg.ClientConfig.MCPOpenAPIMaxSpecMB)
+	assert.Equal(t, 128, stored())
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"mcp_openapi_max_spec_mb":-1}}`,
+		fmt.Sprintf(`{"client_config":{"log_retention_days":8,"mcp_openapi_max_spec_mb":%d}}`, maxMCPOpenAPISpecMB+1),
+		// null would decode as 0 and silently reset the limit; an explicit 0 is the reset.
+		`{"client_config":{"log_retention_days":8,"mcp_openapi_max_spec_mb":null}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.Equal(t, 128, cfg.ClientConfig.MCPOpenAPIMaxSpecMB, "%s left the live value unchanged", body)
+		assert.Equal(t, 128, stored(), "%s left the stored value unchanged", body)
+	}
+
+	reset := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_openapi_max_spec_mb":0}}`)
+	h.updateConfig(reset)
+	require.Equal(t, fasthttp.StatusOK, reset.Response.StatusCode(), string(reset.Response.Body()))
+	assert.Zero(t, stored())
+	assert.Zero(t, cfg.MCPOpenAPIMaxSpecBytes(), "0 leaves the limit to openapimcp's default")
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

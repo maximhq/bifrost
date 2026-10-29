@@ -11,7 +11,7 @@ import (
 
 const (
 	// MaxSpecBytes caps a spec document (inline, file or fetched).
-	MaxSpecBytes = 5 << 20
+	MaxSpecBytes = 32 << 20
 	// DefaultMaxResponseBytes caps an upstream response body returned to the model.
 	DefaultMaxResponseBytes = 64 << 10
 	// ToolCountWarnThreshold is the tool count above which a warning is emitted.

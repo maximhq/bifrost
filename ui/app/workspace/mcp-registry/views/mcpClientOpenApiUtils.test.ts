@@ -11,6 +11,8 @@ import {
 	expandToolSelection,
 	formatBytes,
 	isSpecTooLarge,
+	OPENAPI_MAX_SPEC_BYTES,
+	openAPIMaxSpecBytes,
 	mergePreviewRows,
 	pruneCredentials,
 	readUploadedSpec,
@@ -297,8 +299,8 @@ describe("formatting helpers", () => {
 		expect(formatBytes(512)).toBe("512 B");
 		expect(formatBytes(12 * 1024 + 410)).toBe("12.4 KB");
 		expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MB");
-		expect(isSpecTooLarge(5 * 1024 * 1024)).toBe(false);
-		expect(isSpecTooLarge(5 * 1024 * 1024 + 1)).toBe(true);
+		expect(isSpecTooLarge(OPENAPI_MAX_SPEC_BYTES)).toBe(false);
+		expect(isSpecTooLarge(OPENAPI_MAX_SPEC_BYTES + 1)).toBe(true);
 	});
 	it("summarizes a stored openapi_config", () => {
 		expect(summarizeSpecSource({ spec_title: "Petstore", openapi_version: "3.0.3", spec_size: 12 * 1024 + 410, operation_count: 14 })).toBe(
@@ -365,11 +367,30 @@ describe("readUploadedSpec", () => {
 	});
 	it("refuses an oversized file without reading it", async () => {
 		const result = await readUploadedSpec(
-			file(6 * 1024 * 1024, async () => {
+			file(OPENAPI_MAX_SPEC_BYTES + 1, async () => {
 				throw new Error("must not read");
 			}),
 		);
 		expect(result.error).toContain("exceeds");
+	});
+	it("applies the configured limit and names it", async () => {
+		const max = openAPIMaxSpecBytes(1);
+		const result = await readUploadedSpec(
+			file(max + 1, async () => {
+				throw new Error("must not read");
+			}),
+			max,
+		);
+		expect(result.error).toContain("1.0 MB");
+		expect(
+			await readUploadedSpec(
+				file(OPENAPI_MAX_SPEC_BYTES + 1, async () => "openapi: 3.0.0"),
+				openAPIMaxSpecBytes(64),
+			),
+		).toEqual({
+			text: "openapi: 3.0.0",
+			error: null,
+		});
 	});
 	it("says an empty file is empty, not too large", async () => {
 		const result = await readUploadedSpec(file(0, async () => ""));
@@ -721,5 +742,13 @@ describe("needsHeadersVerification", () => {
 		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "http" })).toBe(true);
 		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "openapi" })).toBe(false);
 		expect(needsHeadersVerification({ auth_type: "headers", connection_type: "http" })).toBe(false);
+	});
+});
+
+describe("openAPIMaxSpecBytes", () => {
+	it("reads client_config.mcp_openapi_max_spec_mb, 0 or unset being the default", () => {
+		expect(openAPIMaxSpecBytes(undefined)).toBe(OPENAPI_MAX_SPEC_BYTES);
+		expect(openAPIMaxSpecBytes(0)).toBe(OPENAPI_MAX_SPEC_BYTES);
+		expect(openAPIMaxSpecBytes(64)).toBe(64 * 1024 * 1024);
 	});
 });
