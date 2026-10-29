@@ -3403,15 +3403,28 @@ func clampToModelOutputCeiling(caps schemas.ModelCaps, maxTokens int) int {
 // Unknown headers are forwarded only to Anthropic; for other providers they are silently dropped.
 // If overrides is non-nil, its entries (keyed by prefix) take precedence over the hardcoded defaults.
 func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvider, overrides ...map[string]bool) []string {
+	var overrideMap map[string]bool
+	if len(overrides) > 0 {
+		overrideMap = overrides[0]
+	}
+	var overrideFalseItem []string
+	for prefix, allowed := range overrideMap {
+		if !allowed {
+			overrideFalseItem = append(overrideFalseItem, prefix)
+		}
+	}
+	headers = slices.DeleteFunc(headers, func(header string) bool {
+		for _, prefix := range overrideFalseItem {
+			if strings.HasPrefix(header, prefix) {
+				return true
+			}
+		}
+		return false
+	})
 	features, hasProvider := ProviderFeatures[provider]
 	if !hasProvider {
 		// Unknown provider — allow all headers (safe default for custom providers)
 		return headers
-	}
-
-	var overrideMap map[string]bool
-	if len(overrides) > 0 {
-		overrideMap = overrides[0]
 	}
 
 	filtered := make([]string, 0, len(headers))
