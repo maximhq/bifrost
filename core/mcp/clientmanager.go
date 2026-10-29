@@ -1188,6 +1188,47 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	return nil
 }
 
+// verifyConnectionType is the transport a one-shot verification dials and
+// reports to connect plugins: SSE for an SSE client, as its live connection
+// is, and streamable HTTP for every other client.
+func verifyConnectionType(config *schemas.MCPClientConfig) schemas.MCPConnectionType {
+	if config.ConnectionType == schemas.MCPConnectionTypeSSE {
+		return schemas.MCPConnectionTypeSSE
+	}
+	return schemas.MCPConnectionTypeHTTP
+}
+
+// newVerifyTransport builds the transport a one-shot verification dials at
+// url, of verifyConnectionType's kind, sending headers on every request and
+// honouring the client's TLS settings. An SSE-only server cannot be reached
+// over streamable HTTP at all.
+func (m *MCPManager) newVerifyTransport(config *schemas.MCPClientConfig, url string, headers map[string]string) (transport.Interface, error) {
+	tlsClient, err := m.buildTLSHTTPClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", err)
+	}
+	if verifyConnectionType(config) == schemas.MCPConnectionTypeSSE {
+		opts := []transport.ClientOption{transport.WithHeaders(headers)}
+		if tlsClient != nil {
+			opts = append(opts, transport.WithHTTPClient(tlsClient))
+		}
+		sseTransport, err := transport.NewSSE(url, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SSE transport for verification: %w", err)
+		}
+		return sseTransport, nil
+	}
+	opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
+	if tlsClient != nil {
+		opts = append(opts, transport.WithHTTPBasicClient(tlsClient))
+	}
+	httpTransport, err := transport.NewStreamableHTTP(url, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", err)
+	}
+	return httpTransport, nil
+}
+
 // VerifyPerUserOAuthConnection creates a temporary MCP connection using the
 // provided access token to verify the server is reachable and discover available
 // tools. The connection is closed after verification. This is used during
@@ -1227,7 +1268,7 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 	}
 	connectReq := &schemas.BifrostMCPConnectRequest{
 		ClientName:       config.Name,
-		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionType:   verifyConnectionType(config),
 		AuthType:         config.AuthType,
 		ConnectionString: &url,
 		Headers:          preparedHeaders,
@@ -1268,19 +1309,11 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 		maps.Copy(finalHeaders, preReq.Headers)
 		finalHeaders["Authorization"] = fmt.Sprintf("Bearer %s", accessToken)
 
-		verifyOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
-		verifyHTTPClient, tlsErr := m.buildTLSHTTPClient(config)
-		if tlsErr != nil {
-			return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", tlsErr)
+		verifyTransport, tErr := m.newVerifyTransport(config, finalURL, finalHeaders)
+		if tErr != nil {
+			return nil, tErr
 		}
-		if verifyHTTPClient != nil {
-			verifyOpts = append(verifyOpts, transport.WithHTTPBasicClient(verifyHTTPClient))
-		}
-		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, verifyOpts...)
-		if hErr != nil {
-			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
-		}
-		tempClient = client.NewClient(httpTransport)
+		tempClient = client.NewClient(verifyTransport)
 		if startErr := tempClient.Start(verifyCtx); startErr != nil {
 			return nil, fmt.Errorf("failed to start MCP connection for verification: %w", startErr)
 		}
@@ -1304,7 +1337,7 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 
 		resp := &schemas.BifrostMCPConnectResponse{
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
-				Type:          schemas.MCPConnectionTypeHTTP,
+				Type:          verifyConnectionType(config),
 				ConnectionURL: &finalURL,
 			},
 			ExtraFields: schemas.BifrostMCPResponseExtraFields{
@@ -1374,6 +1407,11 @@ func (m *MCPManager) verifyPerUserOAuthConnection(ctx context.Context, config *s
 //     periodic refresh for a client running per-call (needs_session_stickiness
 //     nil/false). userHeaders here is whatever AdminConnectionHeaders
 //     resolved, which may legitimately be empty for these auth types.
+//   - Edit pre-flight: a shared headers/none client's new headers or TLS
+//     settings are tried before the edit is stored.
+//
+// An SSE client is dialled over SSE, as its live connection is; every other
+// client over streamable HTTP.
 //
 // Parameters:
 //   - config: MCP client configuration (connection URL, name, PerUserHeaderKeys, etc.)
@@ -1414,7 +1452,7 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 	preparedHeaders := utils.FlattenHeaders(utils.StaticConfigHeaders(config))
 	connectReq := &schemas.BifrostMCPConnectRequest{
 		ClientName:       config.Name,
-		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionType:   verifyConnectionType(config),
 		AuthType:         config.AuthType,
 		ConnectionString: &url,
 		Headers:          preparedHeaders,
@@ -1457,19 +1495,11 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 			finalHeaders[k] = v
 		}
 
-		headersVerifyOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
-		headersVerifyTLSClient, tlsErr := m.buildTLSHTTPClient(config)
-		if tlsErr != nil {
-			return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", tlsErr)
+		verifyTransport, tErr := m.newVerifyTransport(config, finalURL, finalHeaders)
+		if tErr != nil {
+			return nil, tErr
 		}
-		if headersVerifyTLSClient != nil {
-			headersVerifyOpts = append(headersVerifyOpts, transport.WithHTTPBasicClient(headersVerifyTLSClient))
-		}
-		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, headersVerifyOpts...)
-		if hErr != nil {
-			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
-		}
-		tempClient = client.NewClient(httpTransport)
+		tempClient = client.NewClient(verifyTransport)
 		if startErr := tempClient.Start(verifyCtx); startErr != nil {
 			return nil, fmt.Errorf("failed to start MCP connection for verification: %w", startErr)
 		}
@@ -1493,7 +1523,7 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 
 		resp := &schemas.BifrostMCPConnectResponse{
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
-				Type:          schemas.MCPConnectionTypeHTTP,
+				Type:          verifyConnectionType(config),
 				ConnectionURL: &finalURL,
 			},
 			ExtraFields: schemas.BifrostMCPResponseExtraFields{
@@ -2380,11 +2410,11 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		}
 		m.logger.Info("%s MCP client '%s' switched to per-call connections (needs_session_stickiness=false): released its persistent connection", MCPLogPrefix, clientName)
 	} else if !becameSticky {
-		// Re-time the running checker against the updated config and the
-		// current global; a no-op when the cadence is unchanged. Both
-		// stickiness transitions start a fresh checker with the new config
-		// themselves (above, and via connectToMCPClient below).
-		m.checkerManager.RetimeClient(id, newConfig)
+		// Re-apply the updated config to the running checker: its cadence,
+		// against the current global, and is_ping_available. Both stickiness
+		// transitions start a fresh checker with the new config themselves
+		// (above, and via connectToMCPClient below).
+		m.checkerManager.ApplyClientConfig(id, newConfig)
 	}
 	if rebuildOpenAPI && !becameSticky && !becamePerCall && !wasDisabled {
 		// The spec, base URL, credentials or header inputs changed: dial again

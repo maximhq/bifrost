@@ -3233,18 +3233,17 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// (post-redaction-merge) value so a caller that round-trips the map
 	// unchanged doesn't force a needless reconnect. Only shared auth types
 	// carry a connection-level header credential — per-user values are
-	// supplied per caller and never baked into a shared transport. HTTP only,
-	// matching the transport VerifyHeadersConnection builds for the
-	// pre-flight below.
+	// supplied per caller and never baked into a shared transport. HTTP and
+	// SSE, the transports VerifyHeadersConnection can dial for the pre-flight
+	// below.
 	// Skipped for a disabled client: there is no live connection to protect,
 	// and refusing the edit because a deliberately-unreachable upstream can't
 	// be dialed would make a disabled client's credentials uneditable. It is
 	// verified on enable instead, which dials for real.
-	staticHeadersChanged := (existingConfig.AuthType == schemas.MCPAuthTypeHeaders || existingConfig.AuthType == schemas.MCPAuthTypeNone) &&
-		existingConfig.ConnectionType == schemas.MCPConnectionTypeHTTP &&
-		!disabled &&
+	sharedHeaderAuth := existingConfig.AuthType == schemas.MCPAuthTypeHeaders || existingConfig.AuthType == schemas.MCPAuthTypeNone
+	remoteTransport := existingConfig.ConnectionType == schemas.MCPConnectionTypeHTTP || existingConfig.ConnectionType == schemas.MCPConnectionTypeSSE
+	staticHeadersChanged := sharedHeaderAuth && remoteTransport && !disabled &&
 		req.Headers != nil && !mcpHeadersEqual(existingConfig.Headers, headers)
-	headersChanged := staticHeadersChanged && !existingConfig.Disabled
 
 	// TLSConfig: if omitted keep existing; if provided, restore raw CACertPEM when the
 	// incoming value is the redacted placeholder returned by the API.
@@ -3260,6 +3259,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 		tlsConfig = &tlsCopy
 	}
+	// A TLS edit is baked into the live transport the same way a header is, so
+	// it takes the same path: tried first where the pre-flight can reach the
+	// upstream with the client's own credential (headers and none), then
+	// applied by redialing.
+	tlsChanged := remoteTransport && !disabled && !mcpTLSConfigEqual(existingConfig.TLSConfig, tlsConfig)
+	preflightConnectionEdit := staticHeadersChanged || (tlsChanged && sharedHeaderAuth)
+	connectionEditChanged := (staticHeadersChanged || tlsChanged) && !existingConfig.Disabled
 	resolvedMaxProtocolVersion := existingConfig.MaxProtocolVersion
 	if req.MaxProtocolVersion != nil {
 		if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", *req.MaxProtocolVersion); err != nil {
@@ -3622,17 +3628,18 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth credentials cannot be rotated while disabling a client; send these as two separate requests")
 		return
 	}
-	// Pre-flight the new static headers against the upstream before anything
-	// is written. VerifyHeadersConnection dials its own ephemeral transport
-	// and closes it, touching neither the stored row nor the live connection,
-	// so a rejected credential leaves the client exactly as it was — still
+	// Pre-flight the new static headers or TLS settings against the upstream
+	// before anything is written. VerifyHeadersConnection dials its own
+	// ephemeral transport and closes it, touching neither the stored row nor
+	// the live connection, so a rejected credential leaves the client exactly
+	// as it was, still
 	// serving on the headers that work. Committing first and reconnecting
 	// afterwards cannot offer that: the failed dial drops the live connection
 	// (leaving the client unusable with "no active connection") while the bad
 	// headers are already persisted, so the connection checker has nothing
 	// good to retry with. Same verify-then-persist order the create path uses
 	// for per-user headers.
-	if staticHeadersChanged {
+	if preflightConnectionEdit {
 		verifyConfig := *existingConfig
 		verifyConfig.Headers = headers
 		verifyConfig.TLSConfig = tlsConfig
@@ -3657,7 +3664,13 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		_, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, &verifyConfig, verifyHeaders)
 		cancel()
 		if verifyErr != nil {
-			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new headers were rejected by the MCP server, so nothing was changed: %v", verifyErr))
+			edited := "headers"
+			if !staticHeadersChanged {
+				edited = "TLS settings"
+			} else if tlsChanged {
+				edited = "headers and TLS settings"
+			}
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("The new %s were rejected by the MCP server, so nothing was changed: %v", edited, verifyErr))
 			return
 		}
 	}
@@ -3845,8 +3858,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// so record it before the OAuth, exchange and VK steps that can still fail.
 	lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, after)
 
-	// Apply the verified headers to the live client. A sticky client holds an
-	// open transport with the old header baked in, and
+	// Apply the new headers or TLS settings to the live client. A sticky
+	// client holds an open transport with the old ones baked in, and
 	// UpdateMCPClientCredentials is the only thing that replaces it (redial +
 	// tool rediscovery). A per-call client reads the current config on every
 	// dial, so its credential is already live, but its tool list would sit
@@ -3869,10 +3882,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// than the connection checker's reconnect path. The response wording
 	// below differs accordingly.
 	var toolRefreshErr error
-	if headersChanged && sharedConnectErr == nil && !(wasPerCallConnection && !isPerCallConnection) {
+	if connectionEditChanged && sharedConnectErr == nil && !(wasPerCallConnection && !isPerCallConnection) {
 		if err := h.updateMCPClientCredentialsWithRetry(ctx, id, schemasConfig); err != nil &&
 			!errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
-			logger.Error(fmt.Sprintf("MCP client %s updated, but applying the new headers to the live client failed: %v", id, err))
+			logger.Error(fmt.Sprintf("MCP client %s updated, but applying the new headers or TLS settings to the live client failed: %v", id, err))
 			if isPerCallConnection {
 				toolRefreshErr = err
 			} else {
@@ -4300,6 +4313,18 @@ func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, co
 		time.Sleep(retryDelay)
 	}
 	return lastErr
+}
+
+// mcpTLSConfigEqual reports whether two TLS settings dial the same way. A nil
+// config and one that sets nothing are the same: neither customizes TLS.
+func mcpTLSConfigEqual(a, b *schemas.MCPTLSConfig) bool {
+	unset := func(c *schemas.MCPTLSConfig) bool {
+		return c == nil || (!c.InsecureSkipVerify && (c.CACertPEM == nil || c.CACertPEM.GetValue() == ""))
+	}
+	if unset(a) || unset(b) {
+		return unset(a) && unset(b)
+	}
+	return a.InsecureSkipVerify == b.InsecureSkipVerify && a.CACertPEM.Equals(b.CACertPEM)
 }
 
 // mcpHeadersEqual reports whether two resolved static header maps carry the

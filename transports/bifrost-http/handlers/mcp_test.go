@@ -2061,3 +2061,126 @@ func TestAddMCPClient_PerUserHeadersKeepsTLSConfig(t *testing.T) {
 	require.NotNil(t, stored.TLSConfig, "the stored client keeps the tls_config")
 	assert.Equal(t, caPEM, stored.TLSConfig.CACertPEM.GetValue())
 }
+
+// connectionEditRecorder stands in for the runtime on a client edit: it answers
+// VerifyHeadersConnection with verifyErr and records the configs the pre-flight
+// and the live-client update were handed.
+type connectionEditRecorder struct {
+	*openAPIRecordingManager
+	verifyErr error
+	applyErr  error
+	verified  []*schemas.MCPClientConfig
+	applied   []*schemas.MCPClientConfig
+}
+
+// VerifyHeadersConnection records the config it was asked to try and answers verifyErr.
+func (m *connectionEditRecorder) VerifyHeadersConnection(_ context.Context, c *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
+	m.verified = append(m.verified, c)
+	if m.verifyErr != nil {
+		return nil, m.verifyErr
+	}
+	return &schemas.MCPDiscovery{}, nil
+}
+
+// UpdateMCPClientCredentials records the config the live client was updated with and answers applyErr.
+func (m *connectionEditRecorder) UpdateMCPClientCredentials(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	m.applied = append(m.applied, c)
+	return m.applyErr
+}
+
+// newConnectionEditHandler creates a sticky headers client of connectionType
+// through the handler, then puts a connectionEditRecorder answering verifyErr
+// in front of the runtime. It returns the handler, the recorder and the id.
+func newConnectionEditHandler(t *testing.T, connectionType string, verifyErr error) (*MCPHandler, *connectionEditRecorder, string) {
+	t.Helper()
+	h, mgr := newOpenAPITestHandler(t)
+	url := "https://upstream.example/mcp"
+	if connectionType == "sse" {
+		url = "https://upstream.example/sse"
+	}
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "edited", "connection_type": connectionType, "connection_string": url, "auth_type": "headers",
+		"headers": map[string]string{"X-Key": "v1"}, "tools_to_execute": []string{"*"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	rec := &connectionEditRecorder{openAPIRecordingManager: mgr, verifyErr: verifyErr}
+	h.mcpManager = rec
+	return h, rec, mgr.added[0].ID
+}
+
+// TestUpdateMCPClient_TLSEditIsTriedThenApplied: a TLS edit on a client with a
+// live connection is tried against the upstream first, then applied to the
+// live client by redialing, as a header edit is. It used to be stored only, so
+// the open connection kept the old settings until something else redialed.
+func TestUpdateMCPClient_TLSEditIsTriedThenApplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, rec.verified, 1, "the edit is tried first")
+	assert.Equal(t, "PEM-B", rec.verified[0].TLSConfig.CACertPEM.GetValue())
+	require.Len(t, rec.applied, 1, "then applied to the live client")
+	assert.Equal(t, "PEM-B", rec.applied[0].TLSConfig.CACertPEM.GetValue())
+}
+
+// TestUpdateMCPClient_RejectedTLSEditChangesNothing: a TLS edit the upstream
+// cannot be reached with is refused with 422 and nothing is stored or applied.
+func TestUpdateMCPClient_RejectedTLSEditChangesNothing(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", errors.New("x509: certificate signed by unknown authority"))
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusUnprocessableEntity, status, respBody)
+	assert.Contains(t, respBody, "The new TLS settings were rejected by the MCP server, so nothing was changed")
+	assert.Empty(t, rec.updated, "the runtime was not updated")
+	assert.Empty(t, rec.applied, "the live client was not redialed")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+	require.NoError(t, err)
+	assert.Nil(t, stored.TLSConfig, "the stored client keeps its TLS settings")
+}
+
+// TestUpdateMCPClient_FailedTLSApplyIsStoredAsPartialSuccess: a TLS edit that
+// passed its pre-flight but could not be applied to the live client is still
+// stored, and the answer is 200 with status partial_success rather than a 422.
+func TestUpdateMCPClient_FailedTLSApplyIsStoredAsPartialSuccess(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	rec.applyErr = errors.New("dial tcp: connection refused")
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"ca_cert_pem":"PEM-B"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "partial_success", resp.Status, respBody)
+	require.Len(t, rec.applied, 1, "the live client was tried")
+	stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), id)
+	require.NoError(t, err)
+	require.NotNil(t, stored.TLSConfig, "the edit is stored")
+	assert.Equal(t, "PEM-B", stored.TLSConfig.CACertPEM.GetValue())
+}
+
+// TestUpdateMCPClient_UnchangedTLSIsNotReapplied: sending TLS settings that dial
+// the same way, as an editor saving an untouched form does, neither tries nor
+// redials anything.
+func TestUpdateMCPClient_UnchangedTLSIsNotReapplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "http", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tls_config":{"insecure_skip_verify":false}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Empty(t, rec.verified)
+	assert.Empty(t, rec.applied)
+}
+
+// TestUpdateMCPClient_SSEHeaderEditIsTriedThenApplied: a header edit on an SSE
+// client is tried over SSE and then applied to the live client by redialing,
+// as on an HTTP client. SSE clients used to store the new headers only.
+func TestUpdateMCPClient_SSEHeaderEditIsTriedThenApplied(t *testing.T) {
+	h, rec, id := newConnectionEditHandler(t, "sse", nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"headers":{"X-Key":"v2"}}`, id, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, rec.verified, 1, "the edit is tried first")
+	assert.Equal(t, schemas.MCPConnectionTypeSSE, rec.verified[0].ConnectionType)
+	verifiedKey := rec.verified[0].Headers["X-Key"]
+	assert.Equal(t, "v2", verifiedKey.GetValue())
+	require.Len(t, rec.applied, 1, "then applied to the live client")
+	appliedKey := rec.applied[0].Headers["X-Key"]
+	assert.Equal(t, "v2", appliedKey.GetValue())
+}
