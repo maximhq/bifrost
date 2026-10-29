@@ -162,10 +162,10 @@ func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 // goroutine stops forwarding and drains ch, see drainAfterCancel, before
 // running its deferred cleanup.
 func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool) chan *schemas.BifrostStreamChunk {
-	return wrapStreamWithDrainGrace(ctx, ch, stop, armed, cancelDrainGrace)
+	return wrapStreamWithDrainBounds(ctx, ch, stop, armed, defaultDrainBounds)
 }
 
-func wrapStreamWithDrainGrace(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool, drainGrace time.Duration) chan *schemas.BifrostStreamChunk {
+func wrapStreamWithDrainBounds(ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, stop func(), armed bool, bounds drainBounds) chan *schemas.BifrostStreamChunk {
 	if ch == nil {
 		stop()
 		return ch
@@ -183,7 +183,7 @@ func wrapStreamWithDrainGrace(ctx *schemas.BifrostContext, ch chan *schemas.Bifr
 			select {
 			case <-ctx.Done():
 				forwardTimeoutChunkIfFired(ctx, out)
-				drainAfterCancel(ch, drainGrace)
+				drainAfterCancel(ch, bounds)
 				return
 			case chunk, ok = <-ch:
 			}
@@ -198,7 +198,7 @@ func wrapStreamWithDrainGrace(ctx *schemas.BifrostContext, ch chan *schemas.Bifr
 			select {
 			case <-ctx.Done():
 				forwardTimeoutChunkIfFired(ctx, out)
-				drainAfterCancel(ch, drainGrace)
+				drainAfterCancel(ch, bounds)
 				return
 			default:
 			}
@@ -206,7 +206,7 @@ func wrapStreamWithDrainGrace(ctx *schemas.BifrostContext, ch chan *schemas.Bifr
 			case out <- chunk:
 			case <-ctx.Done():
 				forwardTimeoutChunkIfFired(ctx, out)
-				drainAfterCancel(ch, drainGrace)
+				drainAfterCancel(ch, bounds)
 				return
 			}
 		}
@@ -214,9 +214,16 @@ func wrapStreamWithDrainGrace(ctx *schemas.BifrostContext, ch chan *schemas.Bifr
 	return out
 }
 
-// cancelDrainGrace bounds how long drainAfterCancel holds the wrapped stream
-// open waiting for the producer to close ch.
-const cancelDrainGrace = 5 * time.Second
+// drainBounds bounds drainAfterCancel. grace is how long the drain holds the
+// wrapped stream open waiting for the producer to close ch. background is how
+// much longer a detached goroutine keeps draining after that, so a producer
+// that sends late is not left blocked.
+type drainBounds struct {
+	grace      time.Duration
+	background time.Duration
+}
+
+var defaultDrainBounds = drainBounds{grace: 5 * time.Second, background: time.Minute}
 
 // drainAfterCancel discards what is left on ch after cancellation so the
 // producer is never left blocked writing into it. A provider closes ch
@@ -224,10 +231,13 @@ const cancelDrainGrace = 5 * time.Second
 // before close(out), and the transport still sees the producer's cancellation
 // post-hook and log land before it completes the trace. A source that neither
 // sends nor closes (a plugin short-circuit stream that ignores ctx) must not
-// hold the caller's stream open, so after the grace period the rest of the
-// drain moves to a background goroutine; it ends whenever that source closes.
-func drainAfterCancel(ch chan *schemas.BifrostStreamChunk, grace time.Duration) {
-	timer := time.NewTimer(grace)
+// hold the caller's stream open, so after bounds.grace the rest of the drain
+// moves to a background goroutine. That goroutine also stops after
+// bounds.background: a short-circuit stream can be a bare channel nothing ever
+// writes to or closes, and an unbounded drain would then leave one goroutine
+// behind per timed-out request.
+func drainAfterCancel(ch chan *schemas.BifrostStreamChunk, bounds drainBounds) {
+	timer := time.NewTimer(bounds.grace)
 	defer timer.Stop()
 	for {
 		select {
@@ -237,7 +247,17 @@ func drainAfterCancel(ch chan *schemas.BifrostStreamChunk, grace time.Duration) 
 			}
 		case <-timer.C:
 			go func() {
-				for range ch {
+				giveUp := time.NewTimer(bounds.background)
+				defer giveUp.Stop()
+				for {
+					select {
+					case _, ok := <-ch:
+						if !ok {
+							return
+						}
+					case <-giveUp.C:
+						return
+					}
 				}
 			}()
 			return

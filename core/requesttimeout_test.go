@@ -646,7 +646,7 @@ func TestWrapStreamForRequestTimeout_SilentSourceStillReportsTimeout(t *testing.
 
 	in := make(chan *schemas.BifrostStreamChunk)
 	var stopped atomicBool
-	out := wrapStreamWithDrainGrace(ctx, in, func() { stopped.set(true) }, true, 50*time.Millisecond)
+	out := wrapStreamWithDrainBounds(ctx, in, func() { stopped.set(true) }, true, drainBounds{grace: 50 * time.Millisecond, background: time.Second})
 
 	time.Sleep(20 * time.Millisecond) // wrapper is now parked on the receive
 	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
@@ -683,6 +683,29 @@ func TestWrapStreamForRequestTimeout_SilentSourceStillReportsTimeout(t *testing.
 		t.Fatal("a producer sending after the grace period was left blocked")
 	}
 	close(in)
+}
+
+// TestDrainAfterCancel_BackgroundDrainStopsAfterItsBound covers a source that
+// is a bare channel nothing ever writes to or closes. The background drain
+// must give up after its bound rather than wait forever, or every timed-out
+// request on such a stream would leave a goroutine behind.
+func TestDrainAfterCancel_BackgroundDrainStopsAfterItsBound(t *testing.T) {
+	in := make(chan *schemas.BifrostStreamChunk)
+	drainAfterCancel(in, drainBounds{grace: 10 * time.Millisecond, background: 40 * time.Millisecond})
+
+	// Inside the background bound a late send is still drained.
+	select {
+	case in <- &schemas.BifrostStreamChunk{}:
+	case <-time.After(time.Second):
+		t.Fatal("a send inside the background bound was not drained")
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case in <- &schemas.BifrostStreamChunk{}:
+		t.Fatal("background drain was still receiving after its bound")
+	default:
+	}
 }
 
 // TestResolveRequestContext_RootPassedExplicitlyIsTreatedAsShared verifies
