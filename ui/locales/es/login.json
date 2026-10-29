@@ -49,8 +49,8 @@
 		"invalidBody": "El enlace de autorización ha caducado, ya se usó o se le quitó el token. Reinicia la conexión desde tu cliente MCP para obtener uno nuevo.",
 		"recognizeApplication": "Continúa solo si reconoces esta aplicación y su destino de callback:",
 		"publishedBy": "Publicado por <code0>{{host}}</code0>",
-		"localhostWarning": "Esta aplicación solo regresa a tu propio equipo, por lo que su nombre no se puede verificar. Cualquier aplicación que se ejecute localmente podría usarla.",
-		"signInRedirectBody": "Esta autorización requiere una cuenta de Bifrost con la sesión iniciada. Te llevamos a iniciar sesión; volverás aquí directamente.",
+		"localhostWarning": "Esta aplicación solo regresa a tu propio equipo, por lo que no se puede verificar su nombre. Cualquier aplicación que se ejecute localmente podría usarlo.",
+		"signInRedirectBody": "Esta autorización requiere una cuenta de Bifrost con sesión iniciada. Te llevamos a iniciar sesión y volverás directamente aquí.",
 		"signInToBifrost": "Inicia sesión en Bifrost"
 	},
 	"setup": {

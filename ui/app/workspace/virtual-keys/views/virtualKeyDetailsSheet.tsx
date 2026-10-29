@@ -681,11 +681,11 @@ export default function VirtualKeyDetailSheet({
 
 							{/* Relay access: the relays granted by name. */}
 							<div className="space-y-4" data-testid="vk-details-relay-access">
-								<h3 className="font-semibold">Relay access</h3>
+								<h3 className="font-semibold">{t("virtualKeys.relayAccess")}</h3>
 
 								{!virtualKey.relay_grants || virtualKey.relay_grants.length === 0 ? (
 									<span className="text-muted-foreground text-sm" data-testid="vk-details-relay-none">
-										No relays granted
+										{t("virtualKeys.noRelaysGranted")}
 									</span>
 								) : (
 									<div className="flex flex-wrap gap-1">

@@ -498,7 +498,7 @@ export function openAPIParseControls(state: {
 			autoParse: false,
 			showButton: !state.isCurrent || state.hasError,
 			showPending: false,
-			buttonLabel: i18n.t("openapi.source.fetchSpec", { ns: "mcp" }),
+			buttonLabel: i18n.t("openapi.source.fetch", { ns: "mcp" }),
 		};
 	}
 	return {

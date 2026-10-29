@@ -72,15 +72,17 @@ const runLocales = !onlyLiterals || onlyLocales;
 const pathFilters = args.filter((arg) => !arg.startsWith("--")).map((arg) => path.resolve(UI_ROOT, arg));
 
 // A string is prose when it has a letter and is not an identifier, token, path, or URL.
-function isProse(raw) {
+// `maybeIdentifier` is true only where the AST allows an enum value or key (object fields);
+// JSX text and text props are always rendered, so a lowercase word like "save" is prose there.
+function isProse(raw, maybeIdentifier = false) {
 	const text = raw.replace(/\s+/g, " ").trim();
 	if (!/\p{L}/u.test(text)) return false;
 	if (!text.split(/[\s,;]+/).some((word) => /^\p{L}{2,}[.!?:]?$/u.test(word))) return false; // no plain word: "├─ add.py", "v1.2"
 	if (/^(https?:|mailto:|\/|\.\/|#|data:)/.test(text)) return false;
 	if (!text.includes(" ")) {
 		if (/[_./:@\\=<>{}[\]$]|\d/.test(text)) return false; // tokens, keys, versions, css
-		if (/^[a-z]/.test(text)) return false; // identifiers and enum values
 		if (/^[A-Z0-9-]+$/.test(text) && text.length <= 5) return false; // acronyms: API, URL, JSON
+		if (maybeIdentifier && /^[a-z]/.test(text)) return false; // identifiers and enum values
 		if (/^[a-z]+[A-Z]/.test(text)) return false; // camelCase
 	}
 	return true;
@@ -92,16 +94,28 @@ function hasIgnoreComment(sourceFile, node) {
 	return [lines[line], lines[line - 1]].some((l) => l !== undefined && l.includes("i18n-ignore"));
 }
 
-function stringValue(node) {
-	if (!node) return undefined;
-	if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-	if (ts.isJsxExpression(node)) return stringValue(node.expression);
-	if (ts.isParenthesizedExpression(node)) return stringValue(node.expression);
-	if (ts.isTemplateExpression(node)) {
-		const parts = [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].join(" ");
-		return /\p{L}{2,}/u.test(parts) ? `${node.getText()}` : undefined;
-	}
-	return undefined;
+// Peels JSX expression braces and parentheses to the expression inside.
+function unwrap(node) {
+	let current = node;
+	while (current && (ts.isJsxExpression(current) || ts.isParenthesizedExpression(current))) current = current.expression;
+	return current;
+}
+
+// The string-valued nodes a text position can render: literals, templates with prose, and both
+// branches of a conditional.
+function stringLeaves(node) {
+	const inner = unwrap(node);
+	if (!inner) return [];
+	if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return [inner];
+	if (ts.isTemplateExpression(inner)) return /\p{L}{2,}/u.test(literalText(inner)) ? [inner] : [];
+	if (ts.isConditionalExpression(inner)) return [...stringLeaves(inner.whenTrue), ...stringLeaves(inner.whenFalse)];
+	return [];
+}
+
+// Prose detection reads only the literal parts of a template; the `${...}` expressions are not text.
+function literalText(node) {
+	if (ts.isTemplateExpression(node)) return [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].join(" ");
+	return node.text;
 }
 
 function jsxTagName(node) {
@@ -138,29 +152,30 @@ function scanFile(filePath) {
 	const sourceFile = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, kind);
 	const findings = [];
 
-	const report = (node, category, value) => {
-		if (!isProse(value) || hasIgnoreComment(sourceFile, node)) return;
+	// `node` is a string leaf (see stringLeaves) or JSX text.
+	const report = (node, category) => {
+		const value = ts.isJsxText(node) ? node.text : literalText(node);
+		if (!isProse(value, category === "object-field") || hasIgnoreComment(sourceFile, node)) return;
 		const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
 		const tier = REVIEW_CATEGORIES.has(category) ? "review" : "untranslated";
-		findings.push({ line: line + 1, column: character + 1, tier, category, text: value.replace(/\s+/g, " ").trim() });
+		const shown = ts.isTemplateExpression(node) ? node.getText(sourceFile) : value;
+		findings.push({ line: line + 1, column: character + 1, tier, category, text: shown.replace(/\s+/g, " ").trim() });
 	};
 
 	const visit = (node) => {
 		// <p>Some text</p>
 		if (ts.isJsxText(node)) {
 			const parentTag = node.parent ? jsxTagName(node.parent) : undefined;
-			if (!parentTag || !RAW_TEXT_TAGS.has(parentTag)) report(node, "jsx-text", node.text);
+			if (!parentTag || !RAW_TEXT_TAGS.has(parentTag)) report(node, "jsx-text");
 		}
 		// <p>{"Some text"}</p>
 		else if (ts.isJsxExpression(node) && node.parent && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))) {
 			const parentTag = jsxTagName(node.parent);
-			const value = stringValue(node.expression);
-			if (value !== undefined && (!parentTag || !RAW_TEXT_TAGS.has(parentTag))) report(node, "jsx-expression", value);
+			if (!parentTag || !RAW_TEXT_TAGS.has(parentTag)) for (const leaf of stringLeaves(node.expression)) report(leaf, "jsx-expression");
 		}
 		// <Input placeholder="Search..." />
 		else if (ts.isJsxAttribute(node) && TEXT_PROPS.has(node.name.getText())) {
-			const value = stringValue(node.initializer);
-			if (value !== undefined) report(node, "jsx-prop", value);
+			for (const leaf of stringLeaves(node.initializer)) report(leaf, "jsx-prop");
 		}
 		// toast.success("Saved")
 		else if (
@@ -169,13 +184,11 @@ function scanFile(filePath) {
 			node.expression.expression.getText() === "toast" &&
 			TOAST_METHODS.has(node.expression.name.text)
 		) {
-			const value = stringValue(node.arguments[0]);
-			if (value !== undefined) report(node.arguments[0], "toast", value);
+			for (const leaf of stringLeaves(node.arguments[0])) report(leaf, "toast");
 		}
 		// { label: "Network" } in option, tab, and column definitions
 		else if (ts.isPropertyAssignment(node) && TEXT_FIELDS.has(node.name.getText().replace(/["']/g, ""))) {
-			const value = stringValue(node.initializer);
-			if (value !== undefined && !insideTranslationOrType(node) && !hasKeySibling(node)) report(node.initializer, "object-field", value);
+			if (!insideTranslationOrType(node) && !hasKeySibling(node)) for (const leaf of stringLeaves(node.initializer)) report(leaf, "object-field");
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -217,9 +230,34 @@ function flatten(value, prefix = "", out = new Map()) {
 	return out;
 }
 
-const placeholders = (value) =>
-	typeof value === "string" ? [...new Set([...value.matchAll(/\{\{\s*([\w.]+)[^}]*\}\}/g)].map((m) => m[1]))].sort().join(",") : "";
-const baseKey = (key) => key.replace(/_(zero|one|two|few|many|other)$/, "");
+// Interpolation names in a catalog value. Arrays and objects compare element by element.
+function placeholders(value) {
+	if (typeof value === "string") return [...new Set([...value.matchAll(/\{\{\s*([\w.]+)[^}]*\}\}/g)].map((m) => m[1]))].sort().join(",");
+	if (Array.isArray(value)) return value.map(placeholders).join("|");
+	if (value && typeof value === "object")
+		return Object.keys(value)
+			.sort()
+			.map((key) => `${key}:${placeholders(value[key])}`)
+			.join("|");
+	return "";
+}
+const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
+const isPluralKey = (key) => PLURAL_SUFFIX.test(key);
+const baseKey = (key) => key.replace(PLURAL_SUFFIX, "");
+const suffixOf = (key) => PLURAL_SUFFIX.exec(key)?.[1];
+
+// i18next resolves a counted key to the form its language's plural rules pick, so a translation
+// needs those forms (ja: other; ru: one, few, many, other), whatever English has. Languages whose
+// only extra form is `many` (es, fr, it, pt) use it for millions, which UI counts never reach.
+function pluralCategories(lang) {
+	let categories;
+	try {
+		categories = new Intl.PluralRules(lang).resolvedOptions().pluralCategories;
+	} catch {
+		return ["one", "other"];
+	}
+	return categories.includes("few") ? categories : categories.filter((category) => category !== "many");
+}
 
 function checkLocales() {
 	const languages = fs.readdirSync(LOCALES_DIR).filter((name) => fs.statSync(path.join(LOCALES_DIR, name)).isDirectory());
@@ -236,23 +274,43 @@ function checkLocales() {
 				continue;
 			}
 			const target = flatten(JSON.parse(fs.readFileSync(targetPath, "utf8")));
-			// Plural forms differ per language (ja has only _other, ru adds _few/_many), so compare on base keys.
-			const targetBases = new Set([...target.keys()].map(baseKey));
-			const sourceBases = new Set([...source.keys()].map(baseKey));
-			for (const [key, value] of source) {
-				const qualified = `${nsName}:${key}`;
-				if (!target.has(key)) {
-					if (!targetBases.has(baseKey(key))) issues.missing.push(qualified);
-					continue;
-				}
-				const translated = target.get(key);
+			const sourcePluralBases = new Set([...source.keys()].filter(isPluralKey).map(baseKey));
+			const categories = pluralCategories(lang);
+			const compare = (qualified, value, translated) => {
 				if (Array.isArray(value) !== Array.isArray(translated) || typeof value !== typeof translated) issues.shape.push(qualified);
+				else if (Array.isArray(value) && value.length !== translated.length)
+					issues.shape.push(`${qualified} (en: ${value.length} items vs ${lang}: ${translated.length})`);
 				else if (placeholders(value) !== placeholders(translated))
 					issues.placeholders.push(`${qualified} (en: {${placeholders(value)}} vs ${lang}: {${placeholders(translated)}})`);
 				else if (flag("untranslated") && typeof value === "string" && value === translated && isProse(value))
 					issues.untranslated.push(qualified);
+			};
+			// Ordinary keys must exist exactly; a plural sibling (item_one) does not stand in for `item`.
+			for (const [key, value] of source) {
+				if (isPluralKey(key)) continue;
+				const qualified = `${nsName}:${key}`;
+				if (!target.has(key)) issues.missing.push(qualified);
+				else compare(qualified, value, target.get(key));
 			}
-			for (const key of target.keys()) if (!source.has(key) && !sourceBases.has(baseKey(key))) issues.extra.push(`${nsName}:${key}`);
+			// Plural groups are checked against the forms the target language needs. The catalogs use the
+			// plain key as the singular (`x` + `x_other`), which i18next falls back to, so it covers `one`.
+			// A form English lacks (ru _few) compares with English _other; a shared form with its English twin.
+			for (const base of sourcePluralBases) {
+				for (const category of categories) {
+					const key = `${base}_${category}`;
+					if (!target.has(key)) {
+						if (!(category === "one" && target.has(base))) issues.missing.push(`${nsName}:${key}`);
+						continue;
+					}
+					const reference = source.has(key) ? source.get(key) : (source.get(`${base}_other`) ?? source.get(base));
+					if (reference !== undefined) compare(`${nsName}:${key}`, reference, target.get(key));
+				}
+			}
+			for (const key of target.keys()) {
+				if (source.has(key)) continue;
+				if (isPluralKey(key) && sourcePluralBases.has(baseKey(key)) && categories.includes(suffixOf(key))) continue;
+				issues.extra.push(`${nsName}:${key}`);
+			}
 		}
 		report[lang] = issues;
 	}

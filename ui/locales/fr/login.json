@@ -48,10 +48,10 @@
 		"invalidTitle": "Ce lien n’est plus valide",
 		"invalidBody": "Le lien d’autorisation a expiré, a déjà été utilisé, ou son jeton a été retiré. Relancez la connexion depuis votre client MCP pour obtenir un nouveau lien.",
 		"recognizeApplication": "Continuez uniquement si vous reconnaissez cette application et sa destination de rappel :",
-		"publishedBy": "Publié par <code0>{{host}}</code0>",
-		"localhostWarning": "Cette application ne redirige que vers votre propre ordinateur, son nom ne peut donc pas être vérifié. N'importe quelle application exécutée localement pourrait l'utiliser.",
-		"signInRedirectBody": "Cette autorisation nécessite un compte Bifrost connecté. Nous vous redirigeons vers la connexion — vous reviendrez directement ici.",
-		"signInToBifrost": "Se connecter à Bifrost"
+		"signInRedirectBody": "Cette autorisation nécessite un compte Bifrost connecté. Nous vous redirigeons vers la connexion, vous reviendrez ici directement.",
+		"signInToBifrost": "Se connecter à Bifrost",
+		"publishedBy": "Publiée par <code0>{{host}}</code0>",
+		"localhostWarning": "Cette application ne revient que vers votre propre ordinateur ; son nom ne peut donc pas être vérifié. N’importe quelle application exécutée localement pourrait l’utiliser."
 	},
 	"setup": {
 		"instructionsIntro": "Le jeton d’installation est un secret que l’opérateur définit sur le serveur. Définissez-le de l’une des deux manières suivantes, puis redémarrez Bifrost :",

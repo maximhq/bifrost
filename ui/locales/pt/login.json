@@ -49,8 +49,8 @@
 		"invalidBody": "A ligação de autorização expirou, já foi utilizada ou o respetivo token foi removido. Reinicie a ligação a partir do seu cliente MCP para obter uma nova.",
 		"recognizeApplication": "Continue apenas se reconhecer esta aplicação e o seu destino de callback:",
 		"publishedBy": "Publicado por <code0>{{host}}</code0>",
-		"localhostWarning": "Esta aplicação só regressa ao seu próprio computador, pelo que o nome não pode ser verificado. Qualquer aplicação executada localmente poderia utilizá-la.",
-		"signInRedirectBody": "Esta autorização requer uma conta Bifrost com sessão iniciada. Vamos encaminhá-lo para o início de sessão — voltará logo a seguir a esta página.",
+		"localhostWarning": "Esta aplicação só regressa ao seu próprio computador, pelo que o nome não pode ser verificado. Qualquer aplicação em execução localmente poderia usá-lo.",
+		"signInRedirectBody": "Esta autorização requer uma conta Bifrost com sessão iniciada. A redirecioná-lo para iniciar sessão, voltará logo a seguir para aqui.",
 		"signInToBifrost": "Iniciar sessão no Bifrost"
 	},
 	"setup": {

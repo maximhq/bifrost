@@ -248,7 +248,11 @@
 			"vertexEndpoint": "ID ou URL du point de terminaison Vertex",
 			"vertexEndpointHint": "L’ID de modèle ci-dessus correspond au nom du modèle servi, envoyé dans le corps de la requête. Utilise les identifiants Google de cette clé. Prend en charge le chat et la conversion de Responses vers le chat.",
 			"vertexEndpointPlaceholder": "2222222222 ou https://us-west1-aiplatform.googleapis.com/v1/projects/…",
-			"vertexEndpointInvalid": "Saisissez un ID de point de terminaison Vertex ou collez l’URL d’un point de terminaison pris en charge."
+			"vertexEndpointInvalid": "Saisissez un ID de point de terminaison Vertex ou collez l’URL d’un point de terminaison pris en charge.",
+			"azureUseSpeech": "Utiliser les points de terminaison Azure Speech",
+			"azureUseSpeechHint": "Envoyer les requêtes de synthèse et de transcription vocales de ce déploiement à Azure AI Speech plutôt qu’à Azure OpenAI.",
+			"azureUseVoiceLive": "Utiliser les points de terminaison Azure Voice Live",
+			"azureUseVoiceLiveHint": "Envoyer les sessions WebSocket temps réel de ce déploiement à Azure Voice Live plutôt qu’à Azure OpenAI."
 		},
 		"saveChanges": "Enregistrer les modifications",
 		"saving": "Enregistrement…",
@@ -549,7 +553,8 @@
 		},
 		"openaiForm": {
 			"disableStore": "Désactiver Store",
-			"disableStoreHelp": "Avec l’API Responses, store est défini sur true par défaut ; lorsqu’il est activé, la réponse générée est stockée pour être récupérée ultérieurement via l’API. OpenAI expose des points de terminaison pour récupérer et supprimer les réponses stockées, de sorte que vos ID de réponse deviennent des objets durables côté serveur plutôt que des ID à usage unique."
+			"disableStoreHelp": "Avec l’API Responses, store est défini sur true par défaut ; lorsqu’il est activé, la réponse générée est stockée pour être récupérée ultérieurement via l’API. OpenAI expose des points de terminaison pour récupérer et supprimer les réponses stockées, de sorte que vos ID de réponse deviennent des objets durables côté serveur plutôt que des ID à usage unique.",
+			"disableStoreHelpFireworks": "Avec l’API Responses, store vaut true par défaut et, lorsqu’il est activé, la réponse générée est stockée pour être récupérée plus tard via l’API. Désactivez store pour fireworks."
 		},
 		"governanceForm": {
 			"budgetLimitNumber": "La limite de budget doit être un nombre",
@@ -768,7 +773,18 @@
 			"copilotTokenLabel": "Jeton GitHub ou jeton API Copilot",
 			"copilotTokenDescription": "Jeton d’accès personnel à autorisations précises (<code>github_pat_…</code>) avec l’autorisation <strong>Copilot Requests</strong>. Votre organisation doit activer la stratégie <strong>Copilot CLI</strong>.",
 			"copilotTokenInputPlaceholder": "Jeton github_pat_… ou ghu_…, ou jeton API Copilot",
-			"copilotSignInHint": "Ou connectez-vous avec GitHub pour renseigner un jeton."
+			"copilotSignInHint": "Ou connectez-vous avec GitHub pour renseigner un jeton.",
+			"azureUseSpeech": "Utiliser les points de terminaison Azure Speech",
+			"azureUseSpeechHelp": "Envoyer les requêtes de synthèse et de transcription vocales à Azure AI Speech plutôt qu’à Azure OpenAI. Un déploiement peut remplacer ce réglage.",
+			"azureUseVoiceLive": "Utiliser les points de terminaison Azure Voice Live",
+			"azureUseVoiceLiveHelp": "Envoyer les sessions WebSocket temps réel à Azure Voice Live plutôt qu’à Azure OpenAI. Un déploiement peut remplacer ce réglage.",
+			"bearerToken": "Jeton Bearer",
+			"sagemakerIamRoleHelp": "Utilise la chaîne d’identifiants AWS par défaut (rôle IAM, IRSA, environnement). Bifrost en génère le jeton Bearer SageMaker.",
+			"sagemakerExplicitHelp": "Bifrost génère le jeton Bearer SageMaker à partir de ces identifiants AWS.",
+			"sagemakerApiKeyHelp": "Envoie tel quel un jeton sagemaker-api-key-... pré-généré. Ces jetons expirent au bout de 12 heures.",
+			"sagemakerBearerPlaceholder": "sagemaker-api-key-... ou env.SAGEMAKER_API_KEY",
+			"sagemakerRegionHelp": "Région de vos points de terminaison. Un ID de modèle peut la remplacer avec un préfixe : us-west-2/my-endpoint.",
+			"sagemakerAssumeRoleHelp": "Assume un rôle IAM avant de générer les jetons. Fonctionne avec des identifiants explicites comme avec le rôle IAM hérité."
 		},
 		"proxyHttp": "HTTP",
 		"proxySocks5": "SOCKS5",
@@ -896,7 +912,8 @@
 				"unsupportedMethod": "Méthode {{method}} non prise en charge",
 				"addRule": "Ajoutez une règle ou choisissez « Désactivé » pour ne rien transmettre"
 			}
-		}
+		},
+		"saveConfig": "Enregistrer la configuration"
 	},
 	"modelCatalog": {
 		"title": "Catalogue de modèles",
@@ -1308,7 +1325,9 @@
 		"leavesGoverningOwner": "Les fournisseurs, budgets et limites de débit de cette clé proviennent du profil d’accès de son propriétaire ; elle n’en possède aucun en propre.",
 		"leavesGoverningOwnerUser": "Si l’utilisateur auquel vous l’assignez possède un profil d’accès, celui-ci prend le contrôle de la clé, qui continue de fonctionner. Sinon, configurez-la ci-dessous, faute de quoi elle refusera les requêtes.",
 		"leavesGoverningOwnerUnassigned": "Configurez-la ci-dessous, faute de quoi elle refusera les requêtes une fois désassignée.",
-		"ownerProfileNoticeUnnamed": "Géré par le profil d’accès de ce/cette {{owner}}. Ses budgets, limites de débit et fournisseurs s’appliquent à cette clé."
+		"ownerProfileNoticeUnnamed": "Géré par le profil d’accès de ce/cette {{owner}}. Ses budgets, limites de débit et fournisseurs s’appliquent à cette clé.",
+		"relayAccess": "Accès aux relais",
+		"noRelaysGranted": "Aucun relais autorisé"
 	},
 	"modelLimits": {
 		"title": "Budgets et limites",
@@ -1609,7 +1628,17 @@
 			"output_cost_per_video_per_second_1080p": "Sortie / seconde de vidéo (1080p)",
 			"output_cost_per_video_per_second_4k": "Sortie / seconde de vidéo (4K)",
 			"ocr_cost_per_page": "OCR / page",
-			"annotation_cost_per_page": "Annotation / page"
+			"annotation_cost_per_page": "Annotation / page",
+			"input_cost_per_token_voice_live": "Entrée / jeton (Voice Live)",
+			"output_cost_per_token_voice_live": "Sortie / jeton (Voice Live)",
+			"cache_read_input_token_cost_voice_live": "Lecture du cache / jeton (Voice Live)",
+			"input_cost_per_audio_token_voice_live": "Entrée / jeton audio (Voice Live)",
+			"output_cost_per_audio_token_voice_live": "Sortie / jeton audio (Voice Live)",
+			"input_cost_per_standard_speech_audio_token_voice_live": "Entrée / jeton audio vocal standard (Voice Live)",
+			"output_cost_per_standard_speech_audio_token_voice_live": "Sortie / jeton audio vocal standard (Voice Live)",
+			"input_cost_per_custom_speech_audio_token_voice_live": "Entrée / jeton audio vocal personnalisé (Voice Live)",
+			"output_cost_per_custom_speech_audio_token_voice_live": "Sortie / jeton audio vocal personnalisé (Voice Live)",
+			"output_cost_per_video_token": "Sortie / jeton vidéo"
 		},
 		"offPeakRange": "Doit être supérieur à 0 et au plus égal à 1",
 		"actionsAria": "Actions pour le remplacement de tarification {{name}}",
@@ -1885,7 +1914,10 @@
 			"statusWarming": "Préchauffage",
 			"statusReady": "Prêt",
 			"statusFailed": "Échec",
-			"fallbackDecisionDesc": "Un modèle de décision détermine le niveau lorsque la correspondance sémantique ne donne aucun résultat, en utilisant les mêmes consignes de niveau que lorsqu’il est le classificateur principal."
+			"fallbackDecisionDesc": "Un modèle de décision détermine le niveau lorsque la correspondance sémantique ne donne aucun résultat, en utilisant les mêmes consignes de niveau que lorsqu’il est le classificateur principal.",
+			"impactFallback": "Tant que le classifieur n’est pas prêt, {{classifier}} de repli classe chaque requête à sa place. Les règles par niveau de complexité ne correspondent que s’il renvoie un niveau. Les autres règles de routage continuent normalement.",
+			"fallbackClassifierLlm": "le classifieur LLM",
+			"fallbackClassifierDecision": "le modèle de décision"
 		},
 		"editDescription": "Mettez à jour la configuration de la règle de routage",
 		"createDescription": "Créez une nouvelle règle de routage basée sur CEL pour le routage intelligent des requêtes",

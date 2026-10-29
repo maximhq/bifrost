@@ -174,7 +174,8 @@
 		"name": "Nome",
 		"value": "Valor",
 		"unsupportedKey": "Este nome de chave não é suportado",
-		"duplicateKey": "Chave duplicada"
+		"duplicateKey": "Chave duplicada",
+		"emptyKey": "Introduza um nome ou remova a linha"
 	},
 	"sidebar": {
 		"toggle": "Alternar barra lateral"

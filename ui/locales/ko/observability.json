@@ -141,6 +141,11 @@
 		"noModelUsage": "이 기간 동안 사용할 수 있는 모델 사용 데이터가 없어요."
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "마지막 시도 열기",
+			"title": "폴백 체인",
+			"viewing": "보는 중"
+		},
 		"searchPlaceholder": "로그 검색 또는 요청 붙여넣기 ID",
 		"loggingSettings": "로깅 설정",
 		"observabilitySettings": "관찰 가능성 설정",
@@ -261,8 +266,8 @@
 			"endTimestamp": "타임스탬프 종료",
 			"upstreamLatency": "업스트림 지연 시간",
 			"bifrostOverhead": "Bifrost 오버헤드",
-			"totalLatencyTooltip": "총 엔드투엔드 요청 시간: 업스트림 + Bifrost 오버헤드.",
-			"upstreamLatencyTooltip": "공급자를 기다리는 데 소요된 시간은 모든 시도에서 합산돼요.",
+			"totalLatencyTooltip": "이 호출의 전체 종단 간 소요 시간이에요: 업스트림과 Bifrost 오버헤드를 합한 시간이에요.",
+			"upstreamLatencyTooltip": "이 호출이 재시도를 포함해 공급자를 기다린 시간이에요.",
 			"bifrostOverheadTooltip": "Bifrost 자체에 의해 추가된 시간: 라우팅, 플러그인 및 처리.",
 			"requestDetails": "요청 세부정보",
 			"overheadBreakdown": "간접비 분석",
@@ -499,6 +504,8 @@
 			"originalPayload": "원본 페이로드",
 			"parsedAs": "다음으로 구문 분석됨",
 			"wireFormat": "와이어 형식",
+			"errorNotStored": "이 요청은 콘텐츠 로깅이 비활성화되어 있어 오류 메시지가 저장되지 않았어요.",
+			"errorNotStoredWithStatus": "이 요청은 콘텐츠 로깅이 비활성화되어 있어 오류 메시지가 저장되지 않았어요 (HTTP {{statusCode}}).",
 			"providerErrorNoMessage": "공급자가 메시지 없이 오류를 반환했습니다.",
 			"providerErrorNoMessageWithStatus": "공급자가 메시지 없이 오류(HTTP {{statusCode}})를 반환했습니다.",
 			"questionsCount": "질문 ({{count}})",
@@ -700,6 +707,8 @@
 		},
 		"passthroughTooltip": "패스스루 경로를 통해 바이트 단위로 그대로 전달되었어요. 유형은 경로에서 추론했어요.",
 		"moreActions": "더 많은 작업",
+		"exportCsv": "CSV 내보내기",
+		"exportCsvDesc": "일치하는 로그를 CSV로 다운로드",
 		"speech": {
 			"audioPlayerFailed": "오디오 플레이어를 불러오지 못했어요: {{message}}",
 			"unknownError": "알 수 없는 오류",
@@ -759,6 +768,124 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "릴레이",
+			"kind": "종류",
+			"method": "메서드",
+			"path": "경로",
+			"units": "단위",
+			"billable": "과금 대상",
+			"notBillable": "과금 대상 아님",
+			"streamed": "스트리밍됨",
+			"virtualKey": "가상 키",
+			"businessUnit": "비즈니스 유닛",
+			"job": "작업",
+			"call": "호출",
+			"jobSettlement": "작업 정산",
+			"yes": "예",
+			"no": "아니요"
+		},
+		"columns": {
+			"jobBadge": "작업",
+			"noRoute": "라우트 없음",
+			"route": "라우트 {{route}}",
+			"settled": "정산: {{status}}",
+			"notBillable": "과금 대상 아님"
+		},
+		"table": {
+			"waiting": "새 릴레이 호출을 기다리는 중..."
+		},
+		"header": {
+			"searchAuto": "경로, 라우트, 모델을 검색하거나 요청 ID를 붙여넣으세요",
+			"searchModeHint": "검색창에서 릴레이 로그를 검색할지, 요청 ID를 조회할지 선택하세요",
+			"idLookupHint": "이 요청 ID를 정확히 일치하도록 조회하는 중이에요.",
+			"exportDescription": "일치하는 릴레이 로그를 CSV로 다운로드"
+		},
+		"export": {
+			"title": "릴레이 로그 내보내기",
+			"description": "현재 필터와 정렬을 적용해 릴레이 로그를 CSV로 다운로드해요.",
+			"maxEntriesHint": "(선택사항, 최대 {{max}})",
+			"bodiesExcluded": "요청 및 응답 본문과 헤더는 내보내기에서 제외돼요.",
+			"toastNoLogsOnPage": "현재 페이지에 내보낼 릴레이 로그가 없어요",
+			"toastNoMatch": "선택한 필터와 일치하는 내보낼 릴레이 로그가 없어요",
+			"toastExported_one": "릴레이 로그 {{count}}개를 내보냈어요",
+			"toastExported_other": "릴레이 로그 {{count}}개를 내보냈어요"
+		},
+		"empty": {
+			"title": "릴레이 시작하기",
+			"subtitle": "업스트림 API로 첫 요청을 릴레이하면 로그가 표시돼요",
+			"openRelays": "릴레이 열기",
+			"requestTab": "요청 릴레이",
+			"requestDesc": "요청은 릴레이의 자격 증명이 추가된 채로 릴레이의 기본 URL에 그대로 전달돼요.",
+			"prereq1": "릴레이 페이지에서 기본 URL과 자격 증명으로 릴레이를 추가하세요",
+			"prereq2": "<code>&lt;relay-name&gt;</code>을(를) 릴레이 이름으로, <code>&lt;path&gt;</code>를 해당 라우트 중 하나로 바꾸거나, 모든 경로 릴레이를 켜세요",
+			"prereq3": "해당 릴레이(또는 모든 릴레이)를 허용하는 가상 키를 사용하거나, 인증이 비활성화된 경우 <code>x-bf-vk</code> 헤더를 제거하세요"
+		},
+		"stats": {
+			"ofAllCalls": "이 기간의 전체 릴레이 호출 중",
+			"perRequest": "{{value}}/요청"
+		},
+		"detail": {
+			"loadingDetails": "릴레이 로그 상세 정보를 불러오는 중",
+			"notFound": "릴레이 로그를 찾을 수 없어요",
+			"loadFailed": "이 릴레이 로그를 불러올 수 없어요.",
+			"gone": "이 릴레이 로그는 더 이상 존재하지 않아요.",
+			"title": "요청 상세 정보",
+			"route": "라우트",
+			"jobLine": "작업 {{id}}",
+			"matched": "일치",
+			"tokensInOut": "토큰 입력 / 출력",
+			"totalNotPriced": "합계 {{total}} · 가격 미책정",
+			"unitsRead": "{{units}} 읽음",
+			"perUnit": "단위당 약 {{cost}}",
+			"perCall": "호출당 {{cost}}",
+			"notCharged": "청구되지 않음",
+			"bytesOut": "출력 바이트",
+			"summary": "타이밍, 비용, 요청 메타데이터, 헤더",
+			"latencyTooltip": "요청의 전체 종단 간 소요 시간이에요: 업스트림과 Bifrost 오버헤드를 합한 시간이에요.",
+			"upstreamLatencyTooltip": "업스트림 API를 기다린 시간이에요.",
+			"overheadTooltip": "Bifrost 자체에서 추가된 시간이에요: 라우팅, 플러그인, 처리 시간이 포함돼요.",
+			"charged": "청구됨",
+			"chargedNone": "청구되지 않음",
+			"feePerCall": "호출당 요금",
+			"pricePerUnit": "단위당 가격",
+			"unitsReadLabel": "읽은 단위",
+			"unitsBilled": "과금된 단위",
+			"reportedCost": "보고된 비용",
+			"tokensNotPriced": "토큰 (가격 미책정)",
+			"tokensNotPricedValue": "입력 {{input}} / 출력 {{output}}",
+			"matchedRoute": "일치한 라우트",
+			"parentLog": "상위 로그",
+			"queryParameters": "쿼리 매개변수",
+			"matchedHeaders": "일치한 헤더",
+			"errorNoMessageWithStatus": "릴레이가 메시지 없이 오류(HTTP {{status}})를 반환했어요.",
+			"errorNoMessage": "릴레이가 메시지 없이 오류를 반환했어요.",
+			"contentHidden": "이 요청은 콘텐츠 로깅이 비활성화되어 있어요."
+		},
+		"filters": {
+			"reset": "초기화",
+			"searchRelays": "릴레이 검색",
+			"searchMethods": "메서드 검색",
+			"billing": "과금",
+			"calls": "호출",
+			"jobSettlements": "작업 정산",
+			"teams": "팀",
+			"customers": "고객",
+			"businessUnits": "비즈니스 유닛",
+			"projects": "프로젝트",
+			"minCost": "최소 $",
+			"maxCost": "최대 $",
+			"minimumCost": "최소 비용",
+			"maximumCost": "최대 비용"
+		},
+		"grants": {
+			"label": "릴레이 액세스",
+			"tooltip": "이 키가 <strong>/relay/&lt;name&gt;/...</strong>의 릴레이를 호출할 수 있도록 허용해요. 각 호출의 비용은 키의 예산에 청구돼요. 허용된 릴레이가 없으면 키는 어떤 릴레이도 호출할 수 없어요.",
+			"selectRelay": "추가할 릴레이 선택",
+			"remove": "{{name}} 제거"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "MCP 로그 검색",
 		"logActions": "로그 작업",
@@ -800,6 +927,8 @@
 			"invalidDate": "잘못된 날짜",
 			"preExecutionCheck": "실행 전 확인",
 			"tool": "도구",
+			"readKindPrompt": "프롬프트",
+			"readKindResource": "리소스",
 			"request": "요청",
 			"llmRequest": "LLM 요청",
 			"key": "열쇠",

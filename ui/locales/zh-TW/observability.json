@@ -141,6 +141,11 @@
 		"noModelUsage": "該時間段內暫無模型用量資料。"
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "開啟最終嘗試",
+			"title": "回退鏈",
+			"viewing": "檢視中"
+		},
 		"searchPlaceholder": "搜尋日誌或貼上請求 ID",
 		"loggingSettings": "日誌設定",
 		"observabilitySettings": "可觀測性設定",
@@ -203,6 +208,9 @@
 			"codeLanguage": "代碼語言",
 			"copyCode": "複製程式碼"
 		},
+		"moreActions": "更多操作",
+		"exportCsv": "匯出 CSV",
+		"exportCsvDesc": "將符合條件的日誌下載為 CSV",
 		"recalc": {
 			"title": "重新計算費用",
 			"description": "將應用目前時間視窗與篩選條件。請選擇要重新計算費用的日誌。",
@@ -261,8 +269,8 @@
 			"endTimestamp": "結束時間戳",
 			"upstreamLatency": "上游延遲",
 			"bifrostOverhead": "Bifrost 開銷",
-			"totalLatencyTooltip": "端到端總耗時：上游加上 Bifrost 開銷。",
-			"upstreamLatencyTooltip": "等待供應商的時間，按每次嘗試求和。",
+			"totalLatencyTooltip": "此呼叫端到端所花的時間：上游加上 Bifrost 額外負擔。",
+			"upstreamLatencyTooltip": "此呼叫等待供應商所花的時間，包含重試。",
 			"bifrostOverheadTooltip": "Bifrost 自身增加的時間：路由、外掛與處理。",
 			"requestDetails": "請求詳情",
 			"overheadBreakdown": "開銷分解",
@@ -499,6 +507,8 @@
 			"originalPayload": "原始有效負載",
 			"parsedAs": "解析為",
 			"wireFormat": "有線格式",
+			"errorNotStored": "由於此請求已停用內容記錄，因此未儲存錯誤訊息。",
+			"errorNotStoredWithStatus": "由於此請求已停用內容記錄，因此未儲存錯誤訊息（HTTP {{statusCode}}）。",
 			"providerErrorNoMessage": "提供者回傳錯誤但沒有訊息。",
 			"providerErrorNoMessageWithStatus": "提供者傳回錯誤 (HTTP {{statusCode}})，但沒有訊息。",
 			"questionsCount": "問題（{{count}}）",
@@ -522,16 +532,6 @@
 			"transcript": "成績單：",
 			"audio": "聲音的：",
 			"audioMeta": "編號：{{id}} |過期：{{expires}}",
-			"toolCallLabel": "工具呼叫",
-			"approxTokens_one": "約 {{count}} 個 token",
-			"approxTokens_other": "約 {{count}} 個 token",
-			"encryptedMeta": "已加密",
-			"noArgumentsMeta": "無參數",
-			"noArguments": "無參數",
-			"summaryNumbered": "摘要 {{number}}",
-			"attachment": "附件",
-			"toolTypeCount_one": "{{type}} · {{count}} 個工具",
-			"toolTypeCount_other": "{{type}} · {{count}} 個工具",
 			"guardrailHints": {
 				"blocked": "該規則已阻止此請求。",
 				"redacted": "該規則已移除匹配的內容，請求繼續處理。",
@@ -541,7 +541,17 @@
 				"monitoredWouldTransform": "該規則僅作監控：本應改寫相關內容，但請求未經更改繼續處理。",
 				"monitored": "該規則僅作監控：請求未經更改繼續處理。",
 				"detected": "該規則已標記此請求，並讓其未經更改繼續處理。"
-			}
+			},
+			"toolCallLabel": "工具呼叫",
+			"approxTokens_one": "約 {{count}} 個 token",
+			"approxTokens_other": "約 {{count}} 個 token",
+			"encryptedMeta": "已加密",
+			"noArgumentsMeta": "無參數",
+			"noArguments": "無參數",
+			"summaryNumbered": "摘要 {{number}}",
+			"attachment": "附件",
+			"toolTypeCount_one": "{{type}} · {{count}} 個工具",
+			"toolTypeCount_other": "{{type}} · {{count}} 個工具"
 		},
 		"media": {
 			"pause": "暫停",
@@ -699,7 +709,6 @@
 			"ariaLabel": "最低日誌級別"
 		},
 		"passthroughTooltip": "透過直通路由逐位元組轉發；類型由路由推斷而來。",
-		"moreActions": "更多操作",
 		"speech": {
 			"audioPlayerFailed": "載入音訊播放器失敗：{{message}}",
 			"unknownError": "未知錯誤",
@@ -759,6 +768,124 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "轉送",
+			"kind": "類型",
+			"method": "方法",
+			"path": "路徑",
+			"units": "單位",
+			"billable": "計費",
+			"notBillable": "不計費",
+			"streamed": "已串流",
+			"virtualKey": "虛擬金鑰",
+			"businessUnit": "業務單位",
+			"job": "作業",
+			"call": "呼叫",
+			"jobSettlement": "作業結算",
+			"yes": "是",
+			"no": "否"
+		},
+		"columns": {
+			"jobBadge": "作業",
+			"noRoute": "無路由",
+			"route": "路由 {{route}}",
+			"settled": "已結算：{{status}}",
+			"notBillable": "不計費"
+		},
+		"table": {
+			"waiting": "正在等待新的轉送呼叫..."
+		},
+		"header": {
+			"searchAuto": "搜尋路徑、路由、模型，或貼上請求 ID",
+			"searchModeHint": "選擇搜尋框是搜尋轉送日誌，還是查詢請求 ID",
+			"idLookupHint": "正在精確查詢此請求 ID。",
+			"exportDescription": "將符合條件的轉送日誌下載為 CSV"
+		},
+		"export": {
+			"title": "匯出轉送日誌",
+			"description": "將轉送日誌下載為 CSV，並套用目前的篩選與排序。",
+			"maxEntriesHint": "（選填，最多 {{max}}）",
+			"bodiesExcluded": "匯出內容不包含請求與回應本文及標頭。",
+			"toastNoLogsOnPage": "目前頁面沒有可匯出的轉送日誌",
+			"toastNoMatch": "沒有符合所選篩選條件的轉送日誌可匯出",
+			"toastExported_one": "已匯出 {{count}} 筆轉送日誌",
+			"toastExported_other": "已匯出 {{count}} 筆轉送日誌"
+		},
+		"empty": {
+			"title": "開始使用轉送",
+			"subtitle": "將您的第一個請求轉送到上游 API，即可看到日誌出現",
+			"openRelays": "開啟轉送",
+			"requestTab": "轉送請求",
+			"requestDesc": "請求會原樣轉送到該轉送的基礎 URL，並加上該轉送的憑證。",
+			"prereq1": "在「轉送」中新增一個轉送，並填入其基礎 URL 與憑證",
+			"prereq2": "將 <code>&lt;relay-name&gt;</code> 替換為其名稱，並將 <code>&lt;path&gt;</code> 替換為其中一條路由，或開啟「轉送任何路徑」",
+			"prereq3": "使用已授權該轉送（或所有轉送）的虛擬金鑰；若已停用驗證，則可省略 <code>x-bf-vk</code> 標頭"
+		},
+		"stats": {
+			"ofAllCalls": "佔此時段內所有轉送呼叫的比例",
+			"perRequest": "{{value}}/請求"
+		},
+		"detail": {
+			"loadingDetails": "正在載入轉送日誌詳細資料",
+			"notFound": "找不到轉送日誌",
+			"loadFailed": "無法載入此轉送日誌。",
+			"gone": "此轉送日誌已不存在。",
+			"title": "請求詳細資料",
+			"route": "路由",
+			"jobLine": "作業 {{id}}",
+			"matched": "已比對",
+			"tokensInOut": "權杖 輸入 / 輸出",
+			"totalNotPriced": "共 {{total}} · 不計價",
+			"unitsRead": "已讀取 {{units}}",
+			"perUnit": "≈ 每單位 {{cost}}",
+			"perCall": "每次呼叫 {{cost}}",
+			"notCharged": "不收費",
+			"bytesOut": "輸出位元組",
+			"summary": "時間、成本、請求中繼資料、標頭",
+			"latencyTooltip": "請求端到端的總時間：上游加上 Bifrost 額外負擔。",
+			"upstreamLatencyTooltip": "等待上游 API 所花的時間。",
+			"overheadTooltip": "Bifrost 本身增加的時間：路由、外掛程式與處理。",
+			"charged": "已收費",
+			"chargedNone": "不收費",
+			"feePerCall": "每次呼叫費用",
+			"pricePerUnit": "每單位價格",
+			"unitsReadLabel": "已讀取單位",
+			"unitsBilled": "已計費單位",
+			"reportedCost": "回報成本",
+			"tokensNotPriced": "權杖（不計價）",
+			"tokensNotPricedValue": "輸入 {{input}} / 輸出 {{output}}",
+			"matchedRoute": "符合的路由",
+			"parentLog": "父日誌",
+			"queryParameters": "查詢參數",
+			"matchedHeaders": "符合的標頭",
+			"errorNoMessageWithStatus": "轉送傳回錯誤（HTTP {{status}}），但沒有訊息。",
+			"errorNoMessage": "轉送傳回錯誤，但沒有訊息。",
+			"contentHidden": "此請求已停用內容記錄。"
+		},
+		"filters": {
+			"reset": "重設",
+			"searchRelays": "搜尋轉送",
+			"searchMethods": "搜尋方法",
+			"billing": "計費",
+			"calls": "呼叫",
+			"jobSettlements": "作業結算",
+			"teams": "團隊",
+			"customers": "客戶",
+			"businessUnits": "業務單位",
+			"projects": "專案",
+			"minCost": "最低 $",
+			"maxCost": "最高 $",
+			"minimumCost": "最低成本",
+			"maximumCost": "最高成本"
+		},
+		"grants": {
+			"label": "轉送存取",
+			"tooltip": "允許此金鑰呼叫位於 <strong>/relay/&lt;name&gt;/...</strong> 的轉送。每次呼叫的成本會向該金鑰的預算收費。未授權任何轉送時，此金鑰無法呼叫任何轉送。",
+			"selectRelay": "選擇要新增的轉送",
+			"remove": "移除 {{name}}"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "搜尋 MCP 日誌",
 		"logActions": "日誌操作",
@@ -800,6 +927,8 @@
 			"invalidDate": "無效日期",
 			"preExecutionCheck": "執行前檢查",
 			"tool": "工具",
+			"readKindPrompt": "提示詞",
+			"readKindResource": "資源",
 			"request": "請求",
 			"llmRequest": "LLM 請求",
 			"key": "金鑰",
@@ -1142,6 +1271,37 @@
 		"core": "核心"
 	},
 	"agentGateway": {
+		"agentsTable": {
+			"agentActions": "代理操作",
+			"cardUrlCopied": "代理卡 URL 已複製",
+			"copyCardUrl": "複製代理卡 URL",
+			"accessAllowedByDefault": "預設允許",
+			"accessVkCount_one": "{{count}} 個 VK",
+			"accessVkCount_other": "{{count}} 個 VK",
+			"accessNone": "無",
+			"columnGuidance": "{{label}}欄位說明",
+			"toastDeleted": "已刪除",
+			"toastRemoved": "代理 {{name}} 已成功移除。",
+			"toastEnabled": "代理已成功啟用",
+			"toastDisabled": "代理已成功停用",
+			"title": "代理目錄",
+			"subtitle": "管理透過網關提供服務的上游 A2A 代理。",
+			"removeTitle": "移除代理",
+			"removeConfirm": "確定要移除代理 {{name}} 嗎？其網關端點將無法解析，其虛擬金鑰授權也會一併移除。",
+			"searchLabel": "依名稱搜尋代理",
+			"searchPlaceholder": "依名稱搜尋...",
+			"newAgent": "新增代理",
+			"columns": {
+				"name": "名稱",
+				"endpoint": "端點",
+				"cardUrl": "代理卡 URL",
+				"access": "存取",
+				"updated": "更新時間"
+			},
+			"accessHelp": "哪些呼叫者可以存取此代理。「預設允許」表示任何有效的虛擬金鑰都可通過；否則只有已直接授權的虛擬金鑰可以存取。",
+			"noMatching": "找不到符合的代理。",
+			"entriesRange": "第 {{from}}-{{to}} 筆，共 {{total}} 筆"
+		},
 		"pushConfigs": {
 			"copied": "已複製",
 			"filterBy": "依{{label}}篩選",
@@ -1329,37 +1489,6 @@
 				"authorizationCode": "授權碼",
 				"clientCredentials": "用戶端憑證"
 			}
-		},
-		"agentsTable": {
-			"agentActions": "代理操作",
-			"cardUrlCopied": "代理卡 URL 已複製",
-			"copyCardUrl": "複製代理卡 URL",
-			"accessAllowedByDefault": "預設允許",
-			"accessVkCount_one": "{{count}} 個 VK",
-			"accessVkCount_other": "{{count}} 個 VK",
-			"accessNone": "無",
-			"columnGuidance": "{{label}}欄位說明",
-			"toastDeleted": "已刪除",
-			"toastRemoved": "代理 {{name}} 已成功移除。",
-			"toastEnabled": "代理已成功啟用",
-			"toastDisabled": "代理已成功停用",
-			"title": "代理目錄",
-			"subtitle": "管理透過網關提供服務的上游 A2A 代理。",
-			"removeTitle": "移除代理",
-			"removeConfirm": "確定要移除代理 {{name}} 嗎？其網關端點將無法解析，其虛擬金鑰授權也會一併移除。",
-			"searchLabel": "依名稱搜尋代理",
-			"searchPlaceholder": "依名稱搜尋...",
-			"newAgent": "新增代理",
-			"columns": {
-				"name": "名稱",
-				"endpoint": "端點",
-				"cardUrl": "代理卡 URL",
-				"access": "存取",
-				"updated": "更新時間"
-			},
-			"accessHelp": "哪些呼叫者可以存取此代理。「預設允許」表示任何有效的虛擬金鑰都可通過；否則只有已直接授權的虛擬金鑰可以存取。",
-			"noMatching": "找不到符合的代理。",
-			"entriesRange": "第 {{from}}-{{to}} 筆，共 {{total}} 筆"
 		}
 	},
 	"agentLogs": {
@@ -1426,6 +1555,47 @@
 				"publicAgentCardFetched": "已擷取公開代理卡",
 				"extendedAgentCardFetched": "已擷取擴充代理卡"
 			}
+		},
+		"table": {
+			"waitingForNew": "正在等待新的代理日誌…",
+			"loadingMore": "載入中…",
+			"loadMore": "載入更多操作",
+			"groupRange": "第 {{start}}-{{end}} 組，共 {{total}} 組"
+		},
+		"columns": {
+			"operation": "操作",
+			"context": "上下文",
+			"task": "任務",
+			"sessionTurn": "操作 {{turn}}",
+			"collapseContext": "收合此上下文",
+			"expandContext_one": "展開此上下文中另外 {{count}} 個操作",
+			"expandContext_other": "展開此上下文中另外 {{count}} 個操作",
+			"opsCount_one": "{{count}} 個操作",
+			"opsCount_other": "{{count}} 個操作",
+			"contextTooltip_one": "共用同一 context_id 的 {{total}} 個操作所組成的上下文。展開即可檢視另外 {{count}} 個操作。",
+			"contextTooltip_other": "共用同一 context_id 的 {{total}} 個操作所組成的上下文。展開即可檢視另外 {{count}} 個操作。"
+		},
+		"correlated": {
+			"range": "第 {{start}}-{{end}} 筆，共 {{total}} 筆",
+			"executions": "執行次數",
+			"avgLatency": "平均延遲",
+			"viewAll": "檢視全部",
+			"loadFailedLlm": "載入關聯的 LLM 日誌失敗。",
+			"loadFailedMcp": "載入關聯的 MCP 日誌失敗。",
+			"emptyLlm": "未找到關聯的 LLM 日誌。",
+			"emptyMcp": "未找到關聯的 MCP 日誌。"
+		},
+		"empty": {
+			"copyRequest": "複製請求",
+			"title": "傳送你的第一個代理請求",
+			"description": "透過 Bifrost 路由代理請求，即可開始收集代理日誌。",
+			"openAgentGateway": "開啟代理網關",
+			"jsonrpcDescription": "透過 JSON-RPC 傳送嚴格符合 A2A v1 的 SendMessage 請求。",
+			"httpDescription": "透過 A2A HTTP+JSON 繫結傳送相同的訊息。",
+			"beforeTitle": "傳送請求之前",
+			"stepRegister": "在代理網關中註冊並啟用上游代理。",
+			"stepReplace": "將 <code>{{agentName}}</code> 替換為其註冊名稱。",
+			"stepVirtualKey": "使用可存取該代理的虛擬金鑰；若已停用認證，則移除 <code>x-bf-vk</code> 請求頭。"
 		},
 		"logSheet": {
 			"localOperationNote": "此操作由 Bifrost 直接處理，沒有上游請求。下方的協議負載為序列化資料，並非傳輸層擷取內容。",
@@ -1547,47 +1717,6 @@
 			"accepted": "已接受",
 			"requestParameters": "請求參數",
 			"noProtocolBody": "未記錄協定主體。"
-		},
-		"table": {
-			"waitingForNew": "正在等待新的代理日誌…",
-			"loadingMore": "載入中…",
-			"loadMore": "載入更多操作",
-			"groupRange": "第 {{start}}-{{end}} 組，共 {{total}} 組"
-		},
-		"columns": {
-			"operation": "操作",
-			"context": "上下文",
-			"task": "任務",
-			"sessionTurn": "操作 {{turn}}",
-			"collapseContext": "收合此上下文",
-			"expandContext_one": "展開此上下文中另外 {{count}} 個操作",
-			"expandContext_other": "展開此上下文中另外 {{count}} 個操作",
-			"opsCount_one": "{{count}} 個操作",
-			"opsCount_other": "{{count}} 個操作",
-			"contextTooltip_one": "共用同一 context_id 的 {{total}} 個操作所組成的上下文。展開即可檢視另外 {{count}} 個操作。",
-			"contextTooltip_other": "共用同一 context_id 的 {{total}} 個操作所組成的上下文。展開即可檢視另外 {{count}} 個操作。"
-		},
-		"correlated": {
-			"range": "第 {{start}}-{{end}} 筆，共 {{total}} 筆",
-			"executions": "執行次數",
-			"avgLatency": "平均延遲",
-			"viewAll": "檢視全部",
-			"loadFailedLlm": "載入關聯的 LLM 日誌失敗。",
-			"loadFailedMcp": "載入關聯的 MCP 日誌失敗。",
-			"emptyLlm": "未找到關聯的 LLM 日誌。",
-			"emptyMcp": "未找到關聯的 MCP 日誌。"
-		},
-		"empty": {
-			"copyRequest": "複製請求",
-			"title": "傳送你的第一個代理請求",
-			"description": "透過 Bifrost 路由代理請求，即可開始收集代理日誌。",
-			"openAgentGateway": "開啟代理網關",
-			"jsonrpcDescription": "透過 JSON-RPC 傳送嚴格符合 A2A v1 的 SendMessage 請求。",
-			"httpDescription": "透過 A2A HTTP+JSON 繫結傳送相同的訊息。",
-			"beforeTitle": "傳送請求之前",
-			"stepRegister": "在代理網關中註冊並啟用上游代理。",
-			"stepReplace": "將 <code>{{agentName}}</code> 替換為其註冊名稱。",
-			"stepVirtualKey": "使用可存取該代理的虛擬金鑰；若已停用認證，則移除 <code>x-bf-vk</code> 請求頭。"
 		}
 	},
 	"overhead": {

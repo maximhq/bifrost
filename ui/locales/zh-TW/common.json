@@ -67,10 +67,10 @@
 		"virtualMcp": "虛擬 MCP",
 		"virtualMcps": "虛擬 MCP",
 		"video": "影片",
+		"modelLimits": "模型限額",
 		"agents": "代理",
 		"providers": "供應商",
-		"webhookEndpoints": "Webhook 端點",
-		"modelLimits": "模型限額"
+		"webhookEndpoints": "Webhook 端點"
 	},
 	"aboutField": "關於{{field}}",
 	"thisField": "此欄位",
@@ -132,204 +132,6 @@
 		"moreCount": "+{{count}} 更多"
 	},
 	"failedToLoadMoreEntities": "無法載入更多 {{entity}}",
-	"multiSelect": {
-		"placeholder": "選擇選項",
-		"announce": {
-			"oneSelected": "已選擇 {{label}}。已選 {{selected}} 個，共 {{total}} 個選項。",
-			"manySelected": "已選擇 {{count}} 個選項。已選 {{selected}} 個，共 {{total}} 個。",
-			"removed": "已移除選項。已選 {{selected}} 個，共 {{total}} 個選項。",
-			"opened": "下拉選單已開啟。有 {{count}} 個選項可用。請使用方向鍵瀏覽。",
-			"closed": "下拉選單已關閉。",
-			"found_one": "找到 {{count}} 個符合「{{query}}」的選項",
-			"found_other": "找到 {{count}} 個符合「{{query}}」的選項"
-		},
-		"dropdownHelp": "多選下拉選單。使用方向鍵瀏覽，按 Enter 選擇，按 Escape 關閉。",
-		"noneSelected": "未選擇任何選項",
-		"selectedList_one": "已選擇 {{count}} 個選項：{{labels}}",
-		"selectedList_other": "已選擇 {{count}} 個選項：{{labels}}",
-		"triggerAria": "多選：已選 {{selected}} 個，共 {{total}} 個選項。{{placeholder}}",
-		"removeFromSelection": "從已選項目中移除 {{label}}",
-		"clearAllAria_one": "清除已選擇的選項",
-		"clearAllAria_other": "清除全部 {{count}} 個已選擇的選項",
-		"availableOptions": "可用選項",
-		"searchPlaceholder": "搜尋選項...",
-		"searchAria": "搜尋可用選項",
-		"searchHelp": "輸入文字以篩選選項。使用方向鍵瀏覽結果。",
-		"selectAllAria": "選擇全部 {{count}} 個選項",
-		"selectAll": "（全選）",
-		"selectAllWithCount": "（全選 - {{count}} 個選項）",
-		"optionSelectedAria": "{{label}}，已選擇{{disabled}}",
-		"optionNotSelectedAria": "{{label}}，未選擇{{disabled}}",
-		"disabledSuffix": "，已停用",
-		"clear": "清除"
-	},
-	"quarterStart": {
-		"fiscalYearStarts": "財年開始於",
-		"nextReset": "下次重置於 <date>{{reset}}</date>。目前季度結束於 {{end}}。"
-	},
-	"headersTable": {
-		"headerName": "標頭名稱",
-		"headerValue": "標頭值",
-		"headers": "標頭",
-		"name": "名稱",
-		"value": "值",
-		"unsupportedKey": "不支援此鍵名",
-		"duplicateKey": "鍵重複"
-	},
-	"sidebar": {
-		"toggle": "切換側邊欄"
-	},
-	"sheet": {
-		"collapse": "收合",
-		"expand": "展開"
-	},
-	"tabs": {
-		"showMore_one": "再顯示 {{count}} 個分頁",
-		"showMore_other": "再顯示 {{count}} 個分頁"
-	},
-	"promoCard": {
-		"dismiss": "關閉"
-	},
-	"searchSelect": {
-		"failedToLoad": "載入失敗。"
-	},
-	"numberAndSelect": {
-		"resetPeriod": "重置週期"
-	},
-	"secretVar": {
-		"resolvedAfterSave": "儲存後將顯示解析後的值"
-	},
-	"agentGrants": {
-		"label": "代理存取",
-		"tooltip": "授予此金鑰對已註冊代理的存取權。之後該金鑰即可在 <path0>{{path}}</path0> 呼叫各個代理。標示為對所有金鑰開放的代理無需授權。",
-		"selectPlaceholder": "選擇要新增的代理",
-		"removeAria": "移除 {{name}}"
-	},
-	"calendarAlignment": {
-		"rollingNotice": "{{durations}} 將在其完整時長內使用滾動視窗。日曆對齊僅適用於 1d、1w、1M、1Q 和 1Y。"
-	},
-	"formFooter": {
-		"noPermission": "你沒有執行此操作的權限",
-		"saving": "儲存中...",
-		"fixValidation": "請修正驗證錯誤",
-		"update": "更新{{label}}",
-		"create": "建立{{label}}"
-	},
-	"loadError": {
-		"failedToLoad": "載入{{entity}}失敗。",
-		"retry": "重試"
-	},
-	"notAvailableBanner": {
-		"title": "尚未設定配置儲存。",
-		"description": "UI 需要資料庫連線來儲存配置資料，但目前尚未配置任何資料庫。",
-		"enableHintPrefix": "若要啟用 UI，請將資料庫設定新增到你的 config.json（請參閱",
-		"documentation": "文件",
-		"enableHintSuffix": "）。"
-	},
-	"scopeChips": {
-		"showAll_one": "顯示 {{count}} 個範圍",
-		"showAll_other": "顯示全部 {{count}} 個範圍",
-		"grantedScopes": "已授予的範圍"
-	},
-	"theme": {
-		"light": "淺色",
-		"dark": "深色",
-		"system": "系統",
-		"toggle": "切換主題"
-	},
-	"trialBanner": {
-		"expired": "你的 Bifrost 企業版試用已到期。如需協助，請<link0>聯絡我們</link0>。",
-		"expiresIn_one": "你的 Bifrost 企業版試用將在 {{count}} 天後到期。如需協助，請<link0>聯絡我們</link0>。",
-		"expiresIn_other": "你的 Bifrost 企業版試用將在 {{count}} 天後到期。如需協助，請<link0>聯絡我們</link0>。",
-		"expiredSubject": "我的企業版試用已到期，需要協助",
-		"extendSubject": "我需要協助延長企業版試用"
-	},
-	"calendarAlignedLabel": "{{label}}（日曆）",
-	"resetsWhen": "{{when}}重置",
-	"budgetDisplay": {
-		"usageAria": "預算用量",
-		"override": "覆蓋",
-		"baseTooltip": "基礎 {{base}} + 覆蓋 {{override}}"
-	},
-	"rateLimit": {
-		"tokens": "tokens",
-		"req": "req",
-		"tokensUsageAria": "token 用量",
-		"requestUsageAria": "請求用量"
-	},
-	"sidekiq": {
-		"sectionAria": "背景作業",
-		"emptyTitle": "沒有背景作業",
-		"emptyDescription": "長時間執行的任務會在此顯示進度。",
-		"status": {
-			"pending": "已排入佇列",
-			"running": "執行中",
-			"completed": "已完成",
-			"failed": "失敗",
-			"cancelled": "已取消"
-		},
-		"dismissAria": "關閉 {{label}}",
-		"progressAria": "{{label}}進度",
-		"done": "完成",
-		"started": "開始於 {{when}}",
-		"finished": "結束於 {{when}}",
-		"stopJob": "停止作業",
-		"keep": "保留"
-	},
-	"tableColumns": {
-		"configAria": "欄位配置",
-		"toggle": "切換欄位",
-		"resetToDefault": "重置為預設值",
-		"actionsAria": "欄位操作",
-		"hide": "隱藏欄位",
-		"unpin": "取消固定",
-		"pinLeft": "固定到左側",
-		"pinRight": "固定到右側"
-	},
-	"configSyncAlert": {
-		"message": "此配置是從 <code0>config.json</code0> 同步而來。日後對 config.json 的任何更新都會覆蓋在 UI 中所做的更改。如果你只是用 config.json 引導初始配置，可以忽略此提示。"
-	},
-	"breadcrumb": {
-		"label": "導覽路徑",
-		"more": "更多"
-	},
-	"modelParameters": {
-		"keepBetween": "請將{{label}}保持在 {{min}} 到 {{max}} 之間。",
-		"addString": "新增字串",
-		"select": "選擇"
-	},
-	"entityAssociation": {
-		"placeholders": {
-			"virtualKey": "新增虛擬金鑰名稱...",
-			"team": "新增團隊名稱...",
-			"customer": "新增客戶名稱...",
-			"user": "新增使用者名稱...",
-			"provider": "新增供應商名稱...",
-			"apiKey": "新增 API 金鑰名稱..."
-		},
-		"noOptions": {
-			"virtualKey": "未找到虛擬金鑰",
-			"team": "未找到團隊",
-			"customer": "未找到客戶",
-			"user": "未找到使用者",
-			"provider": "未找到供應商",
-			"apiKey": "未找到 API 金鑰"
-		},
-		"selected": "已選擇",
-		"createOption": "新增「{{value}}」"
-	},
-	"combobox": {
-		"selectEllipsis3": "選擇...",
-		"select": "選擇…",
-		"clearSelection": "清除選擇",
-		"clearSearch": "清除搜尋",
-		"search": "搜尋...",
-		"typeOrSelect": "輸入或選擇...",
-		"use": "使用「{{value}}」",
-		"noResults": "未找到結果。",
-		"selectedCount": "已選擇 {{count}} 項",
-		"removeAria": "移除 {{label}}"
-	},
 	"validation": {
 		"customProviderNameIsRequired": "自訂供應商名稱為必填項",
 		"endpointIsRequired": "端點為必填項",
@@ -511,5 +313,204 @@
 		"quarter_other": "{{count}} 個季度",
 		"year_one": "{{count}} 年",
 		"year_other": "{{count}} 年"
+	},
+	"agentGrants": {
+		"label": "代理存取",
+		"tooltip": "授予此金鑰對已註冊代理的存取權。之後該金鑰即可在 <path0>{{path}}</path0> 呼叫各個代理。標示為對所有金鑰開放的代理無需授權。",
+		"selectPlaceholder": "選擇要新增的代理",
+		"removeAria": "移除 {{name}}"
+	},
+	"calendarAlignment": {
+		"rollingNotice": "{{durations}} 將在其完整時長內使用滾動視窗。日曆對齊僅適用於 1d、1w、1M、1Q 和 1Y。"
+	},
+	"formFooter": {
+		"noPermission": "你沒有執行此操作的權限",
+		"saving": "儲存中...",
+		"fixValidation": "請修正驗證錯誤",
+		"update": "更新{{label}}",
+		"create": "建立{{label}}"
+	},
+	"loadError": {
+		"failedToLoad": "載入{{entity}}失敗。",
+		"retry": "重試"
+	},
+	"notAvailableBanner": {
+		"title": "尚未設定配置儲存。",
+		"description": "UI 需要資料庫連線來儲存配置資料，但目前尚未配置任何資料庫。",
+		"enableHintPrefix": "若要啟用 UI，請將資料庫設定新增到你的 config.json（請參閱",
+		"documentation": "文件",
+		"enableHintSuffix": "）。"
+	},
+	"scopeChips": {
+		"showAll_one": "顯示 {{count}} 個範圍",
+		"showAll_other": "顯示全部 {{count}} 個範圍",
+		"grantedScopes": "已授予的範圍"
+	},
+	"theme": {
+		"light": "淺色",
+		"dark": "深色",
+		"system": "系統",
+		"toggle": "切換主題"
+	},
+	"trialBanner": {
+		"expired": "你的 Bifrost 企業版試用已到期。如需協助，請<link0>聯絡我們</link0>。",
+		"expiresIn_one": "你的 Bifrost 企業版試用將在 {{count}} 天後到期。如需協助，請<link0>聯絡我們</link0>。",
+		"expiresIn_other": "你的 Bifrost 企業版試用將在 {{count}} 天後到期。如需協助，請<link0>聯絡我們</link0>。",
+		"expiredSubject": "我的企業版試用已到期，需要協助",
+		"extendSubject": "我需要協助延長企業版試用"
+	},
+	"calendarAlignedLabel": "{{label}}（日曆）",
+	"resetsWhen": "{{when}}重置",
+	"budgetDisplay": {
+		"usageAria": "預算用量",
+		"override": "覆蓋",
+		"baseTooltip": "基礎 {{base}} + 覆蓋 {{override}}"
+	},
+	"rateLimit": {
+		"tokens": "tokens",
+		"req": "req",
+		"tokensUsageAria": "token 用量",
+		"requestUsageAria": "請求用量"
+	},
+	"sidekiq": {
+		"sectionAria": "背景作業",
+		"emptyTitle": "沒有背景作業",
+		"emptyDescription": "長時間執行的任務會在此顯示進度。",
+		"status": {
+			"pending": "已排入佇列",
+			"running": "執行中",
+			"completed": "已完成",
+			"failed": "失敗",
+			"cancelled": "已取消"
+		},
+		"dismissAria": "關閉 {{label}}",
+		"progressAria": "{{label}}進度",
+		"done": "完成",
+		"started": "開始於 {{when}}",
+		"finished": "結束於 {{when}}",
+		"stopJob": "停止作業",
+		"keep": "保留"
+	},
+	"tableColumns": {
+		"configAria": "欄位配置",
+		"toggle": "切換欄位",
+		"resetToDefault": "重置為預設值",
+		"actionsAria": "欄位操作",
+		"hide": "隱藏欄位",
+		"unpin": "取消固定",
+		"pinLeft": "固定到左側",
+		"pinRight": "固定到右側"
+	},
+	"configSyncAlert": {
+		"message": "此配置是從 <code0>config.json</code0> 同步而來。日後對 config.json 的任何更新都會覆蓋在 UI 中所做的更改。如果你只是用 config.json 引導初始配置，可以忽略此提示。"
+	},
+	"breadcrumb": {
+		"label": "導覽路徑",
+		"more": "更多"
+	},
+	"modelParameters": {
+		"keepBetween": "請將{{label}}保持在 {{min}} 到 {{max}} 之間。",
+		"addString": "新增字串",
+		"select": "選擇"
+	},
+	"entityAssociation": {
+		"placeholders": {
+			"virtualKey": "新增虛擬金鑰名稱...",
+			"team": "新增團隊名稱...",
+			"customer": "新增客戶名稱...",
+			"user": "新增使用者名稱...",
+			"provider": "新增供應商名稱...",
+			"apiKey": "新增 API 金鑰名稱..."
+		},
+		"noOptions": {
+			"virtualKey": "未找到虛擬金鑰",
+			"team": "未找到團隊",
+			"customer": "未找到客戶",
+			"user": "未找到使用者",
+			"provider": "未找到供應商",
+			"apiKey": "未找到 API 金鑰"
+		},
+		"selected": "已選擇",
+		"createOption": "新增「{{value}}」"
+	},
+	"combobox": {
+		"selectEllipsis3": "選擇...",
+		"select": "選擇…",
+		"clearSelection": "清除選擇",
+		"clearSearch": "清除搜尋",
+		"search": "搜尋...",
+		"typeOrSelect": "輸入或選擇...",
+		"use": "使用「{{value}}」",
+		"noResults": "未找到結果。",
+		"selectedCount": "已選擇 {{count}} 項",
+		"removeAria": "移除 {{label}}"
+	},
+	"multiSelect": {
+		"placeholder": "選擇選項",
+		"announce": {
+			"oneSelected": "已選擇 {{label}}。已選 {{selected}} 個，共 {{total}} 個選項。",
+			"manySelected": "已選擇 {{count}} 個選項。已選 {{selected}} 個，共 {{total}} 個。",
+			"removed": "已移除選項。已選 {{selected}} 個，共 {{total}} 個選項。",
+			"opened": "下拉選單已開啟。有 {{count}} 個選項可用。請使用方向鍵瀏覽。",
+			"closed": "下拉選單已關閉。",
+			"found_one": "找到 {{count}} 個符合「{{query}}」的選項",
+			"found_other": "找到 {{count}} 個符合「{{query}}」的選項"
+		},
+		"dropdownHelp": "多選下拉選單。使用方向鍵瀏覽，按 Enter 選擇，按 Escape 關閉。",
+		"noneSelected": "未選擇任何選項",
+		"selectedList_one": "已選擇 {{count}} 個選項：{{labels}}",
+		"selectedList_other": "已選擇 {{count}} 個選項：{{labels}}",
+		"triggerAria": "多選：已選 {{selected}} 個，共 {{total}} 個選項。{{placeholder}}",
+		"removeFromSelection": "從已選項目中移除 {{label}}",
+		"clearAllAria_one": "清除已選擇的選項",
+		"clearAllAria_other": "清除全部 {{count}} 個已選擇的選項",
+		"availableOptions": "可用選項",
+		"searchPlaceholder": "搜尋選項...",
+		"searchAria": "搜尋可用選項",
+		"searchHelp": "輸入文字以篩選選項。使用方向鍵瀏覽結果。",
+		"selectAllAria": "選擇全部 {{count}} 個選項",
+		"selectAll": "（全選）",
+		"selectAllWithCount": "（全選 - {{count}} 個選項）",
+		"optionSelectedAria": "{{label}}，已選擇{{disabled}}",
+		"optionNotSelectedAria": "{{label}}，未選擇{{disabled}}",
+		"disabledSuffix": "，已停用",
+		"clear": "清除"
+	},
+	"quarterStart": {
+		"fiscalYearStarts": "財年開始於",
+		"nextReset": "下次重置於 <date>{{reset}}</date>。目前季度結束於 {{end}}。"
+	},
+	"headersTable": {
+		"headerName": "標頭名稱",
+		"headerValue": "標頭值",
+		"headers": "標頭",
+		"name": "名稱",
+		"value": "值",
+		"unsupportedKey": "不支援此鍵名",
+		"duplicateKey": "鍵重複",
+		"emptyKey": "請輸入名稱或移除此列"
+	},
+	"sidebar": {
+		"toggle": "切換側邊欄"
+	},
+	"sheet": {
+		"collapse": "收合",
+		"expand": "展開"
+	},
+	"tabs": {
+		"showMore_one": "再顯示 {{count}} 個分頁",
+		"showMore_other": "再顯示 {{count}} 個分頁"
+	},
+	"promoCard": {
+		"dismiss": "關閉"
+	},
+	"searchSelect": {
+		"failedToLoad": "載入失敗。"
+	},
+	"numberAndSelect": {
+		"resetPeriod": "重置週期"
+	},
+	"secretVar": {
+		"resolvedAfterSave": "儲存後將顯示解析後的值"
 	}
 }

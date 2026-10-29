@@ -261,8 +261,8 @@
 			"endTimestamp": "Horodatage de fin",
 			"upstreamLatency": "Latence amont",
 			"bifrostOverhead": "Surcharge Bifrost",
-			"totalLatencyTooltip": "Temps total de bout en bout de la requête : latence amont plus surcharge Bifrost.",
-			"upstreamLatencyTooltip": "Temps passé à attendre le fournisseur, cumulé sur toutes les tentatives.",
+			"totalLatencyTooltip": "Durée de cet appel de bout en bout : amont plus surcoût de Bifrost.",
+			"upstreamLatencyTooltip": "Temps que cet appel a passé à attendre le fournisseur, nouvelles tentatives comprises.",
 			"bifrostOverheadTooltip": "Temps ajouté par Bifrost lui-même : routage, plugins et traitement.",
 			"requestDetails": "Détails de la requête",
 			"overheadBreakdown": "Répartition de la surcharge",
@@ -541,7 +541,9 @@
 				"monitoredWouldTransform": "La règle est en mode surveillance uniquement : elle aurait transformé ceci, mais la requête a continué sans modification.",
 				"monitored": "La règle est en mode surveillance uniquement : la requête a continué sans modification.",
 				"detected": "La règle a signalé la requête et l’a laissée continuer sans modification."
-			}
+			},
+			"errorNotStored": "Le message d’erreur n’a pas été stocké, car la journalisation du contenu est désactivée pour cette requête.",
+			"errorNotStoredWithStatus": "Le message d’erreur n’a pas été stocké, car la journalisation du contenu est désactivée pour cette requête (HTTP {{statusCode}})."
 		},
 		"media": {
 			"pause": "Pause",
@@ -757,6 +759,131 @@
 				"customers": "clients ({{total}})",
 				"period": "période {{value}}"
 			}
+		},
+		"fallbackChain": {
+			"openFinalAttempt": "Ouvrir la dernière tentative",
+			"title": "Chaîne de repli",
+			"viewing": "Affichage en cours"
+		},
+		"exportCsv": "Exporter en CSV",
+		"exportCsvDesc": "Télécharger les journaux correspondants au format CSV"
+	},
+	"relayLogs": {
+		"fields": {
+			"relay": "Relais",
+			"kind": "Type",
+			"method": "Méthode",
+			"path": "Chemin",
+			"units": "Unités",
+			"billable": "Facturable",
+			"notBillable": "Non facturable",
+			"streamed": "En streaming",
+			"virtualKey": "Clé virtuelle",
+			"businessUnit": "Unité commerciale",
+			"job": "Tâche",
+			"call": "Appel",
+			"jobSettlement": "Règlement de la tâche",
+			"yes": "Oui",
+			"no": "Non"
+		},
+		"columns": {
+			"jobBadge": "TÂCHE",
+			"noRoute": "Aucune route",
+			"route": "Route {{route}}",
+			"settled": "Réglée : {{status}}",
+			"notBillable": "non facturable"
+		},
+		"table": {
+			"waiting": "En attente de nouveaux appels de relais..."
+		},
+		"header": {
+			"searchAuto": "Rechercher un chemin, une route, un modèle ou coller un ID de requête",
+			"searchModeHint": "Choisissez si la zone recherche dans les journaux des relais ou retrouve un ID de requête",
+			"idLookupHint": "Recherche exacte de cet ID de requête.",
+			"exportDescription": "Télécharger les journaux des relais correspondants au format CSV"
+		},
+		"export": {
+			"title": "Exporter les journaux des relais",
+			"description": "Télécharger les journaux des relais au format CSV avec les filtres et le tri actuels appliqués.",
+			"maxEntriesHint": "(facultatif, jusqu’à {{max}})",
+			"bodiesExcluded": "Les corps et les en-têtes des requêtes et des réponses sont exclus de l’export.",
+			"toastNoLogsOnPage": "Aucun journal de relais à exporter sur la page actuelle",
+			"toastNoMatch": "Aucun journal de relais ne correspond aux filtres sélectionnés pour l’export",
+			"toastExported_one": "{{count}} journal de relais exporté",
+			"toastExported_other": "{{count}} journaux de relais exportés"
+		},
+		"empty": {
+			"title": "Premiers pas avec les relais",
+			"subtitle": "Relayez votre première requête vers une API en amont pour voir apparaître les journaux",
+			"openRelays": "Ouvrir les relais",
+			"requestTab": "Relayer une requête",
+			"requestDesc": "La requête est relayée telle quelle vers l’URL de base du relais, avec l’identifiant du relais ajouté.",
+			"prereq1": "Ajoutez un relais dans Relais avec son URL de base et son identifiant",
+			"prereq2": "Remplacez <code>&lt;relay-name&gt;</code> par son nom et <code>&lt;path&gt;</code> par l’une de ses routes, ou activez Relayer tout chemin",
+			"prereq3": "Utilisez une clé virtuelle qui autorise le relais (ou tous les relais), ou supprimez l’en-tête <code>x-bf-vk</code> lorsque l’authentification est désactivée"
+		},
+		"stats": {
+			"ofAllCalls": "Sur l’ensemble des appels de relais de cette période",
+			"perRequest": "{{value}}/req"
+		},
+		"detail": {
+			"loadingDetails": "Chargement des détails du journal de relais",
+			"notFound": "Journal de relais introuvable",
+			"loadFailed": "Ce journal de relais n’a pas pu être chargé.",
+			"gone": "Ce journal de relais n’existe plus.",
+			"title": "Détails de la requête",
+			"route": "Route",
+			"jobLine": "tâche {{id}}",
+			"matched": "Correspondance",
+			"tokensInOut": "Jetons entrée / sortie",
+			"totalNotPriced": "total {{total}} · non tarifé",
+			"unitsRead": "{{units}} lues",
+			"perUnit": "≈ {{cost}} par unité",
+			"perCall": "{{cost}} par appel",
+			"notCharged": "non facturé",
+			"bytesOut": "Octets en sortie",
+			"summary": "durées, coût, métadonnées de la requête, en-têtes",
+			"latencyTooltip": "Durée totale de la requête de bout en bout : amont plus surcoût de Bifrost.",
+			"upstreamLatencyTooltip": "Temps passé à attendre l’API en amont.",
+			"overheadTooltip": "Temps ajouté par Bifrost lui-même : routage, plugins et traitement.",
+			"charged": "Facturé",
+			"chargedNone": "Non facturé",
+			"feePerCall": "Frais par appel",
+			"pricePerUnit": "Prix par unité",
+			"unitsReadLabel": "Unités lues",
+			"unitsBilled": "Unités facturées",
+			"reportedCost": "Coût rapporté",
+			"tokensNotPriced": "Jetons (non tarifés)",
+			"tokensNotPricedValue": "{{input}} en entrée / {{output}} en sortie",
+			"matchedRoute": "Route correspondante",
+			"parentLog": "Journal parent",
+			"queryParameters": "Paramètres de requête",
+			"matchedHeaders": "En-têtes correspondants",
+			"errorNoMessageWithStatus": "Le relais a renvoyé une erreur (HTTP {{status}}) sans message.",
+			"errorNoMessage": "Le relais a renvoyé une erreur sans message.",
+			"contentHidden": "La journalisation du contenu a été désactivée pour cette requête."
+		},
+		"filters": {
+			"reset": "Réinitialiser",
+			"searchRelays": "Rechercher des relais",
+			"searchMethods": "Rechercher des méthodes",
+			"billing": "Facturation",
+			"calls": "Appels",
+			"jobSettlements": "Règlements de tâches",
+			"teams": "Équipes",
+			"customers": "Clients",
+			"businessUnits": "Unités commerciales",
+			"projects": "Projets",
+			"minCost": "Min $",
+			"maxCost": "Max $",
+			"minimumCost": "Coût minimal",
+			"maximumCost": "Coût maximal"
+		},
+		"grants": {
+			"label": "Accès aux relais",
+			"tooltip": "Autorise cette clé à appeler les relais sur <strong>/relay/&lt;name&gt;/...</strong>. Le coût de chaque appel est imputé aux budgets de la clé. Sans relais autorisé, la clé n’en peut appeler aucun.",
+			"selectRelay": "Sélectionner un relais à ajouter",
+			"remove": "Supprimer {{name}}"
 		}
 	},
 	"mcpLogs": {
@@ -821,7 +948,9 @@
 			"filterBy": "Filtrer par {{label}}",
 			"summary": "durées, métadonnées de requête",
 			"summaryWithMetadata": "durées, métadonnées de requête, métadonnées",
-			"sessionId": "ID de session"
+			"sessionId": "ID de session",
+			"readKindPrompt": "Prompt",
+			"readKindResource": "Ressource"
 		},
 		"waitingForNew": "En attente de nouveaux journaux MCP...",
 		"loadingDetails": "Chargement des détails du journal MCP",

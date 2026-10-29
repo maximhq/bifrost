@@ -141,6 +141,11 @@
 		"noModelUsage": "この期間のモデル使用データは利用できません。"
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "最終試行を開く",
+			"title": "フォールバックチェーン",
+			"viewing": "表示中"
+		},
 		"searchPlaceholder": "ログを検索するか、リクエストを貼り付けてください ID",
 		"loggingSettings": "ログ設定",
 		"observabilitySettings": "可観測性の設定",
@@ -261,8 +266,8 @@
 			"endTimestamp": "終了タイムスタンプ",
 			"upstreamLatency": "アップストリームレイテンシ",
 			"bifrostOverhead": "Bifrost オーバーヘッド",
-			"totalLatencyTooltip": "総エンドツーエンドリクエスト時間：アップストリーム時間とBifrostオーバーヘッドの合計。",
-			"upstreamLatencyTooltip": "プロバイダーを待つ時間、すべての試行で合計されたもの。",
+			"totalLatencyTooltip": "この呼び出しの最初から最後までにかかった時間：アップストリームと Bifrost のオーバーヘッドの合計です。",
+			"upstreamLatencyTooltip": "この呼び出しがプロバイダーの応答待ちに費やした時間（リトライを含む）です。",
 			"bifrostOverheadTooltip": "Bifrost自体によって追加された時間: ルーティング、プラグイン、および処理。",
 			"requestDetails": "リクエストの詳細",
 			"overheadBreakdown": "間接費内訳",
@@ -499,6 +504,8 @@
 			"originalPayload": "元のペイロード",
 			"parsedAs": "解析形式",
 			"wireFormat": "ワイヤーフォーマット",
+			"errorNotStored": "このリクエストではコンテンツのログ記録が無効のため、エラーメッセージは保存されませんでした。",
+			"errorNotStoredWithStatus": "このリクエストではコンテンツのログ記録が無効のため、エラーメッセージは保存されませんでした（HTTP {{statusCode}}）。",
 			"providerErrorNoMessage": "プロバイダーがメッセージなしでエラーを返しました。",
 			"providerErrorNoMessageWithStatus": "プロバイダーがメッセージなしでエラー（HTTP {{statusCode}}）を返しました。",
 			"questionsCount": "質問（{{count}}）",
@@ -700,6 +707,8 @@
 		},
 		"passthroughTooltip": "パススルールートを通じてバイト単位でそのまま転送されました。タイプはルートから推測されています。",
 		"moreActions": "その他の操作",
+		"exportCsv": "CSV をエクスポート",
+		"exportCsvDesc": "一致するログを CSV でダウンロード",
 		"speech": {
 			"audioPlayerFailed": "オーディオプレーヤーの読み込みに失敗しました: {{message}}",
 			"unknownError": "不明なエラー",
@@ -759,6 +768,123 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "リレー",
+			"kind": "種類",
+			"method": "メソッド",
+			"path": "パス",
+			"units": "単位",
+			"billable": "課金対象",
+			"notBillable": "課金対象外",
+			"streamed": "ストリーミング",
+			"virtualKey": "仮想キー",
+			"businessUnit": "ビジネスユニット",
+			"job": "ジョブ",
+			"call": "呼び出し",
+			"jobSettlement": "ジョブの精算",
+			"yes": "はい",
+			"no": "いいえ"
+		},
+		"columns": {
+			"jobBadge": "ジョブ",
+			"noRoute": "ルートなし",
+			"route": "ルート {{route}}",
+			"settled": "精算済み：{{status}}",
+			"notBillable": "課金対象外"
+		},
+		"table": {
+			"waiting": "新しいリレー呼び出しを待機中..."
+		},
+		"header": {
+			"searchAuto": "パス、ルート、モデルを検索、またはリクエスト ID を貼り付け",
+			"searchModeHint": "入力欄でリレーログを検索するか、リクエスト ID を照会するかを選択します",
+			"idLookupHint": "このリクエスト ID を完全一致で照会しています。",
+			"exportDescription": "一致するリレーログを CSV でダウンロード"
+		},
+		"export": {
+			"title": "リレーログをエクスポート",
+			"description": "現在のフィルターと並べ替えを適用して、リレーログを CSV でダウンロードします。",
+			"maxEntriesHint": "（任意、最大 {{max}}）",
+			"bodiesExcluded": "リクエストとレスポンスの本文およびヘッダーはエクスポートに含まれません。",
+			"toastNoLogsOnPage": "現在のページにエクスポートできるリレーログがありません",
+			"toastNoMatch": "選択したフィルターに一致するエクスポート可能なリレーログがありません",
+			"toastExported_other": "{{count}} 件のリレーログをエクスポートしました"
+		},
+		"empty": {
+			"title": "リレーを始めましょう",
+			"subtitle": "アップストリーム API への最初のリクエストをリレーすると、ログが表示されます",
+			"openRelays": "リレーを開く",
+			"requestTab": "リクエストをリレー",
+			"requestDesc": "リクエストはそのままリレーのベース URL にリレーされ、リレーの認証情報が付加されます。",
+			"prereq1": "リレーでベース URL と認証情報を指定してリレーを追加します",
+			"prereq2": "<code>&lt;relay-name&gt;</code> をリレー名に、<code>&lt;path&gt;</code> をそのルートのいずれかに置き換えるか、「任意のパスをリレー」をオンにします",
+			"prereq3": "リレー（またはすべてのリレー）へのアクセスを付与した仮想キーを使用するか、認証が無効の場合は <code>x-bf-vk</code> ヘッダーを省略します"
+		},
+		"stats": {
+			"ofAllCalls": "この期間のすべてのリレー呼び出しのうち",
+			"perRequest": "{{value}}/リクエスト"
+		},
+		"detail": {
+			"loadingDetails": "リレーログの詳細を読み込み中",
+			"notFound": "リレーログが見つかりません",
+			"loadFailed": "このリレーログを読み込めませんでした。",
+			"gone": "このリレーログは存在しなくなりました。",
+			"title": "リクエストの詳細",
+			"route": "ルート",
+			"jobLine": "ジョブ {{id}}",
+			"matched": "一致",
+			"tokensInOut": "トークン 入力 / 出力",
+			"totalNotPriced": "合計 {{total}} · 課金なし",
+			"unitsRead": "{{units}} を読み取り",
+			"perUnit": "単位あたり約 {{cost}}",
+			"perCall": "1 回あたり {{cost}}",
+			"notCharged": "課金なし",
+			"bytesOut": "送信バイト数",
+			"summary": "タイミング、コスト、リクエストのメタ情報、ヘッダー",
+			"latencyTooltip": "リクエスト全体にかかった時間：アップストリームと Bifrost のオーバーヘッドの合計です。",
+			"upstreamLatencyTooltip": "アップストリーム API の応答待ちに費やした時間です。",
+			"overheadTooltip": "ルーティング、プラグイン、処理など、Bifrost 自体が加えた時間です。",
+			"charged": "課金額",
+			"chargedNone": "課金なし",
+			"feePerCall": "1 回あたりの手数料",
+			"pricePerUnit": "単位あたりの価格",
+			"unitsReadLabel": "読み取った単位",
+			"unitsBilled": "課金した単位",
+			"reportedCost": "報告されたコスト",
+			"tokensNotPriced": "トークン（課金なし）",
+			"tokensNotPricedValue": "入力 {{input}} / 出力 {{output}}",
+			"matchedRoute": "一致したルート",
+			"parentLog": "親ログ",
+			"queryParameters": "クエリパラメーター",
+			"matchedHeaders": "一致したヘッダー",
+			"errorNoMessageWithStatus": "リレーはメッセージなしでエラー（HTTP {{status}}）を返しました。",
+			"errorNoMessage": "リレーはメッセージなしでエラーを返しました。",
+			"contentHidden": "このリクエストではコンテンツのログ記録が無効になっています。"
+		},
+		"filters": {
+			"reset": "リセット",
+			"searchRelays": "リレーを検索",
+			"searchMethods": "メソッドを検索",
+			"billing": "課金",
+			"calls": "呼び出し",
+			"jobSettlements": "ジョブの精算",
+			"teams": "チーム",
+			"customers": "顧客",
+			"businessUnits": "ビジネスユニット",
+			"projects": "プロジェクト",
+			"minCost": "最小 $",
+			"maxCost": "最大 $",
+			"minimumCost": "最小コスト",
+			"maximumCost": "最大コスト"
+		},
+		"grants": {
+			"label": "リレーへのアクセス",
+			"tooltip": "このキーに <strong>/relay/&lt;name&gt;/...</strong> のリレー呼び出しを許可します。各呼び出しのコストはキーの予算に課金されます。リレーを 1 つも付与しない場合、このキーはどのリレーも呼び出せません。",
+			"selectRelay": "追加するリレーを選択",
+			"remove": "{{name}} を削除"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "MCP ログを検索",
 		"logActions": "アクションを記録する",
@@ -800,6 +926,8 @@
 			"invalidDate": "無効な日付",
 			"preExecutionCheck": "事前実行チェック",
 			"tool": "道具",
+			"readKindPrompt": "プロンプト",
+			"readKindResource": "リソース",
 			"request": "リクエスト",
 			"llmRequest": "LLMリクエスト",
 			"key": "キー",

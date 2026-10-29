@@ -141,6 +141,11 @@
 		"noModelUsage": "Nenhum dado de uso do modelo disponível para este período de tempo."
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "Abrir tentativa final",
+			"title": "Cadeia de fallback",
+			"viewing": "A ver"
+		},
 		"searchPlaceholder": "Pesquise registos ou cole um pedido",
 		"loggingSettings": "Configuração do registo",
 		"observabilitySettings": "Configurações de observação",
@@ -261,8 +266,8 @@
 			"endTimestamp": "Fim da Hora",
 			"upstreamLatency": "Latência a montante",
 			"bifrostOverhead": "Overhead",
-			"totalLatencyTooltip": "Tempo total de solicitação de ponta a ponta: upstream plus .",
-			"upstreamLatencyTooltip": "O tempo gasto à espera do fornecedor, somado em todas as tentativas.",
+			"totalLatencyTooltip": "Tempo que esta chamada demorou de ponta a ponta: servidor a montante mais overhead do Bifrost.",
+			"upstreamLatencyTooltip": "Tempo que esta chamada passou à espera do fornecedor, incluindo as repetições.",
 			"bifrostOverheadTooltip": "Tempo adicionado pelo próprio: roteamento, plugins e processamento.",
 			"requestDetails": "Detalhes do Pedido",
 			"overheadBreakdown": "Repartição Overhead",
@@ -499,6 +504,8 @@
 			"originalPayload": "Payload original",
 			"parsedAs": "Interpretado como",
 			"wireFormat": "Formato de transmissão",
+			"errorNotStored": "A mensagem de erro não foi guardada porque o registo de conteúdo está desativado para este pedido.",
+			"errorNotStoredWithStatus": "A mensagem de erro não foi guardada porque o registo de conteúdo está desativado para este pedido (HTTP {{statusCode}}).",
 			"providerErrorNoMessage": "O fornecedor devolveu um erro sem mensagem.",
 			"providerErrorNoMessageWithStatus": "O fornecedor devolveu um erro (HTTP {{statusCode}}) sem mensagem.",
 			"questionsCount": "Perguntas ({{count}})",
@@ -700,6 +707,8 @@
 		},
 		"passthroughTooltip": "Reencaminhado byte a byte através de uma rota passthrough; o tipo foi inferido a partir da rota.",
 		"moreActions": "Mais ações",
+		"exportCsv": "Exportar CSV",
+		"exportCsvDesc": "Transfira os registos correspondentes como CSV",
 		"speech": {
 			"audioPlayerFailed": "Falha ao carregar o leitor de áudio: {{message}}",
 			"unknownError": "Erro desconhecido",
@@ -759,6 +768,124 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "Relay",
+			"kind": "Tipo",
+			"method": "Método",
+			"path": "Caminho",
+			"units": "Unidades",
+			"billable": "Faturável",
+			"notBillable": "Não faturável",
+			"streamed": "Em streaming",
+			"virtualKey": "Chave virtual",
+			"businessUnit": "Unidade de negócio",
+			"job": "Tarefa",
+			"call": "Chamada",
+			"jobSettlement": "Liquidação da tarefa",
+			"yes": "Sim",
+			"no": "Não"
+		},
+		"columns": {
+			"jobBadge": "TAREFA",
+			"noRoute": "Sem rota",
+			"route": "Rota {{route}}",
+			"settled": "Liquidada: {{status}}",
+			"notBillable": "não faturável"
+		},
+		"table": {
+			"waiting": "A aguardar novas chamadas de relay..."
+		},
+		"header": {
+			"searchAuto": "Pesquise caminho, rota, modelo ou cole um ID de pedido",
+			"searchModeHint": "Escolha se a caixa pesquisa nos registos de relay ou procura um ID de pedido",
+			"idLookupHint": "A procurar exatamente este ID de pedido.",
+			"exportDescription": "Transfira os registos de relay correspondentes como CSV"
+		},
+		"export": {
+			"title": "Exportar registos de relay",
+			"description": "Transfira os registos de relay como CSV com os filtros e a ordenação atuais aplicados.",
+			"maxEntriesHint": "(opcional, até {{max}})",
+			"bodiesExcluded": "Os corpos e cabeçalhos de pedidos e respostas são excluídos da exportação.",
+			"toastNoLogsOnPage": "Não há registos de relay na página atual para exportar",
+			"toastNoMatch": "Nenhum registo de relay corresponde aos filtros selecionados para exportar",
+			"toastExported_one": "{{count}} registo de relay exportado",
+			"toastExported_other": "{{count}} registos de relay exportados"
+		},
+		"empty": {
+			"title": "Comece com os relays",
+			"subtitle": "Encaminhe o seu primeiro pedido para uma API a montante para ver os registos aparecerem",
+			"openRelays": "Abrir relays",
+			"requestTab": "Encaminhar um pedido",
+			"requestDesc": "O pedido é encaminhado tal como está para o URL base do relay, com a credencial do relay adicionada.",
+			"prereq1": "Adicione um relay em Relays com o respetivo URL base e credencial",
+			"prereq2": "Substitua <code>&lt;relay-name&gt;</code> pelo seu nome e <code>&lt;path&gt;</code> por uma das suas rotas, ou ative Encaminhar qualquer caminho",
+			"prereq3": "Use uma chave virtual que conceda o relay (ou todos os relays), ou retire o cabeçalho <code>x-bf-vk</code> quando a autenticação estiver desativada"
+		},
+		"stats": {
+			"ofAllCalls": "De todas as chamadas de relay nesta janela",
+			"perRequest": "{{value}}/pedido"
+		},
+		"detail": {
+			"loadingDetails": "A carregar detalhes do registo de relay",
+			"notFound": "Registo de relay não encontrado",
+			"loadFailed": "Não foi possível carregar este registo de relay.",
+			"gone": "Este registo de relay já não existe.",
+			"title": "Detalhes do pedido",
+			"route": "Rota",
+			"jobLine": "tarefa {{id}}",
+			"matched": "Correspondida",
+			"tokensInOut": "Tokens entrada / saída",
+			"totalNotPriced": "total {{total}} · sem preço",
+			"unitsRead": "{{units}} lidas",
+			"perUnit": "≈ {{cost}} por unidade",
+			"perCall": "{{cost}} por chamada",
+			"notCharged": "não cobrado",
+			"bytesOut": "Bytes de saída",
+			"summary": "tempos, custo, metadados do pedido, cabeçalhos",
+			"latencyTooltip": "Tempo total do pedido de ponta a ponta: servidor a montante mais overhead do Bifrost.",
+			"upstreamLatencyTooltip": "Tempo de espera pela API a montante.",
+			"overheadTooltip": "Tempo acrescentado pelo próprio Bifrost: encaminhamento, plugins e processamento.",
+			"charged": "Cobrado",
+			"chargedNone": "Não cobrado",
+			"feePerCall": "Taxa por chamada",
+			"pricePerUnit": "Preço por unidade",
+			"unitsReadLabel": "Unidades lidas",
+			"unitsBilled": "Unidades faturadas",
+			"reportedCost": "Custo reportado",
+			"tokensNotPriced": "Tokens (sem preço)",
+			"tokensNotPricedValue": "{{input}} entrada / {{output}} saída",
+			"matchedRoute": "Rota correspondida",
+			"parentLog": "Registo principal",
+			"queryParameters": "Parâmetros de consulta",
+			"matchedHeaders": "Cabeçalhos correspondidos",
+			"errorNoMessageWithStatus": "O relay devolveu um erro (HTTP {{status}}) sem mensagem.",
+			"errorNoMessage": "O relay devolveu um erro sem mensagem.",
+			"contentHidden": "O registo de conteúdo foi desativado para este pedido."
+		},
+		"filters": {
+			"reset": "Repor",
+			"searchRelays": "Pesquisar relays",
+			"searchMethods": "Pesquisar métodos",
+			"billing": "Faturação",
+			"calls": "Chamadas",
+			"jobSettlements": "Liquidações de tarefas",
+			"teams": "Equipas",
+			"customers": "Clientes",
+			"businessUnits": "Unidades de negócio",
+			"projects": "Projetos",
+			"minCost": "Mín. $",
+			"maxCost": "Máx. $",
+			"minimumCost": "Custo mínimo",
+			"maximumCost": "Custo máximo"
+		},
+		"grants": {
+			"label": "Acesso a relays",
+			"tooltip": "Permite que esta chave chame relays em <strong>/relay/&lt;name&gt;/...</strong>. O custo de cada chamada é cobrado aos orçamentos da chave. Sem nenhum relay concedido, a chave não pode chamar nenhum.",
+			"selectRelay": "Selecione um relay para adicionar",
+			"remove": "Remover {{name}}"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "Pesquisar registos",
 		"logActions": "Acções de registo",
@@ -800,6 +927,8 @@
 			"invalidDate": "Data inválida",
 			"preExecutionCheck": "Verificação prévia à execução",
 			"tool": "Ferramenta",
+			"readKindPrompt": "Prompt",
+			"readKindResource": "Recurso",
 			"request": "Pedido",
 			"llmRequest": "Pedido LLM",
 			"key": "Chave",

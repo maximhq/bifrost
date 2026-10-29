@@ -174,7 +174,8 @@
 		"name": "Nombre",
 		"value": "Valor",
 		"unsupportedKey": "Este nombre de clave no es compatible",
-		"duplicateKey": "Clave duplicada"
+		"duplicateKey": "Clave duplicada",
+		"emptyKey": "Introduce un nombre o elimina la fila"
 	},
 	"sidebar": {
 		"toggle": "Mostrar u ocultar la barra lateral"

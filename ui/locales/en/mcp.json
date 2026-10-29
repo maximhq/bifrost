@@ -48,6 +48,19 @@
 		"open": "Open"
 	},
 	"registry": {
+		"expose": {
+			"allServed": "All served",
+			"noneServed": "None served",
+			"someServed": "{{count}} served",
+			"serveAllAria": "Serve all {{kind}} ({{status}})",
+			"name": "Name",
+			"served": "Served",
+			"servedByRule": "Served by a pattern rule",
+			"servedByRuleAria": "{{label}} is served by a pattern rule",
+			"stopServingAria": "Stop serving {{label}}",
+			"serveAria": "Serve {{label}}",
+			"listsNone": "This server lists no {{kind}}"
+		},
 		"title": "MCP Server Catalog",
 		"description": "Manage servers that can connect to the MCP Tools endpoint.",
 		"emptyTitle": "MCP servers connect tools and context to the gateway",
@@ -1073,7 +1086,7 @@
 			"fileTooLarge": "The file exceeds the {{size}} limit for OpenAPI documents.",
 			"fileReadFailed": "The file could not be read: {{message}}",
 			"fileEmpty": "The file is empty.",
-			"fetchSpec": "Fetch spec",
+			"fetch": "Fetch",
 			"parseAgain": "Parse again",
 			"tabPaste": "Paste",
 			"tabUpload": "Upload",

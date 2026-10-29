@@ -112,7 +112,7 @@ export function CELRuleBuilder({
 		hideCELExpression: false,
 	},
 }: CELRuleBuilderProps) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const { t: tc } = useTranslation("common");
 	const normalizedInitial = normalizeRoutingRuleGroupQuery(initialQuery ?? defaultQuery);
 	const [query, setQuery] = useState<RuleGroupType>(normalizedInitial);
@@ -147,7 +147,7 @@ export function CELRuleBuilder({
 			...field,
 			value: field.name,
 		})) as Field[];
-	}, [fieldDefinitions]);
+	}, [fieldDefinitions, i18n.language]); // spreading evaluates translated getters, so rebuild on language change
 
 	useEffect(() => {
 		const expression = convertToCELRef.current(query);

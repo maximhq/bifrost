@@ -48,9 +48,9 @@
 		"invalidTitle": "此链接已失效",
 		"invalidBody": "授权链接已过期、已被使用，或其令牌已被剥离。请从 MCP 客户端重新启动连接以获取新链接。",
 		"recognizeApplication": "只有在确认这是你认可的应用及其回调目标后，才继续：",
-		"publishedBy": "发布者：<code0>{{host}}</code0>",
-		"localhostWarning": "此应用只会返回到你自己的计算机，因此无法验证其名称。任何在本地运行的应用都可能使用它。",
-		"signInRedirectBody": "此授权需要已登录的 Bifrost 账户。正在跳转到登录页面，登录后您会直接返回此处。",
+		"publishedBy": "由 <code0>{{host}}</code0> 发布",
+		"localhostWarning": "此应用只会返回到你自己的计算机，因此无法验证其名称。本地运行的任何应用都可能使用它。",
+		"signInRedirectBody": "此授权需要已登录的 Bifrost 账户。正在带你前往登录，登录后会直接返回此处。",
 		"signInToBifrost": "登录 Bifrost"
 	},
 	"setup": {

@@ -10,6 +10,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowLeft, PlusIcon } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { DeleteEndpointDialog } from "./dialogs/deleteEndpointDialog";
 import { AddEndpointSheet } from "./sheets/addEndpointSheet";
 import { EndpointsEmptyState } from "./views/endpointsEmptyState";
@@ -17,6 +18,7 @@ import { EndpointView } from "./views/endpointView";
 
 /** Relays, laid out like the providers page: the endpoints on the left, the selected one on the right. */
 export default function RelaysPage() {
+	const { t } = useTranslation("config");
 	const isMobile = useIsMobile();
 	const canCreate = useRbac(RbacResource.Relays, RbacOperation.Create);
 	const { data, isLoading, isFetching, error, refetch } = useGetRelaysQuery();
@@ -73,7 +75,7 @@ export default function RelaysPage() {
 				)}
 			>
 				<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
-					<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Relays</div>
+					<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">{t("relays.page.title")}</div>
 					<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
 						{endpoints?.map((endpoint) => (
 							<div
@@ -111,7 +113,7 @@ export default function RelaysPage() {
 									data-testid="relays-create-button"
 								>
 									<PlusIcon className="h-4 w-4" />
-									Add Relay
+									{t("relays.page.addRelay")}
 								</Button>
 							</div>
 						)}
@@ -122,7 +124,7 @@ export default function RelaysPage() {
 			<div className={cn("custom-scrollbar min-w-0 w-full md:h-full", mobileDetailOpen ? "block" : "hidden md:block")}>
 				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
 					<ArrowLeft className="size-4" />
-					Endpoints
+					{t("relays.page.back")}
 				</Button>
 				{current && <EndpointView key={current.name} endpoint={current} onRequestDelete={() => setShowDeleteDialog(true)} />}
 			</div>

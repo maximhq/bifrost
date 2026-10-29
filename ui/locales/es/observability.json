@@ -141,6 +141,11 @@
 		"noModelUsage": "No hay datos de uso de modelos disponibles para este período de tiempo."
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "Abrir el intento final",
+			"title": "Cadena de respaldo",
+			"viewing": "Viendo"
+		},
 		"searchPlaceholder": "Registros de búsqueda o pegar un ID de solicitud",
 		"loggingSettings": "Ajustes de registro",
 		"observabilitySettings": "Ajustes de observabilidad",
@@ -261,8 +266,8 @@
 			"endTimestamp": "Marca de tiempo de fin",
 			"upstreamLatency": "Latencia upstream",
 			"bifrostOverhead": "Sobrecarga de Bifrost",
-			"totalLatencyTooltip": "Tiempo total de solicitud final a extremo: aguas arriba más Bifrost arriba.",
-			"upstreamLatencyTooltip": "El tiempo gastado esperando en el proveedor, resumió en cada intento.",
+			"totalLatencyTooltip": "Tiempo que tardó esta llamada de extremo a extremo: upstream más la sobrecarga de Bifrost.",
+			"upstreamLatencyTooltip": "Tiempo que esta llamada esperó al proveedor, incluidos sus reintentos.",
 			"bifrostOverheadTooltip": "Tiempo añadido por Bifrost mismo: enrutamiento, plugins y procesamiento.",
 			"requestDetails": "Detalles de la solicitud",
 			"overheadBreakdown": "Desglose de los gastos generales",
@@ -499,6 +504,8 @@
 			"originalPayload": "Payload original",
 			"parsedAs": "Interpretado como",
 			"wireFormat": "Formato de transmisión",
+			"errorNotStored": "El mensaje de error no se almacenó porque el registro de contenido está deshabilitado para esta solicitud.",
+			"errorNotStoredWithStatus": "El mensaje de error no se almacenó porque el registro de contenido está deshabilitado para esta solicitud (HTTP {{statusCode}}).",
 			"providerErrorNoMessage": "El proveedor devolvió un error sin mensaje.",
 			"providerErrorNoMessageWithStatus": "El proveedor devolvió un error (HTTP {{statusCode}}) sin mensaje.",
 			"questionsCount": "Preguntas ({{count}})",
@@ -700,6 +707,8 @@
 		},
 		"passthroughTooltip": "Reenviado byte por byte a través de una ruta passthrough; el tipo se dedujo a partir de la ruta.",
 		"moreActions": "Más acciones",
+		"exportCsv": "Exportar CSV",
+		"exportCsvDesc": "Descarga los logs coincidentes como CSV",
 		"speech": {
 			"audioPlayerFailed": "No se pudo cargar el reproductor de audio: {{message}}",
 			"unknownError": "Error desconocido",
@@ -759,6 +768,124 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "Relay",
+			"kind": "Tipo",
+			"method": "Método",
+			"path": "Ruta",
+			"units": "Unidades",
+			"billable": "Facturable",
+			"notBillable": "No facturable",
+			"streamed": "En streaming",
+			"virtualKey": "Clave virtual",
+			"businessUnit": "Unidad de negocio",
+			"job": "Job",
+			"call": "Llamada",
+			"jobSettlement": "Liquidación del job",
+			"yes": "Sí",
+			"no": "No"
+		},
+		"columns": {
+			"jobBadge": "JOB",
+			"noRoute": "Sin ruta",
+			"route": "Ruta {{route}}",
+			"settled": "Liquidado: {{status}}",
+			"notBillable": "no facturable"
+		},
+		"table": {
+			"waiting": "Esperando nuevas llamadas de relay..."
+		},
+		"header": {
+			"searchAuto": "Busca por ruta, modelo o pega un ID de solicitud",
+			"searchModeHint": "Elige si el cuadro busca en los logs del relay o consulta un ID de solicitud",
+			"idLookupHint": "Consultando exactamente este ID de solicitud.",
+			"exportDescription": "Descarga los logs de relay coincidentes como CSV"
+		},
+		"export": {
+			"title": "Exportar logs de relay",
+			"description": "Descarga los logs de relay como CSV con los filtros y el orden actuales.",
+			"maxEntriesHint": "(opcional, hasta {{max}})",
+			"bodiesExcluded": "Los cuerpos y los encabezados de solicitud y respuesta se excluyen de la exportación.",
+			"toastNoLogsOnPage": "No hay logs de relay en la página actual para exportar",
+			"toastNoMatch": "Ningún log de relay coincide con los filtros seleccionados para exportar",
+			"toastExported_one": "Se exportó {{count}} log de relay",
+			"toastExported_other": "Se exportaron {{count}} logs de relay"
+		},
+		"empty": {
+			"title": "Empieza con los relays",
+			"subtitle": "Retransmite tu primera solicitud a una API upstream para ver aparecer los logs",
+			"openRelays": "Abrir relays",
+			"requestTab": "Retransmitir una solicitud",
+			"requestDesc": "La solicitud se retransmite tal cual a la URL base del relay, con la credencial del relay agregada.",
+			"prereq1": "Agrega un relay en Relays con su URL base y su credencial",
+			"prereq2": "Reemplaza <code>&lt;relay-name&gt;</code> por su nombre y <code>&lt;path&gt;</code> por una de sus rutas, o activa Retransmitir cualquier ruta",
+			"prereq3": "Usa una clave virtual que conceda acceso al relay (o a todos los relays), o quita el encabezado <code>x-bf-vk</code> cuando la autenticación esté deshabilitada"
+		},
+		"stats": {
+			"ofAllCalls": "De todas las llamadas de relay en esta ventana",
+			"perRequest": "{{value}}/solicitud"
+		},
+		"detail": {
+			"loadingDetails": "Cargando los detalles del log de relay",
+			"notFound": "No se encontró el log de relay",
+			"loadFailed": "No se pudo cargar este log de relay.",
+			"gone": "Este log de relay ya no existe.",
+			"title": "Detalles de la solicitud",
+			"route": "Ruta",
+			"jobLine": "job {{id}}",
+			"matched": "Coincidencia",
+			"tokensInOut": "Tokens de entrada / salida",
+			"totalNotPriced": "total {{total}} · sin precio",
+			"unitsRead": "{{units}} leídas",
+			"perUnit": "≈ {{cost}} por unidad",
+			"perCall": "{{cost}} por llamada",
+			"notCharged": "no cobrado",
+			"bytesOut": "Bytes de salida",
+			"summary": "tiempos, costo, metadatos de la solicitud, encabezados",
+			"latencyTooltip": "Tiempo total de la solicitud de extremo a extremo: upstream más la sobrecarga de Bifrost.",
+			"upstreamLatencyTooltip": "Tiempo de espera de la API upstream.",
+			"overheadTooltip": "Tiempo que agrega el propio Bifrost: enrutamiento, plugins y procesamiento.",
+			"charged": "Cobrado",
+			"chargedNone": "No cobrado",
+			"feePerCall": "Tarifa por llamada",
+			"pricePerUnit": "Precio por unidad",
+			"unitsReadLabel": "Unidades leídas",
+			"unitsBilled": "Unidades facturadas",
+			"reportedCost": "Costo informado",
+			"tokensNotPriced": "Tokens (sin precio)",
+			"tokensNotPricedValue": "{{input}} de entrada / {{output}} de salida",
+			"matchedRoute": "Ruta coincidente",
+			"parentLog": "Log principal",
+			"queryParameters": "Parámetros de consulta",
+			"matchedHeaders": "Encabezados coincidentes",
+			"errorNoMessageWithStatus": "El relay devolvió un error (HTTP {{status}}) sin mensaje.",
+			"errorNoMessage": "El relay devolvió un error sin mensaje.",
+			"contentHidden": "El registro de contenido se deshabilitó para esta solicitud."
+		},
+		"filters": {
+			"reset": "Restablecer",
+			"searchRelays": "Buscar relays",
+			"searchMethods": "Buscar métodos",
+			"billing": "Facturación",
+			"calls": "Llamadas",
+			"jobSettlements": "Liquidaciones de jobs",
+			"teams": "Equipos",
+			"customers": "Clientes",
+			"businessUnits": "Unidades de negocio",
+			"projects": "Proyectos",
+			"minCost": "Mín. $",
+			"maxCost": "Máx. $",
+			"minimumCost": "Costo mínimo",
+			"maximumCost": "Costo máximo"
+		},
+		"grants": {
+			"label": "Acceso a relays",
+			"tooltip": "Permite que esta clave llame a relays en <strong>/relay/&lt;name&gt;/...</strong>. El costo de cada llamada se carga a los presupuestos de la clave. Sin ningún relay concedido, la clave no puede llamar a ninguno.",
+			"selectRelay": "Selecciona un relay para agregar",
+			"remove": "Quitar {{name}}"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "Buscar registros MCP",
 		"logActions": "Acciones de registro",
@@ -800,6 +927,8 @@
 			"invalidDate": "Fecha inválida",
 			"preExecutionCheck": "verificación de ejecución previa",
 			"tool": "Herramienta",
+			"readKindPrompt": "Prompt",
+			"readKindResource": "Recurso",
 			"request": "Solicitud",
 			"llmRequest": "Solicitud LLM",
 			"key": "Clave",

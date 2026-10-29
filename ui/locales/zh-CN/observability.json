@@ -141,6 +141,11 @@
 		"noModelUsage": "该时间段内暂无模型用量数据。"
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "打开最终尝试",
+			"title": "回退链",
+			"viewing": "正在查看"
+		},
 		"searchPlaceholder": "搜索日志或粘贴请求 ID",
 		"loggingSettings": "日志设置",
 		"observabilitySettings": "可观测性设置",
@@ -261,8 +266,8 @@
 			"endTimestamp": "结束时间戳",
 			"upstreamLatency": "上游延迟",
 			"bifrostOverhead": "Bifrost 开销",
-			"totalLatencyTooltip": "端到端总耗时：上游加上 Bifrost 开销。",
-			"upstreamLatencyTooltip": "等待提供商的时间，按每次尝试求和。",
+			"totalLatencyTooltip": "此调用端到端所用的时间：上游加上 Bifrost 开销。",
+			"upstreamLatencyTooltip": "此调用等待提供商所花的时间，包括其重试。",
 			"bifrostOverheadTooltip": "Bifrost 自身增加的时间：路由、插件与处理。",
 			"requestDetails": "请求详情",
 			"overheadBreakdown": "开销分解",
@@ -499,6 +504,8 @@
 			"originalPayload": "原始载荷",
 			"parsedAs": "解析为",
 			"wireFormat": "传输格式",
+			"errorNotStored": "由于此请求已禁用内容日志记录，错误消息未被存储。",
+			"errorNotStoredWithStatus": "由于此请求已禁用内容日志记录，错误消息未被存储（HTTP {{statusCode}}）。",
 			"providerErrorNoMessage": "提供商返回了错误，但没有错误消息。",
 			"providerErrorNoMessageWithStatus": "提供商返回了错误（HTTP {{statusCode}}），但没有错误消息。",
 			"questionsCount": "问题（{{count}}）",
@@ -700,6 +707,8 @@
 		},
 		"passthroughTooltip": "通过透传路由逐字节转发；类型由路由推断得出。",
 		"moreActions": "更多操作",
+		"exportCsv": "导出 CSV",
+		"exportCsvDesc": "将匹配的日志下载为 CSV",
 		"speech": {
 			"audioPlayerFailed": "加载音频播放器失败：{{message}}",
 			"unknownError": "未知错误",
@@ -759,6 +768,124 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "中继",
+			"kind": "类型",
+			"method": "方法",
+			"path": "路径",
+			"units": "单位",
+			"billable": "计费",
+			"notBillable": "不计费",
+			"streamed": "已流式传输",
+			"virtualKey": "虚拟密钥",
+			"businessUnit": "业务单元",
+			"job": "作业",
+			"call": "调用",
+			"jobSettlement": "作业结算",
+			"yes": "是",
+			"no": "否"
+		},
+		"columns": {
+			"jobBadge": "作业",
+			"noRoute": "无路由",
+			"route": "路由 {{route}}",
+			"settled": "已结算：{{status}}",
+			"notBillable": "不计费"
+		},
+		"table": {
+			"waiting": "正在等待新的中继调用..."
+		},
+		"header": {
+			"searchAuto": "搜索路径、路由、模型，或粘贴请求 ID",
+			"searchModeHint": "选择搜索框是搜索中继日志还是查找请求 ID",
+			"idLookupHint": "正在精确查找此请求 ID。",
+			"exportDescription": "将匹配的中继日志下载为 CSV"
+		},
+		"export": {
+			"title": "导出中继日志",
+			"description": "按当前筛选和排序将中继日志下载为 CSV。",
+			"maxEntriesHint": "（可选，最多 {{max}}）",
+			"bodiesExcluded": "导出不包含请求和响应正文及请求头。",
+			"toastNoLogsOnPage": "当前页面没有可导出的中继日志",
+			"toastNoMatch": "没有符合所选筛选条件的中继日志可导出",
+			"toastExported_one": "已导出 {{count}} 条中继日志",
+			"toastExported_other": "已导出 {{count}} 条中继日志"
+		},
+		"empty": {
+			"title": "开始使用中继",
+			"subtitle": "向上游 API 中继你的第一个请求，即可看到日志出现",
+			"openRelays": "打开中继",
+			"requestTab": "中继请求",
+			"requestDesc": "请求会原样中继到该中继的基础 URL，并附上该中继的凭据。",
+			"prereq1": "在“中继”中添加一个中继，填写其基础 URL 和凭据",
+			"prereq2": "将 <code>&lt;relay-name&gt;</code> 替换为其名称，将 <code>&lt;path&gt;</code> 替换为其某条路由，或开启“中继任意路径”",
+			"prereq3": "使用已授予该中继（或所有中继）的虚拟密钥；认证已禁用时，可省略 <code>x-bf-vk</code> 请求头"
+		},
+		"stats": {
+			"ofAllCalls": "占此时间窗口内所有中继调用的比例",
+			"perRequest": "{{value}}/请求"
+		},
+		"detail": {
+			"loadingDetails": "正在加载中继日志详情",
+			"notFound": "未找到中继日志",
+			"loadFailed": "无法加载此中继日志。",
+			"gone": "此中继日志已不存在。",
+			"title": "请求详情",
+			"route": "路由",
+			"jobLine": "作业 {{id}}",
+			"matched": "已匹配",
+			"tokensInOut": "Token 输入 / 输出",
+			"totalNotPriced": "共 {{total}} · 不计价",
+			"unitsRead": "读取 {{units}}",
+			"perUnit": "≈ 每单位 {{cost}}",
+			"perCall": "每次调用 {{cost}}",
+			"notCharged": "未扣费",
+			"bytesOut": "输出字节数",
+			"summary": "耗时、费用、请求元数据、请求头",
+			"latencyTooltip": "请求端到端总耗时：上游加上 Bifrost 开销。",
+			"upstreamLatencyTooltip": "等待上游 API 所花的时间。",
+			"overheadTooltip": "Bifrost 自身增加的时间：路由、插件和处理。",
+			"charged": "已扣费",
+			"chargedNone": "未扣费",
+			"feePerCall": "每次调用费用",
+			"pricePerUnit": "每单位价格",
+			"unitsReadLabel": "读取的单位",
+			"unitsBilled": "计费单位",
+			"reportedCost": "上报费用",
+			"tokensNotPriced": "Token（不计价）",
+			"tokensNotPricedValue": "输入 {{input}} / 输出 {{output}}",
+			"matchedRoute": "匹配的路由",
+			"parentLog": "父日志",
+			"queryParameters": "查询参数",
+			"matchedHeaders": "匹配的请求头",
+			"errorNoMessageWithStatus": "中继返回了错误（HTTP {{status}}），但没有消息。",
+			"errorNoMessage": "中继返回了错误，但没有消息。",
+			"contentHidden": "此请求已禁用内容日志记录。"
+		},
+		"filters": {
+			"reset": "重置",
+			"searchRelays": "搜索中继",
+			"searchMethods": "搜索方法",
+			"billing": "计费",
+			"calls": "调用",
+			"jobSettlements": "作业结算",
+			"teams": "团队",
+			"customers": "客户",
+			"businessUnits": "业务单元",
+			"projects": "项目",
+			"minCost": "最小 $",
+			"maxCost": "最大 $",
+			"minimumCost": "最低费用",
+			"maximumCost": "最高费用"
+		},
+		"grants": {
+			"label": "中继访问",
+			"tooltip": "允许此密钥调用位于 <strong>/relay/&lt;name&gt;/...</strong> 的中继。每次调用的费用都会计入该密钥的预算。未授予任何中继时，该密钥不能调用任何中继。",
+			"selectRelay": "选择要添加的中继",
+			"remove": "移除 {{name}}"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "搜索 MCP 日志",
 		"logActions": "日志操作",
@@ -800,6 +927,8 @@
 			"invalidDate": "无效日期",
 			"preExecutionCheck": "执行前检查",
 			"tool": "工具",
+			"readKindPrompt": "提示词",
+			"readKindResource": "资源",
 			"request": "请求",
 			"llmRequest": "LLM 请求",
 			"key": "密钥",

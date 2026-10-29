@@ -141,6 +141,11 @@
 		"noModelUsage": "No model usage data available for this time period."
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "Open final attempt",
+			"title": "Fallback chain",
+			"viewing": "Viewing"
+		},
 		"searchPlaceholder": "Search logs or paste a request ID",
 		"loggingSettings": "Logging settings",
 		"observabilitySettings": "Observability settings",
@@ -762,6 +767,124 @@
 				"customers": "customers ({{total}})",
 				"period": "period {{value}}"
 			}
+		}
+	},
+	"relayLogs": {
+		"fields": {
+			"relay": "Relay",
+			"kind": "Kind",
+			"method": "Method",
+			"path": "Path",
+			"units": "Units",
+			"billable": "Billable",
+			"notBillable": "Not billable",
+			"streamed": "Streamed",
+			"virtualKey": "Virtual key",
+			"businessUnit": "Business unit",
+			"job": "Job",
+			"call": "Call",
+			"jobSettlement": "Job settlement",
+			"yes": "Yes",
+			"no": "No"
+		},
+		"columns": {
+			"jobBadge": "JOB",
+			"noRoute": "No route",
+			"route": "Route {{route}}",
+			"settled": "Settled: {{status}}",
+			"notBillable": "not billable"
+		},
+		"table": {
+			"waiting": "Waiting for new relay calls..."
+		},
+		"header": {
+			"searchAuto": "Search path, route, model or paste a request ID",
+			"searchModeHint": "Choose whether the box searches relay logs or looks up a request ID",
+			"idLookupHint": "Looking up this request ID exactly.",
+			"exportDescription": "Download matching relay logs as CSV"
+		},
+		"export": {
+			"title": "Export Relay Logs",
+			"description": "Download relay logs as CSV with current filters and sorting applied.",
+			"maxEntriesHint": "(optional, up to {{max}})",
+			"bodiesExcluded": "Request and response bodies and headers are excluded from the export.",
+			"toastNoLogsOnPage": "No relay logs on the current page to export",
+			"toastNoMatch": "No relay logs matched the selected filters to export",
+			"toastExported_one": "Exported {{count}} relay log",
+			"toastExported_other": "Exported {{count}} relay logs"
+		},
+		"empty": {
+			"title": "Get Started with Relays",
+			"subtitle": "Relay your first request to an upstream API to see logs appear",
+			"openRelays": "Open Relays",
+			"requestTab": "Relay a Request",
+			"requestDesc": "The request is relayed as-is to the relay's base URL, with the relay's credential added.",
+			"prereq1": "Add a relay in Relays with its base URL and credential",
+			"prereq2": "Replace <code>&lt;relay-name&gt;</code> with its name and <code>&lt;path&gt;</code> with one of its routes, or turn on Relay Any Path",
+			"prereq3": "Use a virtual key that grants the relay (or all relays), or drop the <code>x-bf-vk</code> header when authentication is disabled"
+		},
+		"stats": {
+			"ofAllCalls": "Of all relay calls in this window",
+			"perRequest": "{{value}}/req"
+		},
+		"detail": {
+			"loadingDetails": "Loading relay log details",
+			"notFound": "Relay log not found",
+			"loadFailed": "This relay log could not be loaded.",
+			"gone": "This relay log no longer exists.",
+			"title": "Request details",
+			"route": "Route",
+			"jobLine": "job {{id}}",
+			"matched": "Matched",
+			"tokensInOut": "Tokens in / out",
+			"totalNotPriced": "total {{total}} · not priced",
+			"unitsRead": "{{units}} read",
+			"perUnit": "≈ {{cost}} per unit",
+			"perCall": "{{cost}} per call",
+			"notCharged": "not charged",
+			"bytesOut": "Bytes out",
+			"summary": "timings, cost, request meta, headers",
+			"latencyTooltip": "Total end-to-end request time: upstream plus Bifrost overhead.",
+			"upstreamLatencyTooltip": "Time spent waiting on the upstream API.",
+			"overheadTooltip": "Time added by Bifrost itself: routing, plugins, and processing.",
+			"charged": "Charged",
+			"chargedNone": "Not charged",
+			"feePerCall": "Fee per call",
+			"pricePerUnit": "Price per unit",
+			"unitsReadLabel": "Units read",
+			"unitsBilled": "Units billed",
+			"reportedCost": "Reported cost",
+			"tokensNotPriced": "Tokens (not priced)",
+			"tokensNotPricedValue": "{{input}} in / {{output}} out",
+			"matchedRoute": "Matched route",
+			"parentLog": "Parent log",
+			"queryParameters": "Query Parameters",
+			"matchedHeaders": "Matched Headers",
+			"errorNoMessageWithStatus": "The relay returned an error (HTTP {{status}}) without a message.",
+			"errorNoMessage": "The relay returned an error without a message.",
+			"contentHidden": "Content logging has been disabled for this request."
+		},
+		"filters": {
+			"reset": "Reset",
+			"searchRelays": "Search relays",
+			"searchMethods": "Search methods",
+			"billing": "Billing",
+			"calls": "Calls",
+			"jobSettlements": "Job settlements",
+			"teams": "Teams",
+			"customers": "Customers",
+			"businessUnits": "Business units",
+			"projects": "Projects",
+			"minCost": "Min $",
+			"maxCost": "Max $",
+			"minimumCost": "Minimum cost",
+			"maximumCost": "Maximum cost"
+		},
+		"grants": {
+			"label": "Relay access",
+			"tooltip": "Let this key call relays at <strong>/relay/&lt;name&gt;/...</strong>. Each call's cost is charged to the key's budgets. With no relay granted the key may call none.",
+			"selectRelay": "Select a relay to add",
+			"remove": "Remove {{name}}"
 		}
 	},
 	"mcpLogs": {

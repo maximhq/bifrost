@@ -174,7 +174,8 @@
 		"name": "Nom",
 		"value": "Valeur",
 		"unsupportedKey": "Ce nom de clé n’est pas pris en charge",
-		"duplicateKey": "Clé en double"
+		"duplicateKey": "Clé en double",
+		"emptyKey": "Saisissez un nom ou supprimez la ligne"
 	},
 	"sidebar": {
 		"toggle": "Afficher/masquer la barre latérale"

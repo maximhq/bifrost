@@ -174,7 +174,8 @@
 		"name": "Name",
 		"value": "Wert",
 		"unsupportedKey": "Dieser Schlüsselname wird nicht unterstützt",
-		"duplicateKey": "Doppelter Schlüssel"
+		"duplicateKey": "Doppelter Schlüssel",
+		"emptyKey": "Gib einen Namen ein oder entferne die Zeile"
 	},
 	"sidebar": {
 		"toggle": "Seitenleiste umschalten"

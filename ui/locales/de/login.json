@@ -49,8 +49,8 @@
 		"invalidBody": "Der Autorisierungslink ist abgelaufen, wurde bereits verwendet oder sein Token wurde entfernt. Starte die Verbindung von deinem MCP-Client aus neu, um einen neuen Link zu erhalten.",
 		"recognizeApplication": "Fahre nur fort, wenn du diese Anwendung und ihr Callback-Ziel erkennst:",
 		"publishedBy": "Veröffentlicht von <code0>{{host}}</code0>",
-		"localhostWarning": "Diese Anwendung leitet nur zu deinem eigenen Computer zurück, daher kann ihr Name nicht überprüft werden. Jede lokal laufende App könnte sie verwenden.",
-		"signInRedirectBody": "Für diese Autorisierung ist ein angemeldetes Bifrost-Konto erforderlich. Du wirst zur Anmeldung weitergeleitet und kommst danach direkt hierher zurück.",
+		"localhostWarning": "Diese Anwendung kehrt nur zu deinem eigenen Computer zurück, daher kann ihr Name nicht überprüft werden. Jede lokal laufende App könnte ihn verwenden.",
+		"signInRedirectBody": "Diese Autorisierung erfordert ein angemeldetes Bifrost-Konto. Du wirst zur Anmeldung weitergeleitet, danach kehrst du direkt hierher zurück.",
 		"signInToBifrost": "Bei Bifrost anmelden"
 	},
 	"setup": {

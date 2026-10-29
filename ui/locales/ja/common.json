@@ -174,7 +174,8 @@
 		"name": "名前",
 		"value": "値",
 		"unsupportedKey": "このキー名はサポートされていません",
-		"duplicateKey": "キーが重複しています"
+		"duplicateKey": "キーが重複しています",
+		"emptyKey": "名前を入力するか、この行を削除してください"
 	},
 	"sidebar": {
 		"toggle": "サイドバーを切り替え"

@@ -141,6 +141,11 @@
 		"noModelUsage": "Keine Modell-Nutzungsdaten für diesen Zeitraum verfügbar."
 	},
 	"logs": {
+		"fallbackChain": {
+			"openFinalAttempt": "Letzten Versuch öffnen",
+			"title": "Fallback-Kette",
+			"viewing": "Ansicht"
+		},
 		"searchPlaceholder": "Logs durchsuchen oder Anfrage-ID einfügen",
 		"loggingSettings": "Protokolleinstellungen",
 		"observabilitySettings": "Observability-Einstellungen",
@@ -261,8 +266,8 @@
 			"endTimestamp": "Endzeitstempel",
 			"upstreamLatency": "Upstream-Latenz",
 			"bifrostOverhead": "Bifrost-Overhead",
-			"totalLatencyTooltip": "Gesamte End-to-End-Anfragezeit: Upstream plus Bifrost-Overhead.",
-			"upstreamLatencyTooltip": "Wartezeit auf den Anbieter, summiert über alle Versuche.",
+			"totalLatencyTooltip": "Dauer dieses Aufrufs von Anfang bis Ende: Upstream plus Bifrost-Overhead.",
+			"upstreamLatencyTooltip": "Zeit, die dieser Aufruf auf den Anbieter gewartet hat, einschließlich seiner Wiederholungen.",
 			"bifrostOverheadTooltip": "Durch Bifrost selbst hinzugefügte Zeit: Routing, Plugins und Verarbeitung.",
 			"requestDetails": "Anfragedetails",
 			"overheadBreakdown": "Overhead-Aufschlüsselung",
@@ -499,6 +504,8 @@
 			"originalPayload": "Original-Payload",
 			"parsedAs": "Geparst als",
 			"wireFormat": "Übertragungsformat",
+			"errorNotStored": "Die Fehlermeldung wurde nicht gespeichert, da die Inhaltsprotokollierung für diese Anfrage deaktiviert ist.",
+			"errorNotStoredWithStatus": "Die Fehlermeldung wurde nicht gespeichert, da die Inhaltsprotokollierung für diese Anfrage deaktiviert ist (HTTP {{statusCode}}).",
 			"providerErrorNoMessage": "Der Anbieter hat einen Fehler ohne Meldung zurückgegeben.",
 			"providerErrorNoMessageWithStatus": "Der Anbieter hat einen Fehler (HTTP {{statusCode}}) ohne Meldung zurückgegeben.",
 			"questionsCount": "Fragen ({{count}})",
@@ -700,6 +707,8 @@
 		},
 		"passthroughTooltip": "Byte für Byte über eine Passthrough-Route weitergeleitet; der Typ wurde aus der Route abgeleitet.",
 		"moreActions": "Weitere Aktionen",
+		"exportCsv": "CSV exportieren",
+		"exportCsvDesc": "Passende Protokolle als CSV herunterladen",
 		"speech": {
 			"audioPlayerFailed": "Audioplayer konnte nicht geladen werden: {{message}}",
 			"unknownError": "Unbekannter Fehler",
@@ -759,6 +768,124 @@
 			}
 		}
 	},
+	"relayLogs": {
+		"fields": {
+			"relay": "Relay",
+			"kind": "Art",
+			"method": "Methode",
+			"path": "Pfad",
+			"units": "Einheiten",
+			"billable": "Abrechenbar",
+			"notBillable": "Nicht abrechenbar",
+			"streamed": "Gestreamt",
+			"virtualKey": "Virtueller Schlüssel",
+			"businessUnit": "Geschäftsbereich",
+			"job": "Job",
+			"call": "Aufruf",
+			"jobSettlement": "Job-Abrechnung",
+			"yes": "Ja",
+			"no": "Nein"
+		},
+		"columns": {
+			"jobBadge": "JOB",
+			"noRoute": "Keine Route",
+			"route": "Route {{route}}",
+			"settled": "Abgerechnet: {{status}}",
+			"notBillable": "nicht abrechenbar"
+		},
+		"table": {
+			"waiting": "Warten auf neue Relay-Aufrufe..."
+		},
+		"header": {
+			"searchAuto": "Pfad, Route oder Modell suchen oder eine Request-ID einfügen",
+			"searchModeHint": "Wähle, ob das Feld Relay-Protokolle durchsucht oder eine Request-ID nachschlägt",
+			"idLookupHint": "Diese Request-ID wird exakt nachgeschlagen.",
+			"exportDescription": "Passende Relay-Protokolle als CSV herunterladen"
+		},
+		"export": {
+			"title": "Relay-Protokolle exportieren",
+			"description": "Relay-Protokolle als CSV mit den aktuellen Filtern und der aktuellen Sortierung herunterladen.",
+			"maxEntriesHint": "(optional, bis zu {{max}})",
+			"bodiesExcluded": "Anfrage- und Antwort-Bodys sowie Header sind vom Export ausgeschlossen.",
+			"toastNoLogsOnPage": "Auf der aktuellen Seite gibt es keine Relay-Protokolle zum Exportieren",
+			"toastNoMatch": "Keine Relay-Protokolle entsprachen den gewählten Filtern für den Export",
+			"toastExported_one": "{{count}} Relay-Protokoll exportiert",
+			"toastExported_other": "{{count}} Relay-Protokolle exportiert"
+		},
+		"empty": {
+			"title": "Erste Schritte mit Relays",
+			"subtitle": "Leite deine erste Anfrage an eine Upstream-API weiter, um Protokolle zu sehen",
+			"openRelays": "Relays öffnen",
+			"requestTab": "Anfrage weiterleiten",
+			"requestDesc": "Die Anfrage wird unverändert an die Basis-URL des Relays weitergeleitet, wobei die Anmeldedaten des Relays hinzugefügt werden.",
+			"prereq1": "Füge unter Relays ein Relay mit Basis-URL und Anmeldedaten hinzu",
+			"prereq2": "Ersetze <code>&lt;relay-name&gt;</code> durch seinen Namen und <code>&lt;path&gt;</code> durch eine seiner Routen, oder aktiviere Relay Any Path",
+			"prereq3": "Verwende einen virtuellen Schlüssel, der das Relay (oder alle Relays) freigibt, oder lass den Header <code>x-bf-vk</code> weg, wenn die Authentifizierung deaktiviert ist"
+		},
+		"stats": {
+			"ofAllCalls": "Von allen Relay-Aufrufen in diesem Zeitraum",
+			"perRequest": "{{value}}/Anfrage"
+		},
+		"detail": {
+			"loadingDetails": "Relay-Protokolldetails werden geladen",
+			"notFound": "Relay-Protokoll nicht gefunden",
+			"loadFailed": "Dieses Relay-Protokoll konnte nicht geladen werden.",
+			"gone": "Dieses Relay-Protokoll existiert nicht mehr.",
+			"title": "Anfragedetails",
+			"route": "Route",
+			"jobLine": "Job {{id}}",
+			"matched": "Zugeordnet",
+			"tokensInOut": "Tokens ein / aus",
+			"totalNotPriced": "gesamt {{total}} · nicht bepreist",
+			"unitsRead": "{{units}} gelesen",
+			"perUnit": "≈ {{cost}} pro Einheit",
+			"perCall": "{{cost}} pro Aufruf",
+			"notCharged": "nicht berechnet",
+			"bytesOut": "Ausgehende Bytes",
+			"summary": "Zeiten, Kosten, Anfrage-Metadaten, Header",
+			"latencyTooltip": "Gesamtdauer der Anfrage von Anfang bis Ende: Upstream plus Bifrost-Overhead.",
+			"upstreamLatencyTooltip": "Zeit, die auf die Upstream-API gewartet wurde.",
+			"overheadTooltip": "Zeit, die Bifrost selbst hinzufügt: Routing, Plugins und Verarbeitung.",
+			"charged": "Berechnet",
+			"chargedNone": "Nicht berechnet",
+			"feePerCall": "Gebühr pro Aufruf",
+			"pricePerUnit": "Preis pro Einheit",
+			"unitsReadLabel": "Gelesene Einheiten",
+			"unitsBilled": "Abgerechnete Einheiten",
+			"reportedCost": "Gemeldete Kosten",
+			"tokensNotPriced": "Tokens (nicht bepreist)",
+			"tokensNotPricedValue": "{{input}} ein / {{output}} aus",
+			"matchedRoute": "Zugeordnete Route",
+			"parentLog": "Übergeordnetes Protokoll",
+			"queryParameters": "Query-Parameter",
+			"matchedHeaders": "Zugeordnete Header",
+			"errorNoMessageWithStatus": "Das Relay hat einen Fehler (HTTP {{status}}) ohne Meldung zurückgegeben.",
+			"errorNoMessage": "Das Relay hat einen Fehler ohne Meldung zurückgegeben.",
+			"contentHidden": "Die Inhaltsprotokollierung wurde für diese Anfrage deaktiviert."
+		},
+		"filters": {
+			"reset": "Zurücksetzen",
+			"searchRelays": "Relays suchen",
+			"searchMethods": "Methoden suchen",
+			"billing": "Abrechnung",
+			"calls": "Aufrufe",
+			"jobSettlements": "Job-Abrechnungen",
+			"teams": "Teams",
+			"customers": "Kunden",
+			"businessUnits": "Geschäftsbereiche",
+			"projects": "Projekte",
+			"minCost": "Min. $",
+			"maxCost": "Max. $",
+			"minimumCost": "Mindestkosten",
+			"maximumCost": "Höchstkosten"
+		},
+		"grants": {
+			"label": "Relay-Zugriff",
+			"tooltip": "Erlaube diesem Schlüssel, Relays unter <strong>/relay/&lt;name&gt;/...</strong> aufzurufen. Die Kosten jedes Aufrufs werden den Budgets des Schlüssels belastet. Ohne freigegebenes Relay darf der Schlüssel keines aufrufen.",
+			"selectRelay": "Relay zum Hinzufügen auswählen",
+			"remove": "{{name}} entfernen"
+		}
+	},
 	"mcpLogs": {
 		"searchPlaceholder": "MCP-Logs durchsuchen",
 		"logActions": "Aktionen protokollieren",
@@ -800,6 +927,8 @@
 			"invalidDate": "Ungültiges Datum",
 			"preExecutionCheck": "Prüfung vor der Ausführung",
 			"tool": "Tool",
+			"readKindPrompt": "Prompt",
+			"readKindResource": "Ressource",
 			"request": "Anfrage",
 			"llmRequest": "LLM-Anfrage",
 			"key": "Schlüssel",

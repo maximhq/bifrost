@@ -174,7 +174,8 @@
 		"name": "이름",
 		"value": "값",
 		"unsupportedKey": "지원되지 않는 키 이름이에요",
-		"duplicateKey": "중복된 키예요"
+		"duplicateKey": "중복된 키예요",
+		"emptyKey": "이름을 입력하거나 행을 삭제하세요"
 	},
 	"sidebar": {
 		"toggle": "사이드바 전환"

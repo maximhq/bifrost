@@ -174,7 +174,8 @@
 		"name": "名称",
 		"value": "值",
 		"unsupportedKey": "不支持此键名",
-		"duplicateKey": "键重复"
+		"duplicateKey": "键重复",
+		"emptyKey": "请输入名称或删除该行"
 	},
 	"sidebar": {
 		"toggle": "切换侧边栏"
