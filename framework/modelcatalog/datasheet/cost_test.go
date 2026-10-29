@@ -7510,3 +7510,55 @@ func BenchmarkComputeTextCost_VoiceLiveAudio(b *testing.B) {
 		_ = computeTextCost(&p, usage, serviceTier{voiceLive: true})
 	}
 }
+
+func BenchmarkComputeTextCost_OutputImageTokens(b *testing.B) {
+	p := chatPricing(0.0000005, 0.000003)
+	p.OutputCostPerImageToken = bifrost.Ptr(0.00006)
+	imageTokens := 1120
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:            8,
+		CompletionTokens:        1403,
+		TotalTokens:             1411,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ImageTokens: &imageTokens},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = computeTextCost(&p, usage, serviceTier{})
+	}
+}
+
+// BenchmarkCalculateCost_ImageModelFallback covers the ordinary text lookup (own chat row) next to an
+// image-only model priced over Responses, which walks every text lookup before the image_generation row.
+func BenchmarkCalculateCost_ImageModelFallback(b *testing.B) {
+	store := geminiFlashImageStore()
+	store.pricingData[makeKey("gemini-2.5-flash", "gemini", "chat")] = configstoreTables.TableModelPricing{
+		Model: "gemini-2.5-flash", Provider: "gemini", Mode: "chat",
+		InputCostPerToken: bifrost.Ptr(0.0000003), OutputCostPerToken: bifrost.Ptr(0.0000025),
+	}
+	textResp := makeChatResponse(schemas.Gemini, "gemini-2.5-flash", &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150})
+	imageTokens := 1120
+	imageResp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         8,
+			OutputTokens:        1403,
+			TotalTokens:         1411,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ImageTokens: &imageTokens},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.Gemini, "gemini-3.1-flash-image"),
+		},
+	}}
+	b.Run("text_model", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = store.CalculateCost(textResp, nil)
+		}
+	})
+	b.Run("image_model_over_responses", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = store.CalculateCost(imageResp, nil)
+		}
+	})
+}
