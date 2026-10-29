@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **Codex with ChatGPT sign-in** - `/chatgpt_passthrough` now forwards `GET /backend-api/codex/models`, so Codex signed in with ChatGPT can run through Bifrost with the virtual key in `x-bf-vk`, following OpenAI's gateway guide. The model list skips the virtual key's model allowlist because it runs no model; each responses turn is still checked. Only a token ChatGPT issued is forwarded; any other bearer on that route keeps the stored OpenAI key, and `/openai_passthrough` is unchanged
+
 ## Features
 
 - **Azure Blob Storage** - Added log payload and skills-file storage with default Azure identity or connection-string authentication, JSON/gzip and Parquet support, and config-file/Helm configuration. Structured environment and vault references can omit `value`.
