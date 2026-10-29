@@ -1,3 +1,4 @@
+- fix: Gemini chat completions forward seed to generationConfig.seed instead of dropping it
 - feat: relays to non-LLM APIs with a single credential, per-route pricing and usage mapping, streaming, header matchers on any header name, and relay plugin hooks for access, budgets and logging
 - feat: AWS SageMaker provider for real-time endpoints (OpenAI-compatible chat) plus InvokeEndpoint and InvokeEndpointWithResponseStream passthrough
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
