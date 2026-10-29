@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
+	sseInitialBufSize = 8 * 1024         // 8KB — sufficient for >99.9% of SSE lines
 	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
 )
 
@@ -87,14 +87,17 @@ type SSEReaderFactory struct {
 	NewEventReader func(reader io.Reader) SSEEventReader
 }
 
-// GetSSEDataReader returns an SSEDataReader for the given reader.
-// If enterprise has injected an SSEReaderFactory via context, uses that.
-// Otherwise returns a default implementation wrapping bufio.NewScanner.
-func GetSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader) SSEDataReader {
-	if ctx != nil {
-		if factory, ok := ctx.Value(schemas.BifrostContextKeySSEReaderFactory).(*SSEReaderFactory); ok && factory != nil && factory.NewDataReader != nil {
-			return factory.NewDataReader(reader)
-		}
+// GetSSEDataReader returns a reader from an explicit factory, otherwise context.
+// An explicit nil factory selects the default SSE reader.
+func GetSSEDataReader(ctx *schemas.BifrostContext, reader io.Reader, factories ...*SSEReaderFactory) SSEDataReader {
+	var factory *SSEReaderFactory
+	if len(factories) > 0 {
+		factory = factories[0]
+	} else if ctx != nil {
+		factory, _ = ctx.Value(schemas.BifrostContextKeySSEReaderFactory).(*SSEReaderFactory)
+	}
+	if factory != nil && factory.NewDataReader != nil {
+		return factory.NewDataReader(reader)
 	}
 	return newDefaultSSEDataReader(ctx, reader)
 }

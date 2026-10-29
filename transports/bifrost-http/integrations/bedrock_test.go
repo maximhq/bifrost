@@ -681,6 +681,46 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 	}
 }
 
+func TestBedrockMistralInvokeCompatibilityFields(t *testing.T) {
+	for _, tc := range []struct{ name, field string }{
+		{"system", `"system":"Answer briefly",`},
+		{"inferenceConfig", `"inferenceConfig":{"maxTokens":7,"temperature":0.1,"topP":0.7,"stopSequences":["stop"]},`},
+	} {
+		for _, route := range []RouteConfig{
+			createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{}),
+			createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", &mockHandlerStore{}),
+		} {
+			t.Run(tc.name+"/"+route.Path, func(t *testing.T) {
+				httpCtx := &fasthttp.RequestCtx{}
+				httpCtx.SetUserValue("modelId", bedrockMistralInvokeModel)
+				httpCtx.Request.SetBodyString(`{` + tc.field + `"max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}`)
+				requestType := route.GetHTTPRequestType(httpCtx)
+				require.Equal(t, schemas.ResponsesRequest, requestType)
+				ctx := createTestBifrostContext()
+				defer ctx.Cancel()
+				ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+				incoming := route.GetRequestTypeInstance(ctx)
+				require.NoError(t, sonic.Unmarshal(httpCtx.Request.Body(), incoming))
+				require.NoError(t, route.PreCallback(httpCtx, ctx, incoming))
+				request, err := route.RequestConverter(ctx, incoming)
+				require.NoError(t, err)
+				out, err := bedrock.ToBedrockResponsesRequest(ctx, request.ResponsesRequest)
+				require.NoError(t, err)
+				if tc.name == "system" {
+					require.Len(t, out.System, 1)
+					assert.Equal(t, "Answer briefly", *out.System[0].Text)
+				} else {
+					require.NotNil(t, out.InferenceConfig)
+					assert.Equal(t, 7, *out.InferenceConfig.MaxTokens)
+					assert.Equal(t, 0.1, *out.InferenceConfig.Temperature)
+					assert.Equal(t, 0.7, *out.InferenceConfig.TopP)
+					assert.Equal(t, []string{"stop"}, out.InferenceConfig.StopSequences)
+				}
+			})
+		}
+	}
+}
+
 func TestBedrockMistralInvokeHTTPValidation(t *testing.T) {
 	var hits atomic.Int32
 	base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1); http.Error(w, "must not reach AWS", 500) })

@@ -4823,14 +4823,6 @@ func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.Bif
 
 func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.BifrostContext, hooks schemas.PostHookRunner, finalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
-	previousFactory := ctx.Value(schemas.BifrostContextKeySSEReaderFactory)
-	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
-	finish := func(parent context.Context) {
-		ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, previousFactory)
-		if finalizer != nil {
-			finalizer(parent)
-		}
-	}
 	// Shared only by this stream's callbacks. Retain identity and the latest
 	// guardrail outcome, not chunk content or accumulated responses.
 	var state struct {
@@ -4840,7 +4832,7 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 	}
 	headers := provider.invokeStreamHeaders(chatExtraParams(request))
 	headers["Accept"] = *schemas.NewSecretVar(bedrockInvokeStreamAccept)
-	stream, err := openai.HandleOpenAIChatCompletionStreaming(ctx, provider.mantleStreamingClient, requestURL, request,
+	return openai.HandleOpenAIChatCompletionStreaming(ctx, provider.mantleStreamingClient, requestURL, request,
 		openai.BearerAuthHeader(key), headers, provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), provider.GetProviderKey(), hooks,
 		func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
@@ -4881,11 +4873,7 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 				response.ExtraParams = state.outcome
 			}
 			return response
-		}, provider.invokeSigner(ctx, key, requestURL, bedrockInvokeStreamAccept, region), provider.logger, finish)
-	if err != nil {
-		ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, previousFactory)
-	}
-	return stream, err
+		}, provider.invokeSigner(ctx, key, requestURL, bedrockInvokeStreamAccept, region), provider.logger, finalizer, invokeSSEReaderFactory)
 }
 
 // invokeEventStreamReader adapts InvokeModelWithResponseStream's AWS

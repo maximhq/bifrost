@@ -4,6 +4,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // drainSSEDataReader reads payloads until EOF, failing the test on any other error.
@@ -19,6 +21,40 @@ func drainSSEDataReader(t *testing.T, r SSEDataReader) []string {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		payloads = append(payloads, string(data))
+	}
+}
+
+func TestSSEDataReader_ExplicitFactory(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, &SSEReaderFactory{
+		NewDataReader: func(io.Reader) SSEDataReader {
+			return newDefaultSSEDataReader(nil, strings.NewReader("data: context\n\n"))
+		},
+	})
+	explicit := &SSEReaderFactory{NewDataReader: func(io.Reader) SSEDataReader {
+		return newDefaultSSEDataReader(nil, strings.NewReader("data: explicit\n\n"))
+	}}
+	for _, tc := range []struct {
+		name    string
+		context *schemas.BifrostContext
+		factory *SSEReaderFactory
+		want    string
+	}{
+		{"overrides context", ctx, explicit, "explicit"},
+		{"without context", nil, explicit, "explicit"},
+		{"nil selects default", ctx, nil, "wire"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := GetSSEDataReader(tc.context, strings.NewReader("data: wire\n\n"), tc.factory)
+			if got := drainSSEDataReader(t, reader); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("payloads = %v, want %q", got, tc.want)
+			}
+		})
+	}
+	reader := GetSSEDataReader(ctx, strings.NewReader("data: wire\n\n"))
+	if got := drainSSEDataReader(t, reader); len(got) != 1 || got[0] != "context" {
+		t.Fatalf("context factory payloads = %v", got)
 	}
 }
 

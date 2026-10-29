@@ -295,6 +295,21 @@ func TestToBedrockInvokeChatRequest_Mistral(t *testing.T) {
 	}
 }
 
+func TestToBedrockInvokeChatRequest_PreservesTokenLimit(t *testing.T) {
+	for _, limit := range []int{1, 15, 16, 256} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			body := strings.Replace(mistralInvokeTestBody, `"max_tokens":256`, fmt.Sprintf(`"max_tokens":%d`, limit), 1)
+			ctx, request := mistralInvokeTestRequest(t, body)
+			native, err := ToBedrockInvokeChatRequest(ctx, request)
+			require.NoError(t, err)
+			wire, err := providerUtils.MarshalProviderRequest(native)
+			require.NoError(t, err)
+			assert.Equal(t, int64(limit), gjson.GetBytes(wire, "max_tokens").Int())
+			assert.Equal(t, limit, *request.Params.MaxCompletionTokens)
+		})
+	}
+}
+
 func TestToBedrockInvokeChatRequest_Validation(t *testing.T) {
 	t.Run("nil request", func(t *testing.T) {
 		_, err := ToBedrockInvokeChatRequest(testBedrockCtx(), nil)
@@ -414,6 +429,11 @@ func TestMistralInvokeStream_CancellationRestoresReader(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream did not deliver its initial chunk")
 	}
+	// An overlapping OpenAI-style reader must not inherit AWS framing.
+	reader := providerUtils.GetSSEDataReader(ctx, strings.NewReader("data: {\"id\":\"openai\"}\n\n"))
+	data, readErr := reader.ReadDataLine()
+	require.NoError(t, readErr)
+	assert.JSONEq(t, `{"id":"openai"}`, string(data))
 	ctx.Cancel()
 	select {
 	case <-finalized:

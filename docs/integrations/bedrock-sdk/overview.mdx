@@ -252,7 +252,7 @@ set to the corresponding assistant tool call's `id`. Invalid tools return an HTT
 `400` `ValidationException` naming the invalid field. Replies use native `choices[]`,
 including inside AWS EventStream chunks.
 
-Existing `toolConfig` compatibility input still routes through Converse. Prompt-based
+Compatibility fields (`system`, `inferenceConfig`, or `toolConfig`) still route through Converse. Prompt-based
 Invoke requests and neutral `/v1/chat/completions` and `/v1/responses` routing are unchanged.
 
 ---

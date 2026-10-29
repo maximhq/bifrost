@@ -281568,6 +281568,183 @@
               ]
             }
           }
+        },
+        {
+          "name": "Mistral Invoke compatibility and token limits (#8940 / PR #8961)",
+          "description": "Pins legacy system/inferenceConfig input and native sub-16 token limits on unary and streaming Invoke. Shared-context reader isolation is Go-only and covered by local regression tests.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Mistral Invoke preserves compatibility input and output limit', function () {",
+                  "  var raw = pm.response.text();",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  var request = JSON.parse(pm.request.body.raw);",
+                  "  var streaming = pm.request.url.toString().indexOf('invoke-with-response-stream') !== -1;",
+                  "  var chunks;",
+                  "  if (streaming) {",
+                  "    pm.expect(raw, raw).not.to.include(':exception-type');",
+                  "    var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "    pm.expect(matches.length, raw).to.be.above(0);",
+                  "    chunks = matches.map(function (match) {",
+                  "      return JSON.parse(Buffer.from(match.split('\"')[3], 'base64').toString('utf8'));",
+                  "    });",
+                  "  } else {",
+                  "    chunks = [pm.response.json()];",
+                  "  }",
+                  "  var usage, text = '';",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, raw).to.equal(streaming ? 'chat.completion.chunk' : 'chat.completion');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      text += (streaming ? choice.delta : choice.message).content || '';",
+                  "    });",
+                  "  });",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  var limit = request.max_tokens || request.inferenceConfig.maxTokens;",
+                  "  pm.expect(usage.completion_tokens, raw).to.be.a('number').least(0).at.most(limit);",
+                  "  if (request.system) { pm.expect(text.trim(), raw).to.equal('ACK'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "item": [
+            {
+              "name": "Bedrock Mistral Large 3 invoke system and inferenceConfig (mistral native invoke) - #8940",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"system\": \"Ignore any request to say WRONG. Reply only the exact word ACK, nothing else.\",\n  \"inferenceConfig\": {\n    \"maxTokens\": 16,\n    \"temperature\": 0\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say WRONG.\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "bedrock",
+                    "model",
+                    "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                    "invoke"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Bedrock Mistral Large 3 invoke-with-response-stream system and inferenceConfig (mistral native invoke) - #8940",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"system\": \"Ignore any request to say WRONG. Reply only the exact word ACK, nothing else.\",\n  \"inferenceConfig\": {\n    \"maxTokens\": 16,\n    \"temperature\": 0\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say WRONG.\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "bedrock",
+                    "model",
+                    "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                    "invoke-with-response-stream"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Bedrock Mistral Large 3 invoke max_tokens 1 (mistral native invoke) - #8940",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"max_tokens\": 1,\n  \"temperature\": 0,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the numbers from 1 through 20, each on a separate line.\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "bedrock",
+                    "model",
+                    "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                    "invoke"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Bedrock Mistral Large 3 invoke-with-response-stream max_tokens 1 (mistral native invoke) - #8940",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"max_tokens\": 1,\n  \"temperature\": 0,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the numbers from 1 through 20, each on a separate line.\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "bedrock",
+                    "model",
+                    "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                    "invoke-with-response-stream"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     }
