@@ -2134,6 +2134,9 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		if err := ValidateMCPClientName(updatedConfig.Name); err != nil {
 			return fmt.Errorf("invalid MCP client configuration: %w", err)
 		}
+		if err := validateMCPTLSConfig(updatedConfig); err != nil {
+			return fmt.Errorf("invalid MCP client configuration: %w", err)
+		}
 
 		if updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType {
 			return fmt.Errorf("connection type cannot be updated for client %s", id)
@@ -3684,7 +3687,7 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 					rootCAs = x509.NewCertPool()
 				}
 				if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
-					return nil, fmt.Errorf("failed to parse MCP CA certificate PEM")
+					return nil, misconfiguredError{errors.New("failed to parse MCP CA certificate PEM")}
 				}
 				tlsConfig.RootCAs = rootCAs
 			}
@@ -3866,13 +3869,13 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 	for _, env := range config.StdioConfig.Envs {
 		envName, _, hasInlineValue := strings.Cut(env, "=")
 		if envName == "" {
-			return nil, nil, fmt.Errorf("environment variable name is empty for MCP client %s", config.Name)
+			return nil, nil, misconfiguredError{fmt.Errorf("environment variable name is empty for MCP client %s", config.Name)}
 		}
 		if hasInlineValue {
 			continue
 		}
 		if os.Getenv(envName) == "" {
-			return nil, nil, fmt.Errorf("environment variable %s is not set for MCP client %s", envName, config.Name)
+			return nil, nil, misconfiguredError{fmt.Errorf("environment variable %s is not set for MCP client %s", envName, config.Name)}
 		}
 	}
 
@@ -3951,7 +3954,7 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MC
 // the lowest latency and highest performance for tool execution.
 func (m *MCPManager) createInProcessConnection(_ context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.InProcessServer == nil {
-		return nil, nil, fmt.Errorf("InProcess connection requires a server instance")
+		return nil, nil, misconfiguredError{errors.New("InProcess connection requires a server instance")}
 	}
 
 	// Create in-process client directly connected to the provided server

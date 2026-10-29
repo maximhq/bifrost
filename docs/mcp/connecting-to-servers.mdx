@@ -1133,6 +1133,11 @@ Bifrost intelligently classifies errors as either **transient** (retryable) or *
 - Bad request errors (400, 405, 422)
 - Command execution permission denied
 - Invalid credentials
+- A server that supports none of the MCP protocol versions Bifrost speaks
+- A server certificate that fails verification (for example, signed by an authority the client does not trust)
+- A STDIO environment variable listed in `envs` that is not set, or an in-process client without a server
+
+A `tls_config.ca_cert_pem` that does not parse as a PEM certificate is refused when the client is created or edited, before any connection is attempted.
 
 ### What Operations Are Retried
 

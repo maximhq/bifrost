@@ -577,14 +577,17 @@ func testSDKInProcessClient(t *testing.T) {
 	}
 }
 
-// testSDKInProcessNoServer: an in-process client with no server is refused. Today the refusal comes
-// only after the connect retries run out, about 31s, because this permanent error is retried like a
-// network one.
+// testSDKInProcessNoServer: an in-process client with no server is refused at once. The error is a
+// misconfiguration, so the connect retries, about 31s for a network error, do not run.
 func testSDKInProcessNoServer(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
+	start := time.Now()
 	err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, ToolsToExecute: schemas.WhiteList{"*"}})
 	if err == nil || !strings.Contains(err.Error(), "InProcess connection requires a server instance") {
 		t.Fatalf("AddMCPClient error = %v, want \"InProcess connection requires a server instance\"", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("AddMCPClient took %v, want the refusal without retries", elapsed)
 	}
 }
 
