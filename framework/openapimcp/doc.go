@@ -15,8 +15,11 @@
 //
 // Not supported, and reported per operation in Synthesis.Unsupported rather than
 // failing the whole document: multipart and binary request bodies, streaming
-// request bodies (3.2 itemSchema), externally referenced schemas, and operations
-// whose only security schemes are OAuth2, OpenID Connect or mutual TLS.
+// request bodies (3.2 itemSchema), and externally referenced schemas.
+// Operations whose only security scheme is mutual TLS are exposed with a
+// warning. OAuth2 and OpenID Connect schemes are met by the bearer token of a
+// client whose auth type is oauth or per_user_oauth; SpecOAuthEndpoints reads
+// the authorization code endpoints such a client defaults its oauth_config from.
 //
 // Naming: a tool is named after its operationId, sanitized to [A-Za-z0-9_]
 // (hyphens would break code mode's tool-name parsing) and capped so that the
