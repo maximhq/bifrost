@@ -764,6 +764,17 @@ func TestTopicReaderSearchesNamesBeforeTheLimit(t *testing.T) {
 	require.Equal(t, "big", list.Topics[0].ID, "with no name, the largest topic still leads")
 }
 
+// A deployment that never saved a Warp configuration has no embedding space,
+// so it has no topics to list: the reader reports Warp unavailable rather than
+// reading a configuration that is not there.
+func TestTopicReaderWithNoConfigurationIsUnavailable(t *testing.T) {
+	reader := NewTopicReader(&recordingStore{}, topicTestLogStore(t))
+
+	list, err := reader.ListTopics(context.Background(), allTimeTopicQuery(10))
+	require.ErrorIs(t, err, ErrUnavailable)
+	require.Nil(t, list)
+}
+
 // allTimeTopicQuery is a query whose window holds every test timestamp.
 func allTimeTopicQuery(limit int) TopicQuery {
 	start := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)

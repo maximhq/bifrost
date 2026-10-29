@@ -2371,9 +2371,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 					if clientConfig.ID == "" {
 						clientConfig.ID = uuid.NewString()
 					}
-					if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
-						logger.Warn("failed to create MCP client config: %v", err)
-					}
+					createFileMCPClient(ctx, config.ConfigStore, clientConfig)
 				}
 			}
 		}
@@ -2872,9 +2870,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 		logger.Debug("updating MCP config in store with %d new clients and %d updated clients", len(clientConfigsToAdd), len(clientConfigsToUpdate))
 		for _, clientConfig := range clientConfigsToAdd {
 			if clientConfig != nil {
-				if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
-					logger.Warn("failed to create MCP client config: %v", err)
-				}
+				createFileMCPClient(ctx, config.ConfigStore, clientConfig)
 			}
 		}
 		for i := range clientConfigsToUpdate {
@@ -2884,6 +2880,22 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 			}
 		}
 	}
+}
+
+// createFileMCPClient stores a config.json MCP client. When a node booting at the same time stored it
+// first, the client takes that row's ID and slug, so every node serves it under the same identity.
+func createFileMCPClient(ctx context.Context, store configstore.ConfigStore, client *schemas.MCPClientConfig) {
+	err := store.CreateMCPClientConfig(ctx, client)
+	if err == nil {
+		return
+	}
+	if stored, getErr := store.GetMCPClientByName(ctx, client.Name); getErr == nil && stored != nil && stored.ClientID != "" {
+		logger.Info("MCP client %q was stored by another node; using its id %s", client.Name, stored.ClientID)
+		client.ID = stored.ClientID
+		client.EndpointSlug = stored.EndpointSlug
+		return
+	}
+	logger.Warn("failed to create MCP client config: %v", err)
 }
 
 func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, mcpCfg *schemas.MCPConfig, fileIsSourceOfTruth bool) {
@@ -3206,9 +3218,7 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 			}
 		}
 		for _, add := range adds {
-			if err := config.ConfigStore.CreateMCPClientConfig(ctx, add); err != nil {
-				logger.Warn("failed to create MCP client config: %v", err)
-			}
+			createFileMCPClient(ctx, config.ConfigStore, add)
 		}
 		for i := range updates {
 			update := updates[i]
