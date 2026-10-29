@@ -1,5 +1,12 @@
 import type { Relay, RelayJobConfig, RelayRouteConfig, RelaySecret, RelayUsageConfig } from "@/lib/types/relays";
-import { type RelayFormValues, relayAuthSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
+import {
+	type RelayFormValues,
+	type RelayUsageForm,
+	relayAuthSchema,
+	relayNetworkFormSchema,
+	relayUsageBaseSchema,
+	routeBillableByDefault,
+} from "@/lib/types/schemas";
 
 type FormSecret = { value?: string; ref?: string; type?: "plain_text" | "env" | "vault" };
 type FormUsage = RelayFormValues["usage"];
@@ -27,6 +34,116 @@ const toApiSecret = (s?: FormSecret): RelaySecret | undefined => {
 	if (!s || (!s.value?.trim() && !s.ref?.trim())) return undefined;
 	return { value: s.value ?? "", ...(s.ref ? { ref: s.ref } : {}), ...(s.type ? { type: s.type } : {}) };
 };
+
+type RouteOrderKey = Pick<RelayRouteConfig, "method" | "path" | "headers">;
+
+const GLOB_CHARS = /[*?[]/;
+const codePointOrder = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** The sort key of a route path; see compareRoutes. */
+function pathRank(path: string): number[] {
+	const segments = path.replace(/^\//, "").split("/");
+	const catchAll = segments[segments.length - 1] === "**";
+	const fixed = catchAll ? segments.slice(0, -1) : segments;
+	const glob = fixed.some((s) => GLOB_CHARS.test(s));
+	// Equal literal text, fewer and narrower wildcards first: /x/foo* is covered by /x/*foo*, and
+	// /files/[m] by /files/[a-z] by /files/? by /files/*.
+	const shape = globShape(fixed.join("/"));
+	return [
+		catchAll ? 1 : 0,
+		catchAll ? -fixed.length : 0,
+		glob ? 1 : 0,
+		glob ? fixed.length : 0,
+		glob ? -shape.literal : 0,
+		glob ? shape.stars : 0,
+		glob ? shape.singles : 0,
+	];
+}
+
+// How many characters a ? (or a negated class) can stand for, for ranking only.
+const ANY_CHARACTER = 0x110000;
+
+/**
+ * The shape of a path.Match pattern, as the gateway reads it: literal characters (outside brackets,
+ * an escaped character included), * wildcards, and the breadth of the single-character positions: a
+ * class counts the characters it matches ([m] 1, [a-z] 26, a negated one nearly all), and a ? all.
+ */
+function globShape(pattern: string): { literal: number; stars: number; singles: number } {
+	let literal = 0;
+	let stars = 0;
+	let singles = 0;
+	for (let i = 0; i < pattern.length; i++) {
+		const c = pattern[i];
+		if (c === "\\" && i + 1 < pattern.length) {
+			literal++;
+			i++;
+		} else if (c === "*") stars++;
+		else if (c === "?") singles += ANY_CHARACTER;
+		else if (c === "[") {
+			const negated = pattern[i + 1] === "^";
+			let j = negated ? i + 2 : i + 1;
+			let size = 0;
+			for (; j < pattern.length && pattern[j] !== "]"; j++) {
+				let lo = pattern[j];
+				if (lo === "\\" && j + 1 < pattern.length) lo = pattern[++j];
+				if (pattern[j + 1] === "-" && j + 2 < pattern.length && pattern[j + 2] !== "]") {
+					let hi = pattern[j + 2];
+					j += 2;
+					if (hi === "\\" && j + 1 < pattern.length) hi = pattern[++j];
+					size += Math.max(1, hi.codePointAt(0)! - lo.codePointAt(0)! + 1);
+				} else size++;
+			}
+			singles += negated ? ANY_CHARACTER - size : size;
+			i = j;
+		} else literal++;
+	}
+	return { literal, stars, singles };
+}
+
+/**
+ * The order routes are saved in. The relay takes the first route that matches, so a route must come
+ * before every broader route that also matches its requests. Literal paths never overlap one another
+ * and come first, A to Z. Globs follow by depth, more literal text first (/models/*:predict before
+ * /models/*), and a trailing /** catch-all comes last, deepest first. On the same path a route with
+ * header matchers precedes the plain one, and exact header values precede globbed ones, since the
+ * broader route would otherwise take their requests.
+ */
+export function compareRoutes(a: RouteOrderKey, b: RouteOrderKey): number {
+	const ra = pathRank(a.path);
+	const rb = pathRank(b.path);
+	for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] - rb[i];
+	const headerKey = (r: RouteOrderKey) =>
+		Object.entries(r.headers ?? {})
+			.map(([name, value]) => `${name.toLowerCase()}: ${value}`)
+			.sort()
+			.join("\n");
+	// Header values are globs too: on one path, X-Amz-Target: * must not precede an exact target.
+	const ha = headerRank(a);
+	const hb = headerRank(b);
+	return (
+		codePointOrder(a.path, b.path) ||
+		Object.keys(b.headers ?? {}).length - Object.keys(a.headers ?? {}).length ||
+		ha[0] - hb[0] ||
+		ha[1] - hb[1] ||
+		ha[2] - hb[2] ||
+		ha[3] - hb[3] ||
+		codePointOrder(a.method.toUpperCase(), b.method.toUpperCase()) ||
+		codePointOrder(headerKey(a), headerKey(b))
+	);
+}
+
+/**
+ * How broad a route's header matchers are: fewer glob values first, then, among globs, more literal
+ * text first (Textract.Analyze* before *), then fewer and narrower wildcards (foo* before *foo*,
+ * v[12] before v[0-9] before v?). Exact values never overlap, so they stay A to Z.
+ */
+function headerRank(r: RouteOrderKey): [number, number, number, number] {
+	const values = Object.values(r.headers ?? {});
+	const globs = values.filter((v) => GLOB_CHARS.test(v)).length;
+	const shapes = values.map(globShape);
+	const sum = (k: "literal" | "stars" | "singles") => shapes.reduce((n, shape) => n + shape[k], 0);
+	return [globs, globs ? -sum("literal") : 0, globs ? sum("stars") : 0, globs ? sum("singles") : 0];
+}
 
 export function emptyRelayForm(): RelayFormValues {
 	return {
@@ -114,9 +231,27 @@ export function cleanUsage(u: FormUsage | undefined, route: boolean): RelayUsage
 	return Object.keys(out).length ? out : undefined;
 }
 
-/** A route is billable by default only for POST, so the flag is stored only when it differs. */
-export function routeBillableByDefault(method: string): boolean {
-	return method.toUpperCase() === "POST";
+export { routeBillableByDefault };
+
+// What prices a call. A route that is not billed drops these; the model and token paths stay, since
+// the gateway reads them on every call to log the model and tokens.
+const PRICING_FIELDS = [
+	"cost_per_request",
+	"cost_per_unit",
+	"cost_path",
+	"units_path",
+	"units_source",
+	"units_measure",
+	"units_block_size",
+	"units_minimum",
+] as const;
+
+/** The usage mapping without its pricing fields, or undefined when nothing else is set. */
+export function withoutPricing<T extends Partial<Record<(typeof PRICING_FIELDS)[number], unknown>>>(usage: T | undefined): T | undefined {
+	if (!usage) return undefined;
+	const rest = { ...usage };
+	for (const field of PRICING_FIELDS) delete rest[field];
+	return Object.values(rest).some((v) => v !== undefined && v !== null && v !== "") ? rest : undefined;
 }
 
 /** Turns form values into the endpoint body the API takes. */
@@ -179,28 +314,34 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 						},
 		usage: cleanUsage(v.usage, false),
 		streaming: streamingSet ? { ...v.streaming, paths: v.streaming.paths.filter((p) => p.trim()) } : undefined,
-		routes: v.routes.map((r) => {
-			const headers = Object.fromEntries(
-				r.headers.filter((h) => h.name.trim() && h.value.trim()).map((h) => [h.name.trim(), h.value.trim()]),
-			);
-			return {
-				method: r.method,
-				path: r.path.trim(),
-				...(Object.keys(headers).length ? { headers } : {}),
-				...(r.enabled === false ? { enabled: false } : {}),
-				...(r.billable !== undefined && r.billable !== routeBillableByDefault(r.method) ? { billable: r.billable } : {}),
-				...(r.stream !== undefined ? { stream: r.stream } : {}),
-				...(cleanUsage(r.usage, true) ? { usage: cleanUsage(r.usage, true) } : {}),
-				...(r.job ? { job: cleanJob(r.job) } : {}),
-			};
-		}),
+		routes: v.routes
+			.map((r) => {
+				const headers = Object.fromEntries(
+					r.headers.filter((h) => h.name.trim() && h.value.trim()).map((h) => [h.name.trim(), h.value.trim()]),
+				);
+				// A route that is not billed is never priced and hides its pricing, so only the model and
+				// token mapping the gateway still reads on every call is sent.
+				const usage =
+					(r.billable ?? routeBillableByDefault(r.method)) ? cleanUsage(r.usage, true) : withoutPricing(cleanUsage(r.usage, true));
+				return {
+					method: r.method,
+					path: r.path.trim(),
+					...(Object.keys(headers).length ? { headers } : {}),
+					...(r.enabled === false ? { enabled: false } : {}),
+					...(r.billable !== undefined && r.billable !== routeBillableByDefault(r.method) ? { billable: r.billable } : {}),
+					...(r.stream !== undefined ? { stream: r.stream } : {}),
+					...(usage ? { usage } : {}),
+					...(r.job ? { job: cleanJob(r.job) } : {}),
+				};
+			})
+			.sort(compareRoutes),
 		skip_route_check: v.skip_route_check || undefined,
 		ignore_upstream_cost: v.ignore_upstream_cost || undefined,
 	};
 }
 
 /** Drops a job's empty optional fields so the stored config carries only what was set. */
-export function cleanJob(job: RelayJobConfig): RelayJobConfig {
+export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsageForm }): RelayJobConfig {
 	const poll = {
 		...(job.poll.method ? { method: job.poll.method } : {}),
 		path: job.poll.path.trim(),
@@ -238,11 +379,14 @@ export function describePricing(u: RelayUsageConfig | undefined, ignoreUpstreamC
 }
 
 /** The mapping a route resolves to: the endpoint's, overridden field by field. */
-export function mergeUsage(base: RelayUsageConfig | undefined, override: RelayUsageConfig | undefined): RelayUsageConfig | undefined {
+export function mergeUsage(
+	base: RelayUsageConfig | RelayUsageForm | undefined,
+	override: RelayUsageConfig | RelayUsageForm | undefined,
+): RelayUsageConfig | undefined {
 	if (!base && !override) return undefined;
-	const out: RelayUsageConfig = { ...(base ?? {}) };
-	for (const [k, v] of Object.entries(override ?? {})) {
-		if (v === undefined || v === "") continue;
+	const out: RelayUsageConfig = {};
+	for (const [k, v] of [...Object.entries(base ?? {}), ...Object.entries(override ?? {})]) {
+		if (v === undefined || v === null || v === "") continue;
 		(out as Record<string, unknown>)[k] = v;
 	}
 	return out;

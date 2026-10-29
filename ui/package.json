@@ -105,6 +105,7 @@
 		"dompurify": "3.4.17",
 		"esbuild": "0.28.1",
 		"follow-redirects": "1.16.1",
+		"seroval": "1.6.11",
 		"tar": "7.5.3",
 		"tinypool": "2.1.2",
 		"zod": "$zod"

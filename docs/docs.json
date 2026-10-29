@@ -1400,6 +1400,7 @@
                   "PUT /api/relays/{name}",
                   "DELETE /api/relays/{name}",
                   "POST /api/relays/usage-preview",
+                  "POST /api/relays/openapi-spec",
                   "GET /api/relays/{name}/access-profiles",
                   "GET /api/relay-logs",
                   "DELETE /api/relay-logs",

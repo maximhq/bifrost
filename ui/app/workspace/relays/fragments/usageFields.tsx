@@ -8,9 +8,11 @@ import {
 	type RelayUnitsSource,
 	type RelayUsageConfig,
 } from "@/lib/types/relays";
+import type { RelayUsageForm } from "@/lib/types/schemas";
 import { describePricing, mergeUsage } from "@/lib/utils/relayForm";
 import type { Control, FieldValues } from "react-hook-form";
-import { InfoLabel } from "../fragments/infoLabel";
+import { DecimalInput } from "./decimalInput";
+import { InfoLabel } from "./infoLabel";
 
 const INHERIT = "__inherit__";
 
@@ -18,23 +20,13 @@ interface UsageFieldsProps {
 	control: Control<FieldValues>;
 	/** Form path of the usage mapping: "usage" on the endpoint, "usage" on a route form. */
 	name: string;
-	value: RelayUsageConfig | undefined;
+	value: RelayUsageForm | undefined;
 	/** Set on a route: the endpoint mapping its empty fields inherit, shown as placeholders. */
 	inheritFrom?: RelayUsageConfig;
 	/** The relay's ignore_upstream_cost: the formula line then leaves out the reported cost. */
 	ignoreUpstreamCost?: boolean;
 	disabled?: boolean;
 	testIdPrefix: string;
-}
-
-function numberField(value: unknown): string | number {
-	return value === undefined || value === null || (typeof value === "number" && Number.isNaN(value)) ? "" : (value as number);
-}
-
-function toNumber(raw: string): number | undefined {
-	if (raw === "") return undefined;
-	const n = Number(raw);
-	return Number.isNaN(n) ? undefined : n;
 }
 
 /**
@@ -44,7 +36,7 @@ function toNumber(raw: string): number | undefined {
  */
 export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamCost, disabled, testIdPrefix }: UsageFieldsProps) {
 	const isRoute = inheritFrom !== undefined;
-	const effective = isRoute ? mergeUsage(inheritFrom, value) : value;
+	const effective = mergeUsage(inheritFrom, value);
 	const measure = effective?.units_measure ?? "value";
 	const wholeBody = measure === "body_bytes" || measure === "body_chars";
 	const placeholder = (field: keyof RelayUsageConfig, fallback: string) => {
@@ -61,15 +53,12 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 				<FormItem className="flex-1">
 					<InfoLabel label={label} info={description} />
 					<FormControl>
-						<Input
-							type="number"
-							step="any"
-							min={0}
+						<DecimalInput
 							placeholder={placeholder(field, fallback)}
 							disabled={disabled}
 							data-testid={`${testIdPrefix}-${field.replaceAll("_", "-")}`}
-							value={numberField(f.value)}
-							onChange={(e) => f.onChange(toNumber(e.target.value))}
+							value={f.value as number | null | undefined}
+							onChange={f.onChange}
 						/>
 					</FormControl>
 					<FormMessage />
@@ -101,7 +90,7 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 							/>
 							<Select
 								value={(field.value as string) ?? (isRoute ? INHERIT : "response")}
-								onValueChange={(v) => field.onChange(v === INHERIT ? undefined : (v as RelayUnitsSource))}
+								onValueChange={(v) => field.onChange(v === INHERIT ? null : (v as RelayUnitsSource))}
 								disabled={disabled}
 							>
 								<FormControl>
@@ -133,7 +122,7 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 							/>
 							<Select
 								value={(field.value as string) ?? (isRoute ? INHERIT : "value")}
-								onValueChange={(v) => field.onChange(v === INHERIT ? undefined : (v as RelayUnitsMeasure))}
+								onValueChange={(v) => field.onChange(v === INHERIT ? null : (v as RelayUnitsMeasure))}
 								disabled={disabled}
 							>
 								<FormControl>
@@ -168,7 +157,7 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 									disabled={disabled}
 									data-testid={`${testIdPrefix}-units-path`}
 									value={(field.value as string) ?? ""}
-									onChange={(e) => field.onChange(e.target.value || undefined)}
+									onChange={(e) => field.onChange(e.target.value)}
 								/>
 							</FormControl>
 							<FormMessage />

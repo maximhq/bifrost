@@ -749,6 +749,8 @@ false
 {{- if hasKey . "allow_all_providers" }}{{- $_ := set $vk "allow_all_providers" .allow_all_providers }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
+{{- /* Rendered as declared; [] must survive so the key hash records an explicit empty list. */ -}}
+{{- if hasKey . "relay_grants" }}{{- $_ := set $vk "relay_grants" (default (list) .relay_grants) }}{{- end }}
 {{- $vks = append $vks $vk }}
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
@@ -1075,6 +1077,19 @@ false
 {{- end }}
 {{- end }}
 {{- $_ := set $config "agents" .Values.bifrost.agents }}
+{{- end }}
+{{- /* Relays. Rendered whenever the key is declared, [] included: with config.json as the source of
+       truth an explicit list prunes stored relays it does not name, and omitting the key leaves them.
+       Startup skips every copy of a repeated name, so a duplicate is refused here instead. */ -}}
+{{- if hasKey .Values.bifrost "relays" }}
+{{- $seenRelayNames := list }}
+{{- range .Values.bifrost.relays }}
+{{- if has .name $seenRelayNames }}
+{{- fail (printf "ERROR: bifrost.relays[].name '%s' is used by more than one relay. Names must be unique; startup reconciliation identifies relays by name." .name) }}
+{{- end }}
+{{- $seenRelayNames = append $seenRelayNames .name }}
+{{- end }}
+{{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
@@ -1476,6 +1491,18 @@ false
 {{- /* Map connectionString for SSE connections */ -}}
 {{- if and (eq $client.connectionType "sse") $client.connectionString }}
 {{- $_ := set $cc "connection_string" $client.connectionString }}
+{{- end }}
+{{- /* Map openapiConfig -> openapi_config (connection_type "openapi" synthesizes an in-process MCP server from the document) */ -}}
+{{- if and (eq $client.connectionType "openapi") $client.openapiConfig }}
+{{- $oa := dict }}
+{{- with $client.openapiConfig.spec }}{{- $_ := set $oa "spec" . }}{{- end }}
+{{- with $client.openapiConfig.specFile }}{{- $_ := set $oa "spec_file" . }}{{- end }}
+{{- with $client.openapiConfig.specUrl }}{{- $_ := set $oa "spec_url" . }}{{- end }}
+{{- with $client.openapiConfig.baseUrl }}{{- $_ := set $oa "base_url" . }}{{- end }}
+{{- with $client.openapiConfig.securityCredentials }}{{- $_ := set $oa "security_credentials" . }}{{- end }}
+{{- if hasKey $client.openapiConfig "includeDeprecated" }}{{- $_ := set $oa "include_deprecated" $client.openapiConfig.includeDeprecated }}{{- end }}
+{{- if hasKey $client.openapiConfig "maxResponseBytes" }}{{- $_ := set $oa "max_response_bytes" $client.openapiConfig.maxResponseBytes }}{{- end }}
+{{- $_ := set $cc "openapi_config" $oa }}
 {{- end }}
 {{- /* Map stdioConfig -> stdio_config */ -}}
 {{- if $client.stdioConfig }}
@@ -2857,7 +2884,7 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $client.connectionType }}
-{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http" $idx $client.name) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http, sse, openapi" $idx $client.name) }}
 {{- end }}
 {{- if eq $client.connectionType "stdio" }}
 {{- if not $client.stdioConfig }}
@@ -2882,6 +2909,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not $client.httpConfig.url }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig.url is required for client '%s'." $idx $client.name) }}
 {{- end }}
+{{- end }}
+{{- if eq $client.connectionType "openapi" }}
+{{- if not $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig is required when connectionType is 'openapi' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not (or $client.openapiConfig.spec $client.openapiConfig.specFile $client.openapiConfig.specUrl) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig needs one of spec, specFile or specUrl for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- $oaAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- if not (has $oaAuth (list "none" "headers" "per_user_headers")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers or per_user_headers; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
+{{- end }}
+{{- else if $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
 {{- end }}
 {{- end }}
 {{- end }}

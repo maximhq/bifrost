@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Info, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
 	detectSpecLanguage,
 	formatBytes,
@@ -45,6 +45,8 @@ export interface OpenAPISpecSourceProps {
 	compact?: boolean;
 	/** Which sources to offer; a surface without a server-side fetch leaves out "url". */
 	modes?: OpenAPISourceMode[];
+	/** What happens to a fetched document on this surface, under the URL field; defaults to the MCP wording. */
+	urlHint?: ReactNode;
 }
 
 const ALL_SOURCE_MODES: OpenAPISourceMode[] = ["paste", "url", "upload"];
@@ -77,6 +79,7 @@ export function OpenAPISpecSource({
 	disabled,
 	compact,
 	modes = ALL_SOURCE_MODES,
+	urlHint,
 }: OpenAPISpecSourceProps) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
@@ -147,6 +150,21 @@ export function OpenAPISpecSource({
 		return () => clearTimeout(timer);
 	}, [shouldAutoParse, sourceKey]);
 
+	// A URL is fetched from the button beside it; the other sources keep their retry button below.
+	const parseButton = (
+		<Button
+			type="button"
+			size="sm"
+			className={mode === "url" ? "h-9 shrink-0" : undefined}
+			onClick={onParse}
+			disabled={disabled || isParsing || sourceEmpty || !!uploadTooLarge}
+			isLoading={isParsing}
+			data-testid="openapi-parse-btn"
+		>
+			{controls.buttonLabel}
+		</Button>
+	);
+
 	return (
 		<div className="space-y-3" data-testid="openapi-spec-source">
 			<Tabs value={mode} onValueChange={(value) => handleModeChange(value as OpenAPISourceMode)}>
@@ -158,7 +176,7 @@ export function OpenAPISpecSource({
 					))}
 				</TabsList>
 
-				<TabsContent value="paste" className="space-y-2">
+				<TabsContent value="paste" className="mt-2 space-y-2">
 					<div className={specError ? "border-destructive rounded-sm border" : "rounded-sm border"} data-testid="openapi-spec-paste-editor">
 						<CodeEditor
 							className="z-0 w-full"
@@ -177,23 +195,29 @@ export function OpenAPISpecSource({
 					</p>
 				</TabsContent>
 
-				<TabsContent value="url" className="space-y-2">
-					<Label htmlFor="openapi-spec-url">Spec URL</Label>
-					<Input
-						id="openapi-spec-url"
-						data-testid="openapi-spec-url-input"
-						placeholder="https://api.example.com/openapi.json"
-						value={specUrl}
-						disabled={disabled}
-						onChange={(e) => onSpecUrlChange(e.target.value)}
-						aria-invalid={!!specUrlError}
-					/>
+				<TabsContent value="url" className="mt-2 space-y-2">
+					<div className="flex items-center gap-3">
+						<Label htmlFor="openapi-spec-url" className="shrink-0">
+							Spec URL
+						</Label>
+						<Input
+							id="openapi-spec-url"
+							className="min-w-0 flex-1"
+							data-testid="openapi-spec-url-input"
+							placeholder="https://api.example.com/openapi.json"
+							value={specUrl}
+							disabled={disabled}
+							onChange={(e) => onSpecUrlChange(e.target.value)}
+							aria-invalid={!!specUrlError}
+						/>
+						{controls.showButton && parseButton}
+					</div>
 					<p className="text-muted-foreground text-xs">
-						Bifrost fetches the document once and stores it with the server; the URL is kept as its source.
+						{urlHint ?? "Bifrost fetches the document once and stores it with the server; the URL is kept as its source."}
 					</p>
 				</TabsContent>
 
-				<TabsContent value="upload" className="space-y-2">
+				<TabsContent value="upload" className="mt-2 space-y-2">
 					<div className="flex flex-wrap items-center gap-3">
 						<Button
 							type="button"
@@ -269,18 +293,7 @@ export function OpenAPISpecSource({
 						</p>
 					)}
 				</div>
-				{controls.showButton && (
-					<Button
-						type="button"
-						size="sm"
-						onClick={onParse}
-						disabled={disabled || isParsing || sourceEmpty || !!uploadTooLarge}
-						isLoading={isParsing}
-						data-testid="openapi-parse-btn"
-					>
-						{controls.buttonLabel}
-					</Button>
-				)}
+				{controls.showButton && mode !== "url" && parseButton}
 			</div>
 		</div>
 	);

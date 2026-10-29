@@ -662,6 +662,17 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1024p?: number;
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
+	output_cost_per_video_token?: number;
+	// Azure Voice Live
+	input_cost_per_token_voice_live?: number;
+	output_cost_per_token_voice_live?: number;
+	cache_read_input_token_cost_voice_live?: number;
+	input_cost_per_audio_token_voice_live?: number;
+	output_cost_per_audio_token_voice_live?: number;
+	input_cost_per_standard_speech_audio_token_voice_live?: number;
+	output_cost_per_standard_speech_audio_token_voice_live?: number;
+	input_cost_per_custom_speech_audio_token_voice_live?: number;
+	output_cost_per_custom_speech_audio_token_voice_live?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

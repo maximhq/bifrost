@@ -2304,10 +2304,12 @@ func TestSanitizeAnthropicToolUseIDPtr(t *testing.T) {
 
 // finalizerTestTracer is a minimal schemas.Tracer that models only the
 // deferred-span lifecycle: a span stays parked until ClearDeferredSpan runs.
-// It records the status passed to EndSpan so tests can assert span outcomes.
+// It records the status passed to EndSpan so tests can assert span outcomes,
+// and reports chunks as the parked span's counted chunks.
 type finalizerTestTracer struct {
 	schemas.NoOpTracer
 	parked    bool
+	chunks    int
 	endStatus schemas.SpanStatus
 }
 
@@ -2318,100 +2320,107 @@ func (t *finalizerTestTracer) GetDeferredSpanHandle(_ string) schemas.SpanHandle
 	return nil
 }
 
+func (t *finalizerTestTracer) GetAccumulatedChunks(_ string) (*schemas.BifrostResponse, int64, int) {
+	return nil, 0, t.chunks
+}
+
 func (t *finalizerTestTracer) ClearDeferredSpan(_ string) { t.parked = false }
 
 func (t *finalizerTestTracer) EndSpan(_ schemas.SpanHandle, status schemas.SpanStatus, _ string) {
 	t.endStatus = status
 }
 
+func newFinalizerTestContext(tracer *finalizerTestTracer) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	return ctx
+}
+
 // A streaming goroutine that exits without reaching the final-chunk path (a
 // failed final send with a live context, or a mid-stream death) must not leak
-// its deferred span. EnsureStreamFinalizerCalled runs on every goroutine exit
-// and clears it.
-func TestEnsureStreamFinalizerCalled_ClearsOrphanedDeferredSpan(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
+// its deferred span. CloseStream runs on every goroutine exit and clears it.
+func TestCloseStream_ClearsOrphanedDeferredSpan(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
-
-	if tracer.GetDeferredSpanHandle("trace-1") == nil {
-		t.Fatal("expected a parked deferred span before the finalizer runs")
-	}
-
-	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 
 	if tracer.GetDeferredSpanHandle("trace-1") != nil {
-		t.Error("deferred span should be cleared when the streaming goroutine exits")
+		t.Error("deferred span should be cleared when the streaming goroutine closes its stream")
 	}
 }
 
-// The clear must survive a nil finalizer (finalizer is optional; the span
-// cleanup is not).
-func TestEnsureStreamFinalizerCalled_ClearsDeferredSpanWithNilFinalizer(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
-
-	EnsureStreamFinalizerCalled(ctx, nil)
-
-	if tracer.GetDeferredSpanHandle("trace-1") != nil {
-		t.Error("deferred span should be cleared even when no finalizer is registered")
-	}
-}
-
-// When the terminal path already cleared the span (the common case), the
-// safety-net completion is a no-op (handle == nil early return) but the
-// finalizer must still run exactly once.
-func TestEnsureStreamFinalizerCalled_NoParkedSpan_StillRunsFinalizerOnce(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: false}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+// After the close the trace's deferred span may already be the next attempt's,
+// so the finalizer safety net must leave spans alone and only run the finalizer.
+func TestEnsureStreamFinalizerCalled_LeavesDeferredSpanAlone(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 
 	calls := 0
 	EnsureStreamFinalizerCalled(ctx, func(context.Context) { calls++ })
 
+	if tracer.GetDeferredSpanHandle("trace-1") == nil || tracer.endStatus != "" {
+		t.Error("EnsureStreamFinalizerCalled must not complete a deferred span")
+	}
 	if calls != 1 {
-		t.Errorf("finalizer should run exactly once on the no-op path, ran %d times", calls)
+		t.Errorf("finalizer should run exactly once, ran %d times", calls)
 	}
 }
 
 // A stream that exits with its span parked and no terminal chunk
 // (StreamEndIndicator unset) died mid-flight and must be marked failed — not OK.
-func TestEnsureStreamFinalizerCalled_IncompleteStreamMarkedError(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+func TestCloseStream_IncompleteStreamMarkedError(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 	// StreamEndIndicator deliberately unset: the stream never reached its end.
 
-	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 
 	if tracer.endStatus != schemas.SpanStatusError {
 		t.Errorf("incomplete stream should end as %q, got %q", schemas.SpanStatusError, tracer.endStatus)
 	}
 }
 
+// An unended stream that produced no chunk is the retry loop's empty stream: its
+// span is left for the retry loop to end, without a fabricated error.
+func TestCloseStream_LeavesChunklessStreamToRetryLoop(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+	ctx := newFinalizerTestContext(tracer)
+
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
+
+	if tracer.GetDeferredSpanHandle("trace-1") == nil || tracer.endStatus != "" {
+		t.Errorf("a chunkless stream's span must stay for the retry loop, got status %q", tracer.endStatus)
+	}
+}
+
 // A stream that reached its terminal chunk (StreamEndIndicator set) but was left
 // parked — e.g. the final send failed — succeeded at the LLM level and must keep
 // its OK status, never a fabricated error.
-func TestEnsureStreamFinalizerCalled_CompletedStreamKeepsOkStatus(t *testing.T) {
-	tracer := &finalizerTestTracer{parked: true}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+func TestCloseStream_CompletedStreamKeepsOkStatus(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true, chunks: 1}
+	ctx := newFinalizerTestContext(tracer)
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 
-	EnsureStreamFinalizerCalled(ctx, func(context.Context) {})
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 
 	if tracer.endStatus != schemas.SpanStatusOk {
 		t.Errorf("completed-but-undelivered stream should end as %q, got %q", schemas.SpanStatusOk, tracer.endStatus)
+	}
+}
+
+// When the terminal path already cleared the span (the common case), the
+// finalizer must still run exactly once.
+func TestEnsureStreamFinalizerCalled_NoParkedSpan_StillRunsFinalizerOnce(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: false}
+	ctx := newFinalizerTestContext(tracer)
+
+	calls := 0
+	EnsureStreamFinalizerCalled(ctx, func(context.Context) { calls++ })
+
+	if calls != 1 {
+		t.Errorf("finalizer should run exactly once on the no-op path, ran %d times", calls)
 	}
 }
 
@@ -4209,13 +4218,13 @@ func TestCompleteDeferredSpan_LeavesSpanOpenWhileStreamTurnPending(t *testing.T)
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, true)
 
-	EnsureStreamFinalizerCalled(ctx, nil)
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 	if tracer.GetDeferredSpanHandle("trace-1") == nil {
 		t.Fatal("the span must stay parked while another turn is pending")
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, false)
-	EnsureStreamFinalizerCalled(ctx, nil)
+	CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
 	if tracer.GetDeferredSpanHandle("trace-1") != nil {
 		t.Error("the span completes once no turn is pending")
 	}
@@ -4347,5 +4356,20 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 		if _, ok := AsBifrostBadRequestError(err); !ok {
 			t.Errorf("%s: err = %v, want a 400 invalid-request error", name, err)
 		}
+	}
+}
+
+// BenchmarkStreamGoroutineExit measures the CloseStream + EnsureStreamFinalizerCalled
+// pair every provider goroutine runs on exit, for a stream whose terminal path already
+// completed its span (the common case).
+func BenchmarkStreamGoroutineExit(b *testing.B) {
+	ctx := newFinalizerTestContext(&finalizerTestTracer{})
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	finalizer := func(context.Context) {}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		CloseStream(ctx, make(chan *schemas.BifrostStreamChunk))
+		EnsureStreamFinalizerCalled(ctx, finalizer)
 	}
 }

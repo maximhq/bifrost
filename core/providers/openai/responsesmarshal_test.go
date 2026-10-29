@@ -1393,6 +1393,43 @@ func TestToOpenAIResponsesRequest_ClearsAnthropicToolSearchName(t *testing.T) {
 	}
 }
 
+// An Anthropic tool_result carrying an image becomes a function_call_output whose
+// output holds an input_image. It must leave with detail "auto" like a top-level
+// image does, or vLLM-backed Responses upstreams reject the request.
+func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{
+		"model": "openai/gpt-4o",
+		"max_tokens": 64,
+		"tools": [{"name": "read_file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+		"messages": [
+			{"role": "user", "content": "Read /tmp/img.png and describe it."},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "/tmp/img.png"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+			]}]}
+		]
+	}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-4o"
+
+	data, err := sonic.Marshal(ToOpenAIResponsesRequest(ctx, bifrostReq))
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	output := gjson.GetBytes(data, `input.#(type=="function_call_output").output`)
+	if !output.IsArray() || len(output.Array()) != 1 {
+		t.Fatalf("want a one-block function_call_output.output, got %s", data)
+	}
+	image := output.Array()[0]
+	if image.Get("type").String() != "input_image" || image.Get("detail").String() != "auto" {
+		t.Fatalf("tool_result image must leave as input_image with detail auto, got %s", image.Raw)
+	}
+}
+
 // The #8361 request through Anthropic ingress: a client tool_search function, a
 // deferred tool, and a search turn whose tool_result is a tool_reference. On
 // gpt-6-sol it previously went out with defer_loading and no tool_search (a 400).

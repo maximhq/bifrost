@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,7 @@ func (h *RelaysHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	r.GET("/api/relays", lib.ChainMiddlewares(h.list, middlewares...))
 	r.POST("/api/relays", lib.ChainMiddlewares(h.create, middlewares...))
 	r.POST("/api/relays/usage-preview", lib.ChainMiddlewares(h.preview, middlewares...))
+	r.POST("/api/relays/openapi-spec", lib.ChainMiddlewares(h.fetchOpenAPISpec, middlewares...))
 	r.GET("/api/relays/{name}", lib.ChainMiddlewares(h.get, middlewares...))
 	r.PUT("/api/relays/{name}", lib.ChainMiddlewares(h.update, middlewares...))
 	r.DELETE("/api/relays/{name}", lib.ChainMiddlewares(h.delete, middlewares...))
@@ -301,6 +303,40 @@ func (h *RelaysHandler) preview(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, out)
+}
+
+// relayOpenAPISpecRequest names the OpenAPI document to fetch for a route import.
+type relayOpenAPISpecRequest struct {
+	SpecURL string `json:"spec_url"`
+}
+
+// relayOpenAPISpecResponse is the fetched document and the URL it was read from after redirects.
+type relayOpenAPISpecResponse struct {
+	Spec    string `json:"spec"`
+	SpecURL string `json:"spec_url"`
+}
+
+// fetchOpenAPISpec handles POST /api/relays/openapi-spec. The route import reads the document in
+// the browser, which cannot fetch most spec URLs itself (CORS), so the gateway fetches it with the
+// same timeout, size cap and private-network guard as the MCP OpenAPI preview and returns the text
+// unparsed. Nothing is stored.
+func (h *RelaysHandler) fetchOpenAPISpec(ctx *fasthttp.RequestCtx) {
+	var req relayOpenAPISpecRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	specURL := strings.TrimSpace(req.SpecURL)
+	if parsed, err := url.Parse(specURL); specURL == "" || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "spec_url must be an absolute http(s) URL")
+		return
+	}
+	data, finalURL, status, err := fetchOpenAPISpecForCaller(ctx, specURL)
+	if err != nil {
+		SendError(ctx, status, err.Error())
+		return
+	}
+	SendJSON(ctx, relayOpenAPISpecResponse{Spec: string(data), SpecURL: finalURL})
 }
 
 // --- Relay Logs ---

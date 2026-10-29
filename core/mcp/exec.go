@@ -134,9 +134,13 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, fmt.Errorf("tool call missing function name")
 	}
 
-	// Code-mode tools have no upstream client — skip client lookup.
+	// Code-mode tools have no upstream client — skip client lookup. A narrowed request is refused
+	// them unless it can reach a code-mode client, the rule that lists them.
 	codeMode := m.toolsManager.GetCodeMode()
 	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
+		if requestNarrowed(ctx) && !m.codeModeClientReachable(ctx) {
+			return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (no code mode client available to this request)", toolName)
+		}
 		return nil, nil, func() {}, nil
 	}
 
@@ -176,6 +180,23 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, err
 	}
 	return state, conn, release, nil
+}
+
+// requestNarrowed reports whether the request carries an include list (virtual key, slug or
+// include headers). An unnarrowed request may use every tool, code mode included.
+func requestNarrowed(ctx *schemas.BifrostContext) bool {
+	return ctx.Value(schemas.MCPContextKeyIncludeClients) != nil || ctx.Value(schemas.MCPContextKeyIncludeTools) != nil
+}
+
+// codeModeClientReachable reports whether the request can see a code-mode client, the rule
+// GetAvailableTools uses to list the code-mode tools.
+func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
+	for clientName := range m.GetToolPerClient(ctx) {
+		if client := m.GetClientByName(clientName); client != nil && client.ExecutionConfig.IsCodeModeClient {
+			return true
+		}
+	}
+	return false
 }
 
 // checkToolExecutionPermitted enforces the same filters that GetToolPerClient applies

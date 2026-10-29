@@ -151,7 +151,7 @@ export class RelaysPage extends BasePage {
     await this.waitForSheetAnimation();
   }
 
-  /** Fills the open route sheet. Header matchers are appended after the existing rows. */
+  /** Fills the open route sheet. Header matchers go into the table's trailing empty row, after the existing rows. */
   async fillRoute(route: RouteInput): Promise<void> {
     if (route.method) {
       await fillSelect(this.page, '[data-testid="relay-route-method"]', route.method);
@@ -159,10 +159,9 @@ export class RelaysPage extends BasePage {
     }
     await this.page.getByTestId("relay-route-path").fill(route.path);
     for (const header of route.headers ?? []) {
-      const existing = await this.page.locator('[data-testid^="relay-route-header-name-"]').count();
-      await this.page.getByTestId("relay-route-add-header").click();
-      await this.page.getByTestId(`relay-route-header-name-${existing}`).fill(header.name);
-      await this.page.getByTestId(`relay-route-header-value-${existing}`).fill(header.value);
+      const trailing = (await this.page.locator('[data-testid^="relay-route-header-name-"]').count()) - 1;
+      await this.page.getByTestId(`relay-route-header-name-${trailing}`).fill(header.name);
+      await this.page.getByTestId(`relay-route-header-value-${trailing}`).fill(header.value);
     }
   }
 

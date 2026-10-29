@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Relay } from "@/lib/types/relays";
+import type { Relay, RelayRouteConfig } from "@/lib/types/relays";
 import { relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
 import {
 	cleanJob,
 	cleanUsage,
+	compareRoutes,
 	describePricing,
 	emptyNetworkForm,
 	emptyRelayForm,
@@ -30,14 +31,119 @@ const stored: Relay = {
 describe("relay form", () => {
 	it("round-trips an endpoint, keeping route overrides and the redacted secret", () => {
 		const back = toRelayConfig(toRelayForm(stored));
+		const route = (path: string) => back.routes?.find((r) => r.path === path);
 		expect(back.credential?.value?.value).toBe("tvly-*******6789");
 		expect(back.extra_headers?.["X-Tenant"].value).toBe("acme");
-		expect(back.routes?.[1].usage).toEqual({ cost_per_request: 0, cost_per_unit: 0.016 });
-		expect(back.routes?.[2].billable).toBe(true);
-		expect(back.routes?.[2].headers).toEqual({ "X-Kind": "poll" });
-		expect(back.routes?.[0].billable).toBeUndefined();
-		expect(back.routes?.[2].enabled).toBe(false);
-		expect(back.routes?.[0].enabled).toBeUndefined();
+		expect(route("/extract")?.usage).toEqual({ cost_per_request: 0, cost_per_unit: 0.016 });
+		expect(route("/jobs/*")?.billable).toBe(true);
+		expect(route("/jobs/*")?.headers).toEqual({ "X-Kind": "poll" });
+		expect(route("/search")?.billable).toBeUndefined();
+		expect(route("/jobs/*")?.enabled).toBe(false);
+		expect(route("/search")?.enabled).toBeUndefined();
+	});
+
+	it("drops the hidden price of a route that is not billed, keeping its model and token mapping", () => {
+		const routes: RelayRouteConfig[] = [
+			{ method: "GET", path: "/status", usage: { cost_per_request: 0.5 } },
+			{
+				method: "POST",
+				path: "/free",
+				billable: false,
+				usage: { cost_per_unit: 0.01, units_path: "u", model_path: "model", model_source: "query", total_tokens_path: "usage.total" },
+			},
+			{ method: "POST", path: "/search", usage: { cost_per_request: 0.02 } },
+		];
+		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
+		const route = (path: string) => back.routes?.find((r) => r.path === path);
+		expect(route("/status")?.usage).toBeUndefined();
+		// The gateway reads the model and tokens on every call, billed or not; only pricing is dropped.
+		expect(route("/free")?.usage).toEqual({ model_path: "model", model_source: "query", total_tokens_path: "usage.total" });
+		expect(route("/search")?.usage).toEqual({ cost_per_request: 0.02 });
+	});
+
+	it("saves routes in match order: literals A to Z, then globs, then catch-alls", () => {
+		const routes: RelayRouteConfig[] = [
+			{ method: "POST", path: "/**" },
+			{ method: "GET", path: "/models/*" },
+			{ method: "POST", path: "/search" },
+			{ method: "POST", path: "/" },
+			{ method: "GET", path: "/models/*:predict" },
+			{ method: "GET", path: "/*/*" },
+			{ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.AnalyzeDocument" } },
+			{ method: "GET", path: "/files/**" },
+			{ method: "GET", path: "/files/latest" },
+			{ method: "DELETE", path: "/batches" },
+		];
+		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
+		expect(back.routes?.map((r) => `${r.method} ${r.path}${r.headers ? " +h" : ""}`)).toEqual([
+			"POST / +h",
+			"POST /",
+			"DELETE /batches",
+			"GET /files/latest",
+			"POST /search",
+			"GET /models/*:predict",
+			"GET /models/*",
+			"GET /*/*",
+			"GET /files/**",
+			"POST /**",
+		]);
+	});
+
+	it("puts an exact header matcher before a glob on the same path, which would otherwise take its calls", () => {
+		const target = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Amz-Target": value } });
+		const routes = [target("*"), target("Textract.Analyze*"), target("Textract.AnalyzeDocument"), target("Textract.AnalyzeExpense")];
+		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
+		expect(back.routes?.map((r) => r.headers?.["X-Amz-Target"])).toEqual([
+			"Textract.AnalyzeDocument",
+			"Textract.AnalyzeExpense",
+			"Textract.Analyze*",
+			"*",
+		]);
+	});
+
+	it("never lets a broader header matcher precede one it covers on the same path", () => {
+		const pairs: [string, string][] = [
+			["poll", "*"],
+			["Textract.Analyze*", "*"],
+			["a*b*", "a*"],
+			["foo*", "*foo*"],
+			["v?", "v*"],
+			["?", "*"],
+			["v[12]", "v[0-9]"],
+			["v[0-9]", "v?"],
+		];
+		const route = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Kind": value } });
+		for (const [narrow, broad] of pairs) {
+			expect(compareRoutes(route(narrow), route(broad)), `${narrow} before ${broad}`).toBeLessThan(0);
+			expect(compareRoutes(route(broad), route(narrow)), `${narrow} before ${broad}`).toBeGreaterThan(0);
+		}
+	});
+
+	it("never lets a broader route precede one it covers", () => {
+		// Each pair is [narrower, broader]: every request the first matches, the second matches too.
+		const pairs: [string, string][] = [
+			["/files/latest", "/files/*"],
+			["/models/*:predict", "/models/*"],
+			["/a/*", "/*/*"],
+			["/*/*", "/**"],
+			["/a/*/*", "/a/**"],
+			["/a/b/**", "/a/**"],
+			["/x/a*b*", "/x/a*"],
+			["/x/foo*", "/x/*foo*"],
+			["/files/?", "/files/*"],
+			["/x/?", "/x/*"],
+			["/files/[m]", "/files/[a-z]"],
+			["/files/[a-z]", "/files/?"],
+			["/files/[^m]", "/files/*"],
+			// An escaped wildcard is a literal character, so this route is narrower than a real *.
+			["/files/a\\*", "/files/a*"],
+		];
+		for (const [narrow, broad] of pairs) {
+			expect(compareRoutes({ method: "GET", path: narrow }, { method: "GET", path: broad }), `${narrow} before ${broad}`).toBeLessThan(0);
+			expect(compareRoutes({ method: "GET", path: broad }, { method: "GET", path: narrow }), `${narrow} before ${broad}`).toBeGreaterThan(
+				0,
+			);
+		}
 	});
 
 	it("keeps settings the form does not edit, and tells an explicit direct proxy from inheriting", () => {
@@ -200,5 +306,13 @@ describe("usage form defaults", () => {
 		const back = toRelayConfig(form);
 		expect(back.network).toEqual({ timeout_seconds: 30 });
 		expect(back.auth).toEqual({ type: "header", header_name: "X-Key" });
+	});
+
+	it("treats a cleared (null) field as unset when merging and saving", () => {
+		expect(mergeUsage({ cost_per_request: 0.01, units_path: "u" }, { cost_per_request: null, units_path: "" })).toEqual({
+			cost_per_request: 0.01,
+			units_path: "u",
+		});
+		expect(cleanUsage({ ...emptyUsageForm(), cost_per_unit: null, cost_per_request: 0 }, true)).toEqual({ cost_per_request: 0 });
 	});
 });
