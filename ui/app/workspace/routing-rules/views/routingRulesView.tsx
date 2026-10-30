@@ -19,6 +19,7 @@ import { RoutingRuleSheet } from "./routingRuleSheet";
 import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
 import { RoutingRulesTable } from "./routingRulesTable";
 import { useTranslation } from "react-i18next";
+import { useActionParam } from "@/hooks/useActionParam";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
@@ -75,6 +76,7 @@ export function RoutingRulesView() {
 		setEditingRule(null);
 		setDialogOpen(true);
 	};
+	useActionParam("create", handleCreateNew, { isOpen: dialogOpen, enabled: canCreate });
 
 	const handleEdit = (rule: RoutingRule) => {
 		setEditingRule(rule);
