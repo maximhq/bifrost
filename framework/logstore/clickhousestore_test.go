@@ -594,13 +594,50 @@ func TestClickHouseIDLookupsPruneParts(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
+// TestClickHouseScopedFindByIDSeesNewestVersion pins that the id lookup's skip
+// indexes cannot hide a row's newest version from FINAL. Once an update moves a
+// log out of the caller's scope, the user_id bloom filter would prune the part
+// holding the new version and FINAL would return the old, in-scope one.
+func TestClickHouseScopedFindByIDSeesNewestVersion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	require.True(t, store.idLookupSkipIndexes)
+	assert.Contains(t, store.idLookupIgnoredIndexes, "`idx_logs_user_id`")
+	assert.NotContains(t, store.idLookupIgnoredIndexes, "`idx_logs_id`")
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	before, after := "ch-scope-before", "ch-scope-after"
+	rows := make([]*Log, 0, 64)
+	for j := range 63 {
+		rows = append(rows, chTestLog(fmt.Sprintf("ch-scope-filler-%d", j), ts.Add(-time.Duration(j+1)*time.Second)))
+	}
+	moved := chTestLog("ch-scope-moved", ts)
+	moved.UserID = &before
+	rows = append(rows, moved)
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, rows))
+	require.NoError(t, store.Update(ctx, "ch-scope-moved", map[string]interface{}{"user_id": after}))
+
+	scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", before)
+	})
+	_, err := store.FindByID(scoped, "ch-scope-moved")
+	assert.ErrorIs(t, err, ErrNotFound, "unhinted lookup must not return the out-of-scope row's old version")
+	_, err = store.FindByID(context.WithValue(scoped, LogTimestampContextKey, ts), "ch-scope-moved")
+	assert.ErrorIs(t, err, ErrNotFound, "hinted lookup must not return the out-of-scope row's old version")
+
+	found, err := store.FindByID(ctx, "ch-scope-moved")
+	require.NoError(t, err)
+	require.NotNil(t, found.UserID)
+	assert.Equal(t, after, *found.UserID)
+}
+
 // BenchmarkChIDLookupContext measures what each ClickHouse id read (FindByID
 // and every update's read-modify-write) pays to carry its query setting.
 func BenchmarkChIDLookupContext(b *testing.B) {
 	ctx := context.Background()
+	store := &ClickHouseLogStore{idLookupSkipIndexes: true, idLookupIgnoredIndexes: "`idx_logs_provider`,`idx_logs_user_id`"}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = chIDLookupContext(ctx)
+		_ = store.idLookupContext(ctx)
 	}
 }
 
