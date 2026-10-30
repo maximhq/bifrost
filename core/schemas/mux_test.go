@@ -131,6 +131,36 @@ func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_KeepsReasoningThatClosesTheTurn(t *testing.T) {
+	text := "closing thought"
+	signature := "sig_last"
+
+	chatMessages := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		{Role: Ptr(ResponsesInputMessageRoleAssistant), Content: &ResponsesMessageContent{ContentStr: Ptr("Hello!")}},
+		{
+			Type: Ptr(ResponsesMessageTypeReasoning),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &text, Signature: &signature},
+				},
+			},
+		},
+	})
+
+	if len(chatMessages) != 2 {
+		t.Fatalf("expected user + assistant, got %d messages", len(chatMessages))
+	}
+	assistant := chatMessages[1].ChatAssistantMessage
+	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != text {
+		t.Fatalf("trailing reasoning was dropped: %#v", assistant)
+	}
+	if len(assistant.ReasoningDetails) != 1 || assistant.ReasoningDetails[0].Signature == nil || *assistant.ReasoningDetails[0].Signature != signature {
+		t.Fatalf("trailing reasoning signature not kept: %#v", assistant.ReasoningDetails)
+	}
+}
+
 func TestToChatMessages_AttachesReasoningToToolCallAssistantMessage(t *testing.T) {
 	reasoningText := "I need to call the search tool."
 

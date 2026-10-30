@@ -734,3 +734,22 @@ func TestInterleavedThinkingOutputToChatMessagesAttachesRunsInOrder(t *testing.T
 		t.Fatalf("signatures per assistant message = %v, want %v", sigs, want)
 	}
 }
+
+// A thinking run can close the turn. The Responses->Chat fallback has no later assistant
+// message to attach it to, so it must stay on the last one rather than disappear.
+func TestInterleavedThinkingOutputToChatMessagesKeepsClosingRun(t *testing.T) {
+	str := func(s string) *string { return &s }
+	resp := &AnthropicMessageResponse{ID: "msg_1", Type: "message", Role: "assistant", Model: "claude-opus-5-5", Content: []AnthropicContentBlock{
+		{Type: AnthropicContentBlockTypeText, Text: str("x0")},
+		{Type: AnthropicContentBlockTypeThinking, Thinking: str("closing"), Signature: str("sig-last")},
+	}}
+	chat := schemas.ToChatMessages(resp.ToBifrostResponsesResponse(&schemas.BifrostContext{}).Output)
+
+	if len(chat) == 0 || chat[len(chat)-1].ChatAssistantMessage == nil {
+		t.Fatalf("expected a trailing assistant message, got %+v", chat)
+	}
+	details := chat[len(chat)-1].ChatAssistantMessage.ReasoningDetails
+	if len(details) != 1 || details[0].Signature == nil || *details[0].Signature != "sig-last" {
+		t.Fatalf("closing thinking run was dropped: %+v", details)
+	}
+}
