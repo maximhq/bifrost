@@ -320,6 +320,27 @@ export function shouldDrainQueue(
 	return wasStreaming && !isStreaming && queued > 0;
 }
 
+export interface WarpHandoffGate {
+	isConfigLoading: boolean;
+	isConfigFetching: boolean;
+	isConfigError: boolean;
+	isConfigured: boolean;
+	isBusy: boolean; // the render's view: an answer in flight, a stored load, or queued follow-ups
+	isStreamingNow: boolean; // the session's live state, which a replayed effect sees before the render does
+}
+
+/** The handed-over question to send now, or null. Calls `take` only once the panel can act on what it removes. */
+export function nextWarpHandoff(gate: WarpHandoffGate, take: () => string | null): string | null {
+	// Only a finished, successful fetch: a failed one keeps the question for a retry, and a cached
+	// config may name a model the opening refetch is about to drop.
+	const isConfigSettled = !gate.isConfigLoading && !gate.isConfigFetching && !gate.isConfigError;
+	if (!isConfigSettled || gate.isBusy || gate.isStreamingNow) return null;
+	if (gate.isConfigured) return take();
+	// Not set up: the panel shows how to set it up, and every question is dropped rather than sent after setup.
+	while (take() !== null);
+	return null;
+}
+
 export const WARP_FINISH_QUESTION = "question";
 
 export function isWarpQuestionFinish(finishReason: string | undefined): boolean {
