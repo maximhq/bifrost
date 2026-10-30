@@ -242,9 +242,7 @@ describe("analyzeTranslationCalls", () => {
 	});
 
 	it("keeps namespace-like nested keys in the hook namespace", () => {
-		const [entry] = analyzeTranslationCalls(
-			makeSourceFile(`const { t } = useTranslation("mcp"); t("common.configCopied");`),
-		);
+		const [entry] = analyzeTranslationCalls(makeSourceFile(`const { t } = useTranslation("mcp"); t("common.configCopied");`));
 		expect(validateCall(entry, { mcp: { common: { configCopied: "Configuration copied" } }, common: {} })).toEqual([]);
 	});
 
@@ -762,11 +760,7 @@ describe("removed call evidence", () => {
 		writeRepoFile(repoRoot, file, `export const Old = () => <button>{i18n.t("save")}</button>;\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
-		writeRepoFile(
-			repoRoot,
-			file,
-			`export const New = () => null;\nexport const Retained = () => <button>{i18n.t("save")}</button>;\n`,
-		);
+		writeRepoFile(repoRoot, file, `export const New = () => null;\nexport const Retained = () => <button>{i18n.t("save")}</button>;\n`);
 		const upstreamSha = commitAll(repoRoot, "move control");
 		const currentEntries = inventoryAtRef(repoRoot, null, file);
 		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, upstreamSha, "--", file));
@@ -817,11 +811,7 @@ describe("removed call evidence", () => {
 
 	it("rejects upstream evidence that only removes a matching comment", () => {
 		const repoRoot = makeGitRepo();
-		writeRepoFile(
-			repoRoot,
-			file,
-			`export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n// Save\n`,
-		);
+		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n// Save\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
 		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);
@@ -933,6 +923,28 @@ describe("removed call evidence", () => {
 			...fixture,
 			currentResources: resources,
 			baselineResources: resources,
+			removedCalls: [
+				{
+					source: sourceIdentity(fixture.baselineEntries[0]),
+					reason: "upstream-removed",
+					upstream: { sha: fixture.upstreamSha, file, diffHeader },
+				},
+			],
+		});
+		expect(findings.map((finding) => finding.type)).toEqual(["hardcoded-english-reversion"]);
+	});
+
+	it("rejects hardcoded English reversion of a nested key after valid upstream evidence", () => {
+		const mergeBaseText = "export const Old = () => null;\n";
+		const prText = `import { useTranslation } from "react-i18next";\nexport const Old = () => { const { t } = useTranslation("mcp"); return <button data-testid="copy-button">{t("common.configCopied")}</button>; };\n`;
+		const currentText = `export const Current = () => <button data-testid="copy-button">Configuration copied</button>;\n`;
+		const fixture = prOnlyRemovalFixture({ mergeBaseText, prText, upstreamText: "export const Old = () => null;\n// dev\n", currentText });
+		const diffHeader = firstDiffHeader(git(fixture.repoRoot, "diff", fixture.baseline, fixture.upstreamSha, "--", file));
+		const nestedResources = { mcp: { common: { configCopied: "Configuration copied" } } };
+		const findings = auditRemovedCalls({
+			...fixture,
+			currentResources: nestedResources,
+			baselineResources: nestedResources,
 			removedCalls: [
 				{
 					source: sourceIdentity(fixture.baselineEntries[0]),

@@ -956,10 +956,7 @@ function upstreamCopy(entry, baselineResources) {
 	if (typeof entry.key !== "string") {
 		return null;
 	}
-	const prefix = new RegExp(`^(${NAMESPACES.join("|")})\\.`).exec(entry.key);
-	const namespace = prefix?.[1] ?? entry.namespace;
-	const key = prefix ? entry.key.slice(prefix[0].length) : entry.key;
-	const value = resourceSubtree(baselineResources?.en?.[namespace] ?? baselineResources?.[namespace], key);
+	const value = resourceSubtree(baselineResources?.en?.[entry.namespace] ?? baselineResources?.[entry.namespace], entry.key);
 	return typeof value === "string" && value.length > 0 ? value : null;
 }
 
