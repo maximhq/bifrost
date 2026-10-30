@@ -3,10 +3,10 @@ set -euo pipefail
 
 # Installs the tools the arm-64-2cpu-8gb runner image no longer ships.
 #
-# Since late 2026-10 that label boots a bare "Base Image for Ubuntu Server 22.04"
+# Since late 2026-10 that label boots a bare Ubuntu 24.04 (noble) base image
 # instead of GitHub's ubuntu-24.04-arm runner image, so Docker (with buildx and
-# compose), jq, gh, a C toolchain, and libatomic (which the official linux-arm64
-# Node binary links against) are all missing. Each component is skipped when it
+# compose), jq, gh, pip/awscli, a C toolchain, and libatomic (which the official
+# linux-arm64 Node binary links against) are all missing. Each component is skipped when it
 # is already present, so on a full runner image this is a no-op.
 #
 # Runs after harden-runner like every other step. apt-sources-https.sh moves the
@@ -21,14 +21,17 @@ set -euo pipefail
 #   docker  Docker CE, containerd, buildx and compose plugins
 #   build   make, gcc, g++ and libc headers for native CGO builds
 #   jq, gh  the tools of the same name
+#   aws     AWS CLI v1 (pinned) in a venv put on GITHUB_PATH; noble's PEP 668
+#           blocks a system pip install. Needs pypi.org + files.pythonhosted.org.
 
 DOCKER_KEY_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+AWSCLI_VERSION="1.46.2"
 OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
 # ${BASH_SOURCE%/*}, not dirname: the installer test runs with a minimal PATH.
 APT_SOURCES_HTTPS="${BASH_SOURCE%/*}/apt-sources-https.sh"
 
 if [[ $# -eq 0 ]]; then
-  echo "Usage: $0 <node|docker|build|jq|gh>..." >&2
+  echo "Usage: $0 <node|docker|build|jq|gh|aws>..." >&2
   exit 1
 fi
 
@@ -46,12 +49,14 @@ apt_update() {
 
 packages=()
 want_docker=0
+want_aws=0
 for component in "$@"; do
   case "$component" in
     # grep without -q: an early exit would SIGPIPE ldconfig and fail the pipeline.
     node) ldconfig -p | grep 'libatomic\.so\.1' >/dev/null || packages+=(libatomic1) ;;
     build) { has make && has gcc && has g++; } || packages+=(make gcc g++ libc6-dev) ;;
     jq | gh) has "$component" || packages+=("$component") ;;
+    aws) has aws || { want_aws=1; packages+=(python3-venv); } ;;
     docker)
       if ! { has docker && docker buildx version >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }; then
         want_docker=1
@@ -68,6 +73,14 @@ if [[ ${#packages[@]} -gt 0 ]]; then
   echo "Installing from Ubuntu: ${packages[*]}"
   apt_update
   sudo apt-get install -y --no-install-recommends "${packages[@]}"
+fi
+
+if [[ $want_aws -eq 1 ]]; then
+  venv="${RUNNER_TEMP:?}/awscli-venv"
+  python3 -m venv "$venv"
+  "$venv/bin/pip" install --no-cache-dir "awscli==${AWSCLI_VERSION}"
+  # pip rides along on PATH too, so configure-r2.sh's own `pip install awscli` is a no-op.
+  echo "$venv/bin" >> "${GITHUB_PATH:?}"
 fi
 
 if [[ $want_docker -eq 1 ]]; then

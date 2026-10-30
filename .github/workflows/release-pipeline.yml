@@ -3492,7 +3492,7 @@ jobs:
       # The arm-64-2cpu-8gb image ships without Docker, libatomic (needed by the
       # linux-arm64 Node binary) or build tools; see the script for details.
       - name: Install arm64 runner dependencies
-        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh node build
+        run: bash ./.github/workflows/scripts/install-arm64-runner-deps.sh node build aws
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0

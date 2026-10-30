@@ -38,7 +38,7 @@ import {
 	useGetVirtualMCPsQuery,
 	useLazyGetMCPClientOpenAPISpecQuery,
 	usePreviewOpenAPISpecMutation,
-	useUpdateMCPClientMutation
+	useUpdateMCPClientMutation,
 } from "@/lib/store";
 import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
 import {
@@ -57,6 +57,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
+import { Trans, useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
 import { MCPToolIconImage } from "./mcpToolIcon";
 import { MCPExposeList, type MCPExposeItem } from "./mcpExposeList";
@@ -77,7 +79,7 @@ import {
 	summarizeSpecSource,
 	supportedToolNames,
 	type OpenAPICredentialField,
-	type OpenAPISourceMode
+	type OpenAPISourceMode,
 } from "./mcpClientOpenApiUtils";
 import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { ConnectionFailureBlock } from "./mcpConnectionFailure";
@@ -111,29 +113,40 @@ function stateDescription(mcpClient: MCPClient, isPerUserAuth: boolean): string 
 	switch (mcpClient.state) {
 		case "pending_verification":
 			return mcpClient.config.auth_type === "token_exchange"
-				? "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call."
+				? i18n.t("registry.sheet.statePendingTokenExchange", { ns: "mcp" })
 				: mcpClient.config.auth_type === "per_user_oauth"
-					? "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server."
-					: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used.";
+					? i18n.t("registry.sheet.statePendingPerUserOauth", { ns: "mcp" })
+					: i18n.t("registry.sheet.statePendingOauth", { ns: "mcp" });
 		case "needs_reauth": {
 			// Each auth type names the repair action the actions menu actually
 			// offers for it, matching the credential block below.
-			const base =
+			const action =
 				mcpClient.config.auth_type === "token_exchange"
-					? "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. Callers' tool calls are unaffected. Use Re-verify as me from the server's actions menu to fix it."
+					? i18n.t("registry.actions.reverifyAsMe", { ns: "mcp" })
 					: isPerUserAuth
-						? "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use Refresh admin credential from the server's actions menu to fix it."
-						: "This connection's credentials need to be re-authorized. Use Reauthorize from the server's actions menu to redo the OAuth consent flow.";
-			return failure ? `${base} Reason: ${failure.message}` : base;
+						? i18n.t("registry.actions.refreshAdminCredential", { ns: "mcp" })
+						: i18n.t("registry.actions.reauthorize", { ns: "mcp" });
+			const key =
+				mcpClient.config.auth_type === "token_exchange"
+					? "registry.sheet.stateNeedsReauthTokenExchange"
+					: isPerUserAuth
+						? "registry.sheet.stateNeedsReauthPerUser"
+						: "registry.sheet.stateNeedsReauthShared";
+			const base = i18n.t(key, { ns: "mcp", action });
+			return failure ? `${base}${i18n.t("registry.sheet.reasonPrefix", { ns: "mcp", message: failure.message })}` : base;
 		}
 		case "unstable":
 			return failure
-				? `Bifrost's last connection check failed ${formatDurationSince(failure.at)} ago while ${failureStageLabel(failure.stage).toLowerCase()}. Tool calls are still attempted normally; the next check runs within about 10 seconds.`
-				: "Bifrost's last connection check failed. Tool calls are still attempted normally; the next check runs within about 10 seconds.";
+				? i18n.t("registry.sheet.stateUnstableTimed", {
+						ns: "mcp",
+						time: formatDurationSince(failure.at),
+						stage: failureStageLabel(failure.stage).toLowerCase(),
+					})
+				: i18n.t("registry.sheet.stateUnstable", { ns: "mcp" });
 		case "degraded":
-			return "Instances of this deployment disagree about this server's state. Tool calls are still attempted on every instance.";
+			return i18n.t("registry.sheet.stateDegraded", { ns: "mcp" });
 		default:
-			return "MCP server configuration and available tools";
+			return i18n.t("registry.sheet.stateDefault", { ns: "mcp" });
 	}
 }
 
@@ -189,6 +202,8 @@ export default function MCPClientSheet({
 	hasPrev = false,
 	hasNext = false,
 }: MCPClientSheetProps) {
+	const { t } = useTranslation("mcp");
+	const { t: tc } = useTranslation("common");
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const isPerUserAuth =
 		mcpClient.config.auth_type === "per_user_oauth" ||
@@ -219,7 +234,7 @@ export default function MCPClientSheet({
 	const globalMaxInstructionsLength = bifrostConfig?.client_config?.mcp_max_instructions_per_client || 4096;
 	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
 	const baseUrl = getExternalBaseUrl(bifrostConfig?.client_config);
-	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: "Endpoint copied" });
+	const { copy: copyEndpoint, copied: endpointCopied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
@@ -310,10 +325,10 @@ export default function MCPClientSheet({
 
 	const toolOptions = useMemo(
 		() => [
-			{ value: "*", label: "Allow All Tools", description: "Allow all current and future tools" },
+			{ value: "*", label: t("registry.sheet.allowAllTools"), description: t("registry.sheet.allowAllToolsDesc") },
 			...allToolNames.map((n) => ({ value: n, label: n })),
 		],
-		[allToolNames],
+		[allToolNames, t],
 	);
 	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 	const supportsTokenExchangeCredentialUpdate = mcpClient.config.auth_type === "token_exchange";
@@ -552,13 +567,13 @@ export default function MCPClientSheet({
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-					client_id: mcpClient.config.oauth_client_id,
-					client_secret: mcpClient.config.oauth_client_secret,
-					authorize_url: mcpClient.config.oauth_authorize_url,
-					token_url: mcpClient.config.oauth_token_url,
-					registration_url: mcpClient.config.oauth_registration_url,
-					resource: mcpClient.config.oauth_resource,
-				}
+						client_id: mcpClient.config.oauth_client_id,
+						client_secret: mcpClient.config.oauth_client_secret,
+						authorize_url: mcpClient.config.oauth_authorize_url,
+						token_url: mcpClient.config.oauth_token_url,
+						registration_url: mcpClient.config.oauth_registration_url,
+						resource: mcpClient.config.oauth_resource,
+					}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -576,9 +591,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		},
 	});
@@ -630,13 +645,13 @@ export default function MCPClientSheet({
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-					client_id: mcpClient.config.oauth_client_id,
-					client_secret: mcpClient.config.oauth_client_secret,
-					authorize_url: mcpClient.config.oauth_authorize_url,
-					token_url: mcpClient.config.oauth_token_url,
-					registration_url: mcpClient.config.oauth_registration_url,
-					resource: mcpClient.config.oauth_resource,
-				}
+						client_id: mcpClient.config.oauth_client_id,
+						client_secret: mcpClient.config.oauth_client_secret,
+						authorize_url: mcpClient.config.oauth_authorize_url,
+						token_url: mcpClient.config.oauth_token_url,
+						registration_url: mcpClient.config.oauth_registration_url,
+						resource: mcpClient.config.oauth_resource,
+					}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -654,9 +669,9 @@ export default function MCPClientSheet({
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
@@ -740,8 +755,8 @@ export default function MCPClientSheet({
 		try {
 			if (mcpClient.config.auth_type === "per_user_headers" && (!data.per_user_header_keys || data.per_user_header_keys.length === 0)) {
 				toast({
-					title: "Header keys required",
-					description: "Declare at least one header name users must supply.",
+					title: t("registry.form.headerKeysRequiredTitle"),
+					description: t("registry.form.headerKeysRequiredDesc"),
 					variant: "destructive",
 				});
 				return;
@@ -763,11 +778,8 @@ export default function MCPClientSheet({
 			if (replacingSpec) {
 				if (!replacePreviewCurrent) {
 					toast({
-						title: "The replacement document is not parsed yet",
-						description:
-							replaceSourceMode === "url"
-								? "Fetch the spec URL so its operations can be reviewed before it replaces the current one."
-								: "Wait for the document to parse, or fix its errors, so its operations can be reviewed before it replaces the current one.",
+						title: t("registry.sheet.replaceNotParsedTitle"),
+						description: replaceSourceMode === "url" ? t("registry.sheet.replaceNotParsedUrl") : t("registry.sheet.replaceNotParsedText"),
 						variant: "destructive",
 					});
 					return;
@@ -779,8 +791,8 @@ export default function MCPClientSheet({
 				});
 				if (hold === "pending") {
 					toast({
-						title: "Still reading the current document",
-						description: "Try again in a moment, so auto-execute settings and tool prices carry over to the replacement.",
+						title: t("registry.sheet.replaceReadingTitle"),
+						description: t("registry.sheet.replaceReadingDesc"),
 						variant: "destructive",
 					});
 					return;
@@ -788,9 +800,8 @@ export default function MCPClientSheet({
 				if (hold === "baseline-failed") {
 					replaceBaselineFailureAcknowledged.current = true;
 					toast({
-						title: "Auto-execute settings and tool prices will not carry over",
-						description:
-							"The current document could not be read to match them to the new operations. Save again to replace it anyway; set them again on the Tools tab afterwards.",
+						title: t("registry.sheet.replaceBaselineFailedTitle"),
+						description: t("registry.sheet.replaceBaselineFailedDesc"),
 						variant: "destructive",
 					});
 					return;
@@ -798,8 +809,8 @@ export default function MCPClientSheet({
 				const supported = supportedToolNames(replacePreview);
 				if (!replaceSelection.some((name) => supported.includes(name))) {
 					toast({
-						title: "Select at least one operation",
-						description: "Tick the operations this server should expose as tools.",
+						title: t("registry.sheet.selectOperationTitle"),
+						description: t("registry.sheet.selectOperationDesc"),
 						variant: "destructive",
 					});
 					return;
@@ -850,9 +861,9 @@ export default function MCPClientSheet({
 				? undefined
 				: oauthScopesRaw.trim()
 					? oauthScopesRaw
-						.split(",")
-						.map((s) => s.trim())
-						.filter(Boolean)
+							.split(",")
+							.map((s) => s.trim())
+							.filter(Boolean)
 					: [];
 			// Only rotate when the user actually changed a field, and never
 			// alongside a disable (the backend rejects that combination
@@ -869,9 +880,9 @@ export default function MCPClientSheet({
 			const shouldUpdateTokenExchange = supportsTokenExchangeCredentialUpdate && tokenExchangeCredentialsDirty;
 			const tokenExchangeScopes = tokenExchangeScopesRaw.trim()
 				? tokenExchangeScopesRaw
-					.split(",")
-					.map((s) => s.trim())
-					.filter(Boolean)
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean)
 				: [];
 			await updateMCPClient({
 				id: mcpClient.config.client_id,
@@ -903,14 +914,14 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-							client_id: oauthClientID,
-							client_secret: oauthClientSecret,
-							authorize_url: data.oauth_config?.authorize_url || undefined,
-							token_url: data.oauth_config?.token_url || undefined,
-							registration_url: data.oauth_config?.registration_url || undefined,
-							scopes: oauthScopes,
-							resource: data.oauth_config?.resource || undefined,
-						}
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+								authorize_url: data.oauth_config?.authorize_url || undefined,
+								token_url: data.oauth_config?.token_url || undefined,
+								registration_url: data.oauth_config?.registration_url || undefined,
+								scopes: oauthScopes,
+								resource: data.oauth_config?.resource || undefined,
+							}
 						: undefined,
 					token_exchange: shouldUpdateTokenExchange
 						? {
@@ -928,9 +939,9 @@ export default function MCPClientSheet({
 					tls_config:
 						data.tls_config !== undefined
 							? {
-								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-								ca_cert_pem: data.tls_config.ca_cert_pem,
-							}
+									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+									ca_cert_pem: data.tls_config.ca_cert_pem,
+								}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 					openapi_config: openapiReplacePayload,
@@ -939,13 +950,13 @@ export default function MCPClientSheet({
 			if (replacingSpec) resetReplaceSpec();
 
 			toast({
-				title: "Success",
-				description: "MCP client updated successfully",
+				title: t("common.success"),
+				description: t("registry.sheet.updated"),
 			});
 			onSubmitSuccess();
 		} catch (error) {
 			toast({
-				title: "Error",
+				title: tc("error"),
 				description: getErrorMessage(error),
 				variant: "destructive",
 			});
@@ -1086,19 +1097,19 @@ export default function MCPClientSheet({
 									<div className="bg-card sticky top-0 z-10 pb-4">
 										<TabsList>
 											<TabsTrigger value="general" data-testid="mcpclient-tab-general">
-												General
+												{t("registry.sheet.tabGeneral")}
 											</TabsTrigger>
 											<TabsTrigger value="authentication" data-testid="mcpclient-tab-authentication">
-												Authentication
+												{t("registry.sheet.tabAuthentication")}
 											</TabsTrigger>
 											<TabsTrigger value="tools" data-testid="mcpclient-tab-tools">
-												Tools
+												{t("registry.sheet.tabTools")}
 											</TabsTrigger>
 											<TabsTrigger value="resources" data-testid="mcpclient-tab-resources">
-												Prompts & Resources
+												{t("registry.sheet.promptsResources")}
 											</TabsTrigger>
 											<TabsTrigger value="access" data-testid="mcpclient-tab-access">
-												Access
+												{t("registry.sheet.tabAccess")}
 											</TabsTrigger>
 										</TabsList>
 									</div>
@@ -1107,39 +1118,37 @@ export default function MCPClientSheet({
 										{hasStateReason(mcpClient) && (
 											<div className="space-y-4">
 												<SectionHeader
-													title={mcpClient.node_states ? "Connection checks across instances" : "Last connection check"}
+													title={
+														mcpClient.node_states ? t("registry.sheet.checksAcrossInstances") : t("registry.sheet.lastConnectionCheck")
+													}
 													description={stateReasonTitle(mcpClient.state, !!mcpClient.node_states)}
 												/>
 												<ConnectionFailureBlock client={mcpClient} />
 											</div>
 										)}
 										<div className="space-y-4">
-											<SectionHeader title="Basic Information" description="Identify this server and review its connection details." />
+											<SectionHeader title={t("registry.sheet.basicInformation")} description={t("registry.sheet.basicInformationDesc")} />
 											<FormField
 												control={form.control}
 												name="name"
 												render={({ field }) => (
 													<FormItem className="flex flex-col gap-3">
 														<div className="flex items-center gap-2">
-															<FormLabel>Name</FormLabel>
+															<FormLabel>{t("common.name")}</FormLabel>
 															<TooltipProvider>
 																<Tooltip>
 																	<TooltipTrigger asChild>
 																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																	</TooltipTrigger>
 																	<TooltipContent className="max-w-xs">
-																		<p>
-																			Use a descriptive, meaningful name that clearly identifies the server. For example, use "google_drive"
-																			instead of "gdrive", or "hacker_news" instead of "hn". This name is used as the Python module name in
-																			code mode.
-																		</p>
+																		<p>{t("registry.sheet.nameTooltip")}</p>
 																	</TooltipContent>
 																</Tooltip>
 															</TooltipProvider>
 														</div>
 														<div>
 															<FormControl>
-																<Input placeholder="Client name" {...field} value={field.value || ""} />
+																<Input placeholder={t("registry.sheet.clientNamePlaceholder")} {...field} value={field.value || ""} />
 															</FormControl>
 															<FormMessage />
 														</div>
@@ -1152,10 +1161,15 @@ export default function MCPClientSheet({
 											<div className="flex flex-col gap-2">
 												{/* An OpenAPI server is generated, not connected to: its summary
 												    names the source and the API it calls, not a transport. */}
-												<div className="text-sm font-medium">{isOpenAPIClient ? "Server source" : "Connection"}</div>
-												<div className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm" data-testid="mcp-client-sheet-connection-summary">
+												<div className="text-sm font-medium">
+													{isOpenAPIClient ? t("registry.sheet.serverSource") : t("registry.sheet.connection")}
+												</div>
+												<div
+													className="bg-muted/40 text-muted-foreground rounded-md border px-3 py-2 text-sm"
+													data-testid="mcp-client-sheet-connection-summary"
+												>
 													{isOpenAPIClient ? (
-														<span className="text-foreground text-xs">Generated from an OpenAPI spec</span>
+														<span className="text-foreground text-xs">{t("registry.sheet.generatedFromOpenApi")}</span>
 													) : (
 														<span className="text-foreground font-mono text-xs uppercase">
 															{mcpClient.config.connection_type === "stdio"
@@ -1166,13 +1180,13 @@ export default function MCPClientSheet({
 														</span>
 													)}
 													<span className="mx-2">·</span>
-													{isOpenAPIClient && <span className="mr-1">calls</span>}
+													{isOpenAPIClient && <span className="mr-1">{t("registry.sheet.openApiCalls")}</span>}
 													<span className="font-mono break-all">
 														{mcpClient.config.connection_type === "stdio"
 															? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-															"-"
+																"-"
 															: mcpClient.config.connection_type === "openapi"
-																? mcpClient.config.openapi_config?.base_url || "base URL from the document's servers"
+																? mcpClient.config.openapi_config?.base_url || t("registry.sheet.baseUrlFromDocument")
 																: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
 																	? mcpClient.config.connection_string.ref
 																	: mcpClient.config.connection_string?.value || "-"}
@@ -1182,7 +1196,7 @@ export default function MCPClientSheet({
 											{isOpenAPIClient && (
 												<div className="space-y-3" data-testid="mcp-client-sheet-openapi-section">
 													<div className="flex items-start justify-between gap-3">
-														<div className="text-sm font-medium">OpenAPI document</div>
+														<div className="text-sm font-medium">{t("registry.sheet.openApiDocument")}</div>
 														{!replaceSpecOpen && (
 															<Button
 																type="button"
@@ -1192,7 +1206,7 @@ export default function MCPClientSheet({
 																onClick={() => void openReplaceSpec()}
 																data-testid="openapi-replace-spec-btn"
 															>
-																Replace spec
+																{t("registry.sheet.replaceSpec")}
 															</Button>
 														)}
 													</div>
@@ -1204,10 +1218,7 @@ export default function MCPClientSheet({
 													</div>
 													{replaceSpecOpen && (
 														<div className="space-y-4 rounded-md border p-3" data-testid="openapi-replace-spec-panel">
-															<p className="text-muted-foreground text-xs">
-																Paste or upload the new document, or fetch it from a URL. Operations that keep their name stay selected; the
-																server is rebuilt from the new document when you save.
-															</p>
+															<p className="text-muted-foreground text-xs">{t("registry.sheet.replaceSpecHelp")}</p>
 															<OpenAPISpecSource
 																compact
 																mode={replaceSourceMode}
@@ -1242,7 +1253,7 @@ export default function MCPClientSheet({
 															/>
 															{isLoadingStoredSpec && (
 																<p className="text-muted-foreground text-xs" data-testid="openapi-replace-spec-loading">
-																	Loading the stored document…
+																	{t("registry.sheet.loadingStoredSpec")}
 																</p>
 															)}
 															{replacePreview && (
@@ -1271,7 +1282,7 @@ export default function MCPClientSheet({
 																	onClick={resetReplaceSpec}
 																	data-testid="openapi-replace-cancel-btn"
 																>
-																	Cancel replace
+																	{t("registry.sheet.cancelReplace")}
 																</Button>
 															</div>
 														</div>
@@ -1280,14 +1291,14 @@ export default function MCPClientSheet({
 											)}
 											{mcpClient.config.endpoint_slug && (
 												<div className="flex flex-col gap-2">
-													<div className="text-sm font-medium">Endpoint</div>
+													<div className="text-sm font-medium">{t("registry.columns.endpoint")}</div>
 													<div className="bg-muted/40 text-muted-foreground flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
 														<span className="font-mono break-all">/mcp/{mcpClient.config.endpoint_slug}</span>
 														<button
 															type="button"
 															onClick={() => copyEndpoint(`${baseUrl}/mcp/${mcpClient.config.endpoint_slug}`)}
 															className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
-															aria-label="Copy endpoint URL"
+															aria-label={t("registry.sheet.copyEndpointAria")}
 															data-testid={`mcp-client-sheet-endpoint-copy-${mcpClient.config.endpoint_slug}`}
 														>
 															{endpointCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
@@ -1299,7 +1310,7 @@ export default function MCPClientSheet({
 												mcpClient.config.stdio_config?.envs &&
 												mcpClient.config.stdio_config.envs.length > 0 && (
 													<div className="space-y-2">
-														<div className="text-sm font-medium">Environment Variables</div>
+														<div className="text-sm font-medium">{t("registry.form.envVars")}</div>
 														<HeadersTable
 															value={Object.fromEntries(
 																mcpClient.config.stdio_config.envs.map((env) => {
@@ -1307,7 +1318,7 @@ export default function MCPClientSheet({
 																	return [name, valueParts.join("=")];
 																}),
 															)}
-															onChange={() => { }}
+															onChange={() => {}}
 															fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 															valuePlaceholder="—"
 															label=""
@@ -1320,10 +1331,7 @@ export default function MCPClientSheet({
 										<DottedSeparator />
 
 										<div className="space-y-4">
-											<SectionHeader
-												title="Server Behavior"
-												description="Control how this server participates in code mode and health checks."
-											/>
+											<SectionHeader title={t("registry.form.serverBehavior")} description={t("registry.form.serverBehaviorDesc")} />
 											<div className="divide-y rounded-md border">
 												<FormField
 													control={form.control}
@@ -1331,7 +1339,7 @@ export default function MCPClientSheet({
 													render={({ field }) => (
 														<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 															<div className="flex items-center gap-2">
-																<FormLabel>Code Mode Server</FormLabel>
+																<FormLabel>{t("registry.form.codeModeServer")}</FormLabel>
 																<TooltipProvider>
 																	<Tooltip>
 																		<TooltipTrigger asChild>
@@ -1341,13 +1349,13 @@ export default function MCPClientSheet({
 																				rel="noopener noreferrer"
 																				data-testid="code-mode-link-help"
 																				className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-																				aria-label="Learn more about Code Mode"
+																				aria-label={t("registry.form.learnCodeModeAria")}
 																			>
 																				<Info className="h-4 w-4 cursor-help" />
 																			</a>
 																		</TooltipTrigger>
 																		<TooltipContent>
-																			<p>Click to learn more about Code Mode</p>
+																			<p>{t("registry.form.learnCodeMode")}</p>
 																		</TooltipContent>
 																	</Tooltip>
 																</TooltipProvider>
@@ -1364,17 +1372,14 @@ export default function MCPClientSheet({
 													render={({ field }) => (
 														<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 															<div className="flex items-center gap-2">
-																<FormLabel>Ping Available for Health Check</FormLabel>
+																<FormLabel>{t("registry.form.pingAvailable")}</FormLabel>
 																<TooltipProvider>
 																	<Tooltip>
 																		<TooltipTrigger asChild>
 																			<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																		</TooltipTrigger>
 																		<TooltipContent className="max-w-xs">
-																			<p>
-																				Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support
-																				ping - will use listTools instead.
-																			</p>
+																			<p>{t("registry.form.pingAvailableHelp")}</p>
 																		</TooltipContent>
 																	</Tooltip>
 																</TooltipProvider>
@@ -1396,17 +1401,14 @@ export default function MCPClientSheet({
 																render={({ field }) => (
 																	<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 																		<div className="flex items-center gap-2">
-																			<FormLabel>Maintain Persistent Connection</FormLabel>
+																			<FormLabel>{t("registry.form.persistentConnection")}</FormLabel>
 																			<TooltipProvider>
 																				<Tooltip>
 																					<TooltipTrigger asChild>
 																						<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																					</TooltipTrigger>
 																					<TooltipContent className="max-w-xs">
-																						<p>
-																							Enable to keep one shared connection open and reused across every caller. Disable to connect
-																							fresh on every call instead.
-																						</p>
+																						<p>{t("registry.sheet.persistentConnectionHelp")}</p>
 																					</TooltipContent>
 																				</Tooltip>
 																			</TooltipProvider>
@@ -1430,10 +1432,9 @@ export default function MCPClientSheet({
 												<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
 													<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
 													<p>
-														Toggling this takes effect immediately on save:{" "}
-														{needsSessionStickiness
-															? "the shared connection will be opened now."
-															: "the existing shared connection will be closed now."}
+														{t("registry.sheet.stickinessImmediate", {
+															effect: needsSessionStickiness ? t("registry.sheet.stickinessOpen") : t("registry.sheet.stickinessClose"),
+														})}
 													</p>
 												</div>
 											)}
@@ -1442,10 +1443,7 @@ export default function MCPClientSheet({
 										<DottedSeparator />
 
 										<div className="space-y-4">
-											<SectionHeader
-												title="Sync & Timeouts"
-												description="Override the global tool sync interval, execution timeout and instruction limit for this server."
-											/>
+											<SectionHeader title={t("registry.sheet.syncTimeouts")} description={t("registry.sheet.syncTimeoutsDesc")} />
 											<div className="divide-y rounded-md border">
 												<FormField
 													control={form.control}
@@ -1457,7 +1455,7 @@ export default function MCPClientSheet({
 																<div className="flex flex-col items-start gap-0.5">
 																	<div className="flex items-start gap-2">
 																		<div>
-																			<FormLabel>Tool Sync Interval (minutes)</FormLabel>
+																			<FormLabel>{t("registry.sheet.toolSyncInterval")}</FormLabel>
 																		</div>
 																		<TooltipProvider>
 																			<Tooltip>
@@ -1465,14 +1463,14 @@ export default function MCPClientSheet({
 																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																				</TooltipTrigger>
 																				<TooltipContent className="max-w-xs">
-																					<p>
-																						Override the global tool sync interval for this server. Leave empty to use the global setting.
-																					</p>
+																					<p>{t("registry.sheet.toolSyncIntervalHelp")}</p>
 																				</TooltipContent>
 																			</Tooltip>
 																		</TooltipProvider>
 																	</div>
-																	<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+																	<div>
+																		{isUsingGlobal && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobal")}</p>}
+																	</div>
 																</div>
 																<FormControl>
 																	<Input
@@ -1499,22 +1497,19 @@ export default function MCPClientSheet({
 															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
 																<div className="flex flex-col items-start gap-0.5">
 																	<div className="flex items-start gap-2">
-																		<FormLabel>Max Protocol Version</FormLabel>
+																		<FormLabel>{t("registry.form.maxProtocolVersion")}</FormLabel>
 																		<TooltipProvider>
 																			<Tooltip>
 																				<TooltipTrigger asChild>
 																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																				</TooltipTrigger>
 																				<TooltipContent className="max-w-xs">
-																					<p>
-																						Newest MCP protocol version Bifrost offers this server. Changing it reconnects the server at the
-																						new version.
-																					</p>
+																					<p>{t("registry.sheet.maxProtocolVersionTooltip")}</p>
 																				</TooltipContent>
 																			</Tooltip>
 																		</TooltipProvider>
 																	</div>
-																	{field.value === "" && <p className="text-muted-foreground text-xs">Using global setting</p>}
+																	{field.value === "" && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobalSetting")}</p>}
 																</div>
 																<FormControl>
 																	<MaxProtocolVersionSelect value={field.value ?? ""} onChange={field.onChange} globalValue={globalMaxProtocolVersion} />
@@ -1533,7 +1528,7 @@ export default function MCPClientSheet({
 																<div className="flex flex-col items-start gap-0.5">
 																	<div className="flex items-start gap-2">
 																		<div>
-																			<FormLabel>Tool Execution Timeout (seconds)</FormLabel>
+																			<FormLabel>{t("registry.sheet.toolExecutionTimeout")}</FormLabel>
 																		</div>
 																		<TooltipProvider>
 																			<Tooltip>
@@ -1541,15 +1536,14 @@ export default function MCPClientSheet({
 																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																				</TooltipTrigger>
 																				<TooltipContent className="max-w-xs">
-																					<p>
-																						Override the global tool execution timeout for this server. Leave empty or set to 0 to use the
-																						global setting.
-																					</p>
+																					<p>{t("registry.sheet.toolExecutionTimeoutHelp")}</p>
 																				</TooltipContent>
 																			</Tooltip>
 																		</TooltipProvider>
 																	</div>
-																	<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+																	<div>
+																		{isUsingGlobal && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobal")}</p>}
+																	</div>
 																</div>
 																<FormControl>
 																	<Input
@@ -1585,7 +1579,7 @@ export default function MCPClientSheet({
 																<div className="flex flex-col items-start gap-0.5">
 																	<div className="flex items-start gap-2">
 																		<div>
-																			<FormLabel>Max Instruction Length (bytes)</FormLabel>
+																			<FormLabel>{t("registry.sheet.maxInstructionLength")}</FormLabel>
 																		</div>
 																		<TooltipProvider>
 																			<Tooltip>
@@ -1593,15 +1587,14 @@ export default function MCPClientSheet({
 																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																				</TooltipTrigger>
 																				<TooltipContent className="max-w-xs">
-																					<p>
-																						Cap on the instructions forwarded from this server. Leave empty or set to 0 to use the global
-																						setting. The combined total across all servers is still bounded by the global total.
-																					</p>
+																					<p>{t("registry.sheet.maxInstructionLengthTooltip")}</p>
 																				</TooltipContent>
 																			</Tooltip>
 																		</TooltipProvider>
 																	</div>
-																	<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+																	<div>
+																		{isUsingGlobal && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobal")}</p>}
+																	</div>
 																</div>
 																<FormControl>
 																	<Input
@@ -1636,17 +1629,14 @@ export default function MCPClientSheet({
 											render={({ field }) => (
 												<FormItem className="border-destructive/30 bg-destructive/5 flex flex-row items-center justify-between gap-4 rounded-md border p-4">
 													<div className="flex items-center gap-2">
-														<FormLabel>Disable Client</FormLabel>
+														<FormLabel>{t("registry.sheet.disableClient")}</FormLabel>
 														<TooltipProvider>
 															<Tooltip>
 																<TooltipTrigger asChild>
 																	<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs">
-																	<p>
-																		When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this
-																		client will not be available for inference until it is re-enabled.
-																	</p>
+																	<p>{t("registry.sheet.disableClientHelp")}</p>
 																</TooltipContent>
 															</Tooltip>
 														</TooltipProvider>
@@ -1668,8 +1658,8 @@ export default function MCPClientSheet({
 									<TabsContent value="authentication" className="space-y-6 pb-10">
 										<div className="space-y-4">
 											<SectionHeader
-												title="Headers"
-												description="Static headers and header-based access rules sent with every request to this server."
+												title={t("registry.filter.headers")}
+												description={t("registry.sheet.headersEditDesc")}
 												testId="headers-heading"
 											/>
 											<FormField
@@ -1681,8 +1671,8 @@ export default function MCPClientSheet({
 															<HeadersTable
 																value={field.value || {}}
 																onChange={field.onChange}
-																keyPlaceholder="Header name"
-																valuePlaceholder="Header value"
+																keyPlaceholder={t("registry.form.headerName")}
+																valuePlaceholder={t("registry.form.headerValue")}
 																label=""
 																useSecretVarInput
 															/>
@@ -1698,10 +1688,10 @@ export default function MCPClientSheet({
 												<DottedSeparator />
 												<div className="space-y-4">
 													<SectionHeader
-														title="Required Headers"
-														description="Comma-separated header names each caller must supply on first use, e.g. X-API-Key, X-Tenant-ID. Values are submitted per user, not stored on this server config."
+														title={t("registry.form.requiredHeaders")}
+														description={t("registry.form.requiredHeadersDesc")}
 														testId="required-headers-heading"
-														tooltip="Changing this list marks existing per-user header submissions as needing an update, so callers resubmit values on next use."
+														tooltip={t("registry.sheet.requiredHeadersTooltip")}
 													/>
 													<div className="rounded-md border p-4">
 														<FormField
@@ -1714,7 +1704,7 @@ export default function MCPClientSheet({
 																			id="mcpclient-per-user-header-keys"
 																			data-testid="mcpclient-per-user-header-keys-textarea"
 																			className="h-24"
-																			placeholder="X-API-Key, X-Tenant-ID"
+																			placeholder={t("registry.form.headerKeysPlaceholder")}
 																			name={field.name}
 																			ref={field.ref}
 																			value={perUserHeaderKeysRaw}
@@ -1748,8 +1738,8 @@ export default function MCPClientSheet({
 										<DottedSeparator />
 										<div className="space-y-4">
 											<SectionHeader
-												title="Allowed Extra Headers"
-												description="Comma-separated dynamic request header names, or * to allow all. Leave empty to block all extra headers."
+												title={t("registry.sheet.allowedExtraHeaders")}
+												description={t("registry.sheet.allowedExtraHeadersDesc")}
 											/>
 											<FormField
 												control={form.control}
@@ -1759,7 +1749,7 @@ export default function MCPClientSheet({
 														<FormControl>
 															<Input
 																data-testid="mcpclient-input-allowed-extra-headers"
-																placeholder="*, or: authorization, x-user-id"
+																placeholder={t("registry.sheet.extraHeadersPlaceholder")}
 																name={field.name}
 																ref={field.ref}
 																value={allowedExtraHeadersRaw}
@@ -1769,9 +1759,9 @@ export default function MCPClientSheet({
 																onBlur={() => {
 																	const parsed = allowedExtraHeadersRaw.trim()
 																		? allowedExtraHeadersRaw
-																			.split(",")
-																			.map((h) => h.trim())
-																			.filter(Boolean)
+																				.split(",")
+																				.map((h) => h.trim())
+																				.filter(Boolean)
 																		: [];
 																	field.onChange(parsed);
 																	field.onBlur();
@@ -1811,8 +1801,8 @@ export default function MCPClientSheet({
 															<DottedSeparator />
 															<div className="space-y-4">
 																<SectionHeader
-																	title="TLS / Certificate"
-																	description="Configure certificate verification for HTTPS connections to this server."
+																	title={t("registry.form.tlsCertificate")}
+																	description={t("registry.form.tlsCertificateDesc")}
 																	testId="tls-config-heading"
 																/>
 																<div className="space-y-4 rounded-md border p-4">
@@ -1827,8 +1817,8 @@ export default function MCPClientSheet({
 															<DottedSeparator />
 															<div className="space-y-4">
 																<SectionHeader
-																	title="OAuth Configuration"
-																	description="Credentials and endpoints this server uses to authenticate via OAuth."
+																	title={t("registry.form.oauthConfig")}
+																	description={t("registry.form.oauthConfigDesc")}
 																	testId="oauth-advanced-heading"
 																/>
 																<div className="space-y-4 rounded-md border p-4">
@@ -1839,41 +1829,36 @@ export default function MCPClientSheet({
 																			isDisabled ? (
 																				<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
 																					<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-																					<p>
-																						OAuth config cannot be rotated while the client is disabled. Re-enable the client to update it.
-																					</p>
+																					<p>{t("registry.sheet.oauthDisabledRotate")}</p>
 																				</div>
 																			) : (
 																				oauthCredentialsDirty && (
 																					<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
 																						<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-																						<p>
-																							Changing any OAuth config field immediately signs out every current session on this MCP
-																							client, shared and per-user alike. Everyone will need to re-authenticate.
-																						</p>
+																						<p>{t("registry.sheet.oauthRotateWarning")}</p>
 																					</div>
 																				)
 																			)
 																		}
 																		scopesRaw={oauthScopesRaw}
 																		onScopesRawChange={setOauthScopesRaw}
-																		scopesLabel="Scopes"
+																		scopesLabel={t("sessions.scopes")}
 																		scopesTestId="mcpclient-input-oauth-scopes"
 																		resource={{ mode: "field" }}
-																		resourceLabel="Resource"
+																		resourceLabel={t("registry.form.resource")}
 																		resourceTestId="mcpclient-input-oauth-resource"
-																		clientIdLabel="Client ID"
-																		clientIdPlaceholder="Enter new OAuth client ID"
-																		clientIdHelperText={!isDisabled ? "Leave empty to keep existing credentials unchanged." : undefined}
+																		clientIdLabel={t("registry.sheet.clientId")}
+																		clientIdPlaceholder={t("registry.sheet.enterNewOauthClientId")}
+																		clientIdHelperText={!isDisabled ? t("registry.sheet.keepExistingCredentials") : undefined}
 																		clientIdTestId="mcpclient-input-oauth-client-id"
-																		clientSecretLabel="Client Secret"
-																		clientSecretPlaceholder="Enter new OAuth client secret"
+																		clientSecretLabel={t("registry.sheet.clientSecret")}
+																		clientSecretPlaceholder={t("registry.sheet.enterNewOauthClientSecret")}
 																		clientSecretTestId="mcpclient-input-oauth-client-secret"
-																		authorizeUrlLabel="Authorization URL"
+																		authorizeUrlLabel={t("registry.sheet.authorizationUrl")}
 																		authorizeUrlTestId="mcpclient-input-oauth-authorize-url"
-																		tokenUrlLabel="Token URL"
+																		tokenUrlLabel={t("registry.sheet.tokenUrl")}
 																		tokenUrlTestId="mcpclient-input-oauth-token-url"
-																		registrationUrlLabel="Registration URL"
+																		registrationUrlLabel={t("registry.sheet.registrationUrl")}
 																		registrationUrlTestId="mcpclient-input-oauth-registration-url"
 																	/>
 																</div>
@@ -1886,8 +1871,8 @@ export default function MCPClientSheet({
 															<DottedSeparator />
 															<div className="space-y-4">
 																<SectionHeader
-																	title="Token Exchange Configuration"
-																	description="Credentials and scopes used to exchange caller identity tokens for access to this server."
+																	title={t("registry.form.tokenExchangeConfig")}
+																	description={t("registry.form.tokenExchangeConfigDesc")}
 																	testId="token-exchange-advanced-heading"
 																/>
 																<div className="space-y-4 rounded-md border p-4">
@@ -1898,49 +1883,41 @@ export default function MCPClientSheet({
 																			tokenExchangeCredentialsDirty && (
 																				<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
 																					<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-																					<p>
-																						Changing any token exchange field immediately evicts every cached exchanged token for this
-																						server. The next tool call for each caller re-exchanges a fresh token.
-																					</p>
+																					<p>{t("registry.sheet.tokenExchangeEvictWarning")}</p>
 																				</div>
 																			)
 																		}
-																		audienceLabel="Audience"
+																		audienceLabel={t("registry.form.audience")}
 																		audienceTooltip={
-																			isEntraIdp
-																				? "The resource app's Application (client) ID at your identity provider - a bare GUID, not the api://... Application ID URI shown under Expose an API. Exchanged tokens are scoped to it."
-																				: "The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+																			isEntraIdp ? t("registry.form.audienceTooltipEntra") : t("registry.form.audienceTooltip")
 																		}
 																		audienceTestId="mcpclient-input-token-exchange-audience"
-																		useIdPCredentialsLabel={idpConfigured ? "Exchange application" : undefined}
-																		useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
-																		useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
-																		useIdPCredentialsRequiredWarning={
-																			isEntraIdp &&
-																			"Your identity provider is Microsoft Entra ID - a dedicated application might not be available, switch to Identity provider application."
-																		}
+																		useIdPCredentialsLabel={idpConfigured ? t("registry.form.exchangeApplication") : undefined}
+																		useIdPCredentialsDedicatedDescription={t("registry.form.dedicatedAppDesc")}
+																		useIdPCredentialsIdPDescription={t("registry.form.idpAppDesc")}
+																		useIdPCredentialsRequiredWarning={isEntraIdp && t("registry.sheet.entraDedicatedWarningEdit")}
 																		useIdPCredentialsTestId="mcpclient-input-token-exchange-use-idp-credentials"
-																		clientIdLabel="Exchange Client ID"
-																		clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
+																		clientIdLabel={t("registry.form.exchangeClientId")}
+																		clientIdPlaceholder={t("registry.form.exchangeClientIdPlaceholder")}
 																		clientIdTestId="mcpclient-input-token-exchange-client-id"
 																		clientIdRedactNonEnvValue={false}
-																		clientSecretLabel="Exchange Client Secret"
+																		clientSecretLabel={t("registry.sheet.exchangeClientSecret")}
 																		clientSecretPlaceholder="env.EXCHANGE_CLIENT_SECRET"
-																		clientSecretHelperText="Omit for public clients."
+																		clientSecretHelperText={t("registry.form.omitPublicClients")}
 																		clientSecretTestId="mcpclient-input-token-exchange-client-secret"
 																		clientSecretMaskNonEnvValue={true}
 																		clientSecretRedactNonEnvValue={false}
-																		authServerUrlLabel="Authorization Server URL"
-																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer. Enter an issuer, or a full token endpoint ending in /token to use it as is."
+																		authServerUrlLabel={t("registry.sheet.authServerUrl")}
+																		authServerUrlHelperText={t("registry.sheet.authServerUrlBlankSso")}
 																		authServerUrlTestId="mcpclient-input-token-exchange-authorization-server-url"
 																		scopes={{
 																			variant: "input",
 																			value: tokenExchangeScopesRaw,
 																			onChange: setTokenExchangeScopesRaw,
-																			label: "Scopes",
+																			label: t("sessions.scopes"),
 																			helperText: isEntraIdp
-																				? "Comma-separated. offline_access alone combines with the audience's default access - any other scope replaces it entirely instead of adding to it."
-																				: "Comma-separated.",
+																				? t("registry.sheet.scopesOfflineAccess")
+																				: t("registry.oauthFields.commaSeparated"),
 																			testId: "mcpclient-input-token-exchange-scopes",
 																			disabled: !hasUpdateMCPClientAccess,
 																		}}
@@ -1961,17 +1938,14 @@ export default function MCPClientSheet({
 												data-testid="mcp-client-tools-replacement-note"
 											>
 												<Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-												<p>
-													A replacement document is open on the General tab, and its operation list decides which tools are saved. Save or
-													cancel the replacement to edit tools here.
-												</p>
+												<p>{t("registry.sheet.toolsReplacementNote")}</p>
 											</div>
 										)}
 										<div className="space-y-4">
 											<div className="flex items-start justify-between gap-4">
 												<SectionHeader
-													title={`Available Tools (${mcpClient.tools?.length || 0})`}
-													description="Enable, auto-execute, and price individual tools exposed by this server."
+													title={t("registry.sheet.availableTools", { count: mcpClient.tools?.length || 0 })}
+													description={t("registry.sheet.availableToolsDesc")}
 												/>
 												{mcpClient.tools && mcpClient.tools.length > 0 && (
 													<div className="flex items-center gap-4">
@@ -1986,10 +1960,10 @@ export default function MCPClientSheet({
 																const isNoneEnabled = currentTools.length === 0;
 																const selectedIds = isAllEnabled ? allToolNames : currentTools;
 																const statusLabel = isAllEnabled
-																	? "All enabled"
+																	? t("registry.sheet.allEnabled")
 																	: isNoneEnabled
-																		? "None enabled"
-																		: `${currentTools.length} enabled`;
+																		? t("registry.sheet.noneEnabled")
+																		: t("registry.sheet.countEnabled", { count: currentTools.length });
 
 																return (
 																	<FormItem>
@@ -2001,7 +1975,7 @@ export default function MCPClientSheet({
 																				<TriStateCheckbox
 																					allIds={allToolNames}
 																					selectedIds={selectedIds}
-																					ariaLabel={`Enable all tools (${statusLabel})`}
+																					ariaLabel={t("registry.sheet.enableAllAria", { status: statusLabel })}
 																					data-testid="mcpclient-tools-enable-all"
 																					onChange={(nextSelectedIds) => {
 																						if (nextSelectedIds.length === 0) {
@@ -2042,10 +2016,10 @@ export default function MCPClientSheet({
 
 																const autoExecuteCount = isAllAutoExecute ? enabledToolNames.length : selectedAutoExecuteIds.length;
 																const statusLabel = isAllAutoExecute
-																	? "All auto-execute"
+																	? t("registry.sheet.allAutoExecute")
 																	: isNoneAutoExecute
-																		? "None auto-execute"
-																		: `${autoExecuteCount} auto-execute`;
+																		? t("registry.sheet.noneAutoExecute")
+																		: t("registry.sheet.countAutoExecute", { count: autoExecuteCount });
 
 																return (
 																	<FormItem>
@@ -2058,7 +2032,7 @@ export default function MCPClientSheet({
 																					allIds={enabledToolNames}
 																					selectedIds={selectedAutoExecuteIds}
 																					disabled={enabledToolNames.length === 0}
-																					ariaLabel={`Auto-execute all tools (${statusLabel})`}
+																					ariaLabel={t("registry.sheet.autoExecuteAllAria", { status: statusLabel })}
 																					data-testid="mcpclient-tools-autoexecute-all"
 																					onChange={(nextSelectedIds) => {
 																						if (nextSelectedIds.length === 0) {
@@ -2086,11 +2060,11 @@ export default function MCPClientSheet({
 														<TableHeader>
 															<TableRow>
 																<TableHead className="w-10"></TableHead>
-																<TableHead className="max-w-[300px]">Tool Name</TableHead>
-																<TableHead className="w-24 text-center">Enabled</TableHead>
+																<TableHead className="max-w-[300px]">{t("registry.sheet.toolName")}</TableHead>
+																<TableHead className="w-24 text-center">{t("common.enabled")}</TableHead>
 																<TableHead className="w-28 text-center">
 																	<div className="flex items-center justify-center gap-1.5">
-																		<span>Auto-execute</span>
+																		<span>{t("registry.sheet.autoExecute")}</span>
 																		<TooltipProvider>
 																			<Tooltip>
 																				<TooltipTrigger asChild>
@@ -2098,24 +2072,20 @@ export default function MCPClientSheet({
 																						href="https://docs.getbifrost.ai/mcp/agent-mode"
 																						target="_blank"
 																						rel="noopener noreferrer"
-																						aria-label="Learn more about Auto-execute and Agent Mode"
+																						aria-label={t("registry.sheet.learnAutoExecuteAria")}
 																						className="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex rounded focus-visible:ring-2 focus-visible:outline-none"
 																					>
 																						<Info className="h-3.5 w-3.5 cursor-help" />
 																					</a>
 																				</TooltipTrigger>
 																				<TooltipContent className="max-w-xs">
-																					<p>
-																						Applies only when Bifrost runs the LLM loop in Agent Mode. In MCP Gateway mode, the connected
-																						client (Claude Desktop, Cursor, etc.) controls tool approval and this setting is ignored. Click
-																						to learn more.
-																					</p>
+																					<p>{t("registry.sheet.autoExecuteHelp")}</p>
 																				</TooltipContent>
 																			</Tooltip>
 																		</TooltipProvider>
 																	</div>
 																</TableHead>
-																<TableHead className="w-32 text-center">Cost (USD)</TableHead>
+																<TableHead className="w-32 text-center">{t("registry.sheet.costUsd")}</TableHead>
 															</TableRow>
 														</TableHeader>
 														<TableBody>
@@ -2168,7 +2138,11 @@ export default function MCPClientSheet({
 																									<Switch
 																										size="md"
 																										checked={isToolEnabled}
-																										aria-label={`${isToolEnabled ? "Disable" : "Enable"} ${tool.name}`}
+																										aria-label={
+																											isToolEnabled
+																												? t("registry.sheet.disableToolAria", { name: tool.name })
+																												: t("registry.sheet.enableToolAria", { name: tool.name })
+																										}
 																										onCheckedChange={(checked) => handleToolToggle(tool.name, checked)}
 																									/>
 																								</div>
@@ -2189,7 +2163,11 @@ export default function MCPClientSheet({
 																										size="md"
 																										checked={isAutoExecuteEnabled}
 																										disabled={!isToolEnabled}
-																										aria-label={`${isAutoExecuteEnabled ? "Disable" : "Enable"} auto-execute for ${tool.name}`}
+																										aria-label={
+																											isAutoExecuteEnabled
+																												? t("registry.sheet.disableAutoExecuteAria", { name: tool.name })
+																												: t("registry.sheet.enableAutoExecuteAria", { name: tool.name })
+																										}
 																										onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
 																									/>
 																								</div>
@@ -2209,7 +2187,7 @@ export default function MCPClientSheet({
 																									type="number"
 																									step="0.000001"
 																									min="0"
-																									placeholder="0.00"
+																									placeholder={t("registry.sheet.costPlaceholder")}
 																									className="h-8 w-24"
 																									disabled={!isToolEnabled}
 																									value={field.value?.[tool.name] ?? ""}
@@ -2234,7 +2212,9 @@ export default function MCPClientSheet({
 																			<tr>
 																				<td colSpan={5} className="p-0">
 																					<div className="bg-muted/30 border-b px-4 py-3">
-																						<div className="text-muted-foreground mb-2 text-xs font-medium">Parameters Schema</div>
+																						<div className="text-muted-foreground mb-2 text-xs font-medium">
+																							{t("registry.sheet.parametersSchema")}
+																						</div>
 																						{tool.parameters ? (
 																							<CodeEditor
 																								className="z-0 w-full rounded-sm border"
@@ -2252,11 +2232,11 @@ export default function MCPClientSheet({
 																								}}
 																							/>
 																						) : (
-																							<div className="text-muted-foreground text-sm">No parameters defined</div>
+																							<div className="text-muted-foreground text-sm">{t("registry.sheet.noParameters")}</div>
 																						)}
 																						{tool.output_schema && (
 																							<div data-testid={`mcp-tool-output-schema-${tool.name}`}>
-																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Output Schema</div>
+																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">{t("registry.sheet.outputSchema")}</div>
 																								<CodeEditor
 																									className="z-0 w-full rounded-sm border"
 																									shouldAdjustInitialHeight={true}
@@ -2286,7 +2266,7 @@ export default function MCPClientSheet({
 												</div>
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">No tools available</p>
+													<p className="text-sm">{t("registry.sheet.noTools")}</p>
 												</div>
 											)}
 										</div>
@@ -2299,8 +2279,8 @@ export default function MCPClientSheet({
 											render={({ field }) => (
 												<MCPExposeList
 													kind="prompts"
-													title="Prompts"
-													description="Prompts this server lists, and which of them MCP clients connected to Bifrost can use."
+													title={t("registry.sheet.promptsTitle")}
+													description={t("registry.sheet.promptsDesc")}
 													items={promptExposeItems}
 													value={field.value}
 													onChange={(next) => form.setValue("prompts_to_expose", next, { shouldDirty: true })}
@@ -2313,8 +2293,8 @@ export default function MCPClientSheet({
 											render={({ field }) => (
 												<MCPExposeList
 													kind="resources"
-													title="Resources"
-													description="Resources and resource templates this server lists, and which of them MCP clients connected to Bifrost can read."
+													title={t("registry.sheet.resourcesTitle")}
+													description={t("registry.sheet.resourcesDesc")}
 													items={resourceExposeItems}
 													value={field.value}
 													onChange={(next) => form.setValue("resources_to_expose", next, { shouldDirty: true })}
@@ -2325,27 +2305,21 @@ export default function MCPClientSheet({
 
 									<TabsContent value="access" className="space-y-6 pb-10">
 										<div className="space-y-4">
-											<SectionHeader
-												title="Access Control"
-												description="Control whether this server is reachable without an explicit assignment."
-											/>
+											<SectionHeader title={t("registry.sheet.accessControl")} description={t("registry.sheet.accessControlDesc")} />
 											<FormField
 												control={form.control}
 												name="allow_by_default"
 												render={({ field }) => (
 													<FormItem className="flex flex-row items-center justify-between gap-4 rounded-md border p-4">
 														<div className="flex items-center gap-2">
-															<FormLabel>Allow by Default</FormLabel>
+															<FormLabel>{t("registry.sheet.allowByDefault")}</FormLabel>
 															<TooltipProvider>
 																<Tooltip>
 																	<TooltipTrigger asChild>
 																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 																	</TooltipTrigger>
 																	<TooltipContent className="max-w-xs">
-																		<p>
-																			When enabled, any caller can use this MCP server without an explicit assignment, with all tools
-																			allowed. An explicit assignment for a caller takes precedence over this setting for that caller.
-																		</p>
+																		<p>{t("registry.sheet.allowByDefaultHelp")}</p>
 																	</TooltipContent>
 																</Tooltip>
 															</TooltipProvider>
@@ -2366,8 +2340,8 @@ export default function MCPClientSheet({
 
 										<div className="space-y-4">
 											<SectionHeader
-												title="Virtual Key Assignments"
-												description="Control which virtual keys can use this server and which tools they're allowed to call."
+												title={t("registry.sheet.vkAssignments")}
+												description={t("registry.sheet.vkAssignmentsDesc")}
 												action={
 													<VirtualKeySelector
 														mode="add"
@@ -2382,7 +2356,7 @@ export default function MCPClientSheet({
 																data-testid="mcpclient-virtualkey-add-trigger"
 															>
 																<Plus className="h-4 w-4" />
-																Add Virtual Key
+																{t("registry.sheet.addVirtualKey")}
 															</Button>
 														}
 													/>
@@ -2392,8 +2366,11 @@ export default function MCPClientSheet({
 												{form.watch("allow_by_default") && (
 													<p className="text-muted-foreground flex items-center gap-1 text-xs">
 														<Info className="h-3 w-3 shrink-0" />
-														Configuring access for a virtual key here overrides the <span className="font-medium">Allow by Default</span>
-														&nbsp;setting for that key.
+														<Trans
+															t={t}
+															i18nKey="registry.sheet.vkOverridesAllowForKey"
+															components={{ strong: <span className="font-medium" /> }}
+														/>
 													</p>
 												)}
 											</div>
@@ -2403,8 +2380,8 @@ export default function MCPClientSheet({
 													<Table>
 														<TableHeader>
 															<TableRow>
-																<TableHead>Virtual Key</TableHead>
-																<TableHead>Allowed Tools</TableHead>
+																<TableHead>{t("registry.sheet.virtualKey")}</TableHead>
+																<TableHead>{t("registry.sheet.allowedTools")}</TableHead>
 																<TableHead className="w-12"></TableHead>
 															</TableRow>
 														</TableHeader>
@@ -2433,10 +2410,10 @@ export default function MCPClientSheet({
 																			}}
 																			placeholder={
 																				vc.tools_to_execute.includes("*")
-																					? "All tools allowed"
+																					? t("registry.sheet.allToolsAllowed")
 																					: vc.tools_to_execute.length === 0
-																						? "No tools allowed"
-																						: "Select tools..."
+																						? t("registry.sheet.noToolsAllowed")
+																						: t("registry.sheet.selectTools")
 																			}
 																			maxCount={3}
 																			className="bg-background dark:bg-input/30 border-input text-foreground hover:bg-accent hover:text-accent-foreground rounded-sm font-normal"
@@ -2461,13 +2438,11 @@ export default function MCPClientSheet({
 												</div>
 											) : form.watch("allow_by_default") ? (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">
-														This MCP server is allowed by default; a virtual key with an explicit assignment uses that instead.
-													</p>
+													<p className="text-sm">{t("registry.sheet.allowedByDefaultEmpty")}</p>
 												</div>
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">No virtual keys have access to this MCP server</p>
+													<p className="text-sm">{t("registry.sheet.noVkAccess")}</p>
 												</div>
 											)}
 										</div>
@@ -2476,25 +2451,25 @@ export default function MCPClientSheet({
 
 										<div className="space-y-4">
 											<SectionHeader
-												title="Virtual MCPs"
-												description="Virtual MCPs that bundle this server's tools and re-serve them at their own endpoint."
+												title={t("registry.sheet.virtualMcpsSection")}
+												description={t("registry.sheet.virtualMcpsSectionDesc")}
 											/>
 											{virtualMcpsLoading ? (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">Loading virtual MCPs…</p>
+													<p className="text-sm">{t("registry.sheet.loadingVirtualMcps")}</p>
 												</div>
 											) : virtualMcpsError ? (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">Couldn't load virtual MCPs.</p>
+													<p className="text-sm">{t("registry.sheet.couldNotLoadVirtualMcps")}</p>
 												</div>
 											) : memberVirtualMcps.length > 0 ? (
 												<div className="rounded-md border">
 													<Table>
 														<TableHeader>
 															<TableRow>
-																<TableHead>Virtual MCP</TableHead>
-																<TableHead>Endpoint</TableHead>
-																<TableHead>Exposed Tools</TableHead>
+																<TableHead>{t("virtualMcps.entity")}</TableHead>
+																<TableHead>{t("registry.columns.endpoint")}</TableHead>
+																<TableHead>{t("registry.sheet.exposedTools")}</TableHead>
 															</TableRow>
 														</TableHeader>
 														<TableBody>
@@ -2505,14 +2480,18 @@ export default function MCPClientSheet({
 																			{vmcp.name}
 																			{!vmcp.enabled && (
 																				<Badge variant="secondary" className="text-xs font-normal">
-																					Disabled
+																					{t("common.disabled")}
 																				</Badge>
 																			)}
 																		</div>
 																	</TableCell>
 																	<TableCell className="text-muted-foreground font-mono text-xs">/mcp/{vmcp.endpoint_slug}</TableCell>
 																	<TableCell className="text-muted-foreground text-sm">
-																		{toolNames.includes("*") ? "All tools" : toolNames.length === 0 ? "No tools" : toolNames.join(", ")}
+																		{toolNames.includes("*")
+																			? t("registry.sheet.allTools")
+																			: toolNames.length === 0
+																				? t("registry.sheet.noToolsShort")
+																				: toolNames.join(", ")}
 																	</TableCell>
 																</TableRow>
 															))}
@@ -2521,7 +2500,7 @@ export default function MCPClientSheet({
 												</div>
 											) : (
 												<div className="text-muted-foreground rounded-sm border p-6 text-center">
-													<p className="text-sm">This server isn't part of any virtual MCP.</p>
+													<p className="text-sm">{t("registry.sheet.notPartOfVirtualMcp")}</p>
 												</div>
 											)}
 										</div>
@@ -2531,7 +2510,7 @@ export default function MCPClientSheet({
 
 							<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 								<Button type="button" variant="outline" onClick={onClose}>
-									Cancel
+									{tc("cancel")}
 								</Button>
 								<TooltipProvider>
 									<Tooltip>
@@ -2543,13 +2522,13 @@ export default function MCPClientSheet({
 													isLoading={isUpdating}
 													data-testid="mcpclient-save-btn"
 												>
-													Save Changes
+													{t("common.saveChanges")}
 												</Button>
 											</span>
 										</TooltipTrigger>
 										{(!hasUpdateMCPClientAccess || !isDirty) && (
 											<TooltipContent>
-												<p>{!hasUpdateMCPClientAccess ? "You don't have permission to perform this action" : "No changes to save"}</p>
+												<p>{!hasUpdateMCPClientAccess ? t("common.noPermissionApos") : t("registry.sheet.noChanges")}</p>
 											</TooltipContent>
 										)}
 									</Tooltip>
@@ -2562,13 +2541,11 @@ export default function MCPClientSheet({
 			<AlertDialog open={!!pendingNavDirection} onOpenChange={(open) => !open && setPendingNavDirection(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
-						<AlertDialogDescription>
-							You have unsaved changes. Are you sure you want to navigate away? Your changes will be lost.
-						</AlertDialogDescription>
+						<AlertDialogTitle>{t("common.unsavedChanges")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("registry.sheet.unsavedDesc")}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel onClick={() => setPendingNavDirection(null)}>Cancel</AlertDialogCancel>
+						<AlertDialogCancel onClick={() => setPendingNavDirection(null)}>{tc("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								const dir = pendingNavDirection;
@@ -2576,7 +2553,7 @@ export default function MCPClientSheet({
 								if (dir) onNavigate?.(dir);
 							}}
 						>
-							Discard Changes
+							{t("common.discardChanges")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>

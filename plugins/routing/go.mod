@@ -6,9 +6,9 @@ require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
 	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.13.1
-	github.com/maximhq/bifrost/framework v1.10.1
-	github.com/maximhq/bifrost/plugins/governance v1.10.1
+	github.com/maximhq/bifrost/core v1.14.1
+	github.com/maximhq/bifrost/framework v1.11.1
+	github.com/maximhq/bifrost/plugins/governance v1.11.1
 	github.com/stretchr/testify v1.12.1
 	gorm.io/gorm v1.31.1
 )
@@ -25,6 +25,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.4 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
 	github.com/ClickHouse/ch-go v0.65.0 // indirect
 	github.com/ClickHouse/clickhouse-go/v2 v2.32.0 // indirect
@@ -61,7 +62,6 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
