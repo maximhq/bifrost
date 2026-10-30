@@ -52,7 +52,7 @@ func (p *RoutingPlugin) computeComplexity(
 				result := &complexity.ComplexityResult{Tier: tier}
 				publishComplexityDecision(ctx, result, complexity.MechanismSession, nil)
 				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
-					fmt.Sprintf("Session complexity reused: effective=%s reason=tool-continuation", tier))
+					fmt.Sprintf("Complexity reused this turn's tier: tier=%s reason=tool-continuation", tier))
 				return result
 			}
 		}
