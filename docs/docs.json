@@ -193,6 +193,7 @@
               "providers/custom-providers",
               "providers/self-hosted-decision-models",
               "providers/custom-pricing",
+              "providers/datasheet-editor",
               "providers/request-options",
               "providers/response-headers",
               "providers/test-harness-coverage"
@@ -1291,7 +1292,11 @@
                   "GET /api/models/details",
                   "GET /api/models/parameters",
                   "GET /api/models/base",
-                  "GET /api/models/newest"
+                  "GET /api/models/newest",
+                  "GET /api/models/datasheet",
+                  "GET /api/models/datasheet/entry",
+                  "PUT /api/models/datasheet/overrides",
+                  "DELETE /api/models/datasheet/overrides/{id}"
                 ]
               },
               {
