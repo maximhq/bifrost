@@ -242,7 +242,7 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 	})
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)}}, testNoopLogger{})
 	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 	decide := func(model string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -293,7 +293,7 @@ func TestOpenAIProviderDecisionCustomProviderGating(t *testing.T) {
 	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
 	decide := func(allowed *schemas.AllowedRequests, model string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 		provider := NewOpenAIProvider(&schemas.ProviderConfig{
-			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+			NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)},
 			CustomProviderConfig: &schemas.CustomProviderConfig{
 				CustomProviderKey: "kserve",
 				BaseProviderType:  schemas.OpenAI,
@@ -465,7 +465,7 @@ func TestOpenAIDecisionConversationReachesOpenAI(t *testing.T) {
 	require.NoError(t, err)
 	converted.Provider = schemas.OpenAI
 
-	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL)}}, testNoopLogger{})
 	resp, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("test-key")}, converted)
 	require.Nil(t, bifrostErr)
 	require.Len(t, resp.Answers, 1)

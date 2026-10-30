@@ -103,7 +103,7 @@ func newMockMiniMax(t *testing.T, responses map[string]func(w http.ResponseWrite
 
 	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL,
+			BaseURL:                        schemas.NewSecretVar(server.URL),
 			DefaultRequestTimeoutInSeconds: 10,
 			AllowPrivateNetwork:            true,
 		},

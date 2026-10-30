@@ -71,7 +71,7 @@ const chatResponseBody = `{"id":"id-1","object":"chat.completion","created":1,"m
 func newTestProvider(t *testing.T, baseURL string) *cloudflare.CloudflareProvider {
 	t.Helper()
 	provider, err := cloudflare.NewCloudflareProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if err != nil {
 		t.Fatalf("NewCloudflareProvider: %v", err)

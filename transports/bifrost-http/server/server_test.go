@@ -840,7 +840,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 			provider: {
 				Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
 				NetworkConfig: &schemas.NetworkConfig{
-					BaseURL:                        upstream.URL,
+					BaseURL:                        schemas.NewSecretVar(upstream.URL),
 					AllowPrivateNetwork:            true,
 					DefaultRequestTimeoutInSeconds: 5,
 				},
@@ -891,7 +891,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 			provider: {
 				Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 				NetworkConfig: &schemas.NetworkConfig{
-					BaseURL:                        upstream.URL,
+					BaseURL:                        schemas.NewSecretVar(upstream.URL),
 					AllowPrivateNetwork:            true,
 					DefaultRequestTimeoutInSeconds: 5,
 				},

@@ -28,7 +28,7 @@ func TestTypedResourceIDsStayOnExpectedEndpoint(t *testing.T) {
 		ctx.SetBodyString(`{"id":"x"}`)
 	})
 
-	provider := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: "http://" + ln.Addr().String()}}
+	provider := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("http://" + ln.Addr().String())}}
 	keys := []schemas.Key{{Value: *schemas.NewSecretVar("sk-test")}}
 	newCtx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(t.Context(), schemas.NoDeadline) }
 

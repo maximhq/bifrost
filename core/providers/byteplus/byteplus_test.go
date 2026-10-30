@@ -101,7 +101,7 @@ func newMockBytePlus(t *testing.T, responses map[string]func(w http.ResponseWrit
 
 	provider, err := byteplus.NewBytePlusProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        server.URL + "/",
+			BaseURL:                        schemas.NewSecretVar(server.URL + "/"),
 			DefaultRequestTimeoutInSeconds: 10,
 			AllowPrivateNetwork:            true,
 		},

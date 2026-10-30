@@ -446,7 +446,7 @@ func TestFireworksDisableStoreForcesStoreFalse(t *testing.T) {
 					defer server.Close()
 
 					provider, err := fireworksprovider.NewFireworksProvider(&schemas.ProviderConfig{
-						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+						NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(server.URL), DefaultRequestTimeoutInSeconds: 30},
 						OpenAIConfig:  &schemas.OpenAIConfig{DisableStore: disableStore},
 					}, bifrost.NewNoOpLogger())
 					if err != nil {
@@ -504,7 +504,7 @@ func newTestFireworksProvider(t *testing.T, baseURL string) *fireworksprovider.F
 
 	provider, err := fireworksprovider.NewFireworksProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        baseURL,
+			BaseURL:                        schemas.NewSecretVar(baseURL),
 			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, bifrost.NewNoOpLogger())

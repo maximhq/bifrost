@@ -21,7 +21,6 @@ package githubcopilot
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -84,7 +83,7 @@ func NewGithubCopilotProvider(config *schemas.ProviderConfig, logger schemas.Log
 	exchangeClient.MaxResponseBodySize = maxExchangeBodyBytes
 	exchangeClient.StreamResponseBody = false
 
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "")
 
 	return &githubCopilotProvider{
 		logger:              logger,
@@ -122,7 +121,7 @@ func (p *githubCopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 
 // listModelsByKey lists the models one key can reach, with that key's own credentials.
 func (p *githubCopilotProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -183,7 +182,7 @@ func (p *githubCopilotProvider) anthropicBuildConfig(isStreaming, validateTools 
 
 // ChatCompletion performs a chat completion request to the Copilot API.
 func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -222,7 +221,7 @@ func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 // ChatCompletionStream performs a streaming chat completion request to the Copilot API.
 func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -279,7 +278,7 @@ func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 // Responses performs a responses request to the Copilot API.
 func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+		creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 		if bErr != nil {
 			return nil, bErr
 		}
@@ -307,7 +306,7 @@ func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
-	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -331,7 +330,7 @@ func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schem
 // ResponsesStream performs a streaming responses request.
 func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+		creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 		if bErr != nil {
 			return nil, bErr
 		}
@@ -367,7 +366,7 @@ func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
 
-	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}
@@ -395,7 +394,7 @@ func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 // Embedding performs an embedding request to the Copilot API.
 func (p *githubCopilotProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL.GetValue(), p.logger)
 	if bErr != nil {
 		return nil, bErr
 	}

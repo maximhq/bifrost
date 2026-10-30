@@ -55,10 +55,7 @@ func NewMiniMaxProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.minimax.io"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.minimax.io")
 
 	return &MiniMaxProvider{
 		logger:              logger,
@@ -81,7 +78,7 @@ func (provider *MiniMaxProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -106,7 +103,7 @@ func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		applyMiniMaxReasoningSplit(request),
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -126,7 +123,7 @@ func (provider *MiniMaxProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		applyMiniMaxReasoningSplit(request),
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -184,7 +181,7 @@ func (provider *MiniMaxProvider) doMiniMaxRequest(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, path))
 	req.Header.SetMethod(method)
 	if value := key.Value.GetValue(); value != "" {
 		req.Header.Set("Authorization", "Bearer "+value)
@@ -823,7 +820,7 @@ func (provider *MiniMaxProvider) doMiniMaxMultipartRequest(ctx *schemas.BifrostC
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, path))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
 	if value := key.Value.GetValue(); value != "" {
@@ -870,7 +867,7 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 	defer fasthttp.ReleaseRequest(req)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, path))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
 	req.Header.Set("Accept", "text/event-stream")

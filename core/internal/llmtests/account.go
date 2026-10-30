@@ -759,7 +759,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case ProviderOpenAICustom:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        "https://api.openai.com",
+				BaseURL:                        schemas.NewSecretVar("https://api.openai.com"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // Higher retries for Groq (can be flaky)
 				RetryBackoffInitial:            1 * time.Second,
@@ -868,7 +868,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     8, // Local service, fewer retries needed
 				RetryBackoffInitial:            250 * time.Millisecond,
 				RetryBackoffMax:                4 * time.Second,
-				BaseURL:                        os.Getenv("OLLAMA_BASE_URL"),
+				BaseURL:                        schemas.NewSecretVar("env.OLLAMA_BASE_URL"),
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -904,7 +904,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.SGL:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        os.Getenv("SGL_BASE_URL"),
+				BaseURL:                        schemas.NewSecretVar("env.SGL_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // SGL (self-hosted) can be variable
 				RetryBackoffInitial:            1 * time.Second,
@@ -1050,7 +1050,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				// Only needed when GITHUB_COPILOT_API_KEY is a raw Copilot API token; a PAT or
 				// GitHub token has its host looked up.
-				BaseURL:                        os.Getenv("GITHUB_COPILOT_API_URL"),
+				BaseURL:                        schemas.NewSecretVar(os.Getenv("GITHUB_COPILOT_API_URL")),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
@@ -1064,7 +1064,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.VLLM:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL:                        os.Getenv("VLLM_BASE_URL"),
+				BaseURL:                        schemas.NewSecretVar("env.VLLM_BASE_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // vllm is stable
 				RetryBackoffInitial:            5 * time.Second,
