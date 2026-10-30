@@ -277,23 +277,6 @@ const noCredRoutes = [
   ["GET", "/api/oauth/config/adm01-id/status"],
   ["DELETE", "/api/oauth/config/adm01-id"],
 ];
-const ADM01 = folder("ADM-01 Every MCP admin route without a credential",
-  "Setup: dashboard auth on; requests carry no Authorization header or cookie.", [
-  request("ADM-01", "setup: record the client count", "GET", "/api/mcp/clients", {
-    asserts: [A.status(200)],
-    extraTests: ["pm.collectionVariables.set('adm01_total', pm.response.json().total_count);"],
-  }),
-  ...noCredRoutes.map(([method, path, body]) =>
-    request("ADM-01", `${method} ${path} without a credential`, method, path, { body, noAuth: true, asserts: [A.status(401), A.msgEquals("Unauthorized")] })),
-  request("ADM-01", "GET /api/oauth/callback is public", "GET", "/api/oauth/callback", { noAuth: true, asserts: [A.status(400), A.msgEquals("Missing required parameters: state and code")] }),
-  request("ADM-01", "nothing changed", "GET", "/api/mcp/clients", {
-    asserts: [A.status(200), A.custom("total_count is unchanged", [
-      "var before = Number(pm.collectionVariables.get('adm01_total'));",
-      "pm.expect(pm.response.json().total_count, 'body: ' + pm.response.text()).to.equal(before);",
-    ])],
-  }),
-]);
-
 // ---------------------------------------------------------------- LOG-41
 const LOG41 = folder("LOG-41 Read endpoints need auth", "Setup: dashboard auth on, no credential.",
   ["/api/mcp-logs", "/api/mcp-logs/stats", "/api/mcp-logs/filterdata", "/api/mcp-logs/histogram"].map((p) =>
@@ -766,6 +749,43 @@ const EP33 = folder("EP-33 Unsupported HTTP methods", "Setup: none; DELETE and P
 ]);
 
 // ================================================================ ADM tests on the fleet
+
+// ADM-01: the client-scoped routes target a real client, so "nothing changes" is checked on that client.
+const ADM01 = folder("ADM-01 Every MCP admin route without a credential",
+  "Setup: dashboard auth on; alpha (echo_tool, add_tool) and an HTTP, auth none, per-call client on alpha. The requests under test carry no Authorization header or cookie, and the client-scoped ones target that client.", [
+  ...freshServer("ADM-01", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-01", httpClient("adm01-c", "adm01_c", "alpha"), "setup: create the client"),
+  request("ADM-01", "setup: record the client count", "GET", "/api/mcp/clients", {
+    asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('adm01_total', pm.response.json().total_count);"],
+  }),
+  request("ADM-01", "setup: read the client", "GET", "/api/mcp/clients?server=adm01-c", {
+    asserts: [A.status(200)],
+    extraTests: [
+      "var c = pm.response.json().clients[0] || {};",
+      "pm.collectionVariables.set('adm01_before', JSON.stringify({ config: c.config, tools: (c.tools || []).map(function (t) { return t.name; }).sort() }));",
+    ],
+  }),
+  ...noCredRoutes.map(([method, path, body]) => {
+    const real = path.replace("/api/mcp/client/adm01-id", "/api/mcp/client/adm01-c");
+    // A PUT that would disable the client if it got through.
+    const realBody = method === "PUT" && real === "/api/mcp/client/adm01-c" ? { disabled: true } : body;
+    return request("ADM-01", `${method} ${real} without a credential`, method, real, { body: realBody, noAuth: true, noCookies: true, asserts: [A.status(401), A.msgEquals("Unauthorized")] });
+  }),
+  request("ADM-01", "GET /api/oauth/callback is public", "GET", "/api/oauth/callback", { noAuth: true, noCookies: true, asserts: [A.status(400), A.msgEquals("Missing required parameters: state and code")] }),
+  request("ADM-01", "the client count is unchanged", "GET", "/api/mcp/clients", {
+    asserts: [A.status(200), A.custom("total_count is unchanged", [
+      "var before = Number(pm.collectionVariables.get('adm01_total'));",
+      "pm.expect(pm.response.json().total_count, 'body: ' + pm.response.text()).to.equal(before);",
+    ])],
+  }),
+  getClient("ADM-01", "adm01-c", "the client is unchanged", [clientState("healthy"), A.custom("config and tools are unchanged", [
+    "var c = pm.response.json().clients[0], before = JSON.parse(pm.collectionVariables.get('adm01_before'));",
+    "pm.expect(c.config, 'body: ' + pm.response.text()).to.eql(before.config);",
+    "pm.expect((c.tools || []).map(function (t) { return t.name; }).sort()).to.eql(before.tools);",
+  ])]),
+  deleteClient("ADM-01", "adm01-c"),
+]);
 
 const createExpect = (id, title, cfg, asserts) => request(id, title, "POST", "/api/mcp/client", { body: cfg, asserts });
 const clientField = (path, v) => A.custom(`${path} is ${lit(v)}`, [`pm.expect(pm.response.json().clients[0].${path}, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
