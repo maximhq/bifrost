@@ -1,0 +1,43 @@
+---
+title: "v1.0.0"
+description: "Edge v1.0.0 changelog - 2026-10-29"
+---
+
+<Update label="Bifrost Edge" description="v1.0.0">
+
+## Changelog
+
+v1.0.0 ships Edge as a desktop app: Bifrost Edge.app on macOS, and Start menu and app menu entries on Windows and Linux. Claude Code, Codex and OpenCode get the Bifrost MCP gateway as a managed MCP server, using Edge's sign-in. Admins can set the model list each app's picker shows, and users can pick their own Cursor and Antigravity CLI models within admin limits. Edge can now capture any process that sends AI API traffic, not only known apps. This release also includes a broad security hardening pass and lower memory use for ChatGPT and Claude web traffic.
+
+## ✨ Features
+
+- **Bifrost Edge Desktop App** - macOS installs `/Applications/Bifrost Edge.app`, which holds the agent and the network extension, and opening the app opens the Edge window. The background service keeps running if the app bundle is moved or replaced. Windows adds a Start menu shortcut and Linux an app menu entry; both open the window of the running tray, or start it. [Docs](https://docs.getbifrost.ai/edge/overview)
+- **Sign-In First Window** - The Edge window is named Bifrost Edge, shows only the sign-in screen until the user is signed in (also while the background service is down), and can start sign-in itself. Dark mode uses a darker background.
+- **Bifrost MCP Gateway in AI Clients** - While Edge is signed in, it adds a `bifrost` MCP server to Claude Code (`~/.claude.json`), Codex (`config.toml`) and OpenCode. The entry runs a small stdio bridge that sends MCP traffic to the gateway's `/mcp` with Edge's token or virtual key, and passes `tools/list_changed` notifications to the client. The entry is removed on sign-out, shutdown and uninstall. Edge never changes a user's own `bifrost` entry or a disabled one, and keeps Codex comments and ordering. [Docs](https://docs.getbifrost.ai/edge/mcp-governance)
+- **App Model Picker Lists** - Edge applies the admin's model list (global, or per-app override) to every model picker it serves or writes: Anthropic and OpenAI `/v1/models`, the Codex manifest and ChatGPT picker, the Claude desktop selector, Cursor, OpenCode, Antigravity Desktop, and the Claude Code, Gemini CLI, Antigravity CLI and Codex catalog files. Listed models come first, in list order, and the admin can show the rest of the catalog after them. Lists only shape pickers; they never block a model. Requires a matching server update.
+- **User-Chosen App Models** - The Edge window's Applications page has an App models block. Users pick their Cursor default model and Antigravity CLI helper model from their allowed models, or reset to the admin value. When the server supports it, choices are saved on the server within the admin's policy; otherwise they stay on the device. The change applies without a restart. [Docs](https://docs.getbifrost.ai/edge/app-governance)
+- **Capture for All AI Traffic** - Any identified process that calls the OpenAI API, the ChatGPT backend or the Anthropic API now goes through Edge, in both TUN and TRP, and is attributed to its app or to a cleaned-up process name. Unknown apps use gateway mode. An unknown app that rejects the Edge certificate is passed through for that host for 24 hours. OpenCode signed in with ChatGPT keeps its own credentials in passthrough mode. [Docs](https://docs.getbifrost.ai/edge/supported-applications)
+- **Cursor Tab Runs on Cursor** - Cursor Tab, cursor prediction, Tab context, edit classification and lint scoring now go to Cursor unchanged with Cursor's own credentials, because Cursor cancels a Tab request faster than any gateway round trip. There is no Tab or linter model setting anymore. File sync calls still update Edge's local snapshot for chat features.
+- **Virtual Key Sign-In** - Edge can sign in with only a virtual key (`sk-bf-...`), which then drives config sync and certificate signing with no user session. Admins can turn this off fleet-wide.
+- **Safer Session Refresh** - New sign-ins use refresh tokens bound to a per-session key (DPoP, RFC 9449). A lost refresh response can be retried safely, also after a restart. Older gateways keep the previous refresh behaviour.
+- **MCP Log Deduplication** - Per-session stdio MCP servers run through a small `edge-mcp-sentinel` helper instead of the full Edge binary. Native tool calls with no session (such as Codex) are matched between the approval check and the result, so each call is logged once.
+- **macOS Notifications from the App** - Missing-config and degraded-capture alerts are posted by Bifrost Edge with its own name and icon, and a new alert replaces the older one of the same kind.
+
+## 🐞 Fixed
+
+- **Request Targets and Headers** - Dot-segment and rootless gateway request targets are refused. Client copies of Bifrost control headers are dropped, and client `Connection` tokens can no longer delete Edge headers.
+- **Domain Rules** - Domain rules match case-insensitively, and ineligible apps are blocked on domains that require governance.
+- **Trusted Paths** - PowerShell, network inventory and machine-ID tools run by absolute path. The uninstaller manifest is read only from a trusted path. The `--data-dir` service folder is secured, the MSI uninstall cleans only the pinned data folder, and Firefox `policies.json` is never written through a link.
+- **Release Builds** - Daemon developer toggles are refused in release builds, and the request log shows only allowlisted header values.
+- **Sign-In and Sign-Out** - Sign-in stays alive after a callback with the wrong state, and web transcripts are cleared at sign-out.
+- **PAC and DNS Routes** - PAC evaluation is bounded and cached and no longer logs request paths. Loopback and link-local DNS answers are ignored for routes.
+- **MCP Inspection** - Only the gateway's answer is relayed for inspected MCP calls, and the MCP tool catalog is capped by encoded size.
+- **ChatGPT Memory Use** - ChatGPT WebSocket messages are decoded once and inspected in bounded memory, including fragmented messages. Conversation responses are read once. Pending inspections are capped but kept for long generations, v1 delta array indexes are bounded, and a pending alias owned by a newer session is kept.
+- **Claude Web** - Every completion action is inspected, and responses are read once in bounded memory.
+- **Codex Null Input Content** - `null` input content from Codex becomes an empty array instead of failing the request.
+- **Windows API Calls** - Root store and window enumeration use typed Windows calls.
+- **Idle CPU Use** - The daemon and tray window use less idle CPU: process forks and polling loops are replaced by in-process reads and event-driven refreshes. The tray no longer notifies about short-lived capture-pending states.
+- **Diagnostics Window** - A slow collection keeps showing the last complete results instead of going blank, and dropdowns work again on Windows.
+- **Clock Skew at Sign-In** - When a refresh is rejected because the device clock is off, Edge says how far off it is instead of showing a generic error.
+
+</Update>
