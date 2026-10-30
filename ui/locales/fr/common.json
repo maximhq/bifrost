@@ -627,5 +627,6 @@
 		"unexpected": "Une erreur inattendue s’est produite",
 		"requestTimeout": "Délai de la requête dépassé",
 		"network": "Erreur réseau"
-	}
+	},
+	"valueOrEnvVar": "{{value}} ou {{env}}"
 }
