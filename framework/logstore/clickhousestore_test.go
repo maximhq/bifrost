@@ -537,17 +537,20 @@ func chSelectedParts(t *testing.T, db *gorm.DB, marker string) uint64 {
 //
 // Every part holds rows at more than one timestamp, as real parts do: a part
 // with a single timestamp lets the sort key bound its ids and hides the scan.
-// The bloom filter hashes are deterministic, so these fixed ids never flake.
+// A bloom filter is sized by its granule's row count, so a two-row filler part
+// would false-positive often; 64 rows keeps it near its 2.5% design rate, and
+// the hashes are deterministic, so these fixed ids never flake.
 func TestClickHouseIDLookupsPruneParts(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	months := []time.Time{now.AddDate(0, -2, 0), now.AddDate(0, -1, 0), now}
 	for i, ts := range months {
-		require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{
-			chTestLog(fmt.Sprintf("ch-prune-filler-%d-a", i), ts.Add(-time.Hour)),
-			chTestLog(fmt.Sprintf("ch-prune-filler-%d-b", i), ts.Add(-50*time.Minute)),
-		}))
+		filler := make([]*Log, 0, 64)
+		for j := range 64 {
+			filler = append(filler, chTestLog(fmt.Sprintf("ch-prune-filler-%d-%d", i, j), ts.Add(-time.Hour+time.Duration(j)*time.Second)))
+		}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, filler))
 	}
 	target := months[1]
 	ids := map[string]time.Time{
@@ -589,6 +592,16 @@ func TestClickHouseIDLookupsPruneParts(t *testing.T) {
 
 	_, err = store.FindByID(hinted, "does-not-exist")
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// BenchmarkChIDLookupContext measures what each ClickHouse id read (FindByID
+// and every update's read-modify-write) pays to carry its query setting.
+func BenchmarkChIDLookupContext(b *testing.B) {
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = chIDLookupContext(ctx)
+	}
 }
 
 // TestClickHouseReconcileSkipIndexesMaterializesNewIndex covers the upgrade
