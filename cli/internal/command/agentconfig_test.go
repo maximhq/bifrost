@@ -715,3 +715,110 @@ func TestRollbackFailedConfigureRemovesReceiptWhenRollbackSucceeds(t *testing.T)
 		t.Fatalf("expected receipt to be removed after successful rollback, stat err = %v", statErr)
 	}
 }
+
+func TestConfigureAllHarnessesRoundTrip(t *testing.T) {
+	t.Setenv("BIFROST_AGENT_TOKEN", "sso-token-must-not-be-written")
+	t.Setenv("BIFROST_VIRTUAL_KEY", "sk-bf-configure-test")
+	for _, agent := range []string{"claude", "codex", "opencode", "gemini"} {
+		t.Run(agent, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("CODEX_HOME", filepath.Join(home, "custom-codex"))
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+			runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("configure made a network request: %s", req.URL)
+				return nil, nil
+			}))
+			if err := runner.Run(context.Background(), []string{"configure", agent, "--model", "openai/test-model"}); err != nil {
+				t.Fatal(err)
+			}
+			paths, err := nativeConfigPaths(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if agent == "codex" && paths[0] != filepath.Join(home, "custom-codex", "config.toml") {
+				t.Fatalf("Codex ignored CODEX_HOME: %v", paths)
+			}
+			for _, path := range paths {
+				body, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(body), "sso-token-must-not-be-written") {
+					t.Fatal("configure persisted an SSO token")
+				}
+				if len(body) == 0 {
+					t.Fatalf("empty config: %s", path)
+				}
+			}
+			if err := runner.Run(context.Background(), []string{"unconfigure", agent}); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range paths {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("config not restored: %s (%v)", path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestLegacyCodexReceiptRetainsRestoreManifest(t *testing.T) {
+	paths := []string{filepath.Join(t.TempDir(), "config.toml")}
+	legacy := []string{filepath.Join(filepath.Dir(paths[0]), "auth.json"), paths[0]}
+	receipt := &configReceipt{ContextID: "test", Agent: "codex", Files: []configSnapshot{{Path: legacy[0]}, {Path: legacy[1]}}}
+	if !receiptMatchesManifest(receipt, "test", "codex", receiptConfigPaths("codex", paths, receipt)) {
+		t.Fatal("legacy Codex restore manifest rejected")
+	}
+	receipt.Files[0].Path = "/unrelated/auth.json"
+	if len(receiptConfigPaths("codex", paths, receipt)) != 1 {
+		t.Fatal("accepted an unrelated legacy auth path")
+	}
+}
+
+func TestConfigureExistingJSONAgentsRestoresOriginalBytes(t *testing.T) {
+	for _, agent := range []string{"opencode", "gemini"} {
+		t.Run(agent, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("OPENCODE_CONFIG", "")
+			t.Setenv("BIFROST_VIRTUAL_KEY", "selected-virtual-key")
+			paths, err := nativeConfigPaths(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originals := [][]byte{[]byte("{\n // user comment\n \"theme\": \"custom\",\n}\n"), []byte("# user env\nKEEP='original'\nGEMINI_API_KEY='old-key'\n")}
+			for index, path := range paths {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, originals[index], 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner, _, _ := newTestRunner(t, nil)
+			if err := runner.Run(context.Background(), []string{"configure", agent, "--model", "provider/model"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := runner.Run(context.Background(), []string{"unconfigure", agent}); err != nil {
+				t.Fatal(err)
+			}
+			for index, path := range paths {
+				restored, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(restored, originals[index]) {
+					t.Fatalf("original bytes not restored: %s", path)
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0o640 {
+					t.Fatalf("original mode not restored: %s", path)
+				}
+			}
+		})
+	}
+}

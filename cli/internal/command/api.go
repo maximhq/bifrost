@@ -112,7 +112,11 @@ func (r *Runner) callOperation(ctx context.Context, env *environment, args []str
 	fs.Var(&headerFlags, "header", "request header as Name: value; repeatable")
 	fs.StringVar(&bodyValue, "body", "", "inline request body")
 	fs.StringVar(&bodyFile, "file", "", "request body file, or - for stdin")
-	fs.StringVar(&authValue, "auth", "auto", "credential mode: auto, none, management, inference, agent")
+	defaultAuth := operation.Auth
+	if defaultAuth == "" {
+		defaultAuth = "auto"
+	}
+	fs.StringVar(&authValue, "auth", defaultAuth, "credential mode: auto, none, management, inference, agent")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the request plan without applying it")
 	fs.BoolVar(&yes, "yes", false, "confirm destructive operations")
 	fs.BoolVar(&stream, "stream", false, "copy the response incrementally")

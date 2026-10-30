@@ -9,15 +9,29 @@ import (
 
 // TestCatalogMatchesOpenAPI verifies every exposed operation still exists in the source document.
 func TestCatalogMatchesOpenAPI(t *testing.T) {
-	body, err := os.ReadFile("../../../docs/openapi/openapi.json")
-	if err != nil {
-		t.Fatal(err)
-	}
 	var document struct {
 		Paths map[string]map[string]json.RawMessage `json:"paths"`
 	}
-	if err := json.Unmarshal(body, &document); err != nil {
-		t.Fatal(err)
+	document.Paths = map[string]map[string]json.RawMessage{}
+	for _, path := range []string{"../../../docs/openapi/openapi.json", "management.json"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var source struct {
+			Paths map[string]map[string]json.RawMessage `json:"paths"`
+		}
+		if err := json.Unmarshal(body, &source); err != nil {
+			t.Fatal(err)
+		}
+		for path, item := range source.Paths {
+			if document.Paths[path] == nil {
+				document.Paths[path] = map[string]json.RawMessage{}
+			}
+			for method, op := range item {
+				document.Paths[path][method] = op
+			}
+		}
 	}
 	methods := map[string]bool{"get": true, "post": true, "put": true, "patch": true, "delete": true, "head": true, "options": true}
 	ids := map[string]struct{}{}

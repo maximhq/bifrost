@@ -45,13 +45,8 @@ func claudeWriteNativeConfig(baseURL, apiKey, model string) error {
 	dir := filepath.Join(home, ".claude")
 	settingsPath := filepath.Join(dir, "settings.json")
 
-	// Read existing settings or start fresh
-	settings := make(map[string]any)
-	if b, err := os.ReadFile(settingsPath); err == nil {
-		if err := sonic.Unmarshal(b, &settings); err != nil {
-			return fmt.Errorf("parse existing claude settings: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	settings, err := readNativeJSON(settingsPath)
+	if err != nil {
 		return fmt.Errorf("read claude settings: %w", err)
 	}
 
@@ -140,7 +135,7 @@ func codexPreLaunch(baseURL, _ string, model string) ([]string, func(), error) {
 		cleanup()
 		return nil, nil, fmt.Errorf("read Codex config: %w", readErr)
 	}
-	if err := codexWriteConfigTOML(targetConfig, baseURL, model); err != nil {
+	if err := codexWriteConfigTOML(targetConfig, baseURL, "", model); err != nil {
 		cleanup()
 		return nil, nil, err
 	}
@@ -149,7 +144,7 @@ func codexPreLaunch(baseURL, _ string, model string) ([]string, func(), error) {
 
 func codexUserHome() (string, error) {
 	if configured := strings.TrimSpace(os.Getenv("CODEX_HOME")); configured != "" {
-		return configured, nil
+		return filepath.Abs(configured)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -159,58 +154,35 @@ func codexUserHome() (string, error) {
 }
 
 // codexWriteNativeConfig writes the bifrost endpoint, API key, and model
-// into Codex CLI's config files (~/.codex/auth.json and
-// ~/.codex/config.toml) so the same configuration is available when users
-// launch Codex directly.
+// into Codex CLI's config file (~/.codex/config.toml) so the same
+// configuration is available when users launch Codex directly.
 //
-// It merges into the existing files, preserving any user-defined settings.
+// The virtual key is embedded as experimental_bearer_token on the custom
+// provider, so Codex authenticates against Bifrost without requiring an
+// OPENAI_API_KEY environment variable. auth.json is deliberately left
+// untouched to avoid overwriting a user's existing OpenAI/ChatGPT login.
 func codexWriteNativeConfig(baseURL, apiKey, model string) error {
-	home, err := os.UserHomeDir()
+	dir, err := codexUserHome()
 	if err != nil {
-		return fmt.Errorf("resolve home dir: %w", err)
+		return err
 	}
-
-	dir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create codex config dir: %w", err)
 	}
 
-	if apiKey = strings.TrimSpace(apiKey); apiKey != "" && apiKey != "dummy-key" {
-		if err := codexWriteAuth(filepath.Join(dir, "auth.json"), apiKey); err != nil {
-			return err
-		}
-	}
-	return codexWriteConfigTOML(filepath.Join(dir, "config.toml"), baseURL, model)
-}
-
-// codexWriteAuth merges the bifrost virtual key into Codex's auth.json,
-// preserving any other fields the user (or Codex itself) may have written.
-func codexWriteAuth(path, apiKey string) error {
-	auth := make(map[string]any)
-	if b, err := os.ReadFile(path); err == nil {
-		if err := sonic.Unmarshal(b, &auth); err != nil {
-			// Unparseable auth.json — overwrite rather than fail the launch,
-			// since the user can't easily recover from a corrupt file.
-			auth = make(map[string]any)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read codex auth: %w", err)
-	}
-
-	auth["auth_mode"] = "apikey"
-	auth["OPENAI_API_KEY"] = apiKey
-
-	b, err := sonic.MarshalIndent(auth, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal codex auth: %w", err)
-	}
-	return config.WriteAtomic(path, b, 0o600)
+	return codexWriteConfigTOML(filepath.Join(dir, "config.toml"), baseURL, apiKey, model)
 }
 
 // codexWriteConfigTOML declares Bifrost as a custom Responses provider.
 // Current Codex versions ignore OPENAI_BASE_URL and require a custom provider
 // to disable OpenAI OAuth, so the provider table is part of the routing contract.
-func codexWriteConfigTOML(path, baseURL, model string) error {
+//
+// When apiKey is non-empty (the native-configure path), the virtual key is
+// written as experimental_bearer_token on the provider so Codex authenticates
+// directly. When apiKey is empty (the pre-launch path), env_key =
+// "OPENAI_API_KEY" is used instead because the launcher injects the key via
+// the environment.
+func codexWriteConfigTOML(path, baseURL, apiKey, model string) error {
 	var existing []byte
 	if b, err := os.ReadFile(path); err == nil {
 		existing = b
@@ -227,18 +199,25 @@ func codexWriteConfigTOML(path, baseURL, model string) error {
 		"env_key":         {},
 	})
 	configured := setTopLevelTOMLKeys(existing, targets)
-	providerURL := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
-	if !strings.HasSuffix(providerURL, "/v1") {
-		providerURL += "/v1"
-	}
+	providerURL := openAIBaseURL(baseURL)
+	apiKey = strings.TrimSpace(apiKey)
 	providerBody := []string{
 		`name = "Bifrost"`,
 		"base_url = " + tomlQuote(providerURL),
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
+	}
+	if apiKey != "" && apiKey != "dummy-key" {
+		// Native configure: embed the virtual key so Codex authenticates
+		// without needing OPENAI_API_KEY in the environment.
+		providerBody = append(providerBody, "experimental_bearer_token = "+tomlQuote(apiKey))
+	} else {
+		// Pre-launch: the launcher injects the key via OPENAI_API_KEY.
+		providerBody = append(providerBody, `env_key = "OPENAI_API_KEY"`)
+	}
+	providerBody = append(providerBody,
 		`requires_openai_auth = false`,
 		`supports_websockets = false`,
-	}
+	)
 	configured = replaceTOMLTable(configured, "model_providers.bifrost", providerBody)
 	return config.WriteAtomic(path, configured, 0o600)
 }
@@ -407,7 +386,7 @@ func tomlUnquoteKey(segment string) string {
 }
 
 // tomlTableHeaderMatches reports whether line declares the given dotted
-// table name, tolerating a trailing inline comment (e.g.
+// table name or a descendant, tolerating a trailing inline comment (e.g.
 // "[model_providers.bifrost] # custom provider") and a quoted form of any
 // dotted segment (e.g. [model_providers."bifrost"]), which TOML treats as
 // identical to the bare form.
@@ -426,11 +405,11 @@ func tomlTableHeaderMatches(line, name string) bool {
 	}
 	declared := strings.Split(trimmed[1:idx], ".")
 	target := strings.Split(name, ".")
-	if len(declared) != len(target) {
+	if len(declared) < len(target) {
 		return false
 	}
-	for i, segment := range declared {
-		if tomlUnquoteKey(strings.TrimSpace(segment)) != target[i] {
+	for i, segment := range target {
+		if tomlUnquoteKey(strings.TrimSpace(declared[i])) != segment {
 			return false
 		}
 	}
@@ -497,4 +476,214 @@ func tomlQuote(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// NativeConfigPaths is shared by writers and restoration receipts.
+func NativeConfigPaths(agent string) ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	switch agent {
+	case "claude":
+		return []string{filepath.Join(home, ".claude", "settings.json")}, nil
+	case "codex":
+		dir, err := codexUserHome()
+		if err != nil {
+			return nil, err
+		}
+		return []string{filepath.Join(dir, "config.toml")}, nil
+	case "gemini":
+		return []string{filepath.Join(home, ".gemini", "settings.json"), filepath.Join(home, ".gemini", ".env")}, nil
+	case "opencode":
+		if path := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG")); path != "" {
+			absolute, err := filepath.Abs(path)
+			return []string{absolute}, err
+		}
+		dir := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+		if dir == "" {
+			dir = filepath.Join(home, ".config")
+		}
+		path := filepath.Join(dir, "opencode", "opencode.json")
+		if _, err := os.Stat(path + "c"); err == nil {
+			path += "c"
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return []string{path}, nil
+	default:
+		return nil, fmt.Errorf("agent %q has no persistent configuration manifest", agent)
+	}
+}
+
+// readNativeJSON refuses malformed settings instead of replacing user data.
+func readNativeJSON(path string) (map[string]any, error) {
+	settings := map[string]any{}
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return settings, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := sonic.Unmarshal(normalizeJSONC(body), &settings); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if settings == nil {
+		return nil, fmt.Errorf("%s must contain a JSON object", path)
+	}
+	return settings, nil
+}
+
+func nativeObject(parent map[string]any, key string) (map[string]any, error) {
+	if value, exists := parent[key]; exists {
+		object, ok := value.(map[string]any)
+		if !ok || object == nil {
+			return nil, fmt.Errorf("configuration field %s must be an object", key)
+		}
+		return object, nil
+	}
+	object := map[string]any{}
+	parent[key] = object
+	return object, nil
+}
+
+func writeNativeJSON(path string, value map[string]any) error {
+	body, err := sonic.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return config.WriteAtomic(path, append(body, '\n'), 0o600)
+}
+
+func opencodeWriteNativeConfig(baseURL, apiKey, model string) error {
+	paths, err := NativeConfigPaths("opencode")
+	if err != nil {
+		return err
+	}
+	settings, err := readNativeJSON(paths[0])
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(model) == "" {
+		current, _ := settings["model"].(string)
+		if !strings.HasPrefix(current, "bifrost/") {
+			return fmt.Errorf("OpenCode requires a model; pass --model provider/model")
+		}
+		model = strings.TrimPrefix(current, "bifrost/")
+	}
+	providers, err := nativeObject(settings, "provider")
+	if err != nil {
+		return err
+	}
+	provider, err := nativeObject(providers, "bifrost")
+	if err != nil {
+		return err
+	}
+	provider["npm"], provider["name"] = "@ai-sdk/openai-compatible", "Bifrost"
+	options, err := nativeObject(provider, "options")
+	if err != nil {
+		return err
+	}
+	if _, exists := options["headers"]; exists {
+		headers, err := nativeObject(options, "headers")
+		if err != nil {
+			return err
+		}
+		for name := range headers {
+			switch strings.ToLower(name) {
+			case "authorization", "x-bf-vk", "x-api-key":
+				delete(headers, name)
+			}
+		}
+	}
+	options["baseURL"], options["apiKey"] = openAIBaseURL(baseURL), apiKey
+	if model = strings.TrimSpace(model); model != "" {
+		models, err := nativeObject(provider, "models")
+		if err != nil {
+			return err
+		}
+		if _, exists := models[model]; !exists {
+			models[model] = map[string]any{"name": model}
+		}
+		settings["model"] = opencodeModelRef(model)
+	}
+	return writeNativeJSON(paths[0], settings)
+}
+
+func geminiWriteNativeConfig(baseURL, apiKey, model string) error {
+	paths, err := NativeConfigPaths("gemini")
+	if err != nil {
+		return err
+	}
+	settings, err := readNativeJSON(paths[0])
+	if err != nil {
+		return err
+	}
+	security, err := nativeObject(settings, "security")
+	if err != nil {
+		return err
+	}
+	auth, err := nativeObject(security, "auth")
+	if err != nil {
+		return err
+	}
+	auth["selectedType"] = "gemini-api-key"
+	auth["useExternal"] = false
+	if model = strings.TrimSpace(model); model != "" {
+		modelSettings, err := nativeObject(settings, "model")
+		if err != nil {
+			return err
+		}
+		modelSettings["name"] = model
+	}
+	values := map[string]string{"GEMINI_API_KEY": apiKey, "GOOGLE_GEMINI_BASE_URL": baseURL}
+	if model != "" {
+		values["GEMINI_MODEL"] = model
+	}
+	var existing []byte
+	if body, err := os.ReadFile(paths[1]); err == nil {
+		existing = body
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	lines := strings.Split(strings.TrimSuffix(string(existing), "\n"), "\n")
+	kept := make([]string, 0, len(lines)+len(values))
+	for _, line := range lines {
+		key, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "export "), "=")
+		if _, replace := values[strings.TrimSpace(key)]; !replace {
+			kept = append(kept, line)
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for key, value := range values {
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Errorf("%s must not contain newlines or NUL", key)
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		// Single quotes keep dollar signs and backslashes literal in dotenv.
+		if strings.Contains(values[key], "'") {
+			return fmt.Errorf("%s must not contain a single quote", key)
+		}
+		kept = append(kept, key+"='"+values[key]+"'")
+	}
+	if err := writeNativeJSON(paths[0], settings); err != nil {
+		return err
+	}
+	return config.WriteAtomic(paths[1], []byte(strings.Join(kept, "\n")+"\n"), 0o600)
+}
+
+// openAIBaseURL includes the API version exactly once for OpenAI-compatible SDKs.
+func openAIBaseURL(baseURL string) string {
+	value := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if !strings.HasSuffix(value, "/v1") {
+		value += "/v1"
+	}
+	return value
 }
