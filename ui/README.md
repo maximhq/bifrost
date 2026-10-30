@@ -65,7 +65,7 @@ UI copy uses `i18next`. Source and fallback locale stay **en**. Also supported: 
 | Path | Purpose |
 | --- | --- |
 | `lib/i18n/index.ts` | Init; exports `i18n` / `SUPPORTED_LOCALES` / `changeLocale` / `getLocale` |
-| `lib/i18n/resources.ts` | Aggregates namespace JSON |
+| `lib/i18n/resources.ts` | Bundles the English catalogs; lazy-loads every other language per namespace |
 | `locales/en/*.json` | English (source and fallback) |
 | `locales/<code>/*.json` | Other supported locales, same keys as English |
 
@@ -74,7 +74,7 @@ Namespaces include `common`, `shell`, `login`, `observability`, `models`, `mcp`,
 #### Adding copy
 
 1. Add the same key to `locales/en/<ns>.json` and each `locales/<code>/<ns>.json`.
-2. For a new namespace: create the JSON files and register them in `lib/i18n/resources.ts`.
+2. For a new namespace: create the JSON file in every locale directory, then import the English one and add it to `NAMESPACES` in `lib/i18n/resources.ts`. Other languages are picked up automatically.
 3. In components:
 
 ```tsx
