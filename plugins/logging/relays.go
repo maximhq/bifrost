@@ -167,6 +167,7 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
 	}
 	entry.ApplyGovernanceContext(ctx)
+	applyRelayGrantAttribution(ctx, entry)
 	// Merged again here, as PostLLMHook does: the key's metadata is stamped by governance, which may
 	// run after this plugin's pre-hook, and the key's values win over caller-sent labels.
 	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)

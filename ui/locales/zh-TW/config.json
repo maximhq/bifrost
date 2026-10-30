@@ -1602,6 +1602,7 @@
 			"proxyCaCertInfo": "經 PEM 編碼的 CA 憑證，用於信任透過 SSL 攔截代理的 TLS 連線，或指向它的 env. 參照。",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 或 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "移除設定",
+			"discardProxy": "捨棄變更",
 			"saveProxy": "儲存代理設定"
 		},
 		"pricing": {

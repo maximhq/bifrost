@@ -79,13 +79,33 @@ func (m *Manager) SetPluginPipeline(acquire func() PluginPipeline, release func(
 	m.acquirePipeline, m.releasePipeline = acquire, release
 }
 
-// SetGlobalProxy sets the source of the proxy inherited by endpoints with no proxy_config. It takes
-// effect on the next Upsert of each endpoint. An error from it refuses those endpoints rather than
-// letting them go direct around a proxy that is on but cannot be read.
+// SetGlobalProxy sets the source of the proxy inherited by endpoints with no proxy of their own (see
+// effectiveProxy). It takes effect on the next Upsert of each endpoint. An error from it refuses
+// those endpoints rather than letting them go direct around a proxy that is on but cannot be read.
 func (m *Manager) SetGlobalProxy(fn func() (*schemas.ProxyConfig, error)) {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	m.globalProxy = fn
+}
+
+// effectiveProxy is the proxy an endpoint dials through, by the rule providers follow: a
+// proxy_config that is absent, of type "none" or of no type names no proxy of its own (the UI saves
+// "none" for an untouched proxy form), so the endpoint inherits the global proxy when one is on for
+// inference, and otherwise connects directly. A global proxy that is on but cannot be read is an
+// error, never a silent direct connection. Callers hold writeMu.
+func (m *Manager) effectiveProxy(own *schemas.ProxyConfig) (*schemas.ProxyConfig, error) {
+	if hasOwnProxy(own) {
+		return own, nil
+	}
+	if m.globalProxy != nil {
+		return m.globalProxy()
+	}
+	return nil, nil
+}
+
+// hasOwnProxy reports whether a proxy_config names a proxy of its own, as for providers.
+func hasOwnProxy(proxy *schemas.ProxyConfig) bool {
+	return proxy != nil && proxy.Type != "" && proxy.Type != schemas.NoProxy
 }
 
 // Upsert validates and compiles cfg and makes it live, replacing an endpoint of the same name.
@@ -95,12 +115,9 @@ func (m *Manager) Upsert(cfg *schemas.RelayConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("relay config is required")
 	}
-	proxy := cfg.ProxyConfig
-	if proxy == nil && m.globalProxy != nil {
-		var err error
-		if proxy, err = m.globalProxy(); err != nil {
-			return fmt.Errorf("%w: global proxy: %w", ErrInvalidConfig, err)
-		}
+	proxy, err := m.effectiveProxy(cfg.ProxyConfig)
+	if err != nil {
+		return fmt.Errorf("%w: global proxy: %w", ErrInvalidConfig, err)
 	}
 	e, err := newEndpoint(cfg, proxy)
 	if err != nil {
@@ -145,13 +162,10 @@ func (m *Manager) Replace(cfgs []*schemas.RelayConfig) error {
 		if cfg == nil {
 			continue
 		}
-		proxy := cfg.ProxyConfig
-		if proxy == nil && m.globalProxy != nil {
-			var err error
-			if proxy, err = m.globalProxy(); err != nil {
-				errs = append(errs, fmt.Sprintf("%s: global proxy: %v", cfg.Name, err))
-				continue
-			}
+		proxy, err := m.effectiveProxy(cfg.ProxyConfig)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: global proxy: %v", cfg.Name, err))
+			continue
 		}
 		e, err := newEndpoint(cfg, proxy)
 		if err != nil {

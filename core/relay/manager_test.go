@@ -81,6 +81,106 @@ func bearerConfig(name, baseURL string) *schemas.RelayConfig {
 	}
 }
 
+// recordingProxy is a forward proxy for absolute-form requests that records each target host.
+func recordingProxy(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var hosts []string
+	transport := &http.Transport{Proxy: nil}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !r.URL.IsAbs() {
+			http.Error(w, "absolute-form request required", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		hosts = append(hosts, r.URL.Host)
+		mu.Unlock()
+		out, err := http.NewRequestWithContext(r.Context(), r.Method, r.URL.String(), r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		out.Header = r.Header.Clone()
+		resp, err := transport.RoundTrip(out)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), hosts...)
+	}
+}
+
+// A relay's proxy_config follows the provider rule: no proxy_config, type "none" and an empty type
+// all mean "not configured", so the relay inherits the global proxy when there is one and connects
+// directly when there is none. Only a relay's own http/socks5/environment proxy overrides the
+// global proxy, and environment variables apply only to type "environment".
+func TestRelayProxyConfigFollowsProviderRule(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
+	global, globalHits := recordingProxy(t)
+	own, ownHits := recordingProxy(t)
+	withGlobal := func() (*schemas.ProxyConfig, error) {
+		return &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(global.URL)}, nil
+	}
+
+	cases := []struct {
+		name      string
+		proxy     *schemas.ProxyConfig
+		global    func() (*schemas.ProxyConfig, error)
+		viaGlobal bool
+		viaOwn    bool
+	}{
+		{name: "no proxy_config inherits the global proxy", global: withGlobal, viaGlobal: true},
+		{name: "type none inherits the global proxy", proxy: &schemas.ProxyConfig{Type: schemas.NoProxy}, global: withGlobal, viaGlobal: true},
+		{name: "an empty type inherits the global proxy", proxy: &schemas.ProxyConfig{}, global: withGlobal, viaGlobal: true},
+		{name: "an own http proxy wins over the global proxy", proxy: &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(own.URL)}, global: withGlobal, viaOwn: true},
+		{name: "type none with no global proxy connects directly", proxy: &schemas.ProxyConfig{Type: schemas.NoProxy}},
+		{name: "no proxy_config and no global proxy connects directly"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(nil, nil)
+			pipeline := &fakePipeline{}
+			m.SetPluginPipeline(func() PluginPipeline { return pipeline }, func(PluginPipeline) {})
+			if tc.global != nil {
+				m.SetGlobalProxy(tc.global)
+			}
+			name := fmt.Sprintf("proxied-%d", i)
+			cfg := bearerConfig(name, upstream.URL)
+			cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/**"}}
+			cfg.ProxyConfig = tc.proxy
+			require.NoError(t, m.Upsert(cfg))
+			beforeGlobal, beforeOwn := len(globalHits()), len(ownHits())
+			res, bErr := m.Serve(testCtx(t), Request{Endpoint: name, Method: "POST", Path: "/x", Headers: map[string]string{}})
+			require.Nil(t, bErr)
+			require.NotNil(t, res.Response)
+			require.Equal(t, http.StatusOK, res.Response.StatusCode)
+			gotGlobal := len(globalHits()) - beforeGlobal
+			gotOwn := len(ownHits()) - beforeOwn
+			assert.Equal(t, tc.viaGlobal, gotGlobal == 1, "went through the global proxy")
+			assert.Equal(t, tc.viaOwn, gotOwn == 1, "went through the relay's own proxy")
+			if tc.viaGlobal {
+				assert.Equal(t, upstreamHost, globalHits()[len(globalHits())-1])
+			}
+		})
+	}
+}
+
 func TestUpsertValidatesEndpoint(t *testing.T) {
 	m := NewManager(nil, nil)
 	cfg := bearerConfig("tavily", "https://search.example.com")

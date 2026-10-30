@@ -6635,6 +6635,42 @@ func TestRelayLogStampsAppAndSession(t *testing.T) {
 
 // TestRelayLogPreHookGatesBodyOnPolicy pins that the request body is captured only under a policy
 // that stores content, or provisionally while governance has yet to decide, as PreLLMHook does.
+// A relay row takes its team, customer, business unit, user and project attribution from the
+// request's grant identity, as an LLM row does (applyGrantAttribution): every team and customer the
+// call is attributed to lands in the set columns, not only the first in the scalar ones.
+func TestRelayLogAppliesGrantAttribution(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	g := grant.New()
+	g.SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: "user", Name: "User"},
+		&schemas.EntityRef{ID: "vk", Name: "Key"},
+		[]schemas.EntityRef{{ID: "team", Name: "Team"}, {ID: "parent-team", Name: "Parent team"}},
+		[]schemas.EntityRef{{ID: "direct", Name: "Direct"}, {ID: "inherited", Name: "Inherited"}},
+		[]schemas.EntityRef{{ID: "business", Name: "Business"}}, &schemas.EntityRef{ID: "project", Name: "Project"}))
+	ctx := policyCtx(false, nil)
+	ctx.SetGrant(g)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-grant")
+
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Billable: true, Body: []byte(`{}`)})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "tavily", StatusCode: 200}, nil)
+	require.NoError(t, err)
+
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry)
+	require.Equal(t, schemas.Ptr("vk"), entry.VirtualKeyID)
+	require.Equal(t, schemas.Ptr("team"), entry.TeamID)
+	require.Equal(t, schemas.Ptr("direct"), entry.CustomerID)
+	require.Equal(t, schemas.Ptr("user"), entry.UserID)
+	require.Equal(t, schemas.Ptr("project"), entry.ProjectID)
+	require.Equal(t, []string{"team", "parent-team"}, entry.TeamIDsParsed)
+	require.Equal(t, []string{"Team", "Parent team"}, entry.TeamNamesParsed)
+	require.Equal(t, []string{"direct", "inherited"}, entry.CustomerIDsParsed)
+	require.Equal(t, []string{"Direct", "Inherited"}, entry.CustomerNamesParsed)
+	require.Equal(t, []string{"business"}, entry.BusinessUnitIDsParsed)
+	require.Equal(t, []string{"Business"}, entry.BusinessUnitNamesParsed)
+}
+
 func TestRelayLogPreHookGatesBodyOnPolicy(t *testing.T) {
 	plugin := policyTestPlugin(boolPtr(true), nil, false)
 	plugin.writeQueue = make(chan *writeQueueEntry, 1)

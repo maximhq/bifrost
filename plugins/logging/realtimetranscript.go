@@ -12,73 +12,102 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
+// grantAttributionTarget points at the attribution fields of one row type, so LLM rows and relay
+// rows take the same grant attribution through one implementation.
+type grantAttributionTarget struct {
+	virtualKeyID, virtualKeyName, teamID, teamName, customerID, customerName           **string
+	businessUnitID, businessUnitName, projectID, projectName, userID, userName         **string
+	userEmail                                                                          **string
+	teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames *[]string
+	// The serialized set columns: a set already stored on the row is never replaced.
+	storedTeamIDs, storedTeamNames, storedCustomerIDs, storedCustomerNames, storedBusinessUnitIDs, storedBusinessUnitNames *string
+}
+
 // applyGrantAttribution supplies identity fields absent on a fresh realtime turn context.
 // Access is cached on the session's grant, so scope stamping need not run again.
 func applyGrantAttribution(ctx *schemas.BifrostContext, entry *logstore.Log) {
+	applyGrantAttributionTo(ctx, grantAttributionTarget{
+		virtualKeyID: &entry.VirtualKeyID, virtualKeyName: &entry.VirtualKeyName,
+		teamID: &entry.TeamID, teamName: &entry.TeamName,
+		customerID: &entry.CustomerID, customerName: &entry.CustomerName,
+		businessUnitID: &entry.BusinessUnitID, businessUnitName: &entry.BusinessUnitName,
+		projectID: &entry.ProjectID, projectName: &entry.ProjectName,
+		userID: &entry.UserID, userName: &entry.UserName, userEmail: &entry.UserEmail,
+		teamIDs: &entry.TeamIDsParsed, teamNames: &entry.TeamNamesParsed,
+		customerIDs: &entry.CustomerIDsParsed, customerNames: &entry.CustomerNamesParsed,
+		businessUnitIDs: &entry.BusinessUnitIDsParsed, businessUnitNames: &entry.BusinessUnitNamesParsed,
+		storedTeamIDs: entry.TeamIDs, storedTeamNames: entry.TeamNames,
+		storedCustomerIDs: entry.CustomerIDs, storedCustomerNames: entry.CustomerNames,
+		storedBusinessUnitIDs: entry.BusinessUnitIDs, storedBusinessUnitNames: entry.BusinessUnitNames,
+	})
+}
+
+// applyRelayGrantAttribution gives a relay row the grant attribution an LLM row gets, so every
+// team, customer and business unit the call is attributed to is recorded, not only the first.
+func applyRelayGrantAttribution(ctx *schemas.BifrostContext, entry *logstore.RelayLog) {
+	applyGrantAttributionTo(ctx, grantAttributionTarget{
+		virtualKeyID: &entry.VirtualKeyID, virtualKeyName: &entry.VirtualKeyName,
+		teamID: &entry.TeamID, teamName: &entry.TeamName,
+		customerID: &entry.CustomerID, customerName: &entry.CustomerName,
+		businessUnitID: &entry.BusinessUnitID, businessUnitName: &entry.BusinessUnitName,
+		projectID: &entry.ProjectID, projectName: &entry.ProjectName,
+		userID: &entry.UserID, userName: &entry.UserName, userEmail: &entry.UserEmail,
+		teamIDs: &entry.TeamIDsParsed, teamNames: &entry.TeamNamesParsed,
+		customerIDs: &entry.CustomerIDsParsed, customerNames: &entry.CustomerNamesParsed,
+		businessUnitIDs: &entry.BusinessUnitIDsParsed, businessUnitNames: &entry.BusinessUnitNamesParsed,
+		storedTeamIDs: entry.TeamIDs, storedTeamNames: entry.TeamNames,
+		storedCustomerIDs: entry.CustomerIDs, storedCustomerNames: entry.CustomerNames,
+		storedBusinessUnitIDs: entry.BusinessUnitIDs, storedBusinessUnitNames: entry.BusinessUnitNames,
+	})
+}
+
+func applyGrantAttributionTo(ctx *schemas.BifrostContext, t grantAttributionTarget) {
 	if ctx.Grant() == nil || ctx.Grant().Identity() == nil {
 		return
 	}
 	identity := ctx.Grant().Identity()
-	if vk := identity.VirtualKey(); vk != nil && entry.VirtualKeyID == nil {
-		entry.VirtualKeyID, entry.VirtualKeyName = schemas.Ptr(vk.ID), schemas.Ptr(vk.Name)
+	fill := func(id, name **string, ref *schemas.EntityRef) {
+		if ref != nil && *id == nil {
+			*id, *name = schemas.Ptr(ref.ID), schemas.Ptr(ref.Name)
+		}
 	}
-	if teams := identity.Teams(); len(teams) > 0 && entry.TeamID == nil {
-		entry.TeamID, entry.TeamName = schemas.Ptr(teams[0].ID), schemas.Ptr(teams[0].Name)
+	first := func(refs []schemas.EntityRef) *schemas.EntityRef {
+		if len(refs) == 0 {
+			return nil
+		}
+		return &refs[0]
 	}
-	if customers := identity.Customers(); len(customers) > 0 && entry.CustomerID == nil {
-		entry.CustomerID, entry.CustomerName = schemas.Ptr(customers[0].ID), schemas.Ptr(customers[0].Name)
-	}
-	if units := identity.BusinessUnits(); len(units) > 0 && entry.BusinessUnitID == nil {
-		entry.BusinessUnitID, entry.BusinessUnitName = schemas.Ptr(units[0].ID), schemas.Ptr(units[0].Name)
-	}
-	if project := identity.Project(); project != nil && entry.ProjectID == nil {
-		entry.ProjectID, entry.ProjectName = schemas.Ptr(project.ID), schemas.Ptr(project.Name)
-	}
-	if user := identity.User(); user != nil && entry.UserID == nil {
-		entry.UserID, entry.UserName = schemas.Ptr(user.ID), schemas.Ptr(user.Name)
+	fill(t.virtualKeyID, t.virtualKeyName, identity.VirtualKey())
+	fill(t.teamID, t.teamName, first(identity.Teams()))
+	fill(t.customerID, t.customerName, first(identity.Customers()))
+	fill(t.businessUnitID, t.businessUnitName, first(identity.BusinessUnits()))
+	fill(t.projectID, t.projectName, identity.Project())
+	if user := identity.User(); user != nil && *t.userID == nil {
+		*t.userID, *t.userName = schemas.Ptr(user.ID), schemas.Ptr(user.Name)
 		if user.Email != "" {
-			entry.UserEmail = schemas.Ptr(clampString(user.Email, maxPersistedUserEmailLen))
+			*t.userEmail = schemas.Ptr(clampString(user.Email, maxPersistedUserEmailLen))
 		}
 	}
-	teams := identity.Teams()
-	if len(entry.TeamIDsParsed) == 0 && entry.TeamIDs == nil && len(teams) > 0 {
-		entry.TeamIDsParsed = make([]string, len(teams))
-		for i, team := range teams {
-			entry.TeamIDsParsed[i] = team.ID
+	set := func(ids, names *[]string, storedIDs, storedNames *string, refs []schemas.EntityRef) {
+		if len(refs) == 0 {
+			return
+		}
+		if len(*ids) == 0 && storedIDs == nil {
+			*ids = make([]string, len(refs))
+			for i, ref := range refs {
+				(*ids)[i] = ref.ID
+			}
+		}
+		if len(*names) == 0 && storedNames == nil {
+			*names = make([]string, len(refs))
+			for i, ref := range refs {
+				(*names)[i] = ref.Name
+			}
 		}
 	}
-	if len(entry.TeamNamesParsed) == 0 && entry.TeamNames == nil && len(teams) > 0 {
-		entry.TeamNamesParsed = make([]string, len(teams))
-		for i, team := range teams {
-			entry.TeamNamesParsed[i] = team.Name
-		}
-	}
-	customers := identity.Customers()
-	if len(entry.CustomerIDsParsed) == 0 && entry.CustomerIDs == nil && len(customers) > 0 {
-		entry.CustomerIDsParsed = make([]string, len(customers))
-		for i, customer := range customers {
-			entry.CustomerIDsParsed[i] = customer.ID
-		}
-	}
-	if len(entry.CustomerNamesParsed) == 0 && entry.CustomerNames == nil && len(customers) > 0 {
-		entry.CustomerNamesParsed = make([]string, len(customers))
-		for i, customer := range customers {
-			entry.CustomerNamesParsed[i] = customer.Name
-		}
-	}
-	units := identity.BusinessUnits()
-	if len(entry.BusinessUnitIDsParsed) == 0 && entry.BusinessUnitIDs == nil && len(units) > 0 {
-		entry.BusinessUnitIDsParsed = make([]string, len(units))
-		for i, unit := range units {
-			entry.BusinessUnitIDsParsed[i] = unit.ID
-		}
-	}
-	if len(entry.BusinessUnitNamesParsed) == 0 && entry.BusinessUnitNames == nil && len(units) > 0 {
-		entry.BusinessUnitNamesParsed = make([]string, len(units))
-		for i, unit := range units {
-			entry.BusinessUnitNamesParsed[i] = unit.Name
-		}
-	}
+	set(t.teamIDs, t.teamNames, t.storedTeamIDs, t.storedTeamNames, identity.Teams())
+	set(t.customerIDs, t.customerNames, t.storedCustomerIDs, t.storedCustomerNames, identity.Customers())
+	set(t.businessUnitIDs, t.businessUnitNames, t.storedBusinessUnitIDs, t.storedBusinessUnitNames, identity.BusinessUnits())
 }
 
 const realtimeInputItemsMetadata = "realtime_input_items"
