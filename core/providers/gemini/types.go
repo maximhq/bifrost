@@ -2773,9 +2773,8 @@ type GenerateContentResponseUsageMetadata struct {
 // GenerateContentResponse represents response message for PredictionService.GenerateContent.
 type GenerateContentResponse struct {
 	// Response variations returned by the model.
-	Candidates []*Candidate `json:"candidates,omitempty"`
-	// Embedding is set on embeddings batch results, which share this envelope.
-	Embedding *GeminiEmbedding `json:"embedding,omitempty"`
+	Candidates []*Candidate     `json:"candidates,omitempty"`
+	Embedding  *GeminiEmbedding `json:"embedding,omitempty"` // set on embeddings batch results
 	// Timestamp when the request is made to the server.
 	CreateTime time.Time `json:"createTime,omitempty"`
 	// Output only. The model version used to generate the response.
@@ -3077,13 +3076,12 @@ type GeminiBatchErrorInfo struct {
 // OpenAI-compatible integrations may wrap it as {status_code, body}. Preserve the
 // raw response so the decoder can accept both wire shapes.
 type GeminiBatchFileResultLine struct {
-	CustomID string                 `json:"custom_id,omitempty"`
-	Key      string                 `json:"key,omitempty"`
-	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
-	Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
-	// Embeddings batch lines may carry the embed response directly, with no response wrapper.
-	Embedding     *GeminiEmbedding                      `json:"embedding,omitempty"`
-	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"`
+	CustomID      string                                `json:"custom_id,omitempty"`
+	Key           string                                `json:"key,omitempty"`
+	Response      sonic.NoCopyRawMessage                `json:"response,omitempty"`
+	Error         *GeminiBatchErrorInfo                 `json:"error,omitempty"`
+	Embedding     *GeminiEmbedding                      `json:"embedding,omitempty"`     // embeddings lines may skip the response wrapper
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"` // usage that rides with an unwrapped embedding
 }
 
 // GeminiFileResponseLine represents the response field inside a Gemini batch
