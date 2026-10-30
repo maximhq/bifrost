@@ -42,6 +42,7 @@ import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import "@enterprise/lib/registrations/modelLimitScopes";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
+import { useActionParam } from "@/hooks/useActionParam";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -225,6 +226,7 @@ export default function ModelLimitsTable({
 		void setEditParam(null);
 		setIsCreatingModelLimit(true);
 	};
+	useActionParam("create", handleAddModelLimit, { isOpen: isCreatingModelLimit, enabled: hasCreateAccess });
 
 	const handleEditModelLimit = (config: ModelConfig) => {
 		setIsCreatingModelLimit(false);

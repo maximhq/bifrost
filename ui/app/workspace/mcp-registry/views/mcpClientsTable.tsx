@@ -70,6 +70,7 @@ import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { useActionParam } from "@/hooks/useActionParam";
 
 function MCPClientActionsMenu({
 	client,
@@ -432,6 +433,7 @@ export default function MCPClientsTable({
 	const handleCreate = () => {
 		setFormOpen(true);
 	};
+	useActionParam("create", handleCreate, { isOpen: formOpen, enabled: hasCreateMCPClientAccess });
 
 	const handleReconnect = async (client: MCPClient) => {
 		try {

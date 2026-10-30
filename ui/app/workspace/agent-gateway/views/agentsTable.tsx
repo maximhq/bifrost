@@ -32,6 +32,7 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import AgentSheet from "./agentSheet";
 import { AgentsEmptyState } from "./agentsEmptyState";
+import { useActionParam } from "@/hooks/useActionParam";
 
 function AgentActionsMenu({
 	agent,
@@ -217,6 +218,7 @@ export default function AgentsTable({
 		setSelectedAgent(null);
 		setSheetOpen(true);
 	};
+	useActionParam("create", handleCreate, { isOpen: sheetOpen, enabled: hasCreateAccess });
 
 	const handleEdit = (agent: AgentRegistrationView) => {
 		setSelectedAgent(agent);
