@@ -101,3 +101,54 @@ func TestPassthroughLoopStreamNoReplayHeader(t *testing.T) {
 	for range got {
 	}
 }
+
+func TestPassthroughLoopStreamLateReplayRefusedMarkerNeverReplays(t *testing.T) {
+	tests := []struct {
+		name  string
+		parts []string
+	}{
+		{"split replay refused", []string{`{"error":{"code":"upstream_reset_`, `replay_refused"}}`}},
+		{"late insufficient quota", []string{`{"error":{"code":"rate_limit_exceeded"}}`, `{"error":{"code":"insufficient_quota"}}`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			wantHeaders := map[string]string{"Content-Type": "application/json", "X-Upstream": "kept"}
+			handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				calls++
+				stream := make(chan *schemas.BifrostStreamChunk, len(tt.parts))
+				for i, part := range tt.parts {
+					headers := map[string]string(nil)
+					if i == 0 {
+						headers = wantHeaders
+					}
+					stream <- &schemas.BifrostStreamChunk{BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{StatusCode: 429, Headers: headers, Body: []byte(part)}}
+				}
+				close(stream)
+				return stream, nil
+			}
+			got, err := executeRequestWithRetries(pilotRetryContext(), pilotRetryConfig(3), handler, nil, schemas.PassthroughStreamRequest, schemas.OpenAI, "gpt-test", nil, NewDefaultLogger(schemas.LogLevelError))
+			if err != nil || got == nil || calls != 1 {
+				t.Fatalf("calls=%d got=%v err=%+v", calls, got, err)
+			}
+			var body string
+			var first *schemas.BifrostPassthroughResponse
+			for chunk := range got {
+				if chunk.BifrostPassthroughResponse == nil {
+					t.Fatalf("unexpected chunk: %+v", chunk)
+				}
+				if first == nil {
+					first = chunk.BifrostPassthroughResponse
+				}
+				body += string(chunk.BifrostPassthroughResponse.Body)
+			}
+			wantBody := ""
+			for _, part := range tt.parts {
+				wantBody += part
+			}
+			if first == nil || first.StatusCode != 429 || first.Headers["Content-Type"] != wantHeaders["Content-Type"] || first.Headers["X-Upstream"] != wantHeaders["X-Upstream"] || body != wantBody {
+				t.Fatalf("raw response lost: first=%+v body=%q want=%q", first, body, wantBody)
+			}
+		})
+	}
+}
