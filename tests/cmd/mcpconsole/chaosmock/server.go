@@ -28,6 +28,7 @@ type Server struct {
 	streams  *streamRegistry
 	oauth    *oauthState
 	rest     *restSurface
+	llm      *llmSurface
 
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
@@ -64,6 +65,7 @@ func NewServer(name string) *Server {
 		streams:  newStreamRegistry(),
 		oauth:    newOAuthState(),
 		rest:     &restSurface{},
+		llm:      newLLMSurface(),
 		version:  "1.0.0",
 	}
 }

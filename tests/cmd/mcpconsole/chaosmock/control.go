@@ -2,7 +2,9 @@ package chaosmock
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -40,6 +42,8 @@ type State struct {
 	OAuth *OAuthState `json:"oauth,omitempty"`
 	// REST is the REST surface's routes and call log, present once used.
 	REST *RESTState `json:"rest,omitempty"`
+	// LLM is the LLM surface's models and scenarios, present once used.
+	LLM *LLMState `json:"llm,omitempty"`
 }
 
 // State captures a server's current state.
@@ -62,6 +66,7 @@ func (s *Server) State() State {
 		StdioEnv:     s.StdioEnv(),
 		OAuth:        oauth,
 		REST:         s.rest.snapshot(),
+		LLM:          s.llm.snapshot(),
 	}
 }
 
@@ -131,6 +136,10 @@ func (f *Fleet) routeControl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.State())
 		return
 	}
+	if strings.TrimSuffix(verb, "/") == "llm/requests" {
+		s.serveLLMRequests(w, r)
+		return
+	}
 	if err := s.applyControl(verb, r); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -168,6 +177,11 @@ type controlBody struct {
 	Routes []Route `json:"routes,omitempty"`
 	Method string  `json:"method,omitempty"`
 	Path   string  `json:"path,omitempty"`
+	// Scenario, Turns, Then and Models drive the llm/* verbs.
+	Scenario string    `json:"scenario,omitempty"`
+	Turns    []LLMTurn `json:"turns,omitempty"`
+	Then     *LLMTurn  `json:"then,omitempty"`
+	Models   []string  `json:"models,omitempty"`
 }
 
 func (s *Server) applyControl(verb string, r *http.Request) error {
@@ -271,6 +285,7 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		s.counters.Reset()
 		s.oauth.resetCounters()
 		s.rest.clearLog()
+		s.llm.clearLog()
 	case "routes/set":
 		for _, rt := range body.Routes {
 			if err := rt.Validate(); err != nil {
@@ -292,6 +307,15 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		}
 	case "oauth/expire", "oauth/revoke", "oauth/fail":
 		return s.applyOAuthControl(strings.TrimSuffix(verb, "/"), body)
+	case "llm/script", "llm/append":
+		return s.applyLLMScript(strings.TrimSuffix(verb, "/") == "llm/script", body)
+	case "llm/clear":
+		s.llm.clear(body.Scenario)
+	case "llm/models":
+		if len(body.Models) == 0 {
+			return errBadRequest("models must name at least one model")
+		}
+		s.llm.setModels(body.Models)
 	default:
 		return errBadRequest("unknown control verb: " + verb)
 	}
@@ -355,3 +379,51 @@ func decodeBody(r *http.Request, v any) error {
 type errBadRequest string
 
 func (e errBadRequest) Error() string { return string(e) }
+
+// applyLLMScript handles llm/script, which replaces a scenario's turns and
+// then turn and clears its logged requests, and llm/append, which adds turns
+// and keeps them. Both refuse a scenario key the request marker cannot carry
+// and a turn that cannot be rendered.
+func (s *Server) applyLLMScript(replace bool, body controlBody) error {
+	if !scenarioMarker.MatchString("[scenario:" + body.Scenario + "]") {
+		return errBadRequest("scenario must be 1 to 64 letters, digits, '.', '_' or '-'")
+	}
+	if !replace && body.Then != nil {
+		return errBadRequest("then is set by llm/script only")
+	}
+	if replace && len(body.Turns) == 0 && body.Then == nil {
+		return errBadRequest("llm/script needs turns or a then turn")
+	}
+	turns := body.Turns
+	if body.Then != nil {
+		turns = append(append([]LLMTurn{}, turns...), *body.Then)
+	}
+	for i, t := range turns {
+		if err := t.Validate(); err != nil {
+			return errBadRequest(fmt.Sprintf("turn %d: %v", i, err))
+		}
+	}
+	s.llm.script(body.Scenario, body.Turns, body.Then, replace)
+	return nil
+}
+
+// serveLLMRequests answers GET llm/requests: the logged requests of one
+// scenario (?scenario=<key>), or of every scenario when none is named, after
+// sequence number ?since=<n>, oldest first.
+func (s *Server) serveLLMRequests(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "llm/requests is read with GET", http.StatusMethodNotAllowed)
+		return
+	}
+	since := 0
+	if v := r.URL.Query().Get("since"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "since must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		since = n
+	}
+	scenario := r.URL.Query().Get("scenario")
+	writeJSON(w, http.StatusOK, map[string]any{"scenario": scenario, "requests": s.llm.requests(scenario, since)})
+}
