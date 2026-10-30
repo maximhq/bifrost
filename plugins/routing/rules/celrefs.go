@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/google/cel-go/cel"
@@ -70,6 +71,11 @@ func celExprReferencesIdentifier(expr celast.Expr, identifier string, scopedIden
 
 	switch expr.Kind() {
 	case celast.IdentKind:
+		// A leading dot (".complexity_tier") resolves from the root scope, so it
+		// names the declared variable even inside a comprehension that shadows it.
+		if root, ok := strings.CutPrefix(expr.AsIdent(), "."); ok {
+			return root == identifier
+		}
 		return expr.AsIdent() == identifier && scopedIdents[identifier] == 0
 	case celast.CallKind:
 		call := expr.AsCall()

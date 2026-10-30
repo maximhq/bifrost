@@ -2515,6 +2515,9 @@ func TestEvaluateRoutingRules_CurrentTime(t *testing.T) {
 		{name: "shadowed macro variable is not the clock", expr: `[1].exists(current_time, current_time == 1)`, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 0},
 		{name: "referencing rule does not see the zero placeholder", expr: `current_time.getHours('UTC') == 0`, at: wednesday, model: "deepseek-chat", wantMatch: false, wantCalls: 1},
 		{name: "midnight hour matches hour 0", expr: `current_time.getHours('UTC') == 0`, at: time.Date(2026, 1, 7, 0, 15, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+		{name: "leading-dot form reads the clock", expr: `.current_time.getFullYear('UTC') >= 2020`, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+		{name: "leading-dot form does not see the zero placeholder", expr: `.current_time.getHours('UTC') == 0`, at: wednesday, model: "deepseek-chat", wantMatch: false, wantCalls: 1},
+		{name: "leading-dot form bypasses a shadowing macro variable", expr: `[1].exists(current_time, .current_time.getHours('UTC') == 2)`, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 1},
 	}
 
 	for _, tt := range tests {
