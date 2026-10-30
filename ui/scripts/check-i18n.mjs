@@ -9,9 +9,39 @@ export const NAMESPACES = Object.freeze(["common", "shell", "models", "governanc
 
 const PLURAL_KEY_PATTERN = /^(.+)_(zero|one|two|few|many|other)$/;
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const DEFAULT_INVENTORY = { namespaces: NAMESPACES, enterpriseNamespaces: new Set() };
 
-function localePath(locale, namespace) {
-	return `ui/locales/${locale}/${namespace}.json`;
+function resourceInventory(repoRoot) {
+	const enterpriseModule = path.join(repoRoot, "ui", "app", "enterprise", "lib", "i18n", "resources.ts");
+	const fallbackModule = path.join(repoRoot, "ui", "app", "_fallbacks", "enterprise", "lib", "i18n", "resources.ts");
+	const modulePath = existsSync(enterpriseModule) ? enterpriseModule : fallbackModule;
+	if (!existsSync(modulePath)) {
+		return DEFAULT_INVENTORY;
+	}
+	const sourceFile = ts.createSourceFile(modulePath, readFileSync(modulePath, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const enterpriseNamespaces = new Set();
+	function visit(node) {
+		if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "ENTERPRISE_NAMESPACES" && node.initializer) {
+			const initializer =
+				ts.isAsExpression(node.initializer) || ts.isSatisfiesExpression(node.initializer) ? node.initializer.expression : node.initializer;
+			if (ts.isArrayLiteralExpression(initializer)) {
+				for (const element of initializer.elements) {
+					if (ts.isStringLiteral(element) || ts.isNoSubstitutionTemplateLiteral(element)) {
+						enterpriseNamespaces.add(element.text);
+					}
+				}
+			}
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(sourceFile);
+	return { namespaces: [...new Set([...NAMESPACES, ...enterpriseNamespaces])], enterpriseNamespaces };
+}
+
+function localePath(locale, namespace, enterpriseNamespaces = DEFAULT_INVENTORY.enterpriseNamespaces) {
+	return enterpriseNamespaces.has(namespace)
+		? `ui/app/enterprise/locales/${locale}/${namespace}.json`
+		: `ui/locales/${locale}/${namespace}.json`;
 }
 
 function resourceError(type, message) {
@@ -28,13 +58,13 @@ function getResource(resources, locale, namespace) {
 	return resources?.[locale]?.[namespace];
 }
 
-function makeFinding(type, locale, namespace, key, message, extra = {}) {
+function makeFinding(type, locale, namespace, key, message, extra = {}, enterpriseNamespaces = DEFAULT_INVENTORY.enterpriseNamespaces) {
 	return {
 		type,
 		locale,
 		namespace,
 		key,
-		path: localePath(locale, namespace),
+		path: localePath(locale, namespace, enterpriseNamespaces),
 		message,
 		...extra,
 	};
@@ -88,11 +118,16 @@ function validPluralExtras(englishResource, localeResource, locale) {
 	return extras;
 }
 
-export function validateLocales(currentResources, baselineResources = {}) {
+function inventoryFromResources(resources) {
+	const enterpriseNamespaces = new Set(Object.keys(resources?.en ?? {}).filter((namespace) => !NAMESPACES.includes(namespace)));
+	return { namespaces: [...new Set([...NAMESPACES, ...enterpriseNamespaces])], enterpriseNamespaces };
+}
+
+export function validateLocales(currentResources, baselineResources = {}, inventory = inventoryFromResources(currentResources)) {
 	const findings = [];
 
 	for (const locale of LOCALES) {
-		for (const namespace of NAMESPACES) {
+		for (const namespace of inventory.namespaces) {
 			const baselineResource = getResource(baselineResources, locale, namespace);
 			if (isResourceError(baselineResource)) {
 				findings.push(
@@ -101,7 +136,9 @@ export function validateLocales(currentResources, baselineResources = {}) {
 						locale,
 						namespace,
 						null,
-						`Could not load baseline ${localePath(locale, namespace)}: ${baselineResource.message}`,
+						`Could not load baseline ${localePath(locale, namespace, inventory.enterpriseNamespaces)}: ${baselineResource.message}`,
+						{},
+						inventory.enterpriseNamespaces,
 					),
 				);
 			}
@@ -114,7 +151,9 @@ export function validateLocales(currentResources, baselineResources = {}) {
 						locale,
 						namespace,
 						null,
-						`Could not load ${localePath(locale, namespace)}: ${currentResource.message}`,
+						`Could not load ${localePath(locale, namespace, inventory.enterpriseNamespaces)}: ${currentResource.message}`,
+						{},
+						inventory.enterpriseNamespaces,
 					),
 				);
 			}
@@ -125,7 +164,7 @@ export function validateLocales(currentResources, baselineResources = {}) {
 		if (locale === "en") {
 			continue;
 		}
-		for (const namespace of NAMESPACES) {
+		for (const namespace of inventory.namespaces) {
 			const englishResource = getResource(currentResources, "en", namespace);
 			const localeResource = getResource(currentResources, locale, namespace);
 			if (!englishResource || !localeResource || isResourceError(englishResource) || isResourceError(localeResource)) {
@@ -136,7 +175,17 @@ export function validateLocales(currentResources, baselineResources = {}) {
 			const localeKeys = flattenKeys(localeResource);
 			for (const key of englishKeys) {
 				if (!localeKeys.has(key)) {
-					findings.push(makeFinding("missing-key", locale, namespace, key, `${locale}/${namespace} is missing English key ${key}`));
+					findings.push(
+						makeFinding(
+							"missing-key",
+							locale,
+							namespace,
+							key,
+							`${locale}/${namespace} is missing English key ${key}`,
+							{},
+							inventory.enterpriseNamespaces,
+						),
+					);
 				}
 			}
 			for (const key of localeKeys) {
@@ -148,6 +197,8 @@ export function validateLocales(currentResources, baselineResources = {}) {
 							namespace,
 							key,
 							`${locale}/${namespace} has non-plural or locale-incompatible extra key ${key}`,
+							{},
+							inventory.enterpriseNamespaces,
 						),
 					);
 				}
@@ -159,7 +210,7 @@ export function validateLocales(currentResources, baselineResources = {}) {
 		if (locale === "en") {
 			continue;
 		}
-		for (const namespace of NAMESPACES) {
+		for (const namespace of inventory.namespaces) {
 			const baselineEnglish = getResource(baselineResources, "en", namespace);
 			const baselineLocale = getResource(baselineResources, locale, namespace);
 			const currentLocale = getResource(currentResources, locale, namespace);
@@ -170,9 +221,15 @@ export function validateLocales(currentResources, baselineResources = {}) {
 			for (const key of validPluralExtras(baselineEnglish, baselineLocale, locale)) {
 				if (!currentKeys.has(key)) {
 					findings.push(
-						makeFinding("removed-plural-key", locale, namespace, key, `${locale}/${namespace} removed PR-head plural key ${key}`, {
-							reason: "baseline-retention",
-						}),
+						makeFinding(
+							"removed-plural-key",
+							locale,
+							namespace,
+							key,
+							`${locale}/${namespace} removed PR-head plural key ${key}`,
+							{ reason: "baseline-retention" },
+							inventory.enterpriseNamespaces,
+						),
 					);
 				}
 			}
@@ -182,8 +239,8 @@ export function validateLocales(currentResources, baselineResources = {}) {
 	return findings;
 }
 
-function loadResource(repoRoot, ref, locale, namespace) {
-	const relativePath = localePath(locale, namespace);
+function loadResource(repoRoot, ref, locale, namespace, inventory) {
+	const relativePath = localePath(locale, namespace, inventory.enterpriseNamespaces);
 	let source;
 	try {
 		source = ref
@@ -203,24 +260,24 @@ function loadResource(repoRoot, ref, locale, namespace) {
 	}
 }
 
-export function loadResources(repoRoot, ref = null) {
+export function loadResources(repoRoot, ref = null, inventory = resourceInventory(repoRoot)) {
 	const resources = {};
 	for (const locale of LOCALES) {
 		resources[locale] = {};
-		for (const namespace of NAMESPACES) {
-			resources[locale][namespace] = loadResource(repoRoot, ref, locale, namespace);
+		for (const namespace of inventory.namespaces) {
+			resources[locale][namespace] = loadResource(repoRoot, ref, locale, namespace, inventory);
 		}
 	}
 	return resources;
 }
 
-export function countRetainedPluralKeys(currentResources, baselineResources) {
+export function countRetainedPluralKeys(currentResources, baselineResources, inventory = DEFAULT_INVENTORY) {
 	let count = 0;
 	for (const locale of LOCALES) {
 		if (locale === "en") {
 			continue;
 		}
-		for (const namespace of NAMESPACES) {
+		for (const namespace of inventory.namespaces) {
 			const currentLocale = getResource(currentResources, locale, namespace);
 			if (!currentLocale || isResourceError(currentLocale)) {
 				continue;
@@ -1317,9 +1374,10 @@ export function runCli(argv = process.argv.slice(2)) {
 	const selectedFileSet = new Set(selectedFiles);
 	const auditedConflicts = conflictedFiles.filter((file) => selectedFileSet.has(file));
 
-	const currentResources = loadResources(repoRoot);
-	const baselineResources = loadResources(repoRoot, options.baseline);
-	const localeFindings = validateLocales(currentResources, baselineResources);
+	const inventory = resourceInventory(repoRoot);
+	const currentResources = loadResources(repoRoot, null, inventory);
+	const baselineResources = loadResources(repoRoot, options.baseline, inventory);
+	const localeFindings = validateLocales(currentResources, baselineResources, inventory);
 	const currentEntries = inventoryForFiles(repoRoot, selectedFiles);
 	const baselineEntries = inventoryForFiles(repoRoot, selectedFiles, options.baseline);
 	const currentCallFindings = callFindings(currentEntries, currentResources.en, review);
@@ -1347,9 +1405,9 @@ export function runCli(argv = process.argv.slice(2)) {
 		inventoryOnly: options.inventoryOnly,
 		locales: {
 			localeCount: LOCALES.length,
-			namespaceCount: NAMESPACES.length,
-			fileCount: LOCALES.length * NAMESPACES.length,
-			retainedPluralKeys: countRetainedPluralKeys(currentResources, baselineResources),
+			namespaceCount: inventory.namespaces.length,
+			fileCount: LOCALES.length * inventory.namespaces.length,
+			retainedPluralKeys: countRetainedPluralKeys(currentResources, baselineResources, inventory),
 			findings: localeFindings,
 		},
 		calls: {

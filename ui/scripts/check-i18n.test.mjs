@@ -122,6 +122,33 @@ describe("validateLocales", () => {
 		]);
 	});
 
+	it("loads enterprise namespaces from the runtime registry and locale paths", () => {
+		const repoRoot = makeTemporaryDirectory();
+		writeMinimalResources(repoRoot);
+		const enterpriseModuleDir = path.join(repoRoot, "ui", "app", "enterprise", "lib", "i18n");
+		mkdirSync(enterpriseModuleDir, { recursive: true });
+		writeFileSync(path.join(enterpriseModuleDir, "resources.ts"), 'export const ENTERPRISE_NAMESPACES = ["agent"] as const;\n');
+		for (const locale of LOCALES) {
+			const directory = path.join(repoRoot, "ui", "app", "enterprise", "locales", locale);
+			mkdirSync(directory, { recursive: true });
+			writeFileSync(path.join(directory, "agent.json"), JSON.stringify({ title: "Agent" }));
+		}
+		const baseline = loadResources(repoRoot);
+		writeFileSync(path.join(repoRoot, "ui", "app", "enterprise", "locales", "de", "agent.json"), "{}");
+		const current = loadResources(repoRoot);
+
+		expect(current.en.agent).toEqual({ title: "Agent" });
+		expect(validateLocales(current, baseline)).toEqual([
+			expect.objectContaining({
+				type: "missing-key",
+				locale: "de",
+				namespace: "agent",
+				key: "title",
+				path: "ui/app/enterprise/locales/de/agent.json",
+			}),
+		]);
+	});
+
 	it("reports an arbitrary non-plural extra key", () => {
 		const current = {
 			en: { common: { greeting: "Hello" } },
