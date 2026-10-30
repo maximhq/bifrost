@@ -9,8 +9,14 @@ import { resolveWarpModel, warpModelForRequest, warpModelKey, warpModels } from 
 import WarpHistory from "@/components/warp/warpHistory";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
-import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
-import { useWarp } from "@/lib/contexts/warpContext";
+import {
+	indexStatusLabel,
+	nextWarpHandoff,
+	pendingWarpQuestion,
+	shouldDrainQueue,
+	turnsFromStoredMessages,
+} from "@/components/warp/warpStream.utils";
+import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
 import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
@@ -133,6 +139,28 @@ export default function WarpPanel() {
 		askRef.current?.(next.text);
 	}, [isStreaming, queue, question, error, isOpeningStored]);
 
+	// A question handed over from outside (the ⌘K palette) starts its own thread once the panel is free.
+	const startThreadRef = useRef<((text: string) => void) | null>(null);
+	const handoffSeq = warp?.handoffSeq ?? 0;
+	const takeHandoff = warp?.takeHandoff;
+	const stream = warp?.stream;
+	// Waits out the answer in flight and the follow-ups queued behind it, so they land in the thread they were written for.
+	// Queued follow-ups hold the handoff even after an error or a clarification question: starting a thread clears the queue.
+	const isBusy = isStreaming || isOpeningStored || queue.length > 0;
+	useEffect(() => {
+		if (!takeHandoff || !stream) return;
+		const gate = {
+			isConfigLoading,
+			isConfigFetching,
+			isConfigError,
+			isConfigured,
+			isBusy,
+			isStreamingNow: stream.getSnapshot().isStreaming,
+		};
+		const text = nextWarpHandoff(gate, takeHandoff);
+		if (text) startThreadRef.current?.(text);
+	}, [handoffSeq, takeHandoff, stream, isConfigLoading, isConfigFetching, isConfigError, isConfigured, isBusy]);
+
 	if (!warp) return null;
 
 	const openStored = async (conversation: WarpConversation) => {
@@ -160,22 +188,25 @@ export default function WarpPanel() {
 	// "Turned off" and "never set up" both report configured:false but need different fixes.
 	const isDisabledButComplete = !!config && !config.enabled && !!config.provider && !!config.model;
 
-	const ask = (text: string, label?: string) => {
+	const sendTurn = (text: string, history: WarpTurn[], label?: string, answeredQuestion?: string) => {
 		abandonStoredLoad();
-		const history = warp.turns;
-		warp.appendTurn({
-			role: "user",
-			content: text,
-			displayContent: label,
-			answeredQuestion: question?.question,
-		});
+		warp.appendTurn({ role: "user", content: text, displayContent: label, answeredQuestion });
 		clearQuestion();
 		// Sending re-pins the transcript, or the new message lands off-screen.
 		scrollToBottom();
 		sentModelRef.current = !!requestModel;
 		void send(history, text, requestModel);
 	};
+	const ask = (text: string, label?: string) => sendTurn(text, warp.turns, label, question?.question);
 	askRef.current = ask;
+	// Same steps as New chat. The history is passed as empty because warp.turns still holds the old thread this render.
+	startThreadRef.current = (text: string) => {
+		resetConversation();
+		setQueue([]);
+		warp.clear();
+		setShowHistory(false);
+		sendTurn(text, []);
+	};
 
 	// The queue does not auto-drain after an error; this is the manual way to resume it.
 	const resumeQueue = () => {
