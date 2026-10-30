@@ -1575,6 +1575,7 @@
 			"proxyCaCertInfo": "A PEM-encoded CA certificate to trust for TLS connections through an SSL-intercepting proxy, or an env. reference to it.",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Remove configuration",
+			"discardProxy": "Discard changes",
 			"saveProxy": "Save Proxy Configuration"
 		},
 		"pricing": {

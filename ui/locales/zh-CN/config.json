@@ -1565,6 +1565,7 @@
 			"proxyCaCertInfo": "PEM 编码的 CA 证书，用于通过执行 SSL 拦截的代理建立 TLS 连接时的信任，或指向它的 env. 引用。",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 或 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "移除配置",
+			"discardProxy": "放弃更改",
 			"saveProxy": "保存代理配置"
 		},
 		"pricing": {

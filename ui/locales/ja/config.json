@@ -1589,6 +1589,7 @@
 			"proxyCaCertInfo": "SSL を傍受するプロキシ経由の TLS 接続で信頼する、PEM 形式の CA 証明書、またはそれを指す env. 参照です。",
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- または env.PROXY_CA_CERT_PEM",
 			"removeConfig": "設定を削除",
+			"discardProxy": "変更を破棄",
 			"saveProxy": "プロキシ設定を保存"
 		},
 		"pricing": {
