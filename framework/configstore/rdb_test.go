@@ -495,6 +495,43 @@ func TestCreateCustomMCPLibraryEntry_ReplacesADeletedRemoteEntry(t *testing.T) {
 	require.ErrorIs(t, store.CreateCustomMCPLibraryEntry(ctx, again), ErrAlreadyExists, "a live custom entry keeps its name")
 }
 
+// TestGetMCPLibraryPaginated_TagsMatchAny checks that several tags select the
+// entries carrying any of them, and that the other filters still apply on top.
+func TestGetMCPLibraryPaginated_TagsMatchAny(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, e := range []struct {
+		name     string
+		category string
+		tags     []string
+	}{
+		{"Tagged X", "files", []string{"x"}},
+		{"Tagged Y", "search", []string{"y"}},
+		{"Tagged XY", "search", []string{"x", "y"}},
+		{"Untagged", "files", nil},
+	} {
+		require.NoError(t, store.UpsertMCPLibraryEntry(ctx, &tables.TableMCPLibrary{
+			Slug: strings.ToLower(strings.ReplaceAll(e.name, " ", "-")), Name: e.name, Category: e.category,
+			ConnectionType: schemas.MCPConnectionTypeHTTP, Tags: e.tags, Source: "remote",
+		}))
+	}
+	names := func(params MCPLibraryQueryParams) []string {
+		entries, _, err := store.GetMCPLibraryPaginated(ctx, params)
+		require.NoError(t, err)
+		out := make([]string, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, e.Name)
+		}
+		return out
+	}
+
+	assert.Equal(t, []string{"Tagged X", "Tagged XY"}, names(MCPLibraryQueryParams{Tags: []string{"x"}}))
+	assert.Equal(t, []string{"Tagged X", "Tagged XY", "Tagged Y"}, names(MCPLibraryQueryParams{Tags: []string{"x", "y"}}))
+	assert.Equal(t, []string{"Tagged XY", "Tagged Y"}, names(MCPLibraryQueryParams{Tags: []string{"x", "y"}, Categories: []string{"search"}}))
+	assert.Equal(t, []string{"Tagged Y"}, names(MCPLibraryQueryParams{Tags: []string{"x", "y"}, Search: "tagged y"}))
+}
+
 func TestValidateSkillVersionIncrementRequiresGreaterVersion(t *testing.T) {
 	tests := []struct {
 		name    string

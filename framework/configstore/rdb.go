@@ -2036,14 +2036,21 @@ func (s *RDBConfigStore) GetMCPLibraryPaginated(ctx context.Context, params MCPL
 	// over the serialized array, which is sufficient for the catalog's small,
 	// well-formed tag values and avoids a DB-specific JSON operator. LIKE
 	// metacharacters in the tag are escaped (with an explicit ESCAPE clause) so
-	// a tag containing % or _ matches literally instead of as a wildcard.
+	// a tag containing % or _ matches literally instead of as a wildcard. The
+	// per-tag matches are ORed inside one parenthesized condition so the other
+	// filters still apply to every match.
 	likeEscaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	var tagConditions []string
+	var tagArgs []any
 	for _, tag := range params.Tags {
 		if tag == "" {
 			continue
 		}
-		escapedTag := likeEscaper.Replace(tag)
-		baseQuery = baseQuery.Where(`tags LIKE ? ESCAPE '\'`, `%"`+escapedTag+`"%`)
+		tagConditions = append(tagConditions, `tags LIKE ? ESCAPE '\'`)
+		tagArgs = append(tagArgs, `%"`+likeEscaper.Replace(tag)+`"%`)
+	}
+	if len(tagConditions) > 0 {
+		baseQuery = baseQuery.Where("("+strings.Join(tagConditions, " OR ")+")", tagArgs...)
 	}
 
 	var totalCount int64
