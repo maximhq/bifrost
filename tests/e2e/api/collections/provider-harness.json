@@ -298482,6 +298482,158 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Anthropic terminal tool arguments from OpenAI Responses (#9296)",
+      "description": "Pin client-visible JSON argument assembly on the normalized Anthropic route for single and parallel calls. The Go converter regressions deterministically cover final-only argument events, partial deltas, duplicate done events and closed blocks. Live provider event boundaries vary, so these requests verify the full wire path but do not force a terminal-only upstream response. Native Responses and Chat Completions routes do not use this reverse Anthropic converter.",
+      "item": [
+        {
+          "name": "OpenAI gpt-4o-mini /anthropic/v1/messages terminal tool arguments single call - #9296",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var blocks = {};",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var value = line.slice(6);",
+                  "  if (value === '[DONE]') { return; }",
+                  "  var event = JSON.parse(value);",
+                  "  if (event.type === 'error') { throw new Error(JSON.stringify(event)); }",
+                  "  if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {",
+                  "    blocks[event.index] = { name: event.content_block.name, json: '', stopped: false };",
+                  "  }",
+                  "  if (event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {",
+                  "    if (!blocks[event.index]) { throw new Error('Argument delta without tool start: ' + value); }",
+                  "    if (blocks[event.index].stopped) { throw new Error('Argument delta after tool stop: ' + value); }",
+                  "    blocks[event.index].json += event.delta.partial_json;",
+                  "  }",
+                  "  if (event.type === 'content_block_stop' && blocks[event.index]) { blocks[event.index].stopped = true; }",
+                  "});",
+                  "pm.test('Tool arguments arrive once before the block stops', function () {",
+                  "  var paths = [];",
+                  "  Object.keys(blocks).forEach(function (key) {",
+                  "    var block = blocks[key];",
+                  "    pm.expect(block.name).to.eql('Read');",
+                  "    pm.expect(block.stopped, text).to.eql(true);",
+                  "    pm.expect(block.json, 'Missing input_json_delta: ' + text).not.to.eql('');",
+                  "    paths.push(JSON.parse(block.json).file_path);",
+                  "  });",
+                  "  pm.expect(paths.sort(), text).to.eql([\"/etc/hostname\"]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 300,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"name\": \"Read\",\n      \"description\": \"Read a file\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"/etc/hostname\"\n            ]\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call Read exactly once for each of these paths, in the same turn: /etc/hostname. Do not produce text.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "OpenAI gpt-4o-mini /anthropic/v1/messages terminal tool arguments parallel calls - #9296",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var blocks = {};",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var value = line.slice(6);",
+                  "  if (value === '[DONE]') { return; }",
+                  "  var event = JSON.parse(value);",
+                  "  if (event.type === 'error') { throw new Error(JSON.stringify(event)); }",
+                  "  if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {",
+                  "    blocks[event.index] = { name: event.content_block.name, json: '', stopped: false };",
+                  "  }",
+                  "  if (event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {",
+                  "    if (!blocks[event.index]) { throw new Error('Argument delta without tool start: ' + value); }",
+                  "    if (blocks[event.index].stopped) { throw new Error('Argument delta after tool stop: ' + value); }",
+                  "    blocks[event.index].json += event.delta.partial_json;",
+                  "  }",
+                  "  if (event.type === 'content_block_stop' && blocks[event.index]) { blocks[event.index].stopped = true; }",
+                  "});",
+                  "pm.test('Tool arguments arrive once before the block stops', function () {",
+                  "  var paths = [];",
+                  "  Object.keys(blocks).forEach(function (key) {",
+                  "    var block = blocks[key];",
+                  "    pm.expect(block.name).to.eql('Read');",
+                  "    pm.expect(block.stopped, text).to.eql(true);",
+                  "    pm.expect(block.json, 'Missing input_json_delta: ' + text).not.to.eql('');",
+                  "    paths.push(JSON.parse(block.json).file_path);",
+                  "  });",
+                  "  pm.expect(paths.sort(), text).to.eql([\"/etc/fstab\", \"/etc/hostname\", \"/etc/os-release\"]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 300,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"name\": \"Read\",\n      \"description\": \"Read a file\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"file_path\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"/etc/hostname\",\n              \"/etc/os-release\",\n              \"/etc/fstab\"\n            ]\n          }\n        },\n        \"required\": [\n          \"file_path\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call Read exactly once for each of these paths, in the same turn: /etc/hostname, /etc/os-release, /etc/fstab. Do not produce text.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
