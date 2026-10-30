@@ -1,73 +1,75 @@
 ---
-title: "Usage mapping and pricing"
-description: "Price every counted relay call with a flat fee, a per-unit rate read from the request or response, and the cost the upstream reports; test the mapping before you save."
+title: "Pricing"
+description: "Price each relayed call with a fee per call, a price per unit read from the call, or the cost the API reports, and test it before callers see it."
 icon: "calculator"
 ---
 
-A relay has no model catalog to price against, so you describe the price yourself. The **usage mapping** says where in a call the billable quantity lives and what each unit costs. Every counted call is priced with it, the result is charged to the caller's budgets and recorded on the Relay Logs row with its breakdown.
+Bifrost has no price list for the APIs you relay, so you tell it how each call is priced. The price is charged to the caller's budgets (virtual key, team, customer and, in Enterprise, business unit and project) and shown on the call's row in Relay Logs.
 
-## The formula
+Only charged calls are priced: a [billable](./routes#which-calls-are-charged) route and a `2xx` reply.
+
+---
+
+## How a call is priced
+
+A call's cost is the sum of up to three parts:
+
+1. **Fee per call:** a fixed amount for every charged call.
+2. **Units × price per unit:** a quantity read from the call (credits, pages, characters, bytes) times what one unit costs.
+3. **Cost the API reports:** some APIs return what the call cost them. Bifrost can add that amount.
 
 ```text
-cost = cost_per_request
-     + billed_units × cost_per_unit
-     + reported_cost                 (read at cost_path, unless ignore_upstream_cost)
-
-billed_units = max( ceil(units / units_block_size), units_minimum )
+cost = fee per call
+     + billed units × price per unit
+     + cost the API reports
 ```
 
-- `cost_per_request` is a flat fee added to every counted call.
-- `units` is the quantity read at `units_path` (or the size of a whole body) from the request or the response; `cost_per_unit` is the price of one.
-- `units_block_size` bills per started block (`100` for an API priced per 100 characters); `units_minimum` is the least number of billed units once a quantity was read. Both default to exact billing.
-- `reported_cost` is a USD figure the upstream itself puts in its reply, read at `cost_path`. An array of numbers is summed.
-- Token counts read at the token paths are **logged, never priced**.
+You can use any combination. For example, a flat `$0.001` per call plus `$0.008` per credit the API says it used:
 
-A non-billable route or a non-`2xx` reply is not charged, but every forwarded reply counts one request against request rate limits. A call that never receives a reply counts nothing. A counted call whose mapping reads nothing still costs `cost_per_request`.
+| API reply | Cost |
+| --- | --- |
+| `{"usage": {"credits": 4}}` | `0.001 + 4 × 0.008 = $0.033` |
+| `{"usage": {"credits": 1}}` | `0.001 + 1 × 0.008 = $0.009` |
 
-## Set the relay pricing
+If a charged call has no units to read, it still costs the fee per call.
+
+---
+
+## Set the price
+
+The relay's price applies to every route, unless a route [sets its own](#price-one-route-differently).
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Open **Relays**, select the relay and choose **Edit Relay Config**.
-2. On the **General** tab, under **Pricing**, set **Fee per Call**, **Price per Unit**, **Units Read From**, **Measure**, **Units Path** and the optional **Block Size** and **Minimum Units**. The effective formula is written out underneath as you type.
-3. On the **Advanced** tab, under **Usage Extraction**, set **Reported Cost Path**, **Model Path** and the token paths, and the **Ignore Reported Cost** switch.
-4. Select **Save General Configuration** (or **Save Advanced Configuration**).
+1. Open **Relays**, select the relay and select **Edit Relay Config**.
+2. On the **General** tab, under **Pricing**, fill in **Fee per Call (USD)**, **Price per Unit (USD)** and where the units come from (see [Where units come from](#where-units-come-from)).
+3. Check the line under the fields, which spells out the price as you type, for example *Each counted call costs $0.001 / call + $0.008 / unit*.
+4. Select **Save General Configuration**.
 
+<Frame>
+  <img
+    src="/media/relays/ui-relay-pricing.png"
+    alt="The General tab's Pricing fields and price summary highlighted"
+    style={{ maxHeight: "640px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
-</Tab>
-<Tab title="API">
-
-```bash
-curl -X PUT http://localhost:8080/api/relays/tavily \
-  -H "Content-Type: application/json" \
-  -d '{
-    "base_url": "https://api.tavily.com",
-    "auth": { "type": "bearer" },
-    "credential": { "value": "env.TAVILY_API_KEY" },
-    "usage": {
-      "cost_per_request": 0.001,
-      "units_path": "usage.credits",
-      "cost_per_unit": 0.008
-    },
-    "routes": [
-      { "method": "POST", "path": "/search" },
-      { "method": "POST", "path": "/extract" }
-    ]
-  }'
-```
+To set the price over the API, send the relay's `usage` with [Update relay](/api-reference/relays/update-relay).
 
 </Tab>
 <Tab title="config.json">
+
+This charges `$0.001` for every call, plus `$0.008` for each credit the API reports at `usage.credits` in its reply:
 
 ```json
 {
   "relays": [
     {
-      "name": "tavily",
-      "base_url": "https://api.tavily.com",
+      "name": "web-search",
+      "base_url": "https://api.example.com",
       "auth": { "type": "bearer" },
-      "credential": { "value": "env.TAVILY_API_KEY" },
+      "credential": { "value": "env.WEB_SEARCH_API_KEY" },
       "usage": {
         "cost_per_request": 0.001,
         "units_path": "usage.credits",
@@ -83,123 +85,69 @@ curl -X PUT http://localhost:8080/api/relays/tavily \
 ```
 
 </Tab>
+<Tab title="Helm">
+
+The same price under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: web-search
+      base_url: "https://api.example.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.WEB_SEARCH_API_KEY"
+      usage:
+        cost_per_request: 0.001
+        units_path: "usage.credits"
+        cost_per_unit: 0.008
+      routes:
+        - method: POST
+          path: /search
+        - method: POST
+          path: /extract
+```
+
+</Tab>
 </Tabs>
 
-## Mapping fields
+---
 
-All paths are [gjson](https://github.com/tidwall/gjson/blob/master/SYNTAX.md) paths into a JSON body (`usage.credits`, `DocumentMetadata.Pages`, `#.Text`). A body is read as JSON when its content type contains `json` (including `application/x-amz-json-1.1`) or when it has no content type and parses as JSON. Negative, infinite or missing numbers read as nothing.
+## Where units come from
 
-| Field | Default | Description |
+Three settings say what one "unit" is:
+
+**Units Read From** (`units_source`) picks which body to read:
+
+| Option | Value | Use it when |
 | --- | --- | --- |
-| `cost_per_request` | `0` | Flat USD fee added to every counted call. |
-| `cost_per_unit` | `0` | USD per billed unit. `0` means no unit pricing. |
-| `units_source` | `response` | Which body the quantity is read from: `response` (what the upstream reports, such as Textract pages) or `request` (what the caller sent, which per-character APIs bill on). |
-| `units_measure` | `value` | `value`: the number at `units_path`. `chars`: the character count of the string at `units_path`. `body_bytes`: the byte length of the whole body. `body_chars`: the character (rune) count of the whole body, any content type. |
-| `units_path` | — | Path of the quantity. Required with `cost_per_unit` unless the measure is `body_bytes` or `body_chars`, which ignore it. An array at the path (`#.Text`) is summed element by element. |
-| `units_block_size` | exact | Bill per started block of this many raw units. |
-| `units_minimum` | `0` | Least number of billed units once a quantity was read. |
-| `cost_path` | — | Response path of a USD cost the upstream reports; an array of numbers is summed. |
-| `model_path` | — | Where the model name is read from the caller's request, for the log row only; virtual-key model restrictions do not apply to relay calls. A body path by default; with `model_source: query`, a query parameter name (Deepgram's `?model=nova-3`). |
-| `model_source` | `body` | `body` or `query`. |
-| `input_tokens_path`, `output_tokens_path`, `total_tokens_path` | — | Response paths of token counts. Recorded on the row, never priced. When only input and output are mapped, the total is their sum. |
+| **Response body** (default) | `response` | The API says what it used, such as `"pages": 3` or `"credits": 4`. |
+| **Request body** | `request` | The API charges for what you send, such as the characters of a text to translate. |
 
-`ignore_upstream_cost` sits on the relay, not in the mapping: when on, `cost_path` values are dropped everywhere while your fee and unit pricing still apply.
+**Measure** (`units_measure`) picks what to count:
 
-### Reading the request body
+| Option | Value | Counts |
+| --- | --- | --- |
+| **Number at path** (default) | `value` | The number at **Units Path**. |
+| **Characters of the string at path** | `chars` | The length of the text at **Units Path**. |
+| **Size of the whole body (bytes)** | `body_bytes` | The size of the whole body. **Units Path** is not used. |
+| **Characters of the whole body** | `body_chars` | The characters of the whole body, in any format (JSON, XML, plain text). **Units Path** is not used. |
 
-When `units_source` is `request` and the measure needs a path (`value` or `chars`), the relay refuses with `400` before contacting the upstream any body it cannot measure unambiguously: a body that is not JSON, one that names a key twice in the same object (case-insensitively), or one that spells the key in a different case than `units_path` (`text` for a `Text` path). Whole-body measures (`body_bytes`, `body_chars`) need no such check.
+**Units Path** (`units_path`) is where the value sits in a JSON body, written with dots: `usage.credits`, `DocumentMetadata.Pages`. Paths are case-sensitive. If the path points at a list, the values are added up: `results.#.credits` sums `credits` over every item of `results`.
 
-The caller's `Content-Type` is not consulted for request-side units, so a caller cannot label a JSON body `text/plain` to be billed for nothing.
+A response body is read as JSON when its content type contains `json`, or when it has no content type and is valid JSON. For request-side units, Bifrost reads valid JSON regardless of the caller's `Content-Type`. A missing or negative number counts as no units.
 
-## Route overrides
+On a charged route that reads units from the request, a body that has the key only in different letter case (`text` when **Units Path** is `Text`) is refused with `400` before the call is sent, since the API would likely accept it but nothing could be billed.
 
-A route's `usage` overrides the relay mapping **field by field**. An empty field inherits the relay's value; a field set to `0` waives it on that route. A route therefore cannot switch a relay path off by leaving it blank; it can only replace it.
+### Blocks and minimums
 
-```json
-{
-  "usage": { "cost_per_request": 0.001, "units_path": "usage.credits", "cost_per_unit": 0.008 },
-  "routes": [
-    { "method": "POST", "path": "/search" },
-    { "method": "POST", "path": "/extract", "usage": { "cost_per_unit": 0.016 } },
-    { "method": "POST", "path": "/map", "usage": { "cost_per_request": 0, "cost_per_unit": 0 } }
-  ]
-}
-```
+Some APIs charge per block of units, or have a minimum charge. Two optional fields cover that:
 
-| Route | Effective price |
-| --- | --- |
-| `POST /search` | `$0.001 + credits × $0.008` (inherits everything) |
-| `POST /extract` | `$0.001 + credits × $0.016` (rate overridden, fee and path inherited) |
-| `POST /map` | `$0` (counted as one request, charges nothing) |
+- **Block Size** (`units_block_size`) charges per started block. With `100`, sending 250 characters is 3 blocks.
+- **Minimum Units** (`units_minimum`) is the fewest units charged once any units were read.
 
-A route that sets only a rate is validated against the merged mapping, so it is accepted when the relay already names the units path. In the Web UI, **Pricing Override** on the route sheet shows the inherited value of each field as a placeholder and the merged formula underneath.
-
-## Worked examples
-
-<Tabs>
-<Tab title="Per-credit, response side">
-
-Tavily reports credits spent in its reply.
-
-```json
-{ "cost_per_request": 0.001, "units_path": "usage.credits", "cost_per_unit": 0.008 }
-```
-
-Response `{"usage": {"credits": 4}}`:
-
-```text
-0.001 + 4 × 0.008 = $0.033
-```
-
-</Tab>
-<Tab title="Per-page, AWS SigV4">
-
-Textract reports the pages it processed. The operation is named in `X-Amz-Target`, so the route matches on it.
-
-```json
-{
-  "auth": { "type": "aws_sigv4", "aws": { "service": "textract" } },
-  "routes": [
-    {
-      "method": "POST",
-      "path": "/",
-      "headers": { "X-Amz-Target": "Textract.AnalyzeDocument" },
-      "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.065 }
-    }
-  ]
-}
-```
-
-Response `{"DocumentMetadata": {"Pages": 3}, "Blocks": [...]}`:
-
-```text
-0 + 3 × 0.065 = $0.195
-```
-
-</Tab>
-<Tab title="Per-character, request side">
-
-Amazon Translate bills the characters of the text sent. The quantity is in the caller's request, so the relay knows it before the upstream answers.
-
-```json
-{
-  "units_source": "request",
-  "units_measure": "chars",
-  "units_path": "Text",
-  "cost_per_unit": 0.000015
-}
-```
-
-Request `{"Text": "<1234 characters>", "SourceLanguageCode": "en", "TargetLanguageCode": "fr"}`:
-
-```text
-1234 × 0.000015 = $0.01851
-```
-
-</Tab>
-<Tab title="Blocks and minimum">
-
-Comprehend Medical bills per 100-character unit with a 3-unit minimum.
+For example, an API that charges `$0.01` per 100 characters with a 3-unit minimum:
 
 ```json
 {
@@ -212,136 +160,244 @@ Comprehend Medical bills per 100-character unit with a 3-unit minimum.
 }
 ```
 
-| Characters sent | Blocks of 100 | Billed units (min 3) | Cost |
+| Characters sent | Blocks of 100 | Units charged (minimum 3) | Cost |
 | --- | --- | --- | --- |
-| 50 | 1 | 3 | `3 × 0.01 = $0.03` |
+| 50 | 1 | 3 | `$0.03` |
 | 250 | 3 | 3 | `$0.03` |
-| 1 250 | 13 | 13 | `13 × 0.01 = $0.13` |
+| 1,250 | 13 | 13 | `$0.13` |
 
-</Tab>
-<Tab title="Whole request body">
+---
 
-Azure Speech text-to-speech bills the characters of the SSML body, which is XML, not JSON.
+## Cost the API reports
 
-```json
-{
-  "units_source": "request",
-  "units_measure": "body_chars",
-  "cost_per_unit": 0.000016
-}
-```
+If the API's reply says what the call cost, set **Reported Cost Path** (`cost_path`) on the **Advanced** tab to where that number is. Bifrost adds it to the price. If the path points at a list of numbers, they are added up.
 
-A 500-character SSML body:
-
-```text
-500 × 0.000016 = $0.008
-```
-
-The same mapping with `units_source: response` and `body_bytes` prices a reply by its size, which is what a streamed audio reply is billed by as it is forwarded.
-
-</Tab>
-<Tab title="Reported cost">
-
-An upstream that returns its own charge.
+For example, this pricing charges a `$0.0005` fee per call plus whatever the API reports at `usage.cost`:
 
 ```json
 { "cost_per_request": 0.0005, "cost_path": "usage.cost" }
 ```
 
-Response `{"usage": {"cost": 0.0021}}`:
+A reply of `{"usage": {"cost": 0.0021}}` then costs `0.0005 + 0.0021 = $0.0026`.
 
-```text
-0.0005 + 0.0021 = $0.0026
-```
+**Ignore Reported Cost** (`ignore_upstream_cost: true`, set on the relay rather than inside `usage`) turns off reported cost on every route of the relay at once, while your fee and unit price still apply.
 
-With `ignore_upstream_cost: true` on the relay, the same call costs `$0.0005`.
+<Frame>
+  <img
+    src="/media/relays/ui-usage-extraction.png"
+    alt="The Advanced tab with Reported Cost Path and Ignore Reported Cost highlighted"
+    style={{ maxHeight: "480px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
-</Tab>
-</Tabs>
+### Model and token fields
 
-## Test pricing
+The same **Usage Extraction** section has fields that only add detail to Relay Logs. They never change the price.
 
-**Test Pricing** runs a sample call through a relay's routes and mapping without contacting the upstream: which route matches, whether the call is counted, what each body yields and the resulting cost, with notes explaining every empty field.
+| Field | What it records |
+| --- | --- |
+| **Model Path** (`model_path`) with **Model Source** (`model_source`) | Which model the caller asked for. With **Body**, a path in the request body. With **Query**, the name of a query parameter, such as `model` for `?model=nova-3`. |
+| **Input Tokens Path**, **Output Tokens Path**, **Total Tokens Path** (`input_tokens_path`, `output_tokens_path`, `total_tokens_path`) | Token counts in the reply. If only input and output are set, the total is their sum. |
 
-<Note>
-The Web UI tests the **saved** relay, so save your pricing edits first. To preview a mapping before saving it, call the API with `config` instead of `name` (below).
-</Note>
+Virtual-key model restrictions do not apply to relay calls, even when a model path is set.
+
+---
+
+## Price one route differently
+
+A route can have its own price. Any field the route leaves empty uses the relay's value. Set a numeric field (fee, price per unit, minimum units) to `0` to drop it on that route. **Reported Cost Path** is a path, not a number, so a route cannot waive it this way: an empty route path always inherits the relay's path. To stop charging reported cost on only some routes, set `cost_path` per route instead of on the relay, and leave it out of the routes you don't want it on.
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Open **Relays**, select the relay and choose **Test Pricing**.
-2. Enter the **Method**, **Path** (a query string may follow, as in `/jobs/1?stream=true`), the expected **Status**, any **Request Headers** a route matches on (one `Name: value` per line), the **Request Body**, the **Response Body** and its content type.
-3. Select **Run Test**.
+1. Open the route from the **⋯** menu in the route table.
+2. Expand **Pricing Override**. The relay's values are shown in grey as hints.
+3. Fill in only the fields that differ for this route, such as **Price per Unit (USD)**.
+4. Select **Save Route**.
 
-The result is laid out like an itemised bill: the charge, the matched route, each part of the formula with the setting that produced it, and the formula written out with those numbers.
+<Frame>
+  <img
+    src="/media/relays/ui-route-pricing-override.png"
+    alt="The route sheet's Pricing Override section highlighted, with Price per Unit set to 0.016"
+    style={{ maxHeight: "640px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
+The route table shows each route's price, with an **override** badge on routes that change it.
 
 </Tab>
-<Tab title="API">
+<Tab title="config.json">
 
-Preview a saved relay by `name`, or an unsaved one by sending its full `config`:
-
-```bash
-curl -X POST http://localhost:8080/api/relays/usage-preview \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "tavily",
-    "sample": {
-      "method": "POST",
-      "path": "/search",
-      "status_code": 200,
-      "request_content_type": "application/json",
-      "request_body": "{\"query\":\"bifrost\"}",
-      "response_content_type": "application/json",
-      "response_body": "{\"usage\":{\"credits\":4}}"
-    }
-  }'
-```
-
-**Response:**
+Here `/search` uses the relay's price, `/extract` charges double per credit, and `/map` is free:
 
 ```json
 {
-  "route_index": 0,
-  "route_allowed": true,
-  "billable": true,
-  "streams": false,
-  "counted": true,
-  "model_path": "",
-  "model_source": "body",
-  "model": "",
-  "units_source": "response",
-  "units_measure": "value",
-  "units_path": "usage.credits",
-  "units": 4,
-  "units_billed": 4,
-  "units_block_size": 0,
-  "units_minimum": 0,
-  "cost_per_unit": 0.008,
-  "cost_per_request": 0.001,
-  "extracted_cost": null,
-  "tokens": null,
-  "cost": 0.033,
-  "notes": []
+  "relays": [
+    {
+      "name": "web-search",
+      "base_url": "https://api.example.com",
+      "auth": { "type": "bearer" },
+      "credential": { "value": "env.WEB_SEARCH_API_KEY" },
+      "usage": { "cost_per_request": 0.001, "units_path": "usage.credits", "cost_per_unit": 0.008 },
+      "routes": [
+        { "method": "POST", "path": "/search" },
+        { "method": "POST", "path": "/extract", "usage": { "cost_per_unit": 0.016 } },
+        { "method": "POST", "path": "/map", "usage": { "cost_per_request": 0, "cost_per_unit": 0 } }
+      ]
+    }
+  ]
 }
 ```
 
-| Sample field | Description |
-| --- | --- |
-| `method`, `path` | The call. `method` defaults to `POST`; a query string may follow the path. |
-| `headers` | Request headers, for routes that match on one. `accept` and `request_content_type` are read as headers too. |
-| `request_content_type`, `request_body` | The caller's body. |
-| `status_code` | Default `200`. A non-`2xx` status is not counted. |
-| `response_content_type`, `response_body` | The upstream's reply. The content type is required when the body is not JSON. `text/event-stream` is read event by event, as the relay does. |
+</Tab>
+<Tab title="Helm">
 
-`route_index` is `null` when no route matched; `route_allowed` is `false` when the call would be refused with `404`. `notes` explain why a figure came out empty, for example `nothing at cost path usage.cost in the response body` or `the relay refuses this request with 400: ...`.
+The same routes under `bifrost.relays`:
+
+```yaml
+bifrost:
+  relays:
+    - name: web-search
+      base_url: "https://api.example.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.WEB_SEARCH_API_KEY"
+      usage:
+        cost_per_request: 0.001
+        units_path: "usage.credits"
+        cost_per_unit: 0.008
+      routes:
+        - method: POST
+          path: /search
+        - method: POST
+          path: /extract
+          usage:
+            cost_per_unit: 0.016
+        - method: POST
+          path: /map
+          usage:
+            cost_per_request: 0
+            cost_per_unit: 0
+```
 
 </Tab>
 </Tabs>
 
+| Route | Price |
+| --- | --- |
+| `POST /search` | `$0.001 + credits × $0.008`: everything comes from the relay |
+| `POST /extract` | `$0.001 + credits × $0.016`: only the unit price is changed |
+| `POST /map` | `$0`: still counted as a request, but free |
+
+---
+
+## Streamed replies
+
+A [streamed](./routes#streaming) call is priced when the stream ends:
+
+- **Server-sent events:** Bifrost reads the events that carry a mapped field (units, reported cost, tokens) as they pass. For each field it keeps the **last** value reported, which is how most APIs report running totals.
+- **Priced by size** (`body_bytes` or `body_chars` from the response): `body_bytes` counts the bytes forwarded; `body_chars` counts their characters, read as they arrive. Either way, a streamed audio reply is charged the same as a normal one.
+- **Units from the request:** known before the stream starts, so they work exactly as for normal calls.
+- **Other streams** (not events, not priced by size) are passed through without being read, so only the fee per call and any request-side units apply.
+
+If the caller disconnects early, what was already sent is still charged.
+
+---
+
+## Examples
+
+<Tabs>
+<Tab title="Per credit">
+
+The API says how many credits a call used.
+
+```json
+{ "cost_per_request": 0.001, "units_path": "usage.credits", "cost_per_unit": 0.008 }
+```
+
+Reply `{"usage": {"credits": 4}}`: `0.001 + 4 × 0.008 = $0.033`.
+
+</Tab>
+<Tab title="Per page, SigV4">
+
+A document API reports how many pages it read. Every operation is `POST /`, named in a header rather than the path, so the route [matches on a header](./routes#match-on-a-header).
+
+```json
+{
+  "auth": { "type": "aws_sigv4", "aws": { "service": "docs" } },
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/",
+      "headers": { "X-Amz-Target": "Docs.AnalyzeDocument" },
+      "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.065 }
+    }
+  ]
+}
+```
+
+Reply `{"DocumentMetadata": {"Pages": 3}, ...}`: `3 × 0.065 = $0.195`.
+
+</Tab>
+<Tab title="Per character sent">
+
+A translation API charges for the characters you send, so the units come from the request.
+
+```json
+{
+  "units_source": "request",
+  "units_measure": "chars",
+  "units_path": "Text",
+  "cost_per_unit": 0.000015
+}
+```
+
+Request with 1,234 characters in `Text`: `1234 × 0.000015 = $0.01851`.
+
+</Tab>
+<Tab title="Whole body">
+
+A text-to-speech API that takes SSML (XML, not JSON) and charges per character.
+
+```json
+{ "units_source": "request", "units_measure": "body_chars", "cost_per_unit": 0.000016 }
+```
+
+A 500-character body: `500 × 0.000016 = $0.008`.
+
+</Tab>
+<Tab title="Reported cost">
+
+The API returns its own price.
+
+```json
+{ "cost_per_request": 0.0005, "cost_path": "usage.cost" }
+```
+
+Reply `{"usage": {"cost": 0.0021}}`: `0.0005 + 0.0021 = $0.0026`.
+
+</Tab>
+</Tabs>
+
+---
+
+## Test pricing
+
+**Test Pricing** shows what a sample call would cost without sending anything to the API. Use it to check a new price before callers hit it.
+
+1. Open **Relays**, select the relay and select **Test Pricing**.
+2. Enter the **Method**, **Path** and expected **Status**. Add **Request Headers** if a route matches on a header.
+3. Paste a sample **Request Body** and **Response Body**, and set the **Response Content-Type**.
+4. Select **Run Test**.
+
+The result shows the amount charged, the route that matched, each part of the price with the setting it came from, and the full sum. If a part comes out empty, a note explains why, for example *no quantity could be read from the response body with measure value at path usage.credits*.
+
+The dashboard tests the **saved** relay, so save your pricing changes first. To test a price before saving it, send the full relay config to [Preview relay usage](/api-reference/relays/preview-relay-usage) in the API reference.
+
+---
+
 ## Next steps
 
-- **[Virtual key access](./access)** — Where the cost lands: budgets and rate limits.
-- **[Streaming](./streaming)** — How a stream is priced per event or by its size.
-- **[Relay Logs](./logs)** — The cost breakdown on every row.
+- **[Virtual keys: relay access](/features/governance/virtual-keys#relay-access)**: who may call the relay, and which budgets the cost lands on.
+- **[Troubleshooting](./troubleshooting#the-cost-is-0-or-wrong)**: a call's cost is not what you expected.

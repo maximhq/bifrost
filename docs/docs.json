@@ -250,15 +250,12 @@
           },
           {
             "group": "Relays",
-            "icon": "waypoints",
+            "icon": "/media/relays-icon.svg",
             "pages": [
               "relays/overview",
               "relays/configuration",
               "relays/routes",
               "relays/pricing",
-              "relays/access",
-              "relays/streaming",
-              "relays/logs",
               "relays/troubleshooting"
             ]
           },
@@ -2563,6 +2560,18 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/relays/access",
+      "destination": "/features/governance/virtual-keys#relay-access"
+    },
+    {
+      "source": "/relays/logs",
+      "destination": "/relays/overview#see-every-call"
+    },
+    {
+      "source": "/relays/streaming",
+      "destination": "/relays/routes#streaming"
+    },
     {
       "source": "/features/governance/complexity-router",
       "destination": "/features/complexity-router"

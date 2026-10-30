@@ -191,6 +191,12 @@ A project opens up MCP access two ways, and both only ever add: where they overl
 
 Tool allowlists union within the project, and then compose with the caller's own MCP access through the project's access rule: `intersect` caps what the caller may execute while inside the project, `union` extends it.
 
+### Relays
+
+A project can grant [relays](/relays/overview), one by one. A project with no relays grants none. The grants compose with the caller's own relay access through the project's access rule, the same way MCP access does. A refused call names the project, for example `Relay 'web-search' is not allowed for project 'q3-research'`.
+
+Where a relay call's cost lands follows the project's [accounting mode](#accounting-modes): the project's budgets, the caller's, or both. The project's detail view lists its relays on the **Relays** tab.
+
 ---
 
 ## Budgets, limits and splits
@@ -275,9 +281,10 @@ Click **Create Project**.
 5. **Access rule.** Choose **Restrict** or **Extend**. The card explains the consequence of each, including that a Restrict project with no providers permits nothing.
 6. **Providers.** Add a provider, then choose all models or an explicit allowlist, optionally a denylist, which keys may serve it, a weight, and any per-provider or per-model money.
 7. **MCP configurations.** Choose which tools the project may execute under **MCP servers**, and assign any **Virtual MCPs** it should reach.
-8. **Project budget** and **Rate limit.** Add one or more budget lines, each with an amount and a reset window, then optionally a **Maximum tokens** and **Maximum requests** limit. **Align to calendar cycle** moves every window on the project onto the calendar.
-9. **Content logging.** Leave **Inherit from virtual key**, or choose **Off for this project** or **On for this project** to override the caller's key. See [Content logging](#content-logging).
-10. **Accounting.** Choose **Both budgets**, **Project only** or **User only**, and a split of **No split** or **Equal**.
+8. **Relay access.** Under **Relays**, pick each [relay](/relays/overview) the project may call. See [Relays](#relays).
+9. **Project budget** and **Rate limit.** Add one or more budget lines, each with an amount and a reset window, then optionally a **Maximum tokens** and **Maximum requests** limit. **Align to calendar cycle** moves every window on the project onto the calendar.
+10. **Content logging.** Leave **Inherit from virtual key**, or choose **Off for this project** or **On for this project** to override the caller's key. See [Content logging](#content-logging).
+11. **Accounting.** Choose **Both budgets**, **Project only** or **User only**, and a split of **No split** or **Equal**.
 
 <Frame>
   <img
@@ -290,7 +297,7 @@ Save with **Create Project**, or **Create & Add Members** when membership is exp
 
 ### The project detail view
 
-A project's page has five tabs, in this order: **Overview**, **Budgets & limits**, **Members**, **Providers** and **MCPs**. Each of the last three carries a count, and the **Use project** button beside them shows the headers a caller sends to reach the project.
+A project's page has seven tabs, in this order: **Overview**, **Budgets & limits**, **Members**, **Providers**, **MCPs**, **Agents** and **Relays**. Each of the last five carries a count, and the **Use project** button beside them shows the headers a caller sends to reach the project.
 
 **Overview** opens with tiles for spend, tokens, requests, members, providers, MCP servers, the access rule, the accounting mode and when the project was created. A **Needs attention** card lists caps near or past their limit, and flags members left holding no slice of a cap under an equal split.
 
@@ -310,7 +317,7 @@ A project's page has five tabs, in this order: **Overview**, **Budgets & limits*
   />
 </Frame>
 
-**Providers** and **MCPs** are read-only views of what the project allows: allowed and blocked models per provider with weights, and tools per server plus assigned virtual MCPs with their slug endpoints.
+**Providers**, **MCPs**, **Agents** and **Relays** are read-only views of what the project allows: allowed and blocked models per provider with weights, tools per server plus assigned virtual MCPs with their slug endpoints, and the agents and relays it grants.
 
 ### Managing members
 
