@@ -279,7 +279,9 @@ func clickhouseReconcileColumns(ctx context.Context, db *gorm.DB, model any, tab
 // column and hardlinks the rest of each part, and mutations_sync = 0 overrides
 // the DSN's mutations_sync = 1 so the backfill runs in the background instead
 // of holding up startup. Indexes already on the table are left alone, so the
-// backfill is submitted once, not on every boot.
+// backfill is submitted once, not on every boot. Because of that, ADD and
+// MATERIALIZE go in one ALTER: separate statements would let a stop between
+// them leave an index that later boots skip and never backfill.
 func clickhouseReconcileSkipIndexes(ctx context.Context, db *gorm.DB, table, cluster string, skipIndexes []string, logger schemas.Logger) error {
 	var names []string
 	if err := db.WithContext(ctx).
@@ -302,11 +304,21 @@ func clickhouseReconcileSkipIndexes(ctx context.Context, db *gorm.DB, table, clu
 			continue
 		}
 		logger.Info("[logstore] clickhouse: adding skip index %s on %s", name, table)
-		stmt := fmt.Sprintf("ALTER TABLE `%s`%s ADD INDEX IF NOT EXISTS %s", table, onCluster, def)
-		if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
-			return fmt.Errorf("clickhouse: add skip index %s on %s: %w", name, table, err)
+		materialize := fmt.Sprintf("MATERIALIZE INDEX `%s` SETTINGS mutations_sync = 0", chEscapeIdentifier(name))
+		stmt := fmt.Sprintf("ALTER TABLE `%s`%s ADD INDEX IF NOT EXISTS %s, %s", table, onCluster, def, materialize)
+		addErr := db.WithContext(ctx).Exec(stmt).Error
+		if addErr == nil {
+			continue
 		}
-		stmt = fmt.Sprintf("ALTER TABLE `%s`%s MATERIALIZE INDEX `%s` SETTINGS mutations_sync = 0", table, onCluster, chEscapeIdentifier(name))
+		// The ALTER may have failed after its metadata step; an index that
+		// landed must still get its backfill, since later boots skip it.
+		var landed int64
+		if err := db.WithContext(ctx).
+			Raw("SELECT count() FROM system.data_skipping_indices WHERE database = currentDatabase() AND table = ? AND name = ?", table, name).
+			Scan(&landed).Error; err != nil || landed == 0 {
+			return fmt.Errorf("clickhouse: add skip index %s on %s: %w", name, table, addErr)
+		}
+		stmt = fmt.Sprintf("ALTER TABLE `%s`%s %s", table, onCluster, materialize)
 		if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
 			return fmt.Errorf("clickhouse: materialize skip index %s on %s: %w", name, table, err)
 		}

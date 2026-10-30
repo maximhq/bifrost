@@ -658,10 +658,23 @@ func TestClickHouseReconcileSkipIndexesMaterializesNewIndex(t *testing.T) {
 	indexes := []string{"INDEX idx_logs_id id TYPE bloom_filter GRANULARITY 1"}
 
 	before := chMutationIDs(t, store.db, "logs")
+	start := time.Now().UnixMicro()
 	require.NoError(t, clickhouseReconcileSkipIndexes(ctx, store.db, "logs", "", indexes, testLogger{}))
 	cmds := chNewMutationCommands(t, store.db, "logs", before)
 	require.Len(t, cmds, 1, "re-adding the index must submit exactly one backfill")
 	assert.Contains(t, cmds[0], "MATERIALIZE INDEX idx_logs_id")
+
+	// Later boots skip an index that exists, so the add and its backfill must be
+	// one ALTER: a stop between two statements would leave it unbackfilled.
+	require.NoError(t, store.db.Exec("SYSTEM FLUSH LOGS").Error)
+	var alters []string
+	require.NoError(t, store.db.Raw(`SELECT query FROM system.query_log
+		WHERE type = 'QueryFinish' AND current_database = currentDatabase() AND query_kind = 'Alter'
+		AND position(query, 'idx_logs_id') > 0 AND event_time_microseconds >= fromUnixTimestamp64Micro(?)
+		ORDER BY event_time_microseconds`, start).Scan(&alters).Error)
+	require.Len(t, alters, 1, "the index must be added and backfilled by a single ALTER, got %q", alters)
+	assert.Contains(t, alters[0], "ADD INDEX")
+	assert.Contains(t, alters[0], "MATERIALIZE INDEX")
 
 	before = chMutationIDs(t, store.db, "logs")
 	require.NoError(t, clickhouseReconcileSkipIndexes(ctx, store.db, "logs", "", indexes, testLogger{}))
