@@ -35,10 +35,13 @@ export function getLocale(): SupportedLocale {
 	return isSupportedLocale(current) ? current : DEFAULT_LOCALE;
 }
 
+let latestLocaleRequest = 0;
+
 // 在异常保护下持久化语言选择，避免存储失败中断切换。
 export async function changeLocale(locale: SupportedLocale): Promise<SupportedLocale> {
+	const requestId = ++latestLocaleRequest;
 	await i18n.changeLanguage(locale);
-	if (typeof window !== "undefined") {
+	if (requestId === latestLocaleRequest && typeof window !== "undefined") {
 		try {
 			window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
 		} catch {
