@@ -1328,7 +1328,8 @@ type LoggerPlugin struct {
 	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
 	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key or named project; attached in PostMCPHook only if content ends up visible
 	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
-	pendingEndpointLogs          sync.Map                       // Maps request id -> *logstore.RelayLog awaiting PostRelayHook
+	pendingEndpointLogs          sync.Map                       // Maps request id -> *pendingRelayLog awaiting PostRelayHook
+	evictedRelayPartials         sync.Map                       // Maps request id -> evictedRelayPartial: relay partial rows persisted at eviction, awaiting reconcile in PostRelayHook
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
 	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
 	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
@@ -1523,7 +1524,7 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	p.cleanupStalePendingLogs()
 }
 
-// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// flushStaleProcessingLogs deletes LLM, MCP, A2A and relay rows still marked
 // processing after 30 minutes.
 func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
@@ -1542,6 +1543,11 @@ func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Delete A2A processing logs older than 30 minutes.
 	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
+	}
+
+	// Delete relay processing logs older than 30 minutes.
+	if err := p.store.FlushRelayLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing relay logs: %v", err)
 	}
 }
 

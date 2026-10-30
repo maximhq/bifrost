@@ -6158,7 +6158,7 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 		ID: "relay-row", Timestamp: time.Now().UTC(), RelayName: "tavily", RequestID: "req-relay-backfill", Status: logstore.RelayLogStatusSuccess,
 		UpstreamLatency: &provisionalUp, OverheadLatency: &provisionalOv,
 	}
-	plugin.storeOrEnqueueRelayEntry(ctx, entry)
+	plugin.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry})
 	if _, parked := plugin.pendingRelayLogsToInject.Load(traceID); !parked {
 		t.Fatal("expected entry to be parked for Inject")
 	}
@@ -6186,7 +6186,7 @@ func TestInject_BackfillsRelayRow(t *testing.T) {
 
 	// No trace on the context: the row is written as it is.
 	direct := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
-	direct.storeOrEnqueueRelayEntry(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &logstore.RelayLog{ID: "no-trace", UpstreamLatency: &provisionalUp})
+	direct.storeOrEnqueueRelayEntry(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), relayInjectEntry{entry: &logstore.RelayLog{ID: "no-trace", UpstreamLatency: &provisionalUp}})
 	queued = <-direct.writeQueue
 	require.Equal(t, float64(6), *queued.endpointLog.UpstreamLatency)
 }
@@ -6200,12 +6200,18 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		plugin.writeQueue = make(chan *writeQueueEntry, 1)
 		ctx := policyCtx(false, nil)
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-policy")
+		if decision != nil {
+			// A presented key governance has not resolved yet: the body is captured provisionally,
+			// as PreLLMHook captures input while governanceDecisionPending.
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
+		}
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
 			RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=private", Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"query":"x"}`),
 		})
 		require.NoError(t, err)
 		if decision != nil {
 			// Governance's PreRelayHook runs after ours and stamps the key's decision.
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
 			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *decision)
 		}
 		_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200, Headers: map[string]string{"content-type": "application/json"}, Body: []byte(`{"ok":true}`)}, nil)
@@ -6282,30 +6288,39 @@ func TestRelayLogKeepsWholeBody(t *testing.T) {
 	require.Nil(t, entry.ResponseBody, "a binary body is not kept")
 }
 
-// A streamed relay reply has no body to log until core/relay buffers it as it forwards bytes, so
-// PreRelayHook stamps the resolved content policy onto the context as a plain bool
-// (BifrostContextKeyRelayContentLoggingEnabledByDefault) for core/relay to read before it opens
-// the stream, the same shape bifrost.go uses for BifrostContextKeyShouldStoreRawInLogs on the LLM path.
+// A streamed relay reply has no body to log until core/relay keeps it as it forwards bytes, so
+// PreRelayHook stamps one capture decision on the context (BifrostContextKeyRelayContentCapture),
+// resolved from the same content policy and the same provisional rule PreLLMHook gates input
+// capture with; core/relay keeps no precedence of its own.
 func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
-	t.Run("on by default", func(t *testing.T) {
-		plugin := policyTestPlugin(nil, nil, false)
+	capture := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext) bool {
+		t.Helper()
 		plugin.writeQueue = make(chan *writeQueueEntry, 1)
-		ctx := policyCtx(false, nil)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-on")
-		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture")
+		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Body: []byte(`{"q":"x"}`)})
 		require.NoError(t, err)
-		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
-		require.True(t, capture)
+		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentCapture).(bool)
+		pending, ok := plugin.pendingEndpointLogs.Load("req-capture")
+		require.True(t, ok)
+		require.Equal(t, capture, pending.(*pendingRelayLog).entry.RequestBody != nil, "the request body is captured under the same decision")
+		return capture
+	}
+	t.Run("on by default", func(t *testing.T) {
+		require.True(t, capture(t, policyTestPlugin(nil, nil, false), policyCtx(false, nil)))
 	})
 	t.Run("off when the plugin disables content logging", func(t *testing.T) {
-		plugin := policyTestPlugin(boolPtr(true), nil, false)
-		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		require.False(t, capture(t, policyTestPlugin(boolPtr(true), nil, false), policyCtx(false, nil)))
+	})
+	t.Run("provisional while governance has not resolved the presented key", func(t *testing.T) {
 		ctx := policyCtx(false, nil)
-		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-off")
-		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
-		require.NoError(t, err)
-		capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
-		require.False(t, capture)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		require.True(t, capture(t, policyTestPlugin(boolPtr(true), nil, false), ctx), "a key may re-enable content after this hook; the post-hook applies the final policy")
+	})
+	t.Run("off once governance has decided against it", func(t *testing.T) {
+		ctx := policyCtx(false, map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true})
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-presented")
+		require.False(t, capture(t, policyTestPlugin(nil, nil, false), ctx))
 	})
 	for _, tc := range []struct {
 		name                 string
@@ -6318,14 +6333,7 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 		{"no retention keeps nothing", nil, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plugin := policyTestPlugin(boolPtr(true), tc.retain, tc.objectStorageEnabled)
-			plugin.writeQueue = make(chan *writeQueueEntry, 1)
-			ctx := policyCtx(false, nil)
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-capture-retained")
-			_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
-			require.NoError(t, err)
-			retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
-			require.Equal(t, tc.want, retained)
+			require.Equal(t, tc.want, capture(t, policyTestPlugin(boolPtr(true), tc.retain, tc.objectStorageEnabled), policyCtx(false, nil)))
 		})
 	}
 }
@@ -6574,4 +6582,67 @@ func TestRelayLogMarksLargePayloadResponse(t *testing.T) {
 	entry := (<-plugin.writeQueue).endpointLog
 	require.True(t, entry.IsLargePayloadResponse)
 	require.Equal(t, "preview", *entry.ResponseBody)
+}
+
+// TestRelayLogStatusFollowsLLMRule pins that a relay row's status comes from the same rule as an
+// LLM row's: a hung-up, 499 or client-deadline call is cancelled, any other failure is an error.
+func TestRelayLogStatusFollowsLLMRule(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  *schemas.BifrostError
+		want string
+	}{
+		{"request cancelled", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled}}, logstore.RelayLogStatusCancelled},
+		{"http 499", &schemas.BifrostError{StatusCode: schemas.Ptr(499), Error: &schemas.ErrorField{Message: "client closed request"}}, logstore.RelayLogStatusCancelled},
+		{"client deadline", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestTimedOut), Message: "request cancelled by context: context deadline exceeded"}}, logstore.RelayLogStatusCancelled},
+		{"upstream timeout", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestTimedOut), Message: schemas.ErrProviderRequestTimedOut}}, logstore.RelayLogStatusError},
+		{"transport failure", &schemas.BifrostError{Error: &schemas.ErrorField{Message: "connection refused"}}, logstore.RelayLogStatusError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := policyTestPlugin(nil, nil, false)
+			plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-status")
+			_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+			require.NoError(t, err)
+			_, _, err = plugin.PostRelayHook(ctx, nil, tc.err)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, (<-plugin.writeQueue).endpointLog.Status)
+		})
+	}
+}
+
+// TestRelayLogStampsAppAndSession pins the two context values PreLLMHook stamps or records that the
+// relay hooks did not: the canonical app key for the plugins that run after this one, and the
+// session identity resolved at ingress.
+func TestRelayLogStampsAppAndSession(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-app")
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-code/1.0.0")
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "sess-42")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search"})
+	require.NoError(t, err)
+	appKey, _ := ctx.Value(schemas.BifrostContextKeyApp).(string)
+	require.NotEmpty(t, appKey, "the app key is stamped for downstream plugins, as PreLLMHook stamps it")
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry.SessionID)
+	require.Equal(t, "sess-42", *entry.SessionID)
+}
+
+// TestRelayLogPreHookGatesBodyOnPolicy pins that the request body is captured only under a policy
+// that stores content, or provisionally while governance has yet to decide, as PreLLMHook does.
+func TestRelayLogPreHookGatesBodyOnPolicy(t *testing.T) {
+	plugin := policyTestPlugin(boolPtr(true), nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-gate")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "tavily", Method: "POST", Path: "/search", Body: []byte(`{"query":"x"}`)})
+	require.NoError(t, err)
+	pending, ok := plugin.pendingEndpointLogs.Load("req-gate")
+	require.True(t, ok)
+	require.Nil(t, pending.(*pendingRelayLog).entry.RequestBody, "content off with no key presented: nothing is held")
 }

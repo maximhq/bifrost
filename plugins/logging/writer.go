@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,9 +22,6 @@ const (
 	// is never evicted mid-flight. Matches the 30-minute window used by
 	// cleanupOldProcessingLogs so the two reapers agree on what "stale" means.
 	pendingLogTTL = 15 * time.Minute
-	// endpointStreamPendingTTL bounds how long a passthrough stream's pending row is kept; each entry
-	// holds at most a 64 KiB request body.
-	endpointStreamPendingTTL = 24 * time.Hour
 	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
 	// itself. Matches the outer server shutdown budget at server.go:1596 so the
 	// logging plugin can fully drain in the worst case; remaining entries beyond
@@ -114,22 +110,31 @@ type pendingAgentInjectEntries struct {
 // PostRelayHook until Inject backfills upstream, overhead and the breakdown from the completed trace.
 type pendingRelayInjectEntries struct {
 	mu        sync.Mutex
-	entries   []*logstore.RelayLog
+	entries   []relayInjectEntry
 	createdAt time.Time
 	drained   bool
+}
+
+// relayLogUpdate reconciles a relay row persisted as processing at eviction: the output columns
+// PostRelayHook set, keyed by database name, applied through store.UpdateRelayLog after the
+// batch's inserts, as a log update reconciles an evicted LLM partial.
+type relayLogUpdate struct {
+	id      string
+	updates map[string]any
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
 // Exactly one insert, partial update, transcript correction, MCP log or agent log is set.
 type writeQueueEntry struct {
-	realtimeInput *realtimeInputUpdate
-	log           *logstore.Log
-	logUpdate     *logstore.Log
-	mcpLog        *logstore.MCPToolLog
-	agentLog      *logstore.AgentLog
-	endpointLog   *logstore.RelayLog
-	callback      func(entry *logstore.Log)
-	mcpCallback   func(entry *logstore.MCPToolLog)
+	realtimeInput     *realtimeInputUpdate
+	log               *logstore.Log
+	logUpdate         *logstore.Log
+	mcpLog            *logstore.MCPToolLog
+	agentLog          *logstore.AgentLog
+	endpointLog       *logstore.RelayLog
+	endpointLogUpdate *relayLogUpdate
+	callback          func(entry *logstore.Log)
+	mcpCallback       func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -483,6 +488,21 @@ func (p *LoggerPlugin) insertEndpointLogIndividually(ctx context.Context, log *l
 	return true
 }
 
+// updateEndpointLogIndividually is the per-row fallback for a relay reconcile whose batch failed.
+// A row the processing-row flush already reaped is nothing to retry.
+func (p *LoggerPlugin) updateEndpointLogIndividually(ctx context.Context, update *relayLogUpdate) bool {
+	err := p.store.UpdateRelayLog(ctx, update.id, update.updates)
+	if err == nil || errors.Is(err, logstore.ErrNotFound) {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual update failed for relay log %s: %v", update.id, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
 // updateLogIndividually is the per-row fallback for a partial log update whose
 // batch failed with a row-level error. It reports false when ctx ended before
 // the row was written or dropped.
@@ -514,6 +534,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
 	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	endpointLogs := make([]*logstore.RelayLog, 0)
+	endpointLogUpdates := make([]*relayLogUpdate, 0)
 	for _, entry := range batch {
 		if entry.log != nil {
 			p.applyParsedPassthrough(entry.log)
@@ -533,6 +554,9 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		}
 		if entry.endpointLog != nil {
 			endpointLogs = append(endpointLogs, entry.endpointLog)
+		}
+		if entry.endpointLogUpdate != nil {
+			endpointLogUpdates = append(endpointLogUpdates, entry.endpointLogUpdate)
 		}
 	}
 
@@ -557,6 +581,16 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchUpdate(ctx, chunk)
 	}, p.updateLogIndividually)
+	// Relay reconciles run after the relay inserts for the same reason. A row the processing-row
+	// flush already reaped is skipped, not retried.
+	unwrittenEndpointUpdates := writeWithRecovery(p, ctx, "relay log update", endpointLogUpdates, func(ctx context.Context, chunk []*relayLogUpdate) error {
+		for _, update := range chunk {
+			if err := p.store.UpdateRelayLog(ctx, update.id, update.updates); err != nil && !errors.Is(err, logstore.ErrNotFound) {
+				return err
+			}
+		}
+		return nil
+	}, p.updateEndpointLogIndividually)
 	for _, entry := range batch {
 		if entry.realtimeInput != nil {
 			if err := p.writeRealtimeInputUpdate(ctx, entry.realtimeInput); err != nil {
@@ -577,7 +611,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	// than one log type is handed back whole if any part is unwritten; persisted
 	// parts are re-inserted as no-ops by conflict-safe insertion.
 	var unwritten []*writeQueueEntry
-	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent) + len(unwrittenEndpoint)
+	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent) + len(unwrittenEndpoint) + len(unwrittenEndpointUpdates)
 	skip := make(map[*writeQueueEntry]struct{}, unwrittenCount)
 	if unwrittenCount > 0 {
 		pending := make(map[any]struct{}, unwrittenCount)
@@ -596,13 +630,17 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 		for _, e := range unwrittenEndpoint {
 			pending[e] = struct{}{}
 		}
+		for _, u := range unwrittenEndpointUpdates {
+			pending[u] = struct{}{}
+		}
 		for _, entry := range batch {
 			_, logPending := pending[entry.log]
 			_, updatePending := pending[entry.logUpdate]
 			_, mcpPending := pending[entry.mcpLog]
 			_, agentPending := pending[entry.agentLog]
 			_, endpointPending := pending[entry.endpointLog]
-			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) || (entry.endpointLog != nil && endpointPending) {
+			_, endpointUpdatePending := pending[entry.endpointLogUpdate]
+			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) || (entry.endpointLog != nil && endpointPending) || (entry.endpointLogUpdate != nil && endpointUpdatePending) {
 				skip[entry] = struct{}{}
 				unwritten = append(unwritten, entry)
 			}
@@ -714,16 +752,28 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
-	// A relayed stream can outlive pendingLogTTL; its request side is kept for the longer stream bound
-	// so the row written when it ends still carries the path, route and billable flag.
-	streamCutoff := time.Now().Add(-endpointStreamPendingTTL)
+	// Relay entries are evicted on idle time like LLM entries: core/relay refreshes lastActivity
+	// on every forwarded stream chunk, so a live stream is never reaped, and an abandoned call's
+	// request side is persisted as a processing row for a late finish to reconcile onto.
 	p.pendingEndpointLogs.Range(func(key, value any) bool {
-		pending, ok := value.(*logstore.RelayLog)
+		pending, ok := value.(*pendingRelayLog)
 		if !ok {
 			return true
 		}
-		if pending.Timestamp.Before(cutoff) && (!pending.Streamed || pending.Timestamp.Before(streamCutoff)) {
-			p.pendingEndpointLogs.Delete(key)
+		lastActive := pending.entry.Timestamp
+		if nanos := pending.lastActivity.Load(); nanos > 0 {
+			if active := time.Unix(0, nanos); active.After(lastActive) {
+				lastActive = active
+			}
+		}
+		if lastActive.Before(cutoff) {
+			p.persistEvictedRelayPartial(key, pending)
+		}
+		return true
+	})
+	p.evictedRelayPartials.Range(func(key, value any) bool {
+		if marker, ok := value.(evictedRelayPartial); ok && marker.at.Before(cutoff) {
+			p.evictedRelayPartials.Delete(key)
 		}
 		return true
 	})
@@ -777,9 +827,14 @@ const pendingClaimShards = 64
 // it the two can interleave so that the partial row lands after the completed
 // insert, or the marker is read before the partial is queued.
 func (p *LoggerPlugin) pendingClaimLock(requestID string) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(requestID))
-	return &p.pendingClaimLocks[h.Sum32()%pendingClaimShards]
+	// FNV-1a inlined: hash/fnv's hasher escapes through its interface and costs an allocation on
+	// every terminal hook, LLM and relay alike.
+	h := uint32(2166136261)
+	for i := 0; i < len(requestID); i++ {
+		h ^= uint32(requestID[i])
+		h *= 16777619
+	}
+	return &p.pendingClaimLocks[h%pendingClaimShards]
 }
 
 // persistEvictedPartial claims a stale pending entry and, when the claim
@@ -1065,6 +1120,45 @@ func (p *LoggerPlugin) enqueueEndpointLogEntry(entry *logstore.RelayLog) {
 	}
 }
 
+// tryEnqueueEndpointLogEntry pushes a relay row to the write queue without blocking and reports
+// whether it was queued, neither counting nor logging a failure, so an eviction that keeps the
+// entry for a retry does not inflate droppedRequests (see tryEnqueueLogEntry).
+func (p *LoggerPlugin) tryEnqueueEndpointLogEntry(entry *logstore.RelayLog) (queued bool) {
+	if entry == nil || p.closed.Load() {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			queued = false
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{endpointLog: entry}:
+		return true
+	default:
+		return false
+	}
+}
+
+// enqueueEndpointLogUpdate pushes a relay reconcile to the write queue. A full queue drops it,
+// matching enqueueLogUpdate's backpressure.
+func (p *LoggerPlugin) enqueueEndpointLogUpdate(update *relayLogUpdate) {
+	if update == nil || p.closed.Load() {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{endpointLogUpdate: update}:
+	default:
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping relay log update %s", update.id)
+	}
+}
+
 // estimateWriteQueueEntrySize returns the estimated serialized payload size for
 // the log entry carried by a write queue item.
 func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
@@ -1090,6 +1184,21 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 		}
 		if entry.agentLog.EventBody != nil {
 			size += len(*entry.agentLog.EventBody)
+		}
+		return size
+	}
+	if entry.endpointLogUpdate != nil {
+		size := len(entry.endpointLogUpdate.id) + 256
+		for k, v := range entry.endpointLogUpdate.updates {
+			size += len(k) + 8
+			switch value := v.(type) {
+			case string:
+				size += len(value)
+			case *string:
+				if value != nil {
+					size += len(*value)
+				}
+			}
 		}
 		return size
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,144 +276,76 @@ func TestServeStreamBilledBySizeOnEarlyClose(t *testing.T) {
 	require.NotNil(t, pipeline.postErr[0])
 }
 
-func TestServeStreamCapturesResponseBodyWhenContentLoggingEnabled(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
-	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
-	m, pipeline := newTestManager(t, cfg)
-
-	ctx := testCtx(t)
-	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
-	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
-	require.Nil(t, bErr)
-	body, err := io.ReadAll(res.Stream)
-	require.NoError(t, err)
-	require.NoError(t, res.Stream.Close())
-
-	require.Len(t, pipeline.post, 1)
-	assert.Equal(t, body, pipeline.post[0].Body, "the buffered capture matches what was forwarded")
-}
-
-// Without a logging plugin (or any plugin that stamps the default-capture signal at all), a
-// streamed reply must never be captured, even if governance or a per-request override happens to
-// be present on ctx for an unrelated reason: there is no logging plugin that will ever read the
-// buffer, so capturing would just retain bytes for nothing.
-func TestServeStreamNeverCapturesWithoutLoggingPluginSignal(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
-	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
-	m, pipeline := newTestManager(t, cfg)
-
-	ctx := testCtx(t)
-	// No BifrostContextKeyRelayContentLoggingEnabledByDefault set at all. Governance says "not
-	// disabled" (false), which a naive precedence chain would read as "enabled".
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
-	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
-	require.Nil(t, bErr)
-	_, err := io.ReadAll(res.Stream)
-	require.NoError(t, err)
-	require.NoError(t, res.Stream.Close())
-
-	require.Len(t, pipeline.post, 1)
-	assert.Nil(t, pipeline.post[0].Body, "no logging plugin signal present; governance alone must not turn capture on")
-}
-
-// A virtual key that re-enables content logging after the plugin's own default disables it must
-// still get its streamed body captured: the decision is resolved after every pre-hook (governance
-// included) has run, not frozen at the plugin's early, pre-governance default.
-func TestServeStreamGovernanceOverrideEnablesCaptureAfterPluginDefaultDisables(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
-	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
-	m, pipeline := newTestManager(t, cfg)
-
-	ctx := testCtx(t)
-	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, false)
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
-	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
-	require.Nil(t, bErr)
-	body, err := io.ReadAll(res.Stream)
-	require.NoError(t, err)
-	require.NoError(t, res.Stream.Close())
-
-	require.Len(t, pipeline.post, 1)
-	assert.Equal(t, body, pipeline.post[0].Body, "governance's override wins over the plugin's disabled default")
-}
-
-// Symmetrically, a virtual key that disables content logging after the plugin's default enables it
-// must not capture, even though the plugin-level signal alone would have said yes.
-func TestServeStreamGovernanceOverrideDisablesCaptureAfterPluginDefaultEnables(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
-	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
-	m, pipeline := newTestManager(t, cfg)
-
-	ctx := testCtx(t)
-	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
-	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
-	require.Nil(t, bErr)
-	_, err := io.ReadAll(res.Stream)
-	require.NoError(t, err)
-	require.NoError(t, res.Stream.Close())
-
-	require.Len(t, pipeline.post, 1)
-	assert.Nil(t, pipeline.post[0].Body, "governance's override wins over the plugin's enabled default")
-}
-
-func TestServeStreamOmitsResponseBodyByDefault(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
-	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
-	m, pipeline := newTestManager(t, cfg)
-
-	// No BifrostContextKeyRelayContentLoggingEnabledByDefault set: the common case (no logging
-	// plugin, or content logging off) must not buffer anything.
-	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
-	require.Nil(t, bErr)
-	_, err := io.ReadAll(res.Stream)
-	require.NoError(t, err)
-	require.NoError(t, res.Stream.Close())
-
-	require.Len(t, pipeline.post, 1)
-	assert.Nil(t, pipeline.post[0].Body, "capture is opt-in; the default path never buffers the body")
-}
-
-// TestServeStreamCapturesWholeReply pins that a streamed reply's body reaches the post-hooks in full,
-// as a buffered reply's does, rather than cut at a log-row size.
-func TestServeStreamCapturesWholeReply(t *testing.T) {
-	body := strings.Repeat("data: {\"chunk\":\"xxxxxxxx\"}\n\n", 4096) // ~120 KB
+// sseUpstream serves one small event stream for the capture tests.
+func sseUpstream(t *testing.T, body string) *httptest.Server {
+	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, body)
 	}))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+// The logging plugin owns the content policy and stamps one capture decision on ctx; core/relay
+// keeps no precedence of its own. Governance's or the per-request keys being present for unrelated
+// reasons must not turn capture on by themselves: without the plugin's decision nothing is kept.
+func TestServeStreamCaptureFollowsPluginDecision(t *testing.T) {
+	const payload = "data: {\"delta\":\"a\"}\n\n"
+	for _, tc := range []struct {
+		name string
+		set  func(ctx *schemas.BifrostContext)
+		want string
+	}{
+		{"nothing stamped: no logging plugin, nothing captured", func(*schemas.BifrostContext) {}, ""},
+		{"plugin asked for capture", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
+		}, payload},
+		{"plugin declined capture", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, false)
+		}, ""},
+		{"governance alone does not turn capture on", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
+			ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+			ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, false)
+		}, ""},
+		{"governance alone does not turn capture off", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		}, payload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := sseUpstream(t, payload)
+			cfg := bearerConfig("llm", upstream.URL)
+			cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+			m, pipeline := newTestManager(t, cfg)
+			ctx := testCtx(t)
+			tc.set(ctx)
+			res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+			require.Nil(t, bErr)
+			body, err := io.ReadAll(res.Stream)
+			require.NoError(t, err)
+			require.NoError(t, res.Stream.Close())
+			require.Len(t, pipeline.post, 1)
+			assert.Equal(t, tc.want, string(pipeline.post[0].Body))
+			if tc.want != "" {
+				assert.Equal(t, body, pipeline.post[0].Body, "the capture matches what was forwarded")
+			}
+		})
+	}
+}
+
+// A streamed reply's body reaches the post-hooks in full, as a buffered reply's does and as the
+// stream accumulator keeps an LLM stream: there is no bound of the relay's own on the capture.
+func TestServeStreamCapturesWholeReply(t *testing.T) {
+	body := strings.Repeat("data: {\"chunk\":\"xxxxxxxx\"}\n\n", 160*1024) // ~4.7 MiB
+	upstream := sseUpstream(t, body)
 	cfg := bearerConfig("llm", upstream.URL)
 	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
 	m, pipeline := newTestManager(t, cfg)
 
 	ctx := testCtx(t)
-	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
+	ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
 	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
 	require.Nil(t, bErr)
 	_, err := io.ReadAll(res.Stream)
@@ -420,46 +353,8 @@ func TestServeStreamCapturesWholeReply(t *testing.T) {
 	require.NoError(t, res.Stream.Close())
 
 	require.Len(t, pipeline.post, 1)
-	assert.Equal(t, len(body), len(pipeline.post[0].Body), "the whole streamed reply is captured")
+	require.Equal(t, len(body), len(pipeline.post[0].Body), "the whole streamed reply is captured")
 	assert.True(t, string(pipeline.post[0].Body) == body, "the captured bytes are the reply's bytes")
-}
-
-// TestServeStreamCapturesRetainedHiddenContent pins that a stream is captured when content logging
-// is off but the logging plugin retains hidden content in object storage, so a streamed reply is
-// retained like a buffered one.
-func TestServeStreamCapturesRetainedHiddenContent(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"secret\":true}\n\n")
-	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
-
-	for _, tc := range []struct {
-		name     string
-		retained bool
-		want     string
-	}{
-		{"retained hidden content is captured", true, "data: {\"secret\":true}\n\n"},
-		{"content off without retention is not captured", false, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m, pipeline := newTestManager(t, cfg)
-			ctx := testCtx(t)
-			ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, false)
-			if tc.retained {
-				ctx.SetValue(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled, true)
-			}
-			res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
-			require.Nil(t, bErr)
-			_, err := io.ReadAll(res.Stream)
-			require.NoError(t, err)
-			require.NoError(t, res.Stream.Close())
-			require.Len(t, pipeline.post, 1)
-			assert.Equal(t, tc.want, string(pipeline.post[0].Body))
-		})
-	}
 }
 
 // pastFormerCap is just over the 64 MiB the relay once refused a buffered reply above and cut a
@@ -508,7 +403,7 @@ func TestServeStreamCapturesPastFormerCap(t *testing.T) {
 	m, pipeline := newTestManager(t, cfg)
 
 	ctx := testCtx(t)
-	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
+	ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
 	res, bErr := m.Serve(ctx, Request{Endpoint: "files", Method: "GET", Path: "/download", Headers: map[string]string{}})
 	require.Nil(t, bErr)
 	_, err := io.Copy(io.Discard, res.Stream)
@@ -516,6 +411,59 @@ func TestServeStreamCapturesPastFormerCap(t *testing.T) {
 	require.NoError(t, res.Stream.Close())
 	require.Len(t, pipeline.post, 1)
 	assert.Equal(t, pastFormerCap, len(pipeline.post[0].Body), "the capture is not cut at a size of the relay's own")
+}
+
+// Every forwarded chunk touches the logging plugin's activity slot, so a live stream is never
+// reaped as stale, the way PostLLMHook refreshes LastActivity per chunk.
+func TestServeStreamTouchesActivityPerChunk(t *testing.T) {
+	upstream := sseUpstream(t, "data: {\"delta\":\"a\"}\n\n")
+	cfg := bearerConfig("llm", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+	m, _ := newTestManager(t, cfg)
+
+	var activity atomic.Int64
+	seed := time.Now().Add(-time.Hour).UnixNano()
+	activity.Store(seed)
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyRelayActivity, &activity)
+	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err := io.ReadAll(res.Stream)
+	require.NoError(t, err)
+	require.NoError(t, res.Stream.Close())
+	assert.Greater(t, activity.Load(), seed, "a forwarded chunk refreshes the activity slot")
+}
+
+// A stream that goes quiet past stream_idle_timeout_in_seconds ends as a timeout, the type the
+// LLM path gives the same stall, not as a generic transport error.
+func TestServeStreamIdleTimeoutIsATimeout(t *testing.T) {
+	released := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"delta\":\"a\"}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer upstream.Close()
+	defer close(released)
+	cfg := bearerConfig("slow", upstream.URL)
+	cfg.Network = &schemas.RelayNetworkConfig{StreamIdleTimeoutInSeconds: 1}
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/events", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "slow", Method: "POST", Path: "/events", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err := io.ReadAll(res.Stream)
+	require.Error(t, err, "the idle guard ends the stream")
+	require.NoError(t, res.Stream.Close())
+
+	require.Len(t, pipeline.postErr, 1)
+	require.NotNil(t, pipeline.postErr[0])
+	require.NotNil(t, pipeline.postErr[0].Error.Type)
+	assert.Equal(t, schemas.RequestTimedOut, *pipeline.postErr[0].Error.Type)
 }
 
 func TestServeJobRouteHandsBackJob(t *testing.T) {
@@ -738,7 +686,7 @@ func BenchmarkServeStreamBodyCapture(b *testing.B) {
 		m, pipeline := newTestManager(b, cfg)
 		ctx := testCtx(b)
 		if capture {
-			ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
+			ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -810,7 +758,7 @@ func TestLargeBufferedReplyIsForwardedAsStream(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	ctxWith := func(threshold int64) *schemas.BifrostContext {
 		ctx := testCtx(t)
-		ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
+		ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
 		if threshold > 0 {
 			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, threshold)
 		}
