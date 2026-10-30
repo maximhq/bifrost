@@ -4173,6 +4173,441 @@ const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token",
   restoreConfig("ADM-40"),
 ]);
 
+// ================================================================ per-user upstream OAuth against the mock's authorization server
+
+// Every test here sets mcp_oauth_private_allowlist ["127.0.0.1"] and temp-token auth as it states, and restores the
+// config at the end. Each test has its own fleet server. A per_user_oauth client is verified at create time by an
+// admin consent (login_hint admin); callers then consent as alice or bob through the per-user flow Bifrost opens.
+const PU_TEXT = (tempTokens) => `${ALLOWLIST_TEXT}, mcp_enable_temp_token_auth ${tempTokens}`;
+const puConfig = (id, tempTokens) => [readConfig(id), putConfig(id, `setup: ${PU_TEXT(tempTokens)}`, ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", `cc.mcp_enable_temp_token_auth = ${tempTokens};`], [A.status(200)])];
+const PU_SERVER_TEXT = (p, cfgText = "") => `a fleet server ${p} (echo_tool, add_tool) as an OAuth protected resource with dynamic registration${cfgText}; a per_user_oauth client ${p} on it with tools_to_execute ["*"]`;
+const puBody = (p) => oauthBody(`${p}-u`, p, p, { auth_type: "per_user_oauth" });
+// puConnect creates a per_user_oauth client (with over merged into its config) and verifies it by consenting as admin.
+const puConnect = (id, p, cfg = {}, over = {}) => [
+  ...asServer(id, p, cfg),
+  createOAuth(id, "setup: create the per-user OAuth client", { ...puBody(p), ...over }, p),
+  consentAs(id, "setup: consent for the per-user OAuth client as admin", p, "admin"),
+  followCallback(id, "setup: follow the callback for the per-user OAuth client", p, callbackSuccess()),
+  completeOAuth(id, "setup: complete the per-user OAuth client", p, [A.status(200)]),
+];
+const PU_FLOWS = "/api/oauth/per-user/flows/";
+const PU_SUCCESS = "/workspace/mcp-sessions/auth-success";
+const flowDetail = (id, title, v, asserts, opts = {}) => request(id, title, "GET", `${PU_FLOWS}{{${v}}}`, { ...opts, asserts });
+// flowStart keeps the authorize_url it returns in <v>_au, which consentAs follows.
+const flowStart = (id, title, v, asserts = [A.status(200)], opts = {}) => request(id, title, "GET", `${PU_FLOWS}{{${v}}}/start`, {
+  ...opts, asserts, extraTests: [`pm.collectionVariables.set('${v}_au', pm.response.json().authorize_url || '');`],
+});
+// puFinish takes flow v through start, consent as identity and the callback, which lands on the public success page.
+const puFinish = (id, v, identity, label) => [
+  flowStart(id, `setup: start ${label}`, v),
+  consentAs(id, `setup: consent for ${label} as ${identity}`, v, identity),
+  followCallback(id, `setup: follow the callback for ${label}`, v, [A.status(302), locationEnds(PU_SUCCESS)]),
+];
+// TT sends only flow v's temp token, kept in <v>_tt by authFlow.
+const TT = (v) => ({ noAuth: true, noCookies: true, headers: [{ key: "X-Bifrost-Temp-Token", value: `{{${v}_tt}}` }] });
+// keepFlow keeps the flow id of a 400's mcp_auth_required in v; with otherThan it also checks the flow is a new one.
+const keepFlow = (v, otherThan) => A.custom(`mcp_auth_required kind "oauth" names a flow${otherThan ? ", a new one" : ""}`, [
+  "var r = (pm.response.json().extra_fields || {}).mcp_auth_required;",
+  "pm.expect(r && r.kind, 'body: ' + pm.response.text()).to.equal('oauth');",
+  "pm.expect(r.session_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+  ...(otherThan ? [`pm.expect(r.session_id).to.not.equal(pm.collectionVariables.get(${lit(otherThan)}));`] : []),
+  `pm.collectionVariables.set(${lit(v)}, r.session_id);`,
+]);
+// authFlow checks a 400's mcp_auth_required in full: kind "oauth", authorize_url ending /workspace/mcp-sessions/auth?flow=<flow id>
+// and session_id equal to that flow id. Without temp tokens: no #t= and the exact message. With them: a #t= token, kept in <saveAs>_tt, and
+// the required-fragment notice. saveAs keeps F; sameAs checks F against a kept one.
+const authFlow = (name, { saveAs, sameAs, tempToken = false }) => A.custom(`mcp_auth_required kind "oauth", authorize_url .../workspace/mcp-sessions/auth?flow=<flow id>${tempToken ? "#t=<token>" : " with no #t="}, session_id is the flow id${sameAs ? ", the same flow id" : ""}, ${tempToken ? "message has \"IMPORTANT: this link includes a required fragment\"" : `message "Authentication required for ${name}. Visit <url> to connect your account."`}`, [
+  "var r = (pm.response.json().extra_fields || {}).mcp_auth_required;",
+  "pm.expect(r, 'body: ' + pm.response.text()).to.be.an('object');",
+  "pm.expect(r.kind).to.equal('oauth');",
+  "var m = /\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#]+)(#t=(.*))?$/.exec(r.authorize_url);",
+  "pm.expect(m, 'authorize_url: ' + r.authorize_url).to.not.equal(null);",
+  "pm.expect(r.session_id).to.equal(m[1]);",
+  ...(tempToken ? [
+    "pm.expect(m[3], 'authorize_url: ' + r.authorize_url).to.be.a('string').and.not.empty;",
+    "pm.expect(r.message).to.include('IMPORTANT: this link includes a required fragment');",
+    ...(saveAs ? [`pm.collectionVariables.set(${lit(saveAs + "_tt")}, m[3]);`] : []),
+  ] : [
+    "pm.expect(r.authorize_url, 'authorize_url').to.not.include('#t=');",
+    `pm.expect(r.message).to.equal(${lit(`Authentication required for ${name}. Visit `)} + r.authorize_url + ' to connect your account.');`,
+  ]),
+  ...(saveAs ? [`pm.collectionVariables.set(${lit(saveAs)}, m[1]);`] : []),
+  ...(sameAs ? [`pm.expect(m[1]).to.equal(pm.collectionVariables.get(${lit(sameAs)}));`] : []),
+]);
+// startUrl checks a flow start's authorize_url: server p's authorize endpoint with a client_id, S256, a state and
+// Bifrost's callback as redirect_uri.
+const startUrl = (p) => A.custom(`authorize_url is ${p}'s authorize endpoint with client_id, S256, a state and the callback redirect_uri`, [QS_FN,
+  "var u = pm.response.json().authorize_url;",
+  `pm.expect(u, 'body: ' + pm.response.text()).to.include(${lit(`/s/${p}/as/authorize?`)});`,
+  "var q = qs(u);",
+  "pm.expect(q.client_id, 'query').to.be.a('string').and.not.empty;",
+  "pm.expect(q.code_challenge_method, 'query').to.equal('S256');",
+  "pm.expect(q.code_challenge, 'query').to.be.a('string').and.not.empty;",
+  "pm.expect(q.state, 'query').to.be.a('string').and.not.empty;",
+  "pm.expect(/\\/api\\/oauth\\/callback$/.test(q.redirect_uri || ''), 'redirect_uri ' + q.redirect_uri).to.equal(true);",
+]);
+// The sessions list is read whole (limit 500) and filtered here by client and an ES5 predicate on the entry s.
+const SESSIONS = "/api/mcp/sessions?limit=500";
+const sessionRows = (clientId, pred) => `var found = (pm.response.json().sessions || []).filter(function (s) { return s.mcp_client && s.mcp_client.client_id === ${lit(clientId)} && (${pred}); });`;
+const saveSession = (id, title, clientId, pred, v) => request(id, title, "GET", SESSIONS, {
+  asserts: [A.status(200), A.custom("exactly one matching entry", [sessionRows(clientId, pred), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);"])],
+  extraTests: [sessionRows(clientId, pred), `pm.collectionVariables.set(${lit(v)}, found.length ? found[0].id : '');`],
+});
+const sessionsHas = (id, title, clientId, pred, what) => request(id, title, "GET", SESSIONS, {
+  asserts: [A.status(200), A.custom(what, [sessionRows(clientId, pred), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);"])],
+});
+const vkPred = (v) => `s.kind === 'token' && s.virtual_key && s.virtual_key.id === pm.collectionVariables.get(${lit(v + "_id")})`;
+const sessionPred = (sid) => `s.kind === 'token' && s.session_id === ${lit(sid)}`;
+// puVK creates a virtual key granted every tool of client p, keeping its id and value in v_id and v.
+const puVK = (id, label, p, v) => vkCreate(id, `setup: create the ${label} VK, granted every tool of ${p}`, { name: `${id} ${label} key`, mcp_configs: [{ mcp_client_name: p, tools_to_execute: ["*"] }] }, v);
+const vkExec = (v) => ({ headers: [{ key: "x-bf-vk", value: `{{${v}}}` }] });
+const execAfterS = (id, title, tool, session, ms, asserts) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, asserts, pre: [`setTimeout(function () {}, ${ms});`],
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: "hi" }) } },
+  headers: [{ key: "x-bf-mcp-session-id", value: session }],
+});
+const credKind = (v) => A.custom(`credential kind is ${lit(v)}`, [`pm.expect((pm.response.json().clients[0].credential || {}).kind, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+const methodIs = (m, n) => A.custom(`${m} count is ${n}`, [`pm.expect((pm.response.json().counters.methods || {})[${lit(m)}] || 0, 'body: ' + pm.response.text()).to.equal(${n});`]);
+const adminLogin = (id) => request(id, "setup: log in as the admin", "POST", "/api/session/login", {
+  noAuth: true, noCookies: true, raw: "{{login_body}}",
+  pre: ["var C = require('crypto-js'); var pair = C.enc.Base64.parse(pm.variables.get('admin_auth_header').replace(/^Basic /, '')).toString(C.enc.Utf8); var i = pair.indexOf(':');", "pm.variables.set('login_body', JSON.stringify({ username: pair.slice(0, i), password: pair.slice(i + 1) }));"],
+  asserts: [A.status(200)],
+  extraTests: ["var m = /(?:^|[;,\\s])token=([^;]+)/.exec(pm.response.headers.get('Set-Cookie') || '');", "pm.collectionVariables.set('admin_cookie', m ? m[1] : '');"],
+});
+const adminLogout = (id) => request(id, "teardown: log the admin session out", "POST", "/api/session/logout", { noAuth: true, noCookies: true, headers: [{ key: "Authorization", value: "Bearer {{admin_cookie}}" }], asserts: [A.status(200)] });
+// A per_user_headers client on fleet server srv, which accepts only X-Api-Key key-a.
+const PH_TEXT = (srv) => `a fleet server ${srv} (echo_tool, add_tool) that accepts only X-Api-Key key-a; a per_user_headers client ${srv} on it with per_user_header_keys ["x-api-key"], sample key-a, tools_to_execute ["*"]`;
+const phClient = (id, srv) => [
+  ...freshServer(id, srv, ["echo_tool", "add_tool"]),
+  mockAuth(id, srv, `setup: ${srv} accepts only X-Api-Key key-a`, { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": "key-a" } }),
+  createClient(id, { client_id: `${srv}-c`, name: srv, connection_type: "http", connection_string: `${CHAOS}/s/${srv}/mcp`, auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "key-a" }, tools_to_execute: ["*"] }, "setup: create the per_user_headers client"),
+];
+// phCredential opens a header flow for session sid, submits key-a and keeps the credential id in v.
+const phCredential = (id, srv, sid, v) => [
+  execTool(id, `setup: execute as ${sid} opens a header flow`, `${srv}-echo_tool`, [A.status(400), headersFlow({ saveAs: `${v}_flow` })], { session: sid }),
+  request(id, "setup: submit x-api-key key-a", "PUT", `/api/mcp/per-user-headers/flows/{{${v}_flow}}`, { body: { headers: { "x-api-key": "key-a" } }, asserts: [A.status(200)], extraTests: [`pm.collectionVariables.set(${lit(v)}, pm.response.json().credential_id);`] }),
+];
+const NO_SESSION = "MCP session not found";
+const NO_FLOW = "OAuth flow not found";
+
+const AUTH27 = folder("AUTH-27 per_user_oauth create with admin verification", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth27")}, created and verified by consenting as admin.`, [
+  ...puConfig("AUTH-27", false),
+  ...asServer("AUTH-27", "auth27"),
+  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration")]),
+  consentAs("AUTH-27", "consent as admin", "auth27", "admin"),
+  followCallback("AUTH-27", "follow the callback", "auth27", callbackSuccess()),
+  completeOAuth("AUTH-27", "complete", "auth27", [A.status(200), messageStarts("OAuth configuration verified successfully. 2 tools discovered")]),
+  getClient("AUTH-27", "auth27-u", "the credential is oauth and active", [credKind("oauth"), credStatus("active")]),
+  completeOAuth("AUTH-27", "complete again", "auth27", [A.status(409)]),
+  deleteClient("AUTH-27", "auth27-u"),
+  restoreConfig("AUTH-27"),
+]);
+
+const AUTH28 = folder("AUTH-28 per_user_oauth verification fails", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth28")}. After the admin consent and callback, the authorization server expires admin's token, so auth28 rejects it.`, [
+  ...puConfig("AUTH-28", false),
+  ...asServer("AUTH-28", "auth28"),
+  createOAuth("AUTH-28", "setup: create the per-user OAuth client", puBody("auth28"), "auth28"),
+  consentAs("AUTH-28", "setup: consent as admin", "auth28", "admin"),
+  followCallback("AUTH-28", "setup: follow the callback", "auth28", callbackSuccess()),
+  mockPost("AUTH-28", "auth28", "oauth/expire", "setup: expire admin's token", { identity: "admin" }),
+  completeOAuth("AUTH-28", "complete", "auth28", [A.status(500), A.msgStartsWith("OAuth configuration test failed:")]),
+  notListed("AUTH-28", "auth28-u"),
+  restoreConfig("AUTH-28"),
+]);
+
+const AUTH29_MSG = "per-user OAuth for auth29 requires an identity: send a Virtual Key (x-bf-vk)";
+const AUTH29 = folder("AUTH-29 Per-user client with no caller identity", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth29")}, verified as admin. The caller sends no VK and no session id.`, [
+  ...puConfig("AUTH-29", false),
+  ...puConnect("AUTH-29", "auth29"),
+  execTool("AUTH-29", "execute with no identity", "auth29-echo_tool", [A.status(400), A.msgStartsWith(AUTH29_MSG)]),
+  gwCall("AUTH-29", "/mcp tools/call with no identity", "auth29-echo_tool", [toolResultError(null, AUTH29_MSG)]),
+  deleteClient("AUTH-29", "auth29-u"),
+  restoreConfig("AUTH-29"),
+]);
+
+const AUTH30 = folder("AUTH-30 Identity but no token yet", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth30")}, verified as admin. The caller sends x-bf-mcp-session-id auth30-sess1 and has no token.`, [
+  ...puConfig("AUTH-30", false),
+  ...puConnect("AUTH-30", "auth30"),
+  execTool("AUTH-30", "first execute call as auth30-sess1", "auth30-echo_tool", [A.status(400), authFlow("auth30", { saveAs: "auth30_f" })], { session: "auth30-sess1" }),
+  execTool("AUTH-30", "second execute call as auth30-sess1", "auth30-echo_tool", [A.status(400), authFlow("auth30", { sameAs: "auth30_f" })], { session: "auth30-sess1" }),
+  mockGet("AUTH-30", "auth30", "no tools/call reached auth30", [methodIs("tools/call", 0)]),
+  deleteClient("AUTH-30", "auth30-u"),
+  restoreConfig("AUTH-30"),
+]);
+
+const AUTH31 = folder("AUTH-31 Temp-token link", `Setup: ${PU_TEXT(true)}; ${PU_SERVER_TEXT("auth31")}, verified as admin; a VK granted every tool of auth31. One caller sends x-bf-mcp-session-id auth31-sess1, the other the VK; neither has a token.`, [
+  ...puConfig("AUTH-31", true),
+  ...puConnect("AUTH-31", "auth31"),
+  puVK("AUTH-31", "first", "auth31", "auth31_vk1"),
+  execTool("AUTH-31", "execute as auth31-sess1", "auth31-echo_tool", [A.status(400), authFlow("auth31", { tempToken: true })], { session: "auth31-sess1" }),
+  execTool("AUTH-31", "execute with the VK", "auth31-echo_tool", [A.status(400), authFlow("auth31", { tempToken: true })], vkExec("auth31_vk1")),
+  deleteClient("AUTH-31", "auth31-u"),
+  vkDelete("AUTH-31", "teardown: delete the VK", "auth31_vk1"),
+  restoreConfig("AUTH-31"),
+]);
+
+const AUTH32 = folder("AUTH-32 Flow detail and start", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth32")}, verified as admin; an execute call as auth32-sess1 opens a flow.`, [
+  ...puConfig("AUTH-32", false),
+  ...puConnect("AUTH-32", "auth32"),
+  execTool("AUTH-32", "setup: execute as auth32-sess1 opens a flow", "auth32-echo_tool", [A.status(400), keepFlow("auth32_f")], { session: "auth32-sess1" }),
+  flowDetail("AUTH-32", "flow detail", "auth32_f", [A.status(200), A.jsonEquals("flow_mode", "session"), A.jsonEquals("status", "pending"), A.jsonEquals("session_id", "auth32-sess1")]),
+  flowStart("AUTH-32", "start", "auth32_f", [A.status(200), startUrl("auth32")]),
+  request("AUTH-32", "detail of an unknown flow", "GET", `${PU_FLOWS}7f3e2a10-0000-4000-8000-000000000032`, { asserts: [A.status(404), A.msgEquals(NO_FLOW)] }),
+  request("AUTH-32", "start of an unknown flow", "GET", `${PU_FLOWS}7f3e2a10-0000-4000-8000-000000000032/start`, { asserts: [A.status(404), A.msgEquals(NO_FLOW)] }),
+  deleteClient("AUTH-32", "auth32-u"),
+  restoreConfig("AUTH-32"),
+]);
+
+const AUTH33 = folder("AUTH-33 Caller completes per-user OAuth", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth33")}, verified as admin; an execute call as auth33-sess1 opens a flow; the authorization server approves as alice.`, [
+  ...puConfig("AUTH-33", false),
+  ...puConnect("AUTH-33", "auth33"),
+  execTool("AUTH-33", "setup: execute as auth33-sess1 opens a flow", "auth33-echo_tool", [A.status(400), keepFlow("auth33_f")], { session: "auth33-sess1" }),
+  flowStart("AUTH-33", "setup: start the flow", "auth33_f"),
+  consentAs("AUTH-33", "setup: consent as alice", "auth33_f", "alice"),
+  followCallback("AUTH-33", "the callback", "auth33_f", [A.status(302), locationEnds(PU_SUCCESS)]),
+  execTool("AUTH-33", "execute as auth33-sess1", "auth33-echo_tool", [A.status(200)], { session: "auth33-sess1" }),
+  mockGet("AUTH-33", "auth33", "the call is counted under alice", [identityCalls("alice", 1)]),
+  flowStart("AUTH-33", "start the completed flow again", "auth33_f", [A.status(404)]),
+  deleteClient("AUTH-33", "auth33-u"),
+  restoreConfig("AUTH-33"),
+]);
+
+const AUTH34 = folder("AUTH-34 Two callers stay isolated", `Setup: as AUTH-33 (${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth34")}, verified as admin; auth34-sess1 completes as alice and makes one call). Then auth34-sess2 calls, completes its own flow as bob, and the two sessions call again.`, [
+  ...puConfig("AUTH-34", false),
+  ...puConnect("AUTH-34", "auth34"),
+  execTool("AUTH-34", "setup: execute as auth34-sess1 opens flow A", "auth34-echo_tool", [A.status(400), keepFlow("auth34_fa")], { session: "auth34-sess1" }),
+  ...puFinish("AUTH-34", "auth34_fa", "alice", "flow A"),
+  execTool("AUTH-34", "setup: execute as auth34-sess1", "auth34-echo_tool", [A.status(200)], { session: "auth34-sess1" }),
+  execTool("AUTH-34", "first execute call as auth34-sess2", "auth34-echo_tool", [A.status(400), keepFlow("auth34_fb", "auth34_fa")], { session: "auth34-sess2" }),
+  mockGet("AUTH-34", "auth34", "auth34-sess2's call did not reach auth34", [identityCallsAre({ alice: 1 }), A.custom("tools/call reached auth34 once, alice's", ["pm.expect((pm.response.json().counters.methods || {})['tools/call'] || 0, 'body: ' + pm.response.text()).to.equal(1);"])]),
+  ...puFinish("AUTH-34", "auth34_fb", "bob", "flow B"),
+  execTool("AUTH-34", "execute as auth34-sess1", "auth34-echo_tool", [A.status(200)], { session: "auth34-sess1" }),
+  execTool("AUTH-34", "execute as auth34-sess1 again", "auth34-echo_tool", [A.status(200)], { session: "auth34-sess1" }),
+  execTool("AUTH-34", "execute as auth34-sess2", "auth34-echo_tool", [A.status(200)], { session: "auth34-sess2" }),
+  mockGet("AUTH-34", "auth34", "alice 3, bob 1, admin never counted", [identityCallsAre({ alice: 3, bob: 1 }), noIdentity("admin")]),
+  deleteClient("AUTH-34", "auth34-u"),
+  restoreConfig("AUTH-34"),
+]);
+
+const AUTH35 = folder("AUTH-35 VK-mode isolation and revoke", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth35")}, verified as admin; two VKs granted every tool of auth35. The first VK completes as alice, the second as bob, each calls once, then the first VK's session is deleted.`, [
+  ...puConfig("AUTH-35", false),
+  ...puConnect("AUTH-35", "auth35"),
+  puVK("AUTH-35", "first", "auth35", "auth35_vk1"),
+  puVK("AUTH-35", "second", "auth35", "auth35_vk2"),
+  execTool("AUTH-35", "setup: execute with the first VK opens its flow", "auth35-echo_tool", [A.status(400), keepFlow("auth35_f1")], vkExec("auth35_vk1")),
+  ...puFinish("AUTH-35", "auth35_f1", "alice", "the first VK's flow"),
+  execTool("AUTH-35", "setup: execute with the second VK opens its flow", "auth35-echo_tool", [A.status(400), keepFlow("auth35_f2")], vkExec("auth35_vk2")),
+  ...puFinish("AUTH-35", "auth35_f2", "bob", "the second VK's flow"),
+  execTool("AUTH-35", "setup: execute with the first VK", "auth35-echo_tool", [A.status(200)], vkExec("auth35_vk1")),
+  execTool("AUTH-35", "setup: execute with the second VK", "auth35-echo_tool", [A.status(200)], vkExec("auth35_vk2")),
+  saveSession("AUTH-35", "setup: find the first VK's session", "auth35-u", vkPred("auth35_vk1"), "auth35_s1"),
+  request("AUTH-35", "delete the first VK's session", "DELETE", "/api/mcp/sessions/{{auth35_s1}}", { asserts: [A.status(204)] }),
+  execTool("AUTH-35", "execute with the first VK", "auth35-echo_tool", [A.status(400), keepFlow("auth35_f3")], vkExec("auth35_vk1")),
+  execTool("AUTH-35", "execute with the second VK", "auth35-echo_tool", [A.status(200)], vkExec("auth35_vk2")),
+  mockGet("AUTH-35", "auth35", "the second VK's call ran under bob and alice is unchanged", [identityCallsAre({ alice: 1, bob: 2 })]),
+  deleteClient("AUTH-35", "auth35-u"),
+  vkDelete("AUTH-35", "teardown: delete the first VK", "auth35_vk1"),
+  vkDelete("AUTH-35", "teardown: delete the second VK", "auth35_vk2"),
+  restoreConfig("AUTH-35"),
+]);
+
+const AUTH36 = folder("AUTH-36 Per-user lazy refresh", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth36", " whose authorization server issues 5s access tokens and rotates refresh tokens")}, verified as admin; auth36-sess1 completes as alice. Each execute call waits 6s first, so each finds an expired token.`, [
+  ...puConfig("AUTH-36", false),
+  ...puConnect("AUTH-36", "auth36", { access_ttl: "5s", rotate_refresh: true }),
+  execTool("AUTH-36", "setup: execute as auth36-sess1 opens a flow", "auth36-echo_tool", [A.status(400), keepFlow("auth36_f")], { session: "auth36-sess1" }),
+  ...puFinish("AUTH-36", "auth36_f", "alice", "the flow"),
+  execAfterS("AUTH-36", "first execute call as auth36-sess1, 6s later", "auth36-echo_tool", "auth36-sess1", 6000, [A.status(200)]),
+  execAfterS("AUTH-36", "second execute call as auth36-sess1, 6s after the first", "auth36-echo_tool", "auth36-sess1", 6000, [A.status(200)]),
+  mockGet("AUTH-36", "auth36", "two refresh grants for alice, the second presenting the first's new token", [A.custom("2 refresh_token requests for alice, both 200, the second's refresh_token the first's issued one", [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token' && e.identity === 'alice'; });",
+    "pm.expect(r.length, 'refreshes: ' + JSON.stringify(pm.response.json().oauth.log)).to.equal(2);",
+    "pm.expect(r[0].status).to.equal(200);", "pm.expect(r[1].status).to.equal(200);",
+    "pm.expect(r[1].refresh_token).to.equal(r[0].issued_refresh_token);",
+  ]), identityCalls("alice", 2)]),
+  deleteClient("AUTH-36", "auth36-u"),
+  restoreConfig("AUTH-36"),
+]);
+
+const gwFlow = (id, title, tool, vk, v, withToken) => request(id, title, "POST", "/mcp", {
+  noAuth: true, raw: JSON.stringify(call(tool, { text: "hi" })), headers: [MCP_ACCEPT, { key: "x-bf-vk", value: `{{${vk}}}` }],
+  asserts: [A.status(200), A.custom(`isError true and the text links a flow${withToken ? " with a #t= temp token" : ""}`, [
+    "var r = pm.response.json().result;",
+    "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+    "var m = /\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)(#t=(\\S+))?/.exec(r.content[0].text);",
+    "pm.expect(m, 'text: ' + r.content[0].text).to.not.equal(null);",
+    ...(withToken ? ["pm.expect(m[3], 'text: ' + r.content[0].text).to.be.a('string').and.not.empty;"] : []),
+  ])],
+  extraTests: [
+    "var mm = /\\/workspace\\/mcp-sessions\\/auth\\?flow=([^&#\\s]+)(#t=(\\S+))?/.exec(pm.response.json().result.content[0].text) || [];",
+    `pm.collectionVariables.set(${lit(v)}, mm[1]);`,
+    ...(withToken ? [`pm.collectionVariables.set(${lit(v + "_tt")}, mm[3]);`] : []),
+  ],
+});
+const ADM04 = folder("ADM-04 A temp token reaches only its own flow", `Setup: dashboard auth on; ${PU_TEXT(true)}; ${PU_SERVER_TEXT("adm04")}, verified as admin; two VKs granted every tool of adm04, each opening its own flow with a tools/call on /mcp. The first flow's temp token comes from the #t= fragment of the link in that reply; the requests that use it carry nothing else.`, [
+  ...puConfig("ADM-04", true),
+  ...puConnect("ADM-04", "adm04"),
+  puVK("ADM-04", "first", "adm04", "adm04_vk1"),
+  puVK("ADM-04", "second", "adm04", "adm04_vk2"),
+  gwFlow("ADM-04", "setup: /mcp tools/call with the first VK opens the first flow and its temp token", "adm04-echo_tool", "adm04_vk1", "adm04_f1", true),
+  gwFlow("ADM-04", "setup: /mcp tools/call with the second VK opens the second flow", "adm04-echo_tool", "adm04_vk2", "adm04_f2", false),
+  flowDetail("ADM-04", "the first flow's detail with its temp token", "adm04_f1", [A.status(200)], TT("adm04_f1")),
+  flowStart("ADM-04", "the first flow's start with its temp token", "adm04_f1", [A.status(200)], TT("adm04_f1")),
+  flowDetail("ADM-04", "control: the first flow's temp token still opens its own flow after the start", "adm04_f1", [A.status(200)], TT("adm04_f1")),
+  flowDetail("ADM-04", "the second flow's detail with the first flow's temp token", "adm04_f2", [A.status(401), errorCode("temp_token_rejected")], TT("adm04_f1")),
+  request("ADM-04", "GET /api/mcp/clients with the first flow's temp token", "GET", "/api/mcp/clients", { ...TT("adm04_f1"), asserts: [A.status(401), errorCode("temp_token_rejected")] }),
+  putConfig("ADM-04", `setup: ${PU_TEXT(false)}`, ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", "cc.mcp_enable_temp_token_auth = false;"], [A.status(200)]),
+  flowDetail("ADM-04", "the first flow's detail with its temp token, temp-token auth off", "adm04_f1", [A.status(401), errorCode("temp_token_auth_disabled")], TT("adm04_f1")),
+  deleteClient("ADM-04", "adm04-u"),
+  vkDelete("ADM-04", "teardown: delete the first VK", "adm04_vk1"),
+  vkDelete("ADM-04", "teardown: delete the second VK", "adm04_vk2"),
+  restoreConfig("ADM-04"),
+]);
+
+const ADM27 = folder("ADM-27 per_user_oauth create and complete", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm27")}, created and verified by consenting as admin.`, [
+  ...puConfig("ADM-27", false),
+  ...asServer("ADM-27", "adm27"),
+  createOAuth("ADM-27", "create", puBody("adm27"), "adm27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration")]),
+  consentAs("ADM-27", "setup: consent as admin", "adm27", "admin"),
+  followCallback("ADM-27", "setup: follow the callback", "adm27", callbackSuccess()),
+  completeOAuth("ADM-27", "complete", "adm27", [A.status(200), messageStarts("OAuth configuration verified successfully. 2 tools discovered."), A.jsonEquals("tools_count", 2)]),
+  getClient("ADM-27", "adm27-u", "the credential is oauth and active", [credKind("oauth"), credStatus("active")]),
+  request("ADM-27", "there is no sessions entry for adm27-u", "GET", SESSIONS, { asserts: [A.status(200), A.custom("no entry for adm27-u", [sessionRows("adm27-u", "true"), "pm.expect(found, 'body: ' + pm.response.text()).to.eql([]);"])] }),
+  completeOAuth("ADM-27", "replay complete", "adm27", [A.status(409), A.msgEquals("OAuth flow has already been completed for this MCP client")]),
+  deleteClient("ADM-27", "adm27-u"),
+  restoreConfig("ADM-27"),
+]);
+
+const ADM28 = folder("ADM-28 per_user_oauth verification failure", `Setup: dashboard auth on, admin credentials; as ADM-27 (${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm28")}). After the admin consent and callback, the authorization server expires admin's token, so adm28 rejects it.`, [
+  ...puConfig("ADM-28", false),
+  ...asServer("ADM-28", "adm28"),
+  createOAuth("ADM-28", "setup: create", puBody("adm28"), "adm28"),
+  consentAs("ADM-28", "setup: consent as admin", "adm28", "admin"),
+  followCallback("ADM-28", "setup: follow the callback", "adm28", callbackSuccess()),
+  oauthStatus("ADM-28", "control: after the callback the status has a token_id", "adm28", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])]),
+  mockPost("ADM-28", "adm28", "oauth/expire", "setup: expire admin's token", { identity: "admin" }),
+  completeOAuth("ADM-28", "complete", "adm28", [A.status(500), A.msgContains("OAuth configuration test failed")]),
+  notListed("ADM-28", "adm28-u"),
+  oauthStatus("ADM-28", "the status has no token_id", "adm28", "", [A.custom("there is no token_id", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('token_id');"])]),
+  restoreConfig("ADM-28"),
+]);
+
+const ADM34 = folder("ADM-34 per_user_oauth reauthorize repairs only the admin credential", `Setup: dashboard auth on, admin credentials; as ADM-27 (${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm34")}, verified as admin); a VK granted every tool of adm34 whose caller completed as alice, so it has a token entry. The client is then reauthorized and verified as admin again.`, [
+  ...puConfig("ADM-34", false),
+  ...puConnect("ADM-34", "adm34"),
+  puVK("ADM-34", "first", "adm34", "adm34_vk1"),
+  execTool("ADM-34", "setup: execute with the VK opens its flow", "adm34-echo_tool", [A.status(400), keepFlow("adm34_f")], vkExec("adm34_vk1")),
+  ...puFinish("ADM-34", "adm34_f", "alice", "the VK's flow"),
+  saveSession("ADM-34", "setup: find the VK's token entry", "adm34-u", vkPred("adm34_vk1"), "adm34_t"),
+  request("ADM-34", "reauthorize", "POST", "/api/mcp/client/adm34-u/reauthorize", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm34_au', pm.response.json().authorize_url);"] }),
+  consentAs("ADM-34", "consent as admin", "adm34", "admin"),
+  followCallback("ADM-34", "the callback", "adm34", callbackSuccess()),
+  completeOAuth("ADM-34", "complete", "adm34", [A.status(200), A.jsonMessage("Admin discovery credential repaired successfully. 2 tools discovered.")]),
+  request("ADM-34", "the VK's token entry keeps its id and is active", "GET", SESSIONS, { asserts: [A.status(200), A.custom("one entry for the VK, the recorded id, status \"active\"", [
+    sessionRows("adm34-u", vkPred("adm34_vk1")),
+    "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(found[0].id).to.equal(pm.collectionVariables.get('adm34_t'));",
+    "pm.expect(found[0].status).to.equal('active');",
+  ])] }),
+  deleteClient("ADM-34", "adm34-u"),
+  vkDelete("ADM-34", "teardown: delete the VK", "adm34_vk1"),
+  restoreConfig("ADM-34"),
+]);
+
+const ADM75 = folder("ADM-75 Sessions reauth", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PH_TEXT("adm75h")}, where adm75-hsess1 submitted key-a, giving a header credential; ${PU_SERVER_TEXT("adm75")}, verified as admin, where adm75-sess1 completed as alice, giving an OAuth token.`, [
+  ...puConfig("ADM-75", false),
+  ...phClient("ADM-75", "adm75h"),
+  ...phCredential("ADM-75", "adm75h", "adm75-hsess1", "adm75_hc"),
+  ...puConnect("ADM-75", "adm75"),
+  execTool("ADM-75", "setup: execute as adm75-sess1 opens a flow", "adm75-echo_tool", [A.status(400), keepFlow("adm75_f")], { session: "adm75-sess1" }),
+  ...puFinish("ADM-75", "adm75_f", "alice", "the flow"),
+  saveSession("ADM-75", "setup: find the OAuth token's entry", "adm75-u", sessionPred("adm75-sess1"), "adm75_t"),
+  request("ADM-75", "reauth the header credential", "POST", "/api/mcp/sessions/{{adm75_hc}}/reauth", {
+    asserts: [A.status(200), A.jsonEquals("kind", "headers"), A.custom("session_id is set", ["pm.expect(pm.response.json().session_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]), A.custom("authorize_url contains /workspace/mcp-sessions/auth?flow= and &kind=headers", [
+      "var u = pm.response.json().authorize_url;",
+      "pm.expect(u, 'body: ' + pm.response.text()).to.include('/workspace/mcp-sessions/auth?flow=');",
+      "pm.expect(u).to.include('&kind=headers');",
+    ])],
+    extraTests: ["pm.collectionVariables.set('adm75_hc_flow', pm.response.json().session_id);"],
+  }),
+  request("ADM-75", "reauth the header credential again", "POST", "/api/mcp/sessions/{{adm75_hc}}/reauth", { asserts: [A.status(200), A.custom("the same session_id", ["pm.expect(pm.response.json().session_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('adm75_hc_flow'));"])] }),
+  request("ADM-75", "reauth the OAuth token", "POST", "/api/mcp/sessions/{{adm75_t}}/reauth", {
+    asserts: [A.status(200), A.custom("authorize_url contains the session_id", ["var b = pm.response.json();", "pm.expect(b.session_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;", "pm.expect(b.authorize_url).to.include(b.session_id);"])],
+    extraTests: ["pm.collectionVariables.set('adm75_t_flow', pm.response.json().session_id);"],
+  }),
+  request("ADM-75", "reauth an unknown id", "POST", "/api/mcp/sessions/7f3e2a10-0000-4000-8000-000000000075/reauth", { asserts: [A.status(404), A.msgEquals(NO_SESSION)] }),
+  request("ADM-75", "reauth the header credential's flow id", "POST", "/api/mcp/sessions/{{adm75_hc_flow}}/reauth", { asserts: [A.status(404), A.msgEquals(NO_SESSION)] }),
+  request("ADM-75", "reauth the OAuth token's flow id", "POST", "/api/mcp/sessions/{{adm75_t_flow}}/reauth", { asserts: [A.status(404), A.msgEquals(NO_SESSION)] }),
+  deleteClient("ADM-75", "adm75h-c"),
+  deleteClient("ADM-75", "adm75-u"),
+  restoreConfig("ADM-75"),
+]);
+
+const ADM76 = folder("ADM-76 Sessions revoke", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PH_TEXT("adm76h")}, with a header credential (adm76-hsess1 submitted key-a, then reauth opened a flow for it) and a pending header flow (adm76-hsess2); ${PU_SERVER_TEXT("adm76")}, verified as admin, with an OAuth token (adm76-sess1 completed as alice, then reauth opened a pending flow for it); and a shared OAuth client on fleet server adm76s, connected.`, [
+  ...puConfig("ADM-76", false),
+  ...phClient("ADM-76", "adm76h"),
+  ...phCredential("ADM-76", "adm76h", "adm76-hsess1", "adm76_hc"),
+  request("ADM-76", "setup: reauth the header credential, opening its flow", "POST", "/api/mcp/sessions/{{adm76_hc}}/reauth", { asserts: [A.status(200), A.custom("session_id is set", ["pm.expect(pm.response.json().session_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], extraTests: ["pm.collectionVariables.set('adm76_hc_flow', pm.response.json().session_id);"] }),
+  execTool("ADM-76", "setup: execute as adm76-hsess2 opens a pending header flow", "adm76h-echo_tool", [A.status(400), headersFlow({ saveAs: "adm76_hf" })], { session: "adm76-hsess2" }),
+  ...puConnect("ADM-76", "adm76"),
+  execTool("ADM-76", "setup: execute as adm76-sess1 opens a flow", "adm76-echo_tool", [A.status(400), keepFlow("adm76_f")], { session: "adm76-sess1" }),
+  ...puFinish("ADM-76", "adm76_f", "alice", "the flow"),
+  saveSession("ADM-76", "setup: find the OAuth token's entry", "adm76-u", sessionPred("adm76-sess1"), "adm76_t"),
+  request("ADM-76", "setup: reauth the OAuth token, opening a pending flow", "POST", "/api/mcp/sessions/{{adm76_t}}/reauth", { asserts: [A.status(200), A.custom("session_id is set", ["pm.expect(pm.response.json().session_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], extraTests: ["pm.collectionVariables.set('adm76_t_flow', pm.response.json().session_id);"] }),
+  ...connectedO("ADM-76", "adm76s"),
+  oauthStatus("ADM-76", "setup: record the shared token_id", "adm76s", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], ["pm.collectionVariables.set('adm76s_tok', pm.response.json().token_id);"]),
+  request("ADM-76", "control: the header credential's flow is open", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(200)] }),
+  flowDetail("ADM-76", "control: the OAuth token's pending flow is open", "adm76_t_flow", [A.status(200)]),
+  request("ADM-76", "revoke the header credential", "DELETE", "/api/mcp/sessions/{{adm76_hc}}", { asserts: [A.status(204)] }),
+  request("ADM-76", "the header credential's flow is gone", "GET", "/api/mcp/per-user-headers/flows/{{adm76_hc_flow}}", { asserts: [A.status(404)] }),
+  request("ADM-76", "revoke the pending header flow", "DELETE", "/api/mcp/sessions/{{adm76_hf}}", { asserts: [A.status(204)] }),
+  request("ADM-76", "revoke the OAuth token", "DELETE", "/api/mcp/sessions/{{adm76_t}}", { asserts: [A.status(204)] }),
+  flowDetail("ADM-76", "the OAuth token's pending flow is gone", "adm76_t_flow", [A.status(404), A.msgEquals(NO_FLOW)]),
+  request("ADM-76", "revoke the shared token id", "DELETE", "/api/mcp/sessions/{{adm76s_tok}}", { asserts: [A.status(404), A.msgEquals(NO_SESSION)] }),
+  deleteClient("ADM-76", "adm76h-c"),
+  deleteClient("ADM-76", "adm76-u"),
+  deleteClient("ADM-76", "adm76s-o"),
+  restoreConfig("ADM-76"),
+]);
+
+const ADM77 = folder("ADM-77 Per-user OAuth flow detail", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm77")}, verified as admin; a VK granted every tool of adm77, whose execute call opens a flow; then the client is reauthorized, opening an admin flow.`, [
+  ...puConfig("ADM-77", false),
+  ...puConnect("ADM-77", "adm77"),
+  puVK("ADM-77", "first", "adm77", "adm77_vk1"),
+  execTool("ADM-77", "setup: execute with the VK opens a flow", "adm77-echo_tool", [A.status(400), keepFlow("adm77_f")], vkExec("adm77_vk1")),
+  flowDetail("ADM-77", "flow detail", "adm77_f", [A.status(200), A.jsonEquals("flow_mode", "vk"), A.jsonEquals("status", "pending"), A.jsonEquals("has_active_token", false), A.custom("oauth_config_id is the client's and virtual_key is the VK", [
+    "var b = pm.response.json();",
+    "pm.expect(b.oauth_config_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('adm77_oc'));",
+    "pm.expect(b.virtual_key && b.virtual_key.id).to.equal(pm.collectionVariables.get('adm77_vk1_id'));",
+    "pm.expect(b.virtual_key.name).to.equal('ADM-77 first key');",
+  ])]),
+  request("ADM-77", "setup: reauthorize, opening an admin flow", "POST", "/api/mcp/client/adm77-u/reauthorize", { asserts: [A.status(200), A.custom("flow_id is set", ["pm.expect(pm.response.json().flow_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], extraTests: ["pm.collectionVariables.set('adm77_af', pm.response.json().flow_id);"] }),
+  flowDetail("ADM-77", "the admin flow's id on the per-user flow endpoint", "adm77_af", [A.status(404), A.msgEquals(NO_FLOW)]),
+  deleteClient("ADM-77", "adm77-u"),
+  vkDelete("ADM-77", "teardown: delete the VK", "adm77_vk1"),
+  restoreConfig("ADM-77"),
+]);
+
+const ADM78 = folder("ADM-78 Per-user OAuth start and callback", `Setup: dashboard auth on, admin credentials; ${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm78")}, verified as admin. adm78-sess1's flow completes as alice through a callback with no cookie; adm78-sess2's completes as bob through a callback carrying the admin's dashboard session cookie.`, [
+  ...puConfig("ADM-78", false),
+  ...puConnect("ADM-78", "adm78"),
+  execTool("ADM-78", "setup: execute as adm78-sess1 opens the first flow", "adm78-echo_tool", [A.status(400), keepFlow("adm78_f1")], { session: "adm78-sess1" }),
+  flowStart("ADM-78", "start the first flow", "adm78_f1", [A.status(200), startUrl("adm78")]),
+  consentAs("ADM-78", "setup: consent for the first flow as alice", "adm78_f1", "alice"),
+  followCallback("ADM-78", "the callback without a cookie", "adm78_f1", [A.status(302), locationEnds(PU_SUCCESS)]),
+  sessionsHas("ADM-78", "a token entry for adm78-sess1", "adm78-u", sessionPred("adm78-sess1"), "one token entry for adm78-sess1"),
+  flowDetail("ADM-78", "the first flow is gone", "adm78_f1", [A.status(404), A.msgEquals(NO_FLOW)]),
+  adminLogin("ADM-78"),
+  execTool("ADM-78", "setup: execute as adm78-sess2 opens the second flow", "adm78-echo_tool", [A.status(400), keepFlow("adm78_f2")], { session: "adm78-sess2" }),
+  flowStart("ADM-78", "setup: start the second flow", "adm78_f2"),
+  consentAs("ADM-78", "setup: consent for the second flow as bob", "adm78_f2", "bob"),
+  request("ADM-78", "the callback with a dashboard cookie", "GET", "", { base: "{{adm78_f2_cb}}", noAuth: true, noRedirect: true, noCookies: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }], asserts: [A.status(302), locationEnds("/workspace/mcp-sessions?completed=1")] }),
+  sessionsHas("ADM-78", "a token entry for adm78-sess2", "adm78-u", sessionPred("adm78-sess2"), "one token entry for adm78-sess2"),
+  flowDetail("ADM-78", "the second flow is gone", "adm78_f2", [A.status(404), A.msgEquals(NO_FLOW)]),
+  adminLogout("ADM-78"),
+  deleteClient("ADM-78", "adm78-u"),
+  restoreConfig("ADM-78"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -4197,8 +4632,8 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM29, ADM31, ADM32, ADM33, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM31, ADM32, ADM33, ADM34, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM75, ADM76, ADM77, ADM78, ADM81, ADM82, ADM83]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
