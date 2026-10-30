@@ -2074,6 +2074,34 @@ func TestNormalizedUsageDerivesTotalWhenReportedZero(t *testing.T) {
 	}
 }
 
+// TestNormalizedUsageResponsesStream verifies usage survives without stream accumulation.
+func TestNormalizedUsageResponsesStream(t *testing.T) {
+	resp := &BifrostResponse{ResponsesStreamResponse: &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeCompleted,
+		Response: &BifrostResponsesResponse{
+			Usage: &ResponsesResponseUsage{InputTokens: 14, OutputTokens: 4, TotalTokens: 18},
+		},
+	}}
+	want := &BifrostLLMUsage{PromptTokens: 14, CompletionTokens: 4, TotalTokens: 18}
+	if got := resp.NormalizedUsage(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("NormalizedUsage() = %+v, want %+v", got, want)
+	}
+}
+
+// BenchmarkNormalizedUsageResponsesStream measures final-event normalization cost.
+func BenchmarkNormalizedUsageResponsesStream(b *testing.B) {
+	resp := &BifrostResponse{ResponsesStreamResponse: &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeCompleted,
+		Response: &BifrostResponsesResponse{
+			Usage: &ResponsesResponseUsage{InputTokens: 14, OutputTokens: 4, TotalTokens: 18},
+		},
+	}}
+	b.ReportAllocs()
+	for b.Loop() {
+		resp.NormalizedUsage()
+	}
+}
+
 // reasoning.type must survive the chat<->responses conversion used when a
 // provider only implements one of the two APIs.
 func TestReasoningTypeSurvivesChatResponsesConversion(t *testing.T) {
