@@ -5,9 +5,11 @@
 
 import { Button } from "@/components/ui/button";
 import { Plus, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ActionProps } from "react-querybuilder";
 
-export function ActionButton({ handleOnClick, label, className, title }: ActionProps) {
+export function ActionButton({ handleOnClick, label, className, title, testID }: ActionProps) {
+	const { t } = useTranslation("observability");
 	const labelStr = typeof label === "string" ? label : "";
 	const labelLower = labelStr.toLowerCase();
 	const isAddButton = labelLower.includes("add");
@@ -16,12 +18,12 @@ export function ActionButton({ handleOnClick, label, className, title }: ActionP
 		labelLower === "x" ||
 		labelStr === "x" ||
 		label?.toString().toLowerCase() === "x" ||
-		title === "Remove rule" ||
-		title === "Remove group";
+		testID === "remove-rule" ||
+		testID === "remove-group";
 
 	// Icon-only remove button needs an accessible name (no visible label is rendered)
 	const iconOnly = isRemoveButton;
-	const ariaLabel = iconOnly ? labelStr?.trim() || (typeof title === "string" ? title.trim() : "") || "Remove" : undefined;
+	const ariaLabel = iconOnly ? labelStr?.trim() || (typeof title === "string" ? title.trim() : "") || t("celBuilder.remove") : undefined;
 
 	return (
 		<Button

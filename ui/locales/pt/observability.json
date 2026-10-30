@@ -124,7 +124,10 @@
 			"barChart": "Gráfico de barras",
 			"lineChart": "Gráfico de linhas",
 			"directValue": "Direto: {{value}}",
-			"semanticValue": "Semântico: {{value}}"
+			"semanticValue": "Semântico: {{value}}",
+			"tokensPerSecValue": "{{value}} tokens/s",
+			"moreCount_one": "+{{count}} mais",
+			"moreCount_other": "+{{count}} mais"
 		},
 		"rankings": {
 			"topDimension": "Principais {{dimension}}s",
@@ -136,7 +139,10 @@
 			"avgLatency": "Latência média",
 			"noData": "Sem dados de utilização de {{dimension}} disponíveis para este período.",
 			"attributedTooltipShort": "Atribuído — um pedido conta para cada {{dimension}} a que pertence, pelo que isto pode exceder a contagem real de pedidos.",
-			"attributedTooltipLong": "Um pedido conta para cada {{dimension}} a que pertence, pelo que isto pode exceder a contagem total de pedidos."
+			"attributedTooltipLong": "Um pedido conta para cada {{dimension}} a que pertence, pelo que isto pode exceder a contagem total de pedidos.",
+			"newBadge": "novo",
+			"requestsCount_one": "{{formattedCount}} solicitação",
+			"requestsCount_other": "{{formattedCount}} solicitações"
 		},
 		"noModelUsage": "Nenhum dado de uso do modelo disponível para este período de tempo."
 	},
@@ -144,7 +150,24 @@
 		"fallbackChain": {
 			"openFinalAttempt": "Abrir tentativa final",
 			"title": "Cadeia de fallback",
-			"viewing": "A ver"
+			"viewing": "A ver",
+			"outcome": {
+				"succeeded": "Solicitação bem-sucedida",
+				"failed": "Todas as tentativas falharam",
+				"inProgress": "Ainda em execução"
+			},
+			"summary": {
+				"attempt": "Tentativa {{position}} de {{total}}",
+				"fellBack": "Tentativa {{position}} de {{total}}. Esta tentativa falhou e a solicitação passou para {{label}}.",
+				"later": "Tentativa {{position}} de {{total}}. Outras tentativas foram executadas depois desta."
+			},
+			"attempts_other": "{{count}} tentativas",
+			"attempts_one": "{{count}} tentativa",
+			"attemptsWithTotal_other": "{{count}} tentativas · {{latency}} no total",
+			"attemptsWithTotal_one": "{{count}} tentativa · {{latency}} no total",
+			"keyName": "chave {{name}}",
+			"retries_other": "{{count}} novas tentativas",
+			"retries_one": "{{count}} nova tentativa"
 		},
 		"searchPlaceholder": "Pesquise registos ou cole um pedido",
 		"loggingSettings": "Configuração do registo",
@@ -241,7 +264,13 @@
 			"toastCancelled": "Recálculo de custos cancelado",
 			"toastComplete": "Recálculo de custos concluído",
 			"toastProgress": "Recalculando os custos de log...",
-			"errorGeneric": "Falha ao recalcular os custos"
+			"errorGeneric": "Falha ao recalcular os custos",
+			"noLogsMatch": "Nenhum log corresponde aos filtros atuais.",
+			"toastStopped": "Interrompido após {{updated}} atualizados e {{skipped}} ignorados",
+			"toastUpdatedSkipped": "{{updated}} atualizados, {{skipped}} ignorados",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} verificados, {{updated}} atualizados, {{skipped}} ignorados",
+			"toastChecked": "{{processed}} verificados, {{updated}} atualizados, {{skipped}} ignorados",
+			"errorGenericStatus": "Falha ao recalcular os custos ({{status}})"
 		},
 		"session": {
 			"logs": "Registos",
@@ -548,7 +577,12 @@
 				"monitoredWouldTransform": "A regra apenas monitoriza: teria transformado isto, mas o pedido prosseguiu sem alterações.",
 				"monitored": "A regra apenas monitoriza: o pedido prosseguiu sem alterações.",
 				"detected": "A regra sinalizou o pedido e deixou-o prosseguir sem alterações."
-			}
+			},
+			"unknown": "Desconhecido",
+			"sourceEventInitiated": "Iniciado por evento",
+			"sourceLanguageModel": "Modelo de linguagem",
+			"batchItemResult": "Item do lote {{type}}",
+			"providerReturnedHttp": "O provedor retornou HTTP {{status}}"
 		},
 		"media": {
 			"pause": "Pausa",
@@ -764,9 +798,21 @@
 				"virtualKeys": "chaves virtuais ({{total}})",
 				"teams": "equipes ({{total}})",
 				"customers": "clientes ({{total}})",
-				"period": "período {{value}}"
+				"period": "período {{value}}",
+				"relays": "relés ({{total}})",
+				"methods": "métodos ({{total}})",
+				"kinds": "tipos ({{total}})",
+				"users": "usuários ({{total}})",
+				"businessUnits": "unidades de negócio ({{total}})",
+				"projects": "projetos ({{total}})",
+				"apps": "aplicativos ({{total}})",
+				"billableOnly": "somente faturáveis",
+				"nonBillableOnly": "somente não faturáveis",
+				"minCost": "custo mín. {{value}}",
+				"maxCost": "custo máx. {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "misto"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1122,8 @@
 			"overheadLatencySpans": "Períodos de latência overhead",
 			"overheadLatencySpansHelp": "Períodos internos de cronometragem (setup, seleção de chaves, fases de pipeline). Desligado por omissão.",
 			"configJsonPrecedence": "Se <filter>plugin_span_filter</filter> estiver definido na configuração do plugin <plugin>{{pluginName}}</plugin> em config.json, tem precedência sobre estas definições depois de reiniciar o Bifrost.",
-			"destinationOtel": "o colecionador"
+			"destinationOtel": "o colecionador",
+			"noChangePermission": "Você não tem permissão para alterar as configurações de observabilidade"
 		},
 		"savePrometheus": "Gravar a Configuração do & 0!",
 		"saveOtel": "Gravar a Configuração do & 0!",
@@ -1233,7 +1280,12 @@
 		"passthrough_stream": "Fluxo de Passagem",
 		"websocket_responses": "Respostas",
 		"realtime": "Tempo real",
-		"realtime_turn": "Turno em Tempo Real"
+		"realtime_turn": "Turno em Tempo Real",
+		"model_retrieve": "Obter modelo",
+		"live": "Ao vivo",
+		"live_session": "Sessão ao vivo",
+		"live_content": "Gravação ao vivo",
+		"live_sideband": "Sideband ao vivo"
 	},
 	"celBuilder": {
 		"copied": "Copiado",
@@ -1260,7 +1312,8 @@
 		"value": "Valor",
 		"enterValue": "Digite o valor...",
 		"commaSeparated": "Digite valores separados por vírgulas ou array do & 0;",
-		"celPlaceholder": "p. ex., model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "p. ex., model == \"claude-sonnet-4-6\"",
+		"remove": "Remover"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Regra de Roteamento",
@@ -1717,6 +1770,12 @@
 			"stepRegister": "Registe e ative o agente a montante no Agent Gateway.",
 			"stepReplace": "Substitua <code>{{agentName}}</code> pelo nome com que foi registado.",
 			"stepVirtualKey": "Utilize uma chave virtual com acesso ao agente ou remova o cabeçalho <code>x-bf-vk</code> quando a autenticação estiver desativada."
+		},
+		"interactive": {
+			"copied": "Copiado",
+			"filterBy": "Filtrar por {{label}}",
+			"clickToFilter": "Clique para filtrar · Clique direito para copiar",
+			"rightClickToCopy": "Clique direito para copiar"
 		}
 	},
 	"overhead": {

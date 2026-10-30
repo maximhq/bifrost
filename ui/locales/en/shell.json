@@ -379,7 +379,8 @@
 			"Security": "Security",
 			"Provider Setup": "Provider Setup",
 			"Everything Else": "Everything Else"
-		}
+		},
+		"completedSr": "Completed:"
 	},
 	"warp": {
 		"ask": "Ask Warp",
@@ -443,7 +444,8 @@
 		"question": {
 			"label": "Question",
 			"skip": "Skip",
-			"orType": "Or type your own answer below."
+			"orType": "Or type your own answer below.",
+			"skipAnswer": "Use your best judgement and say what you assumed."
 		},
 		"message": {
 			"whatThisCovers": "What this covers",
@@ -615,7 +617,11 @@
 					"Ask an administrator to allow Warp's model for your account.",
 					"Or set Warp to a model your account is allowed to use in Warp settings."
 				]
-			}
+			},
+			"requestFailedStatus": "Warp request failed ({{status}})",
+			"noResponseBody": "Warp returned no response body",
+			"connectionClosed": "The connection closed before Warp finished answering.",
+			"requestFailed": "Warp request failed"
 		},
 		"dock": {
 			"resize": "Resize Warp panel",
@@ -623,7 +629,12 @@
 		},
 		"chart": {
 			"openInLogs": "Open in Logs",
-			"empty": "No data in this window."
+			"empty": "No data in this window.",
+			"weekOf": "Week of {{date}}"
+		},
+		"usage": {
+			"tokens_one": "{{formattedCount}} token",
+			"tokens_other": "{{formattedCount}} tokens"
 		}
 	},
 	"rssSources": {
@@ -665,5 +676,11 @@
 		"upload": "Upload",
 		"logoHelp": "An image URL or a PNG, JPEG, GIF, WebP, SVG or ICO up to 96 KB. Defaults to the site's favicon.",
 		"addFeed": "Add feed"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent sign-in complete",
+		"title": "Bifrost Agent sign-in",
+		"completeBody": "You can close this window and return to the Bifrost Agent.",
+		"status": "Sign-in status: {{status}}"
 	}
 }

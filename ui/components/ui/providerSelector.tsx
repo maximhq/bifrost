@@ -405,7 +405,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 										<span
 											role="button"
 											tabIndex={-1}
-											aria-label={`Remove ${optionFor(value).label}`}
+											aria-label={t("combobox.removeAria", { label: optionFor(value).label })}
 											className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
 											onClick={(e) => {
 												e.preventDefault();

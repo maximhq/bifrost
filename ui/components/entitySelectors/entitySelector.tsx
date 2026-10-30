@@ -36,6 +36,10 @@ const ENTITY_NOUN_KEYS: Partial<Record<string, ParseKeys<"common">>> = {
 	"MCP servers": "entities.mcpServers",
 	"Virtual MCP": "entities.virtualMcp",
 	"Virtual MCPs": "entities.virtualMcps",
+	agent: "entities.agent",
+	agents: "entities.agents",
+	relay: "entities.relay",
+	relays: "entities.relays",
 };
 
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";

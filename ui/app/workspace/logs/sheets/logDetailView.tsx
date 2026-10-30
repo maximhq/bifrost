@@ -32,7 +32,7 @@ import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
 import {
 	ComplexityTierColors,
@@ -136,7 +136,7 @@ const formatRealtimeTransport = (value: unknown): string => {
 		case "webrtc":
 			return "WebRTC";
 		default:
-			return transport || "Unknown";
+			return transport || i18n.t("logs.detail.unknown", { ns: "observability" });
 	}
 };
 
@@ -155,11 +155,11 @@ const formatRealtimeSource = (value: unknown): string => {
 	const source = String(value ?? "").trim();
 	switch (source.toLowerCase()) {
 		case "ei":
-			return "Event Initiated";
+			return i18n.t("logs.detail.sourceEventInitiated", { ns: "observability" });
 		case "lm":
-			return "Language Model";
+			return i18n.t("logs.detail.sourceLanguageModel", { ns: "observability" });
 		default:
-			return source || "Unknown";
+			return source || i18n.t("logs.detail.unknown", { ns: "observability" });
 	}
 };
 
@@ -305,7 +305,7 @@ const batchRequestStates = (counts: BatchRequestCounts): [ParseKeys<"observabili
 	];
 };
 
-const formatExactNumber = (value: number) => value.toLocaleString("en-US");
+const formatExactNumber = (value: number) => value.toLocaleString(getLocale());
 
 // Input tokens are normalized to include cache read/write tokens, so break the total down.
 const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
@@ -877,9 +877,11 @@ export function LogDetailView({
 				}
 				const errorMessage: string | null =
 					item?.error?.message ||
-					(item?.result?.type && item.result.type !== "succeeded" ? `Batch item ${item.result.type}` : null) ||
+					(item?.result?.type && item.result.type !== "succeeded"
+						? i18n.t("logs.detail.batchItemResult", { ns: "observability", type: item.result.type })
+						: null) ||
 					(typeof item?.response?.status_code === "number" && item.response.status_code >= 400
-						? `Provider returned HTTP ${item.response.status_code}`
+						? i18n.t("logs.detail.providerReturnedHttp", { ns: "observability", status: item.response.status_code })
 						: null);
 				return { customId, model, message, rawFallback, errorMessage };
 			})

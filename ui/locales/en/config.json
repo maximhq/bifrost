@@ -335,7 +335,8 @@
 		"unregisteredNote": "No code currently reads this flag. The override is stored but inert until a Register() call is added.",
 		"toastToggled": "{{name}} {{state}}",
 		"enabledState": "enabled",
-		"disabledState": "disabled"
+		"disabledState": "disabled",
+		"enableAria": "Enable {{name}}"
 	},
 	"mcpSettings": {
 		"title": "MCP Settings",
@@ -782,7 +783,45 @@
 		"showLess": "Show less",
 		"showMore": "Show more",
 		"skillNotFound": "Skill not found",
-		"backToList": "Back to list"
+		"backToList": "Back to list",
+		"validation": {
+			"nameRequired": "Name is required",
+			"nameTooLong": "Name must be 64 characters or fewer",
+			"nameFormat": "Name must be lowercase alphanumeric with hyphens only (no leading/trailing/consecutive hyphens)",
+			"nameReserved": "\"{{name}}\" is a reserved name used by the skills serving layer",
+			"descriptionRequired": "Description is required",
+			"descriptionTooLong": "Description exceeds 1024 character limit ({{length}}/1024)",
+			"versionRequired": "Version is required",
+			"versionFormat": "Version must be semver format (e.g., 1.0.0 or 1.0.0-beta.1)",
+			"versionParts": "Version parts must be non-negative integers",
+			"versionBump": "Version must be different from {{previous}}. Bump at least one of: major ({{major}}), minor ({{minor}}), patch ({{patch}}), or change the suffix (e.g., -beta.1).",
+			"extraFrontmatterObject": "Extra frontmatter must be a JSON object",
+			"reservedKeys": "Reserved keys cannot be used: {{keys}}",
+			"invalidJson": "Invalid JSON",
+			"metadataObject": "Metadata must be a JSON object",
+			"metadataKeys": "Metadata keys must be strings",
+			"metadataValue": "Metadata value for \"{{key}}\" must be a string",
+			"bodyRequired": "SKILL.md body is required",
+			"bodyLarge": "This SKILL.md body is above the recommended size. Consider moving detailed material into files under references/ and linking to them from the skill body.",
+			"fileTooLarge": "File exceeds {{limit}} limit",
+			"urlRequired": "URL is required",
+			"urlScheme": "URL must start with http:// or https://",
+			"dataUrlRequired": "Data URL is required",
+			"dataUrlFormat": "Data URL must start with data: and contain ;base64,",
+			"textRequired": "Text content is required",
+			"unknownSource": "Unknown source type: {{type}}",
+			"filenameRequired": "Filename is required",
+			"filenameDots": "Filename cannot be . or ..",
+			"filenameFolders": "Filename must not include folders",
+			"skillMdManaged": "SKILL.md is managed by the skill body",
+			"pathRequired": "File path is required",
+			"pathRelative": "Path must be relative (no leading /)",
+			"pathNotFolder": "Path must point to a file, not a folder",
+			"pathSlashes": "Path must use forward slashes only",
+			"pathSegments": "Path must not contain empty, current, or parent directory segments"
+		},
+		"itemCount_one": "{{count}} item",
+		"itemCount_other": "{{count}} items"
 	},
 	"promptRepo": {
 		"loadFailed": "Failed to load prompt repository",
@@ -956,7 +995,9 @@
 		"file": "File",
 		"attachmentAlt": "attachment",
 		"noChangePermission": "You do not have permission to change prompts",
-		"noChangeFolderPermission": "You do not have permission to change prompt folders"
+		"noChangeFolderPermission": "You do not have permission to change prompt folders",
+		"noResponseBody": "No response body",
+		"mcpServerFallback": "MCP server"
 	},
 	"docs": {
 		"title": "Documentation",
@@ -1150,7 +1191,9 @@
 			"thresholdLabel": "New topic threshold",
 			"thresholdHint": "How many requests that matched no topic have to be waiting before Warp groups them into new topics, checked hourly. Lower finds new subjects sooner from fewer examples; higher waits for clearer patterns. {{min}} to {{max}}.",
 			"thresholdError": "Must be a whole number from {{min}} to {{max}}"
-		}
+		},
+		"alphaBadge": "ALPHA",
+		"aboutAria": "About {{label}}"
 	},
 	"skillsSettings": {
 		"description": "Configure Skills Repository marketplace serving.",
@@ -1288,7 +1331,27 @@
 			"authSuggestion": "Auth suggestion: {{type}}",
 			"import": "Import",
 			"importCount_one": "Import {{count}} route",
-			"importCount_other": "Import {{count}} routes"
+			"importCount_other": "Import {{count}} routes",
+			"docEmpty": "The document is empty",
+			"docNotJson": "The document is not a JSON object",
+			"docNotOpenapi": "The document is not an OpenAPI object",
+			"warn": {
+				"schemeUndeclared": "Security scheme {{name}} is required but not declared; set the auth type by hand",
+				"apiKeyLocation": "Security scheme {{name}} uses an apiKey in {{location}}, which the relay cannot inject",
+				"unsupportedLocation": "an unsupported location",
+				"httpScheme": "Security scheme {{name}} uses HTTP {{scheme}} auth, which the relay cannot inject",
+				"schemeType": "Security scheme {{name}} is {{type}}; set the auth type by hand",
+				"unknownType": "unknown",
+				"authOptional": "The document makes authentication optional; set the auth type by hand if the API needs a key",
+				"noSingleScheme": "No security alternative in the document is a single scheme the relay can inject; set the auth type by hand",
+				"severalSchemes": "The document declares several security schemes and requires none; set the auth type by hand",
+				"noPaths": "The document declares no paths",
+				"refPaths_one": "{{paths}} is defined by $ref, which the import does not resolve, so those operations were not imported; add their routes by hand and review the routes list.",
+				"refPaths_other": "{{paths}} are defined by $ref, which the import does not resolve, so those operations were not imported; add their routes by hand and review the routes list.",
+				"noMethods": "No operation in the document uses a method the relay serves",
+				"differentSchemes": "The operations require different security schemes, and one endpoint applies one auth; set the auth type by hand",
+				"serverQuery": "The server URL's query ({{query}}) is left out of the suggested base URL, since a relay base URL cannot carry one; callers must send it themselves."
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}} (relay default)",
@@ -1309,7 +1372,17 @@
 			"blockSizeInfo": "Bill per started block of this many units.",
 			"minimumLabel": "Minimum Units (Optional)",
 			"minimumInfo": "Least units billed once a quantity is read.",
-			"formula": "Each counted call costs <strong>{{formula}}</strong>"
+			"formula": "Each counted call costs <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "Response body",
+				"request": "Request body"
+			},
+			"measures": {
+				"value": "Number at path",
+				"chars": "Characters of the string at path",
+				"bodyBytes": "Size of the whole body (bytes)",
+				"bodyChars": "Characters of the whole body"
+			}
 		},
 		"preview": {
 			"path": "Path",
@@ -1424,7 +1497,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole or env.AWS_ROLE_ARN",
 			"externalIdLabel": "External ID (Optional)",
 			"externalIdInfo": "Required by the role's trust policy when using cross-account access",
-			"externalIdPlaceholder": "external-id or env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id or env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer token",
+				"header": "Custom header",
+				"query": "Query parameter",
+				"basic": "Basic auth",
+				"none": "No authentication"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1495,6 +1575,21 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Remove configuration",
 			"saveProxy": "Save Proxy Configuration"
+		},
+		"pricing": {
+			"free": "Free",
+			"perCall": "${{price}} / call",
+			"perUnit": "${{price}} / unit",
+			"perByte": "${{price}} / byte",
+			"perChar": "${{price}} / char",
+			"blockUnit_one": "${{price}} per {{count}} unit",
+			"blockUnit_other": "${{price}} per {{count}} units",
+			"blockByte_one": "${{price}} per {{count}} byte",
+			"blockByte_other": "${{price}} per {{count}} bytes",
+			"blockChar_one": "${{price}} per {{count}} char",
+			"blockChar_other": "${{price}} per {{count}} chars",
+			"withMinimum": "{{pricing}}, min {{min}}",
+			"reportedCost": "reported cost"
 		}
 	}
 }

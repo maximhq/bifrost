@@ -913,7 +913,8 @@
 				"unsupportedMethod": "サポートされていないメソッドです: {{method}}",
 				"addRule": "ルールを追加するか、何も転送しない場合は「オフ」を選択してください"
 			}
-		}
+		},
+		"customBaseUrlRequired": "ベース URL は必須です"
 	},
 	"modelCatalog": {
 		"title": "モデルカタログ",
@@ -1020,7 +1021,10 @@
 			"5": "金",
 			"6": "土"
 		},
-		"aboutModelsColumn": "モデル列について"
+		"aboutModelsColumn": "モデル列について",
+		"attributeKeyPlaceholder": "キー",
+		"attributeValuePlaceholder": "値",
+		"filterProviderAria": "プロバイダーで絞り込む"
 	},
 	"virtualKeys": {
 		"emptyTitle": "仮想キーはアクセス、予算、料金制限を管理します",
@@ -1327,7 +1331,9 @@
 		"leavesGoverningOwner": "このキーのプロバイダー、予算、レート制限は所有者のアクセスプロファイルから引き継がれており、このキー固有の設定はありません。",
 		"leavesGoverningOwnerUser": "割り当て先のユーザーにアクセスプロファイルがある場合、そのプロファイルがこのキーを管理するため、引き続き使用できます。ない場合は以下で設定してください。設定しないとリクエストは拒否されます。",
 		"leavesGoverningOwnerUnassigned": "以下で設定してください。割り当てを解除すると、リクエストは拒否されます。",
-		"ownerProfileNoticeUnnamed": "この{{owner}}のアクセスプロファイルによって管理されています。その予算、レート制限、プロバイダーがこのキーに適用されます。"
+		"ownerProfileNoticeUnnamed": "この{{owner}}のアクセスプロファイルによって管理されています。その予算、レート制限、プロバイダーがこのキーに適用されます。",
+		"managedByProfileToggleHint": "この仮想キーはアクセスプロファイルで管理されています。プロファイルから有効化または無効化してください。",
+		"noUpdatePermission": "仮想キーを更新する権限がありません。"
 	},
 	"modelLimits": {
 		"title": "予算と制限",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "0 より大きく 1 以下にしてください",
 		"actionsAria": "料金オーバーライド {{name}} の操作",
-		"deleteDescriptionNamed": "「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。"
+		"deleteDescriptionNamed": "「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。",
+		"noChangePermission": "価格オーバーライドを変更する権限がありません"
 	},
 	"routing": {
 		"rulesTitle": "ルーティングルール",
@@ -1917,7 +1924,17 @@
 			"statusWarming": "ウォームアップ中",
 			"statusReady": "準備完了",
 			"statusFailed": "失敗",
-			"fallbackDecisionDesc": "セマンティックマッチングで結果が得られない場合に、判断モデルが階層を決定します。プライマリ分類器として使う場合と同じ階層ガイダンスが使用されます。"
+			"fallbackDecisionDesc": "セマンティックマッチングで結果が得られない場合に、判断モデルが階層を決定します。プライマリ分類器として使う場合と同じ階層ガイダンスが使用されます。",
+			"criteriaSignalItemMax": "各シグナルは最大 {{max}} 文字です",
+			"criteriaExampleItemMax": "各例は最大 {{max}} 文字です",
+			"criteriaSignalMin": "シグナルを 1 つ以上追加してください",
+			"criteriaExampleMin": "例を 1 つ以上追加してください",
+			"criteriaSignalMax_other": "最大 {{count}} 個のシグナル",
+			"criteriaExampleMax_other": "最大 {{count}} 個の例",
+			"enterDefinition": "定義を入力してください",
+			"selectDecisionProvider": "判定モデルを提供するプロバイダーを選択してください",
+			"selectDecisionModel": "判定モデルを選択してください",
+			"enterDecisionTimeout": "判定モデルのタイムアウトを入力してください"
 		},
 		"editDescription": "ルーティングルールの設定を更新する",
 		"createDescription": "インテリジェントなリクエストルーティングのための新しいCELベースのルーティングルールを作成する",
@@ -2119,5 +2136,10 @@
 		"searchOrTypeJev": "Jev モデルを検索または入力…",
 		"searchOrType": "モデルを検索または入力…",
 		"selectModel": "モデルを選択"
+	},
+	"pricing": {
+		"notAvailable": "利用不可",
+		"perMillionTokens": "{{price}} / 100 万トークン",
+		"perMillionCharacters": "{{price}} / 100 万文字"
 	}
 }

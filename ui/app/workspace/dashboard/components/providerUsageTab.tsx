@@ -27,6 +27,7 @@ import { ProviderLatencyChart } from "./charts/providerLatencyChart";
 import { ProviderThroughputChart } from "./charts/providerThroughputChart";
 import { ProviderTokenChart } from "./charts/providerTokenChart";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 export interface ProviderUsageTabProps {
 	// Data
@@ -182,7 +183,7 @@ function ProviderUsageTabImpl({
 				}
 				totalTooltip={
 					providerCostTotal !== null
-						? providerCostTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+						? providerCostTotal.toLocaleString(getLocale(), { style: "currency", currency: "USD", maximumFractionDigits: 6 })
 						: undefined
 				}
 				legend={
@@ -207,7 +208,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-cost-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerCostProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerCostProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -272,7 +273,7 @@ function ProviderUsageTabImpl({
 				testId="chart-provider-tokens"
 				totalLabel={t("labels.total")}
 				total={providerTokenTotal !== null ? <NumberFlow value={providerTokenTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-				totalTooltip={providerTokenTotal !== null ? providerTokenTotal.toLocaleString("en-US") : undefined}
+				totalTooltip={providerTokenTotal !== null ? providerTokenTotal.toLocaleString(getLocale()) : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						{providerTokenProvider === "all" ? (
@@ -295,7 +296,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-token-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerTokenProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerTokenProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -366,7 +367,7 @@ function ProviderUsageTabImpl({
 					) : undefined
 				}
 				totalTooltip={
-					providerLatencyAvg !== null ? `${providerLatencyAvg.toLocaleString("en-US", { maximumFractionDigits: 6 })}ms` : undefined
+					providerLatencyAvg !== null ? `${providerLatencyAvg.toLocaleString(getLocale(), { maximumFractionDigits: 6 })}ms` : undefined
 				}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
@@ -390,7 +391,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-latency-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerLatencyProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerLatencyProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -467,7 +468,9 @@ function ProviderUsageTabImpl({
 				}
 				totalTooltip={
 					providerThroughputAvg !== null
-						? `${providerThroughputAvg.toLocaleString("en-US", { maximumFractionDigits: 2 })} tokens/sec`
+						? t("dashboard.charts.tokensPerSecValue", {
+								value: providerThroughputAvg.toLocaleString(getLocale(), { maximumFractionDigits: 2 }),
+							})
 						: undefined
 				}
 				legend={
@@ -492,7 +495,7 @@ function ProviderUsageTabImpl({
 													data-testid="provider-throughput-legend-more-trigger"
 													className="text-muted-foreground cursor-default"
 												>
-													+{providerThroughputProviders.length - 1} more
+													{t("dashboard.charts.moreCount", { count: providerThroughputProviders.length - 1 })}
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>

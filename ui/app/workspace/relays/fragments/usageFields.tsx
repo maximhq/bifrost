@@ -2,8 +2,10 @@ import { FormControl, FormField, FormItem, FormMessage } from "@/components/ui/f
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-	RelayUnitsMeasureLabels,
-	RelayUnitsSourceLabels,
+	RelayUnitsMeasures,
+	RelayUnitsSources,
+	relayUnitsMeasureLabel,
+	relayUnitsSourceLabel,
 	type RelayUnitsMeasure,
 	type RelayUnitsSource,
 	type RelayUsageConfig,
@@ -44,7 +46,9 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 	const placeholder = (field: keyof RelayUsageConfig, fallback: string) => {
 		if (!isRoute) return fallback;
 		const inherited = inheritFrom?.[field];
-		return inherited !== undefined && inherited !== "" ? t("relays.usage.relayDefault", { value: inherited }) : t("relays.usage.inheritsRelay");
+		return inherited !== undefined && inherited !== ""
+			? t("relays.usage.relayDefault", { value: inherited })
+			: t("relays.usage.inheritsRelay");
 	};
 
 	const numberInput = (field: keyof RelayUsageConfig, label: string, description: string, fallback: string) => (
@@ -86,10 +90,7 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 					name={`${name}.units_source`}
 					render={({ field }) => (
 						<FormItem className="flex-1">
-							<InfoLabel
-								label={t("relays.usage.unitsSourceLabel")}
-								info={t("relays.usage.unitsSourceInfo")}
-							/>
+							<InfoLabel label={t("relays.usage.unitsSourceLabel")} info={t("relays.usage.unitsSourceInfo")} />
 							<Select
 								value={(field.value as string) ?? (isRoute ? INHERIT : "response")}
 								onValueChange={(v) => field.onChange(v === INHERIT ? null : (v as RelayUnitsSource))}
@@ -102,9 +103,9 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 								</FormControl>
 								<SelectContent>
 									{isRoute && <SelectItem value={INHERIT}>{t("relays.usage.inheritFromRelay")}</SelectItem>}
-									{(Object.keys(RelayUnitsSourceLabels) as RelayUnitsSource[]).map((k) => (
+									{RelayUnitsSources.map((k) => (
 										<SelectItem key={k} value={k}>
-											{RelayUnitsSourceLabels[k]}
+											{relayUnitsSourceLabel(k)}
 										</SelectItem>
 									))}
 								</SelectContent>
@@ -118,10 +119,7 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 					name={`${name}.units_measure`}
 					render={({ field }) => (
 						<FormItem className="flex-1">
-							<InfoLabel
-								label={t("relays.usage.measureLabel")}
-								info={t("relays.usage.measureInfo")}
-							/>
+							<InfoLabel label={t("relays.usage.measureLabel")} info={t("relays.usage.measureInfo")} />
 							<Select
 								value={(field.value as string) ?? (isRoute ? INHERIT : "value")}
 								onValueChange={(v) => field.onChange(v === INHERIT ? null : (v as RelayUnitsMeasure))}
@@ -134,9 +132,9 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 								</FormControl>
 								<SelectContent>
 									{isRoute && <SelectItem value={INHERIT}>{t("relays.usage.inheritFromRelay")}</SelectItem>}
-									{(Object.keys(RelayUnitsMeasureLabels) as RelayUnitsMeasure[]).map((k) => (
+									{RelayUnitsMeasures.map((k) => (
 										<SelectItem key={k} value={k}>
-											{RelayUnitsMeasureLabels[k]}
+											{relayUnitsMeasureLabel(k)}
 										</SelectItem>
 									))}
 								</SelectContent>
@@ -173,11 +171,11 @@ export function UsageFields({ control, name, value, inheritFrom, ignoreUpstreamC
 			</div>
 			<p className="text-muted-foreground text-sm" data-testid={`${testIdPrefix}-formula`}>
 				<Trans
-						t={t}
-						i18nKey="relays.usage.formula"
-						values={{ formula: describePricing(effective, ignoreUpstreamCost) }}
-						components={{ strong: <span className="text-foreground font-medium" /> }}
-					/>
+					t={t}
+					i18nKey="relays.usage.formula"
+					values={{ formula: describePricing(effective, ignoreUpstreamCost) }}
+					components={{ strong: <span className="text-foreground font-medium" /> }}
+				/>
 			</p>
 		</div>
 	);

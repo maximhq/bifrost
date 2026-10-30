@@ -1,4 +1,7 @@
+import i18n from "@/lib/i18n";
 import type { BifrostError, OverheadBucket } from "@/lib/types/logs";
+
+const T = { ns: "config" } as const;
 
 // Types for Relays (/api/relays) and Relay Logs
 // (/api/relay-logs). They mirror core/schemas/relay.go and
@@ -13,26 +16,42 @@ export type RelayRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HE
 export const RelayAuthTypes: RelayAuthType[] = ["bearer", "header", "query", "basic", "aws_sigv4", "none"];
 export const RelayRouteMethods: RelayRouteMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
-export const RelayAuthTypeLabels: Record<RelayAuthType, string> = {
-	bearer: "Bearer token",
-	header: "Custom header",
-	query: "Query parameter",
-	basic: "Basic auth",
-	aws_sigv4: "AWS SigV4",
-	none: "No authentication",
-};
+export const RelayUnitsSources: RelayUnitsSource[] = ["response", "request"];
+export const RelayUnitsMeasures: RelayUnitsMeasure[] = ["value", "chars", "body_bytes", "body_chars"];
 
-export const RelayUnitsSourceLabels: Record<RelayUnitsSource, string> = {
-	response: "Response body",
-	request: "Request body",
-};
+export function relayAuthTypeLabel(type: RelayAuthType): string {
+	switch (type) {
+		case "bearer":
+			return i18n.t("relays.credentials.authTypes.bearer", T);
+		case "header":
+			return i18n.t("relays.credentials.authTypes.header", T);
+		case "query":
+			return i18n.t("relays.credentials.authTypes.query", T);
+		case "basic":
+			return i18n.t("relays.credentials.authTypes.basic", T);
+		case "aws_sigv4":
+			return "AWS SigV4";
+		case "none":
+			return i18n.t("relays.credentials.authTypes.none", T);
+	}
+}
 
-export const RelayUnitsMeasureLabels: Record<RelayUnitsMeasure, string> = {
-	value: "Number at path",
-	chars: "Characters of the string at path",
-	body_bytes: "Size of the whole body (bytes)",
-	body_chars: "Characters of the whole body",
-};
+export function relayUnitsSourceLabel(source: RelayUnitsSource): string {
+	return source === "response" ? i18n.t("relays.usage.sources.response", T) : i18n.t("relays.usage.sources.request", T);
+}
+
+export function relayUnitsMeasureLabel(measure: RelayUnitsMeasure): string {
+	switch (measure) {
+		case "value":
+			return i18n.t("relays.usage.measures.value", T);
+		case "chars":
+			return i18n.t("relays.usage.measures.chars", T);
+		case "body_bytes":
+			return i18n.t("relays.usage.measures.bodyBytes", T);
+		case "body_chars":
+			return i18n.t("relays.usage.measures.bodyChars", T);
+	}
+}
 
 /** A secret as the API carries it: a value (redacted on read), or an env./vault reference. */
 export interface RelaySecret {

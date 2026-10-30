@@ -379,7 +379,8 @@
 			"Security": "安全",
 			"Provider Setup": "供應商設定",
 			"Everything Else": "其他設定"
-		}
+		},
+		"completedSr": "已完成："
 	},
 	"warp": {
 		"ask": "詢問 Warp",
@@ -443,7 +444,8 @@
 		"question": {
 			"label": "問題",
 			"skip": "跳過",
-			"orType": "或在下方輸入你自己的回答。"
+			"orType": "或在下方輸入你自己的回答。",
+			"skipAnswer": "請自行判斷，並說明你的假設。"
 		},
 		"message": {
 			"whatThisCovers": "涵蓋內容",
@@ -624,7 +626,11 @@
 					"請管理員允許你的帳戶使用 Warp 的模型。",
 					"或在 Warp 設定中改用你的帳戶獲准使用的模型。"
 				]
-			}
+			},
+			"requestFailedStatus": "Warp 請求失敗（{{status}}）",
+			"noResponseBody": "Warp 未傳回回應內容",
+			"connectionClosed": "連線在 Warp 完成回答前已關閉。",
+			"requestFailed": "Warp 請求失敗"
 		},
 		"dock": {
 			"resize": "調整 Warp 面板大小",
@@ -632,7 +638,11 @@
 		},
 		"chart": {
 			"openInLogs": "在日誌中開啟",
-			"empty": "此時間範圍內沒有資料。"
+			"empty": "此時間範圍內沒有資料。",
+			"weekOf": "{{date}} 當週"
+		},
+		"usage": {
+			"tokens_other": "{{formattedCount}} 個 Token"
 		}
 	},
 	"rssSources": {
@@ -674,5 +684,11 @@
 		"upload": "上傳",
 		"logoHelp": "圖片 URL，或不超過 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。預設為網站的 favicon。",
 		"addFeed": "新增訂閱源"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent 登入完成",
+		"title": "Bifrost Agent 登入",
+		"completeBody": "你可以關閉此視窗並返回 Bifrost Agent。",
+		"status": "登入狀態：{{status}}"
 	}
 }

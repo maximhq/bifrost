@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "重新授权未完成",
 			"toolsRefreshed": "工具已刷新",
 			"toolsRefreshedDesc_one": "客户端 {{name}} 现在提供 {{count}} 个工具。",
-			"toolsRefreshedDesc_other": "客户端 {{name}} 现在提供 {{count}} 个工具。"
+			"toolsRefreshedDesc_other": "客户端 {{name}} 现在提供 {{count}} 个工具。",
+			"oauthVerifiedPerUser": "OAuth 设置验证成功。每位用户将单独进行身份验证。",
+			"clientConnected": "MCP 客户端已成功连接"
 		},
 		"filter": {
 			"connectionType": "连接类型",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "必须填写基础 URL",
 			"invalidAllowedExtraHeadersTitle": "允许的额外标头无效",
 			"invalidAllowedExtraHeadersDesc": "通配符“*”不能与特定标头名称同时使用。",
-			"allowedExtraHeadersPlaceholder": "*，或：authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "*，或：authorization, x-user-id",
+			"useGlobalSetting": "使用全局设置",
+			"useGlobalSettingWithValue": "使用全局设置（{{value}}）",
+			"maxProtocolAuto": "自动（最新）"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "此服务器需要一次性验证：Bifrost 交换你已登录身份的令牌、测试连接并发现工具。之后调用方会在每次工具调用时自动交换各自的身份令牌。",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "客户端连接状态（正常、不稳定、需要重新授权等）。“不稳定”反映的是 Bifrost 自身对服务器连接的检查，并非通过服务器发起的工具调用结果；连接会自动恢复，且不会阻止工具调用。对于按用户区分的客户端（OAuth、标头、令牌交换），此状态反映的是 Bifrost 保留的管理员凭据（仅用于定期刷新工具列表），不反映任何用户自己的会话，后者不受影响。",
 		"columnGuidanceAria": "{{label}} 列说明",
 		"vkCount_one": "{{count}} 个 VK",
-		"vkCount_other": "{{count}} 个 VK"
+		"vkCount_other": "{{count}} 个 VK",
+		"failure": {
+			"stageConnect": "连接中",
+			"stagePing": "Ping",
+			"stageListTools": "正在列出工具",
+			"stageToolDiscovery": "正在发现工具",
+			"stageTransportLost": "连接已断开",
+			"stageCredential": "凭证",
+			"titleDegraded": "各实例对此服务器状态的判断不一致",
+			"titleUnstableAll": "上次连接检查在所有实例上均失败",
+			"titleUnstable": "上次连接检查失败",
+			"titleNeedsReauth": "需要重新授权",
+			"titleError": "未在运行时中注册",
+			"titleDefault": "连接状态",
+			"lastFailedAgo": "上次失败于 {{age}} 前",
+			"lastFailedRun": "上次失败于 {{age}} 前 · {{state}}已持续 {{duration}}",
+			"stateNeedsReauth": "需要重新授权",
+			"stateUnstable": "不稳定"
+		}
 	},
 	"library": {
 		"title": "MCP 服务器库",

@@ -24,6 +24,7 @@ import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 import { NoChartData } from "./charts/noChartData";
 
 type SortField = "total_requests" | "success_rate" | "total_tokens" | "total_cost" | "avg_latency" | "throughput";
@@ -170,7 +171,7 @@ function TopModelsChart({
 			autoHeight
 			totalLabel={t("labels.total")}
 			total={grandTotal !== null ? <NumberFlow value={grandTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString("en-US") : undefined}
+			totalTooltip={grandTotal !== null ? grandTotal.toLocaleString(getLocale()) : undefined}
 		>
 			<div style={{ height: 200, marginBottom: 6 }}>
 				{chartData.length > 0 ? (

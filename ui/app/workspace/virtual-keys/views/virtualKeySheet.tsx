@@ -93,7 +93,8 @@ import { useForm } from "react-hook-form";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 interface VirtualKeySheetProps {
 	virtualKey?: VirtualKey | null;
@@ -300,7 +301,9 @@ function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterEx
 			<FormLabel>{t("virtualKeys.expiry")}</FormLabel>
 			<p className="text-muted-foreground text-xs">
 				{value
-					? t("virtualKeys.expiresIn", { when: formatDistanceToNow(new Date(value), { addSuffix: true }) })
+					? t("virtualKeys.expiresIn", {
+							when: formatDistanceToNow(new Date(value), { addSuffix: true, locale: dateFnsLocale(i18n.language) }),
+						})
 					: t("virtualKeys.neverExpires")}
 			</p>
 			<div className="flex flex-wrap gap-1.5">
@@ -994,7 +997,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	};
 
 	const formatBudgetAmount = (value: number) =>
-		new Intl.NumberFormat("en-US", {
+		new Intl.NumberFormat(getLocale(), {
 			style: "currency",
 			currency: "USD",
 			maximumFractionDigits: 2,

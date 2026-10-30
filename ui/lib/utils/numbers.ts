@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 export const COMPACT_NUMBER_FORMAT = {
 	notation: "compact",
 	compactDisplay: "short",
@@ -65,8 +66,8 @@ export function formatTokenPriceCompact(cost?: number, maximumFractionDigits = D
  * @returns Formatted full token price string.
  */
 export function formatTokenPriceFull(cost?: number, maximumFractionDigits = DEFAULT_TOKEN_PRICE_MAX_FRACTION_DIGITS): string {
-	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "Not available";
-	return `${formatTokenPriceValue(cost, maximumFractionDigits)} / 1M tokens`;
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return i18n.t("pricing.notAvailable", { ns: "models" });
+	return i18n.t("pricing.perMillionTokens", { ns: "models", price: formatTokenPriceValue(cost, maximumFractionDigits) });
 }
 
 /**
@@ -78,6 +79,6 @@ export function formatTokenPriceFull(cost?: number, maximumFractionDigits = DEFA
  * @returns Formatted full character price string.
  */
 export function formatCharacterPriceFull(cost?: number, maximumFractionDigits = DEFAULT_TOKEN_PRICE_MAX_FRACTION_DIGITS): string {
-	if (cost === undefined || cost === null || !Number.isFinite(cost)) return "Not available";
-	return `${formatTokenPriceValue(cost, maximumFractionDigits)} / 1M characters`;
+	if (cost === undefined || cost === null || !Number.isFinite(cost)) return i18n.t("pricing.notAvailable", { ns: "models" });
+	return i18n.t("pricing.perMillionCharacters", { ns: "models", price: formatTokenPriceValue(cost, maximumFractionDigits) });
 }

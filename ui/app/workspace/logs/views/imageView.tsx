@@ -3,7 +3,7 @@ import { BifrostImageGenerationOutput, ImageEditInput, ImageVariationInput } fro
 import { Image, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImageMessage } from "@/components/chat/ImageMessage";
 import { Button } from "@/components/ui/button";
-import { RequestTypeLabels } from "@/lib/constants/logs";
+import { getRequestTypeLabel, RequestTypeLabels } from "@/lib/constants/logs";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
@@ -33,13 +33,10 @@ function getMethodTypeLabel(requestType: string | undefined, t: TFunction<"obser
 	if (!requestType) return t("logs.media.imageGeneration");
 
 	const normalizedType = requestType.toLowerCase();
-	if (normalizedType.includes("image_edit")) {
-		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || t("logs.media.imageEdit");
-	}
-	if (normalizedType.includes("image_variation")) {
-		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || t("logs.media.imageVariation");
-	}
-	return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || t("logs.media.imageGeneration");
+	if (Object.hasOwn(RequestTypeLabels, normalizedType)) return getRequestTypeLabel(normalizedType, t);
+	if (normalizedType.includes("image_edit")) return t("logs.media.imageEdit");
+	if (normalizedType.includes("image_variation")) return t("logs.media.imageVariation");
+	return t("logs.media.imageGeneration");
 }
 
 export default function ImageView({ imageInput, imageEditInput, imageVariationInput, imageOutput, requestType }: ImageViewProps) {

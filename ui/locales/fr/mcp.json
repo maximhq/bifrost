@@ -108,7 +108,9 @@
 			"reauthorizationDidNotComplete": "La réautorisation ne s'est pas terminée",
 			"toolsRefreshed": "Outils actualisés",
 			"toolsRefreshedDesc_one": "Le client {{name}} sert maintenant {{count}} outil.",
-			"toolsRefreshedDesc_other": "Le client {{name}} sert maintenant {{count}} outils."
+			"toolsRefreshedDesc_other": "Le client {{name}} sert maintenant {{count}} outils.",
+			"oauthVerifiedPerUser": "La configuration OAuth a été vérifiée. Chaque utilisateur s'authentifiera individuellement.",
+			"clientConnected": "Client MCP connecté"
 		},
 		"filter": {
 			"connectionType": "Type de connexion",
@@ -275,7 +277,10 @@
 			"resourceBothAuth": "Utilisez soit un secret client, soit une clé privée auprès du serveur en amont, pas les deux",
 			"resourceClientIdRequired": "L’ID client auprès du serveur en amont est obligatoire pour Cross App Access",
 			"resourceTokenEndpointHttps": "Le point de terminaison de jeton doit être une URL https (http n’est autorisé que pour localhost)",
-			"assertionAudienceHttps": "L’audience de l’assertion doit être une URL https (http n’est autorisé que pour localhost)"
+			"assertionAudienceHttps": "L’audience de l’assertion doit être une URL https (http n’est autorisé que pour localhost)",
+			"useGlobalSetting": "Utiliser le paramètre global",
+			"useGlobalSettingWithValue": "Utiliser le paramètre global ({{value}})",
+			"maxProtocolAuto": "Auto (dernière)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Ce serveur nécessite une vérification unique : Bifrost échange votre jeton d’identité connecté, teste la connexion et découvre les outils. Les appelants voient ensuite leurs propres jetons d’identité échangés automatiquement à chaque appel d’outil.",
@@ -600,6 +605,24 @@
 			"stopServingAria": "Ne plus exposer {{label}}",
 			"serveAria": "Exposer {{label}}",
 			"listsNone": "Ce serveur ne liste aucun élément ({{kind}})"
+		},
+		"failure": {
+			"stageConnect": "Connexion",
+			"stagePing": "Ping",
+			"stageListTools": "Liste des outils",
+			"stageToolDiscovery": "Découverte des outils",
+			"stageTransportLost": "Connexion interrompue",
+			"stageCredential": "Identifiants",
+			"titleDegraded": "Les instances ne s'accordent pas sur l'état de ce serveur",
+			"titleUnstableAll": "Le dernier test de connexion a échoué sur toutes les instances",
+			"titleUnstable": "Le dernier test de connexion a échoué",
+			"titleNeedsReauth": "Réautorisation requise",
+			"titleError": "Non enregistré dans le runtime",
+			"titleDefault": "État de la connexion",
+			"lastFailedAgo": "Dernier échec il y a {{age}}",
+			"lastFailedRun": "Dernier échec il y a {{age}} · {{state}} depuis {{duration}}",
+			"stateNeedsReauth": "réautorisation requise",
+			"stateUnstable": "instable"
 		}
 	},
 	"library": {
