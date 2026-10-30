@@ -627,5 +627,6 @@
 		"unexpected": "发生意外错误",
 		"requestTimeout": "请求超时",
 		"network": "网络错误"
-	}
+	},
+	"valueOrEnvVar": "{{value}} 或 {{env}}"
 }
