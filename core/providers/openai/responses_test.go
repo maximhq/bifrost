@@ -5144,6 +5144,21 @@ func TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet(t *testing.
 
 	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
 		installCapabilityRecord(t, model, nil)
+		req := newReq()
+		req.Model = "accounts/fireworks/models/kimi-k3"
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
+
+	t.Run("datasheet_silent_inlines_for_qwen", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *out.Input.OpenAIResponsesRequestInputArray[0].Role)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
+
+	t.Run("datasheet_true_keeps_for_qwen", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(true)})
 		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
 		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
 	})

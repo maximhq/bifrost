@@ -957,7 +957,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
-	if !caps.SupportsMidConversationSystem(true) {
+	if !caps.SupportsMidConversationSystem(defaultSupportsMidConversationSystem(capModel)) {
 		messages = inlineResponsesMidConversationSystem(messages)
 	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated

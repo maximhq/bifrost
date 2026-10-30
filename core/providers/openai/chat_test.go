@@ -3113,6 +3113,22 @@ func TestToOpenAIChatRequest_MidConversationSystemFromDatasheet(t *testing.T) {
 
 	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
 		installCapabilityRecord(t, model, nil)
+		req := newReq()
+		req.Model = "accounts/fireworks/models/kimi-k3"
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[4].Role)
+	})
+
+	// Qwen chat templates reject a system message after the first turn, so a silent row inlines it.
+	t.Run("datasheet_silent_inlines_for_qwen", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ChatMessageRoleDeveloper, out.Messages[1].Role)
+		require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[4].Role)
+	})
+
+	t.Run("datasheet_true_keeps_for_qwen", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(true)})
 		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
 		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[4].Role)
 	})
@@ -3252,6 +3268,98 @@ func TestInlineChatMidConversationSystem_NilContent(t *testing.T) {
 	require.Equal(t, schemas.ChatMessageRoleUser, out[2].Role)
 	require.Equal(t, "ops", *out[2].Name)
 	require.Nil(t, out[2].Content)
+}
+
+// TestInlineChatMidConversationSystem_ContentBlocks pins that each text block of a
+// mid-conversation system or developer message is wrapped once, that other blocks are kept,
+// and that a roleless message does not end the leading run.
+func TestInlineChatMidConversationSystem_ContentBlocks(t *testing.T) {
+	image := schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}}
+	out := inlineChatMidConversationSystem([]OpenAIMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("be brief")}},
+		{},
+		{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("no emoji")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("first")},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("second")},
+		}}},
+		{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("look at this")},
+			image,
+		}}},
+		{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{image}}},
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("<system-reminder>\nalready wrapped\n</system-reminder>\n")}},
+	})
+	require.Len(t, out, 8)
+	require.Equal(t, schemas.ChatMessageRoleDeveloper, out[2].Role)
+	require.Equal(t, "no emoji", *out[2].Content.ContentStr)
+
+	require.Equal(t, schemas.ChatMessageRoleUser, out[4].Role)
+	require.Len(t, out[4].Content.ContentBlocks, 2)
+	require.Equal(t, "<system-reminder>\nfirst\n</system-reminder>\n", *out[4].Content.ContentBlocks[0].Text)
+	require.Equal(t, "<system-reminder>\nsecond\n</system-reminder>\n", *out[4].Content.ContentBlocks[1].Text)
+
+	require.Equal(t, schemas.ChatMessageRoleUser, out[5].Role)
+	require.Len(t, out[5].Content.ContentBlocks, 2)
+	require.Equal(t, "<system-reminder>\nlook at this\n</system-reminder>\n", *out[5].Content.ContentBlocks[0].Text)
+	require.Equal(t, image, out[5].Content.ContentBlocks[1])
+
+	require.Equal(t, schemas.ChatMessageRoleUser, out[6].Role)
+	require.Equal(t, []schemas.ChatContentBlock{image}, out[6].Content.ContentBlocks)
+
+	require.Equal(t, schemas.ChatMessageRoleUser, out[7].Role)
+	require.Equal(t, "<system-reminder>\nalready wrapped\n</system-reminder>\n", *out[7].Content.ContentStr)
+}
+
+// TestToOpenAIChatRequest_QwenResponsesFallback runs a Responses request through the chat
+// fallback that Groq uses (ToChatRequest, then ToOpenAIChatRequest) for a Qwen model the
+// datasheet says nothing about. The leading instructions keep their role, and a developer
+// message right after a tool-call turn becomes a user turn, without touching the caller's input.
+func TestToOpenAIChatRequest_QwenResponsesFallback(t *testing.T) {
+	const model = "qwen/qwen3.8-27b"
+	installCapabilityRecord(t, model, nil)
+	msg := func(role schemas.ResponsesMessageRoleType, content *schemas.ResponsesMessageContent) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(role), Content: content}
+	}
+	text := func(s string) *schemas.ResponsesMessageContent {
+		return &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(s)}
+	}
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Groq,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{
+			msg(schemas.ResponsesInputMessageRoleSystem, text("be brief")),
+			msg(schemas.ResponsesInputMessageRoleDeveloper, text("no emoji")),
+			msg(schemas.ResponsesInputMessageRoleUser, text("what time is it")),
+			{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("clock"), Arguments: schemas.Ptr("{}")},
+			},
+			msg(schemas.ResponsesInputMessageRoleDeveloper, &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("answer in french")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("use 24h time")},
+			}}),
+		},
+	}
+
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req.ToChatRequest())
+	require.NotNil(t, out)
+	require.Len(t, out.Messages, 5)
+	instruction := []schemas.ChatMessageRole{schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper}
+	require.Contains(t, instruction, out.Messages[0].Role)
+	require.Contains(t, instruction, out.Messages[1].Role)
+	require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[2].Role)
+	require.Equal(t, schemas.ChatMessageRoleAssistant, out.Messages[3].Role)
+	require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[4].Role)
+	inlined := out.Messages[4].Content
+	require.NotNil(t, inlined)
+	require.Len(t, inlined.ContentBlocks, 2)
+	require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *inlined.ContentBlocks[0].Text)
+	require.Equal(t, "<system-reminder>\nuse 24h time\n</system-reminder>\n", *inlined.ContentBlocks[1].Text)
+
+	require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *req.Input[4].Role)
+	require.Equal(t, "answer in french", *req.Input[4].Content.ContentBlocks[0].Text)
 }
 
 // A tool result's explicit prompt-cache breakpoint survives the media in it being named instead of

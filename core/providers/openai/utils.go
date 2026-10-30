@@ -402,8 +402,20 @@ func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
 	}
 }
 
+// defaultSupportsMidConversationSystem is the name-based fallback for
+// ModelCaps.SupportsMidConversationSystem, used when the datasheet says nothing.
+// Qwen chat templates raise "System message must be at the beginning." for a
+// system message after the first turn, so the request fails upstream.
+func defaultSupportsMidConversationSystem(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "qwen")
+}
+
 // wrapSystemReminder renders system text for a user turn, matching the Anthropic converter's fallback.
+// Text that already opens with <system-reminder>, as Claude Code sends it, is left as it is.
 func wrapSystemReminder(text string) string {
+	if strings.HasPrefix(strings.TrimSpace(text), "<system-reminder>") {
+		return text
+	}
 	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
 }
 
@@ -413,6 +425,10 @@ func inlineChatMidConversationSystem(messages []OpenAIMessage) []OpenAIMessage {
 	leading := true
 	for i := range messages {
 		m := &messages[i]
+		// A roleless message, such as a converted additional_tools item, is not a conversation turn.
+		if m.Role == "" {
+			continue
+		}
 		isSystem := m.Role == schemas.ChatMessageRoleSystem || m.Role == schemas.ChatMessageRoleDeveloper
 		if leading && isSystem {
 			continue

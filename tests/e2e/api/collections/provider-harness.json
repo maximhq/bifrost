@@ -298484,11 +298484,85 @@
       ]
     },
     {
-      "name": "297. Mid-conversation system messages on the Responses to Chat fallback (#8145 / PR #8279)",
-      "description": "Issue #8145: when a provider has no Responses endpoint, Bifrost converts the request to Chat Completions (ToChatRequest -> ToChatMessages in core/schemas/mux.go). A role:system or role:developer message inside the conversation was forwarded in place, and chat templates that require the system message to come first (the official Qwen3.5 and Qwen3.8 templates raise 'System message must be at the beginning.') rejected the request with 400. Claude Code sends such a message on every request through /anthropic/v1/messages, so every request to these models failed. After the fix only the leading run of system and developer messages keeps its role; a later one becomes a user turn wrapped in <system-reminder>, as the Bedrock provider already does. Groq serves Responses through this fallback and hosts qwen3.8-27b. The non-streaming cases pin the chat wire via x-bf-send-back-raw-request, so they fail before the fix even if the upstream template tolerated the message; the streaming case pins that Claude Code's streaming shape completes. Bedrock, Anthropic and Gemini are not covered here: they inline mid-conversation system messages in their own converters, not through ToChatMessages.",
+      "name": "297. Mid-conversation system messages for Qwen on OpenAI-compatible chat (#8145 / PR #8279)",
+      "description": "Issue #8145: Qwen chat templates (the official Qwen3.5 and Qwen3.8 templates raise 'System message must be at the beginning.') reject a role:system or role:developer message after the first turn with 400. ToOpenAIChatRequest already inlines such a message as a <system-reminder> user turn when supports_mid_conversation_system_messages is false, but a Qwen model the datasheet says nothing about, such as Groq's qwen3.8-27b, defaulted to sending it in place. That failed on /v1/chat/completions directly and on /v1/responses and /anthropic/v1/messages, which Groq serves through the Responses to Chat fallback into the same function. Claude Code sends such a message on every request through /anthropic/v1/messages. After the fix a Qwen model name defaults to inlining when the datasheet is silent, and the datasheet can still opt a model out. The non-streaming cases pin the chat wire via x-bf-send-back-raw-request, so they fail before the fix even if the upstream template tolerated the message; the streaming case pins that Claude Code's streaming shape completes.",
       "item": [
         {
-          "name": "groq/qwen/qwen3.8-27b /anthropic/v1/messages mid-conversation system message reaches the chat wire as a system-reminder user turn - mid-conversation system fallback - #8145",
+          "name": "groq/qwen/qwen3.8-27b /v1/chat/completions mid-conversation system message reaches the chat wire as a system-reminder user turn - mid-conversation system qwen - #8145",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('groq qwen3.8 chat mid-conversation system: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 here is the chat template rejecting a system message after the first turn: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('groq qwen3.8 chat mid-conversation system: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var messages = (rr && Array.isArray(rr.messages)) ? rr.messages : [];",
+                  "var dump = JSON.stringify(messages);",
+                  "function text(m) {",
+                  "  var c = m && m.content;",
+                  "  if (typeof c === 'string') { return c; }",
+                  "  if (Array.isArray(c)) { return c.map(function (p) { return (p && p.text) || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "pm.test('groq qwen3.8 chat mid-conversation system: only the leading message keeps the system role on the chat wire', function () {",
+                  "  pm.expect(messages.length, 'messages: ' + dump).to.be.above(1);",
+                  "  pm.expect(messages[0].role, 'messages: ' + dump).to.eql('system');",
+                  "  for (var i = 1; i < messages.length; i++) {",
+                  "    pm.expect(['system', 'developer'], 'message ' + i + ' kept an instruction role after the conversation started: ' + dump).to.not.include(messages[i].role);",
+                  "  }",
+                  "});",
+                  "pm.test('groq qwen3.8 chat mid-conversation system: the later instruction becomes a user turn wrapped in system-reminder', function () {",
+                  "  var hit = messages.filter(function (m) { return text(m).indexOf('Answer in German.') !== -1; });",
+                  "  pm.expect(hit.length, 'the instruction is missing from the chat wire: ' + dump).to.eql(1);",
+                  "  pm.expect(hit[0].role, 'messages: ' + dump).to.eql('user');",
+                  "  pm.expect(text(hit[0]), 'messages: ' + dump).to.include('<system-reminder>');",
+                  "  pm.expect(text(hit[0]).split('<system-reminder>').length - 1, 'reminder wrapped more than once: ' + dump).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"groq/qwen/qwen3.8-27b\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are concise.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in German.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "groq/qwen/qwen3.8-27b /anthropic/v1/messages mid-conversation system message reaches the chat wire as a system-reminder user turn - mid-conversation system qwen - #8145",
           "event": [
             {
               "listen": "test",
@@ -298566,7 +298640,7 @@
           }
         },
         {
-          "name": "groq/qwen/qwen3.8-27b /v1/responses mid-conversation developer message reaches the chat wire as a system-reminder user turn - mid-conversation system fallback - #8145",
+          "name": "groq/qwen/qwen3.8-27b /v1/responses mid-conversation developer message reaches the chat wire as a system-reminder user turn - mid-conversation system qwen - #8145",
           "event": [
             {
               "listen": "test",
@@ -298639,7 +298713,7 @@
           }
         },
         {
-          "name": "groq/qwen/qwen3.8-27b /anthropic/v1/messages streaming with a mid-conversation system message completes - mid-conversation system fallback - #8145",
+          "name": "groq/qwen/qwen3.8-27b /anthropic/v1/messages streaming with a mid-conversation system message completes - mid-conversation system qwen - #8145",
           "event": [
             {
               "listen": "test",

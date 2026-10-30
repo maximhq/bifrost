@@ -56,7 +56,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 	}
 
-	if !caps.SupportsMidConversationSystem(true) {
+	if !caps.SupportsMidConversationSystem(defaultSupportsMidConversationSystem(capModel)) {
 		openaiReq.Messages = inlineChatMidConversationSystem(openaiReq.Messages)
 	}
 
