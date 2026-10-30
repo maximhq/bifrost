@@ -1720,6 +1720,9 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"cached_read_tokens",
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
+		// search_result_count is a Search row's only pricing input for the empty /
+		// matched distinction, and it is a small integer, so the list carries it too.
+		"search_result_count",
 		"created_at",
 		// guardrail_debug holds only sanitized rule metadata (never matched
 		// text), so it stays small; the Guardrail Incidents view reads the
@@ -1840,6 +1843,10 @@ var billingScalarColumns = []string{
 	"has_object", "content_hidden",
 	// Served tier: scales every token rate.
 	"service_tier", "speed", "inference_geo",
+	// How many results a Search matched. The reprice rebuilds the response from the
+	// row and the row keeps no result pages, so this is the only thing that tells a
+	// billed Search from a free no-match one.
+	"search_result_count",
 }
 
 // billingSelectColumns returns the SELECT clause for cost recomputation.

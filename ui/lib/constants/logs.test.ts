@@ -33,6 +33,18 @@ describe("logs constants", () => {
 		expect(RequestTypeColors.model_retrieve).toBeTruthy();
 	});
 
+	// The logs table renders the Type badge from RequestTypeLabels and the Type filter from
+	// RequestTypes, so a missing entry degrades to the raw "search"/"fetch" type. The e2e
+	// spec asserts both labels on mocked rows.
+	it.each([
+		["search", "Web Search"],
+		["fetch", "Page Fetch"],
+	] as const)("registers %s as a known request type", (type, label) => {
+		expect(RequestTypes).toContain(type);
+		expect(RequestTypeLabels[type]).toBe(label);
+		expect(RequestTypeColors[type]).toBeTruthy();
+	});
+
 	it("registers live sessions as known request types", () => {
 		for (const type of ["live", "live.session", "live_content", "live_sideband"] as const) {
 			expect(RequestTypes).toContain(type);

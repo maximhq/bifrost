@@ -49,6 +49,15 @@ describe("allowedRequestsSchema", () => {
 		expect(result.data?.passthrough_stream).toBe(false);
 	});
 
+	// The provider forms build their payload from these parsed values, so an undeclared key
+	// is dropped on save and the flagged operation is disabled without the operator seeing it.
+	it("keeps the tools flags through a parse", () => {
+		const result = allowedRequestsSchema.safeParse({ ...stored, search: true, fetch: false });
+		expect(result.success).toBe(true);
+		expect(result.data?.search).toBe(true);
+		expect(result.data?.fetch).toBe(false);
+	});
+
 	it("still accepts an explicit live flag", () => {
 		const result = allowedRequestsSchema.safeParse({ ...stored, live: true });
 		expect(result.success).toBe(true);

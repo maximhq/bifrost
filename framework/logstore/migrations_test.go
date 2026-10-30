@@ -716,6 +716,45 @@ func TestMCPGovernanceSnapshotsMigrationIsRegistered(t *testing.T) {
 	t.Fatal("mcp_tool_logs_add_governance_snapshots is not registered in logstoreMigrationSteps")
 }
 
+// TestMigrationAddSearchResultCountColumn verifies the Search result count column is additive,
+// idempotent, and leaves rows written before it NULL — so a legacy row keeps repricing the way it
+// did rather than being mistaken for a no-match Search.
+func TestMigrationAddSearchResultCountColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "logs-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddSearchResultCountColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "SearchResultCount"))
+	require.NoError(t, migrationAddSearchResultCountColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "logs-existing").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+
+	// A row that predates the column keeps NULL rather than being backfilled to 0: 0 means
+	// "matched nothing", which is a priced answer, and these rows never had one recorded.
+	var stored *int
+	require.NoError(t, db.Raw("SELECT search_result_count FROM logs WHERE id = ?", "logs-existing").Scan(&stored).Error)
+	assert.Nil(t, stored)
+}
+
+// TestSearchResultCountMigrationIsRegistered keeps the column reachable on a real deployment:
+// an unregistered step leaves it missing there while every test that calls the migration
+// directly still passes.
+func TestSearchResultCountMigrationIsRegistered(t *testing.T) {
+	for _, step := range logstoreMigrationSteps {
+		for _, id := range step.IDs {
+			if id == "logs_add_search_result_count_column" {
+				return
+			}
+		}
+	}
+	t.Fatal("logs_add_search_result_count_column is not registered in logstoreMigrationSteps")
+}
+
 // TestMigrationAddWarpConversationTables_NonRollbackable pins that rolling the
 // history tables back is refused while they hold anything. warp_conversations
 // and warp_messages are persistent user content - saved chats someone can

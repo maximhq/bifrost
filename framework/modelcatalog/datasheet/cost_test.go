@@ -7530,6 +7530,90 @@ func TestCalculateCostForUsage_LiveVoiceDuration(t *testing.T) {
 	}
 }
 
+// Search and Fetch carry no model, so the catalog cannot price them. The provider reports the
+// flat fee on the response and the engine must take it before any pricing lookup.
+func TestCalculateCost_SearchUsesProviderReportedPerRequestCost(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	resp := &schemas.BifrostResponse{
+		SearchResponse: &schemas.BifrostSearchResponse{
+			Usage: &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: 0.00075}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.SearchRequest,
+				RoutingInfo: routingInfoFor(schemas.DeepSeek, ""),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.00075, s.CalculateCost(resp, nil), 1e-12)
+}
+
+func TestCalculateCost_FetchUsesProviderReportedPerRequestCost(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	resp := &schemas.BifrostResponse{
+		FetchResponse: &schemas.BifrostFetchResponse{
+			Usage: &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: 0.00075}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FetchRequest,
+				RoutingInfo: routingInfoFor(schemas.DeepSeek, ""),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.00075, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// A per-request operation reports no token usage, so the "no usage means nothing to price"
+// guard must not swallow it: an operator who pins cost_per_request on a synthetic row gets a
+// priced call, not a free one.
+func TestCalculateCost_SearchPricesFromCostPerRequestWithoutUsage(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:          "deepseek-search",
+		Provider:       "deepseek",
+		Mode:           "search",
+		CostPerRequest: bifrost.Ptr(0.00075),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		SearchResponse: &schemas.BifrostSearchResponse{
+			Results: []schemas.BifrostSearchResult{{Title: "a match"}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.SearchRequest,
+				RoutingInfo: routingInfoFor(schemas.DeepSeek, "deepseek-search"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 0.00075, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// An empty Search is a successful no-match answer DeepSeek does not bill, and the provider
+// therefore reports no usage for it. A resolved cost_per_request row must not turn that free
+// call into a charged one — only a call that matched something falls back to the row.
+func TestCalculateCost_EmptySearchStaysFreeWithCostPerRequestRow(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model:          "deepseek-search",
+		Provider:       "deepseek",
+		Mode:           "search",
+		CostPerRequest: bifrost.Ptr(0.00075),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{
+		SearchResponse: &schemas.BifrostSearchResponse{
+			Results: []schemas.BifrostSearchResult{},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.SearchRequest,
+				RoutingInfo: routingInfoFor(schemas.DeepSeek, "deepseek-search"),
+			},
+		},
+	}
+
+	assert.Zero(t, s.CalculateCost(resp, nil), "an empty Search is not billed, so no row may price it")
+}
+
 // TestCalculateCost_VoiceLiveRates pins Azure Voice Live pricing: a turn marked with the voice_live
 // pricing surface uses the model's _voice_live rates, splitting audio into the parts Azure Speech
 // handled (standard and custom speech rates) and the rest (audio rate). An unset _voice_live rate falls

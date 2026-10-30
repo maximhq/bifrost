@@ -39,6 +39,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Databricks,
 	schemas.DeepSeek,
 	schemas.Elevenlabs,
+	schemas.Exa,
 	schemas.Gemini,
 	schemas.Groq,
 	schemas.HuggingFace,
@@ -629,6 +630,12 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	default:
 		return false
 	}
+}
+
+// isToolsRequestType returns true for the standalone web tools operations. DeepSeek's Search and
+// Fetch contracts carry no model, so key selection and pricing must both tolerate an absent one.
+func isToolsRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.SearchRequest || reqType == schemas.FetchRequest
 }
 
 // isPassthroughRequestType returns true if the given request type is a passthrough request.

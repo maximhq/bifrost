@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { buildProviderUpdatePayload } from "../views/utils";
 import { AllowedRequestsFields } from "./allowedRequestsFields";
+import { withToolsFlagDefaults } from "./apiStructureForm.utils";
 
 // Type for form data
 type FormCustomProviderConfig = z.infer<typeof formCustomProviderConfigSchema>;
@@ -57,6 +58,10 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				count_tokens: provider.custom_provider_config?.allowed_requests?.count_tokens ?? true,
 				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
 				model_retrieve: provider.custom_provider_config?.allowed_requests?.model_retrieve ?? false,
+				// Saved configs predate the tools flags; defaulting them on keeps the
+				// switch checked instead of persisting a silent false on the next save.
+				search: provider.custom_provider_config?.allowed_requests?.search ?? true,
+				fetch: provider.custom_provider_config?.allowed_requests?.fetch ?? true,
 				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
 				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
 				decisions: provider.custom_provider_config?.allowed_requests?.decisions ?? true,
@@ -72,7 +77,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 	}, [form.formState.isDirty]);
 
 	useEffect(() => {
-		form.reset(provider.custom_provider_config);
+		form.reset(withToolsFlagDefaults(provider.custom_provider_config));
 	}, [form, provider.name, provider.custom_provider_config]);
 
 	const onSubmit = (data: FormCustomProviderConfig) => {

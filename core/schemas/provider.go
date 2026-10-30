@@ -423,6 +423,8 @@ type AllowedRequests struct {
 	Compaction            bool `json:"compaction"`
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
+	Search                bool `json:"search"`
+	Fetch                 bool `json:"fetch"`
 	Decision              bool `json:"decisions"`
 	OCR                   bool `json:"ocr"`
 	Speech                bool `json:"speech"`
@@ -512,6 +514,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Embedding
 	case RerankRequest:
 		return ar.Rerank
+	case SearchRequest:
+		return ar.Search
+	case FetchRequest:
+		return ar.Fetch
 	case DecisionRequest:
 		return ar.Decision
 	case OCRRequest:
@@ -921,6 +927,20 @@ type ResponsesLifecycleProvider interface {
 	ResponsesDelete(ctx *BifrostContext, key Key, req *BifrostResponsesDeleteRequest) (*BifrostResponsesDeleteResponse, *BifrostError)
 	ResponsesCancel(ctx *BifrostContext, key Key, req *BifrostResponsesCancelRequest) (*BifrostResponsesResponse, *BifrostError)
 	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)
+}
+
+// ToolsProvider is an optional interface for providers that expose standalone web
+// tools — a search endpoint and a page-fetch endpoint — rather than model inference.
+// DeepSeek is the first such provider, and its contract carries no model at all, so
+// these are separate operations instead of an arm of the inference surface. Checked
+// via type assertion in core dispatch; providers that do not implement it return the
+// standard unsupported-operation error, which keeps the blast radius off the other
+// provider implementations.
+type ToolsProvider interface {
+	// Search runs a web search and returns ranked pages.
+	Search(ctx *BifrostContext, key Key, req *BifrostSearchRequest) (*BifrostSearchResponse, *BifrostError)
+	// Fetch retrieves a single page as Markdown.
+	Fetch(ctx *BifrostContext, key Key, req *BifrostFetchRequest) (*BifrostFetchResponse, *BifrostError)
 }
 
 // ResponsesNamespaceToolProvider is an optional interface for providers whose

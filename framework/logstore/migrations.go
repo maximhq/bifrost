@@ -343,6 +343,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"agent_logs_add_raw_payload_columns"}, run: migrationAddAgentRawPayloadColumns},
 	{IDs: []string{"logs_add_matview_refresh_state_table"}, run: migrationAddMatViewRefreshStateTable},
 	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
+	{IDs: []string{"logs_add_search_result_count_column"}, run: migrationAddSearchResultCountColumn},
 	{IDs: []string{"logs_add_warp_topic_tables"}, run: migrationAddWarpTopicTables},
 	{IDs: []string{"logs_add_warp_vector_deletes_table"}, run: migrationAddWarpVectorDeletesTable},
 	{IDs: []string{"mcp_tool_logs_add_method_column"}, run: migrationAddMethodColumnToMCPToolLogs},
@@ -5899,6 +5900,46 @@ func migrationAddMatViewRefreshStateTable(ctx context.Context, db *gorm.DB, logg
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while creating matview_refresh_state table: %w", err)
+	}
+	return nil
+}
+
+// migrationAddSearchResultCountColumn adds the search_result_count column to the logs table.
+// It records how many results a Search matched. Cost recomputation rebuilds a response from the
+// row rather than replaying the original one, and that rebuild has no result pages to count — an
+// empty result set is the free case, so without this column a reprice cannot tell a paid Search
+// from a no-match one and, under ignore-provider-cost, drops the per-request fee. A count is all
+// the pricing needs, which is why Search can keep result pages out of the log store.
+//
+// Nullable with no default and unindexed: metadata-only on Postgres with no table rewrite and no
+// backfill. Rows written before it keep NULL on every request type, and Search rows already
+// written keep NULL too — repricing those keeps the behaviour they had, since the marker that
+// says "no match" was never captured for them.
+func migrationAddSearchResultCountColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_search_result_count_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "search_result_count")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "search_result_count")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding search_result_count column: %s", err.Error())
 	}
 	return nil
 }

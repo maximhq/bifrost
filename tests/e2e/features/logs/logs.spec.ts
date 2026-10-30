@@ -1289,3 +1289,56 @@ test.describe("LLM Logs", () => {
     });
   });
 });
+
+test.describe("DeepSeek tools request types", () => {
+  // Search and Fetch are their own request types, not chat variants. The log table labels
+  // them from RequestTypeLabels, so a missing entry degrades to the raw "search"/"fetch"
+  // badge instead of the operator-facing name.
+  for (const { object, label } of [
+    { object: "search", label: "Web Search" },
+    { object: "fetch", label: "Page Fetch" },
+  ]) {
+    test(`should label ${object} logs as ${label}`, async ({ page, logsPage }) => {
+      const timestamp = new Date().toISOString();
+      await page.route((url) => url.pathname === "/api/logs", async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: {
+          logs: [{
+            id: `synthetic-${object}-${Date.now()}`,
+            object,
+            timestamp,
+            created_at: timestamp,
+            provider: "deepseek",
+            model: "deepseek-v4-flash",
+            number_of_retries: 0,
+            fallback_index: 0,
+            status: "success",
+            stream: false,
+            latency: 120,
+            cost: 0.00075,
+            input_history: [],
+            responses_input_history: [],
+          }],
+          pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+          stats: {
+            total_requests: 1,
+            success_rate: 100,
+            user_facing_success_rate: 100,
+            user_facing_total_requests: 1,
+            average_latency: 120,
+            total_tokens: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_cost: 0.00075,
+            has_logs: true,
+          },
+        } });
+      });
+
+      await logsPage.goto();
+      const table = page.getByTestId("logs-table");
+      await expect(table.getByText(label, { exact: true })).toBeVisible();
+      await expect(table.getByText(object, { exact: true })).toHaveCount(0);
+    });
+  }
+});

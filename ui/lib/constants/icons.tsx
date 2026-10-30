@@ -889,6 +889,25 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// A neutral monogram until Exa's own mark is added.
+	exa: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Exa</title>
+				<rect x="2" y="2" width="20" height="20" rx="5" stroke="currentColor" strokeWidth="1.5" />
+				<path d="M15.5 7.5h-7v9h7M8.5 12h5.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+			</svg>
+		);
+	},
 	wafer: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

@@ -715,6 +715,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "exa": {
+          "$ref": "#/$defs/provider"
+        },
         "minimax": {
           "$ref": "#/$defs/provider"
         },
@@ -13865,6 +13868,8 @@
         "responses",
         "embedding",
         "rerank",
+        "search",
+        "fetch",
         "decisions",
         "speech",
         "transcription",
@@ -13993,6 +13998,12 @@
               "type": "boolean"
             },
             "rerank": {
+              "type": "boolean"
+            },
+            "search": {
+              "type": "boolean"
+            },
+            "fetch": {
               "type": "boolean"
             },
             "decisions": {

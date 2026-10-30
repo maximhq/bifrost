@@ -2225,6 +2225,222 @@
         ]
       }
     },
+    "/v1/tools/search": {
+      "post": {
+        "operationId": "searchWeb",
+        "summary": "Search the web",
+        "description": "Runs a web search through the routed provider and returns ranked pages in one shape\nfor every provider.\n\nThis is a web call, not an inference call: it carries no model upstream and is priced\nper request. A cost the provider reports is always charged as reported; only when the\nprovider reports none does the model catalog's per-request price apply. So an empty\nsearch is free only where the provider bills nothing for it and reports no cost, as\nDeepSeek does; a provider that reports a cost for an empty search is charged it.\n\n`model` selects the provider. A provider name alone (`exa`) routes to that provider; a\nprovider/model pair (`deepseek/deepseek-chat`) routes to the provider and also names a\nmodel, which a virtual key restricted to specific models is held to. Omit it to route to\nDeepSeek.\n",
+        "tags": [
+          "Web Tools"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response. An empty results array means no match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient provider account balance. Top up rather than retry. DeepSeek answers this for its own account balance; the status is passed through from the routed provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 above its 5 QPS per-account search cap.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/tools/fetch": {
+      "post": {
+        "operationId": "fetchPage",
+        "summary": "Fetch a page as Markdown",
+        "description": "Retrieves a single page through the routed provider and returns its content as\nMarkdown. Priced per request from the cost the provider reports when it reports one,\nand from the model catalog otherwise.\n\n`model` selects the provider, on the same rule as Search: a provider name alone routes\nto that provider, and a provider/model pair also names a model a virtual key's allowlist\nis held to. Omit it to route to DeepSeek.\n\nThe page is read by the provider's servers, not by Bifrost, so the gateway's\nprivate-network safeguards do not apply. A URL rejected by the provider's security\npolicy surfaces as a 403.\n",
+        "tags": [
+          "Web Tools"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient provider account balance. Top up rather than retry. DeepSeek answers this for its own account balance; the status is passed through from the routed provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The page was rejected by the provider's fetch security policy. DeepSeek and Exa both refuse a URL their own policy forbids.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The page carried no usable content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider could not retrieve the page. Exa reports a page it could not read in its `statuses`; the page's own status is kept in the error message, and only a missing page (404 or 410) becomes the 404 above.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 for its 5 QPS per-account Fetch cap and for a target domain's own limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/v1/decisions": {
       "post": {
         "operationId": "createDecision",
@@ -124200,6 +124416,198 @@
           },
           "extra_fields": {
             "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "description": "A provider-neutral web search. Each provider refuses a bound or filter it cannot honour\nwith a 400 rather than dropping it. Options only one provider has (DeepSeek's\n`ori_question` and `localization`) are sent as additional top-level fields.\n",
+        "additionalProperties": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Optional routing handle, either a provider name alone (`exa`) or provider/model\n(`deepseek/deepseek-chat`). Search carries no model upstream; omit this and the\ngateway routes to DeepSeek.\n",
+            "example": "deepseek/deepseek-chat"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Search query. Providers bound its length differently (DeepSeek: 128 characters) and\nsome pass operators through unchanged.\n",
+            "example": "go generics"
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of results to return. Providers cap it differently (DeepSeek: 50)."
+          },
+          "include_content": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, each result carries page text in content. Increases response size."
+          },
+          "include_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only return results from these domains."
+          },
+          "exclude_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Never return results from these domains."
+          },
+          "published_after": {
+            "type": "string",
+            "description": "Only return pages published after this RFC 3339 date or date-time.",
+            "example": "2026-01-01"
+          },
+          "published_before": {
+            "type": "string",
+            "description": "Only return pages published before this RFC 3339 date or date-time."
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback providers, each a provider name alone or provider/model. An unknown provider is refused."
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array",
+            "description": "An empty array is a normal no-match answer, not an error.",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            }
+          },
+          "usage": {
+            "type": "object",
+            "description": "Carries the flat per-request cost of this call.",
+            "properties": {
+              "cost": {
+                "type": "object",
+                "properties": {
+                  "total_cost": {
+                    "type": "number",
+                    "example": 0.00075
+                  }
+                }
+              }
+            }
+          },
+          "extra_fields": {
+            "type": "object",
+            "description": "Bifrost metadata (latency, provider, request type, headers)."
+          }
+        }
+      },
+      "SearchResult": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "snippet": {
+            "type": "string",
+            "description": "Display-length excerpt, when the provider returns one."
+          },
+          "content": {
+            "type": "string",
+            "description": "Page text, present only when include_content was true."
+          },
+          "published_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "RFC 3339 publication date, or null when unknown."
+          },
+          "score": {
+            "type": "number",
+            "nullable": true,
+            "description": "The provider's own relevance score. Not comparable across providers."
+          },
+          "provider_fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "What only this provider returns, under its own names. DeepSeek: summary, site_name,\nsite_icon and authority (0-4, -1 when unknown).\n"
+          }
+        }
+      },
+      "FetchRequest": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Optional routing handle; fetch carries no model upstream."
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 8192,
+            "description": "Absolute HTTP(S) URL with a host and no embedded credentials.",
+            "example": "https://example.com/page"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback providers, each a provider name alone or provider/model. An unknown provider is refused."
+          }
+        }
+      },
+      "FetchResponse": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Empty when the upstream could not determine one."
+          },
+          "content": {
+            "type": "string",
+            "description": "The page as Markdown."
+          },
+          "usage": {
+            "type": "object",
+            "description": "Carries the flat per-request cost of this call.",
+            "properties": {
+              "cost": {
+                "type": "object",
+                "properties": {
+                  "total_cost": {
+                    "type": "number",
+                    "example": 0.00075
+                  }
+                }
+              }
+            }
+          },
+          "extra_fields": {
+            "type": "object",
+            "description": "Bifrost metadata (latency, provider, request type, headers)."
           }
         }
       },

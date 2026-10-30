@@ -61,10 +61,26 @@ func TestListProjectionIncludesBillingScalars(t *testing.T) {
 		"service_tier",
 		"speed",
 		"inference_geo",
+		"search_result_count",
 	} {
 		if !containsColumn(cols, scalar) {
 			t.Fatalf("listSelectColumns is missing %q; cost recomputation cannot see it", scalar)
 		}
+	}
+}
+
+// TestBillingProjectionCarriesSearchResultCount is a Search-specific guard. The reprice rebuilds
+// the response from the row instead of replaying it, so the result count is the only thing that
+// tells a billed Search from a free no-match one. Dropping it from the projection silently makes
+// every reprice treat both as empty and leave the row unpriced.
+func TestBillingProjectionCarriesSearchResultCount(t *testing.T) {
+	if cols := newProjectionTestStore(t).billingSelectColumns(); !containsColumn(cols, "search_result_count") {
+		t.Fatal("billingSelectColumns is missing search_result_count; a Search reprice cannot tell a billed call from an empty one")
+	}
+	// The count is also not a payload column, so a large scalar page — which NULLs the payload
+	// columns — must still carry it.
+	if containsColumn(billingScalarSelectColumns(), "NULL AS search_result_count") {
+		t.Fatal("the scalar projection NULLs search_result_count; it is a pricing input, not a payload")
 	}
 }
 
@@ -265,4 +281,59 @@ func containsColumn(clause, column string) bool {
 		}
 	}
 	return false
+}
+
+// TestBillingProjectionDeliversSearchResultCountEndToEnd is the query-level counterpart for Search.
+//
+// A Search row's result pages are never stored (see rawResponseIsLoggable in the logging plugin),
+// so search_result_count is the only pricing input the row carries for it: an empty result set is
+// free, a matching one owes the configured per-request fee. This pins that the column survives a
+// real write and a billing read, is unaffected by a row whose payload was offloaded, and is absent
+// on a row written before it existed.
+func TestBillingProjectionDeliversSearchResultCountEndToEnd(t *testing.T) {
+	store := newProjectionTestStore(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC()
+	matched := &Log{
+		ID: "search-matched", Timestamp: base, Object: "search", Provider: "deepseek",
+		Model: "deepseek-search", Status: "success", SearchResultCount: new(3),
+	}
+	empty := &Log{
+		ID: "search-empty", Timestamp: base.Add(time.Second), Object: "search", Provider: "deepseek",
+		Model: "deepseek-search", Status: "success", SearchResultCount: new(0),
+	}
+	// Offloaded payloads are NULL on the row; the count must survive that, or every hybrid-store
+	// Search reprices as if it had no results.
+	offloaded := &Log{
+		ID: "search-offloaded", Timestamp: base.Add(2 * time.Second), Object: "search", Provider: "deepseek",
+		Model: "deepseek-search", Status: "success", HasObject: true, SearchResultCount: new(7),
+	}
+	legacy := &Log{
+		ID: "search-legacy", Timestamp: base.Add(3 * time.Second), Object: "search", Provider: "deepseek",
+		Model: "deepseek-search", Status: "success",
+	}
+	for _, r := range []*Log{matched, empty, offloaded, legacy} {
+		require.NoError(t, r.SerializeFields())
+		require.NoError(t, store.Create(ctx, r))
+	}
+
+	for name, columns := range map[string]bool{"full": false, "scalar": true} {
+		t.Run(name, func(t *testing.T) {
+			result, err := store.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10, OmitBillingPayloads: columns})
+			require.NoError(t, err)
+			byID := make(map[string]*Log, len(result.Logs))
+			for i := range result.Logs {
+				byID[result.Logs[i].ID] = &result.Logs[i]
+			}
+
+			require.NotNil(t, byID["search-matched"].SearchResultCount)
+			assert.Equal(t, 3, *byID["search-matched"].SearchResultCount)
+			require.NotNil(t, byID["search-empty"].SearchResultCount, "an empty result set is 0, not absent")
+			assert.Zero(t, *byID["search-empty"].SearchResultCount)
+			require.NotNil(t, byID["search-offloaded"].SearchResultCount, "the count is not a payload field")
+			assert.Equal(t, 7, *byID["search-offloaded"].SearchResultCount)
+			assert.Nil(t, byID["search-legacy"].SearchResultCount, "a row written before the column stays NULL")
+		})
+	}
 }

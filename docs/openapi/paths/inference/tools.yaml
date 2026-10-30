@@ -1,0 +1,136 @@
+tools-search:
+  post:
+    operationId: searchWeb
+    summary: Search the web
+    description: |
+      Runs a web search through the routed provider and returns ranked pages in one shape
+      for every provider.
+
+      This is a web call, not an inference call: it carries no model upstream and is priced
+      per request. A cost the provider reports is always charged as reported; only when the
+      provider reports none does the model catalog's per-request price apply. So an empty
+      search is free only where the provider bills nothing for it and reports no cost, as
+      DeepSeek does; a provider that reports a cost for an empty search is charged it.
+
+      `model` selects the provider. A provider name alone (`exa`) routes to that provider; a
+      provider/model pair (`deepseek/deepseek-chat`) routes to the provider and also names a
+      model, which a virtual key restricted to specific models is held to. Omit it to route to
+      DeepSeek.
+    tags:
+    - Web Tools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/tools.yaml#/SearchRequest'
+    responses:
+      '200':
+        description: Successful response. An empty results array means no match.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/tools.yaml#/SearchResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '402':
+        description: Insufficient provider account balance. Top up rather than retry.
+          DeepSeek answers this for its own account balance; the status is passed
+          through from the routed provider.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '429':
+        description: The provider's rate limit was exceeded. DeepSeek answers 429 above
+          its 5 QPS per-account search cap.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+tools-fetch:
+  post:
+    operationId: fetchPage
+    summary: Fetch a page as Markdown
+    description: |
+      Retrieves a single page through the routed provider and returns its content as
+      Markdown. Priced per request from the cost the provider reports when it reports one,
+      and from the model catalog otherwise.
+
+      `model` selects the provider, on the same rule as Search: a provider name alone routes
+      to that provider, and a provider/model pair also names a model a virtual key's allowlist
+      is held to. Omit it to route to DeepSeek.
+
+      The page is read by the provider's servers, not by Bifrost, so the gateway's
+      private-network safeguards do not apply. A URL rejected by the provider's security
+      policy surfaces as a 403.
+    tags:
+    - Web Tools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/tools.yaml#/FetchRequest'
+    responses:
+      '200':
+        description: Successful response.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/tools.yaml#/FetchResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '402':
+        description: Insufficient provider account balance. Top up rather than retry.
+          DeepSeek answers this for its own account balance; the status is passed
+          through from the routed provider.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '403':
+        description: The page was rejected by the provider's fetch security policy.
+          DeepSeek and Exa both refuse a URL their own policy forbids.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '404':
+        description: The page carried no usable content.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '502':
+        description: The provider could not retrieve the page. Exa reports a page it
+          could not read in its `statuses`; the page's own status is kept in the error
+          message, and only a missing page (404 or 410) becomes the 404 above.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '429':
+        description: The provider's rate limit was exceeded. DeepSeek answers 429 for its
+          5 QPS per-account Fetch cap and for a target domain's own limit.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

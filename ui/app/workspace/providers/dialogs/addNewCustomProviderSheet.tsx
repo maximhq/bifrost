@@ -62,6 +62,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				responses_cancel: true,
 				responses_input_items: true,
 				embedding: true,
+				search: true,
+				fetch: true,
 				speech: true,
 				speech_stream: true,
 				transcription: true,

@@ -591,6 +591,20 @@ func responseStopReason(result *schemas.BifrostResponse) *string {
 	return stopReason
 }
 
+// recordSearchResultCount writes how many results a Search matched onto the row. This is not
+// content: it is how cost recomputation tells a billed Search from an empty, free one, because
+// the response it rebuilds has no result pages to count (the count is all of a Search that the
+// row keeps — see rawResponseIsLoggable). It is therefore recorded whatever the content policy
+// decided, unlike the parsed output beside it, and an empty result set is recorded as 0 so that
+// "matched nothing" stays distinguishable from a row written before the column existed.
+func recordSearchResultCount(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil || result == nil || result.SearchResponse == nil {
+		return
+	}
+	n := len(result.SearchResponse.Results)
+	entry.SearchResultCount = &n
+}
+
 // applyContentOutputToEntry sets the content output of a non-streaming response on entry: the
 // conversation (text and chat completions as OutputMessage, Responses and compaction as
 // ResponsesOutput) and the per-kind outputs (list models, embeddings, rerank, decisions, OCR,
@@ -677,6 +691,18 @@ func applyContentOutputToEntry(entry *logstore.Log, result *schemas.BifrostRespo
 	}
 }
 
+// rawResponseIsLoggable reports whether a non-streaming response body may be persisted when
+// content logging and raw storage are both on.
+//
+// Search and Fetch are excluded because their raw bodies carry result content: a Fetch with
+// need_content returns whole page text, and a Search result can carry page content too. The row
+// keeps the query or URL that captureRequestInput records instead. ExtraFields.RawResponse is
+// left as it is, so the API still returns it when send_back_raw_response is enabled — this
+// filters the logger's write only.
+func rawResponseIsLoggable(requestType schemas.RequestType) bool {
+	return requestType != schemas.SearchRequest && requestType != schemas.FetchRequest
+}
+
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	defer applyRefusalLogOutcome(entry)
 	if result == nil {
@@ -703,6 +729,10 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		entry.StopReason = stopReason
 	}
 
+	// How many results a Search matched is a pricing input, not output content, so it is
+	// recorded even when content logging is off — the reprice needs it to bill the row.
+	recordSearchResultCount(entry, result)
+
 	if contentLoggingEnabled {
 		if shouldStoreRaw {
 			if extraFields.RawRequest != nil {
@@ -711,7 +741,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 					entry.RawRequest = string(rawRequestBytes)
 				}
 			}
-			if extraFields.RawResponse != nil {
+			if extraFields.RawResponse != nil && rawResponseIsLoggable(extraFields.RequestType) {
 				rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
 				if err == nil {
 					entry.RawResponse = string(rawRespBytes)
@@ -2027,7 +2057,7 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 		extraFields.RoutingInfo.ResolvedKeyAlias.ModelName = &canonical
 	}
 
-	resp := buildResponseForRequestType(requestType, usage, extraFields, servedTierFromLog(logEntry))
+	resp := buildResponseForRequestType(requestType, usage, extraFields, servedTierFromLog(logEntry), logEntry)
 
 	// Put the served model back on the response body, which the reconstructed
 	// response leaves empty. Pricing reads it in one place — the Azure Model Router
@@ -2137,9 +2167,25 @@ func setResponseModel(resp *schemas.BifrostResponse, model string) {
 	}
 }
 
+// searchResultsFromLog rebuilds a Search response's result set from the row's result count.
+//
+// The reprice builds a response from the row, and that row deliberately keeps no result pages
+// (see rawResponseIsLoggable), so its Search reprice would otherwise report an empty result set —
+// which pricing reads as a free no-match call and so skips even when a per-request fee is
+// configured. A row that recorded a count therefore gets that many placeholders, which is all
+// pricing reads: an empty Search needs none, and a NULL count (a row written before the column
+// existed) is left as it was, because the check that would tell its empty case from its billed
+// one was never captured.
+func searchResultsFromLog(logEntry *logstore.Log) []schemas.BifrostSearchResult {
+	if logEntry == nil || logEntry.SearchResultCount == nil || *logEntry.SearchResultCount <= 0 {
+		return nil
+	}
+	return make([]schemas.BifrostSearchResult, *logEntry.SearchResultCount)
+}
+
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
 // field so that CalculateCost's extractCostInput routes it properly.
-func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas.BifrostLLMUsage, extra schemas.BifrostResponseExtraFields, tier servedTier) *schemas.BifrostResponse {
+func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas.BifrostLLMUsage, extra schemas.BifrostResponseExtraFields, tier servedTier, logEntry *logstore.Log) *schemas.BifrostResponse {
 	switch requestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		return &schemas.BifrostResponse{
@@ -2158,6 +2204,21 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 	case schemas.RerankRequest:
 		return &schemas.BifrostResponse{
 			RerankResponse: &schemas.BifrostRerankResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.SearchRequest:
+		return &schemas.BifrostResponse{
+			SearchResponse: &schemas.BifrostSearchResponse{
+				Results:     searchResultsFromLog(logEntry),
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.FetchRequest:
+		return &schemas.BifrostResponse{
+			FetchResponse: &schemas.BifrostFetchResponse{
 				Usage:       usage,
 				ExtraFields: extra,
 			},
