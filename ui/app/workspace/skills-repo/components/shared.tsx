@@ -801,9 +801,7 @@ export function ReadOnlyFileTree({
 							</span>
 
 							{isFolder && !isExpanded && item.childCount != null && item.childCount > 0 && (
-								<span className="text-muted-foreground text-xs">
-									{item.childCount} item{item.childCount !== 1 ? "s" : ""}
-								</span>
+								<span className="text-muted-foreground text-xs">{t("skillsRepo.itemCount", { count: item.childCount })}</span>
 							)}
 
 							{/* Download context menu (file + SKILL.md rows) */}

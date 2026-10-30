@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import i18n from "@/lib/i18n";
 // Known provider names array - centralized definition
 export const KnownProvidersNames = [
 	"anthropic",
@@ -275,6 +276,8 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 	if ((app.name === "Unknown" || app.name === "Other") && userAgent?.trim()) {
 		return userAgent.trim();
 	}
+	if (app.name === "Unknown") return i18n.t("logs.detail.unknown", { ns: "observability" });
+	if (app.name === "Other") return i18n.t("labels.other", { ns: "observability" });
 	return app.name;
 };
 

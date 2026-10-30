@@ -240,13 +240,11 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 												) : (
 													<div className="flex flex-wrap gap-1 pr-4">
 														{extraKeys.length > 0 && (
-															<Badge variant="secondary">
-																{extraKeys.length} {extraKeys.length === 1 ? "attribute" : "attributes"}
-															</Badge>
+															<Badge variant="secondary">{t("modelCatalog.attribute", { count: extraKeys.length })}</Badge>
 														)}
 														{overrideCount > 0 && (
 															<Badge variant="outline" data-testid={`model-catalog-override-badge-${testKey}`}>
-																{overrideCount} {overrideCount === 1 ? "override" : "overrides"}
+																{t("modelCatalog.override", { count: overrideCount })}
 															</Badge>
 														)}
 													</div>

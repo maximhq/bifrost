@@ -200,7 +200,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 						<Button
 							onClick={handleSave}
 							disabled={isLoading || !wasOpenRef.current || !hasUpdateAccess}
-							title={hasUpdateAccess ? undefined : "You do not have permission to change observability settings"}
+							title={hasUpdateAccess ? undefined : t("connectors.tracing.noChangePermission")}
 							isLoading={isLoading}
 							data-testid="plugin-tracing-save-button"
 							type="button"

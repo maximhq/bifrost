@@ -44,12 +44,12 @@ export function RecalculateCostDialog({ open, onOpenChange, filters, totalLogs, 
 	const disabledReason =
 		mode === "missing"
 			? isFetching
-				? "Checking how many logs are missing a cost…"
+				? t("logs.recalc.checking")
 				: missingCount === 0
-					? "All logs in the current window already have a cost."
+					? t("logs.recalc.allHaveCost")
 					: null
 			: totalLogs === 0
-				? "No logs match the current filters."
+				? t("logs.recalc.noLogsMatch")
 				: null;
 
 	return (

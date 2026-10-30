@@ -134,8 +134,10 @@ function CorrelatedTableHeader({ kind }: { kind: CorrelatedLogKind }) {
 }
 
 function CorrelatedStatusBar({ status }: { status: string }) {
+	const { t } = useTranslation("observability");
 	const validatedStatus: Status = status === "success" || status === "error" || status === "processing" ? status : "processing";
-	return <div title={status} aria-label={status} className={`h-8 w-1 shrink-0 rounded-sm ${StatusBarColors[validatedStatus]}`} />;
+	const statusLabel = t(`logs.statuses.${validatedStatus}`);
+	return <div title={statusLabel} aria-label={statusLabel} className={`h-8 w-1 shrink-0 rounded-sm ${StatusBarColors[validatedStatus]}`} />;
 }
 
 function CorrelatedApp({ appKey, userAgent }: { appKey?: string; userAgent?: string }) {

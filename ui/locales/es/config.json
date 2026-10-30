@@ -335,7 +335,8 @@
 		"unregisteredNote": "Actualmente no hay código que lea esta bandera. La anulación se almacena pero se inerte hasta que se agrega una llamada Registro().",
 		"toastToggled": "{{name}}{{state}}",
 		"enabledState": "habilitado",
-		"disabledState": "deshabilitado"
+		"disabledState": "deshabilitado",
+		"enableAria": "Activar {{name}}"
 	},
 	"mcpSettings": {
 		"title": "Ajustes del PCM",
@@ -782,7 +783,45 @@
 		"showLess": "Mostrar menos",
 		"showMore": "Mostrar más",
 		"skillNotFound": "No se encontró el skill",
-		"backToList": "Volver a la lista"
+		"backToList": "Volver a la lista",
+		"validation": {
+			"nameRequired": "El nombre es obligatorio",
+			"nameTooLong": "El nombre debe tener 64 caracteres o menos",
+			"nameFormat": "El nombre debe contener solo letras minúsculas, números y guiones (sin guiones al principio, al final ni consecutivos)",
+			"nameReserved": "\"{{name}}\" es un nombre reservado que usa la capa de servicio de skills",
+			"descriptionRequired": "La descripción es obligatoria",
+			"descriptionTooLong": "La descripción supera el límite de 1024 caracteres ({{length}}/1024)",
+			"versionRequired": "La versión es obligatoria",
+			"versionFormat": "La versión debe tener formato semver (p. ej., 1.0.0 o 1.0.0-beta.1)",
+			"versionParts": "Las partes de la versión deben ser enteros no negativos",
+			"versionBump": "La versión debe ser distinta de {{previous}}. Incrementa al menos uno de estos: mayor ({{major}}), menor ({{minor}}), parche ({{patch}}) o cambia el sufijo (p. ej., -beta.1).",
+			"extraFrontmatterObject": "El frontmatter adicional debe ser un objeto JSON",
+			"reservedKeys": "No se pueden usar claves reservadas: {{keys}}",
+			"invalidJson": "JSON no válido",
+			"metadataObject": "Los metadatos deben ser un objeto JSON",
+			"metadataKeys": "Las claves de los metadatos deben ser cadenas",
+			"metadataValue": "El valor de los metadatos de \"{{key}}\" debe ser una cadena",
+			"bodyRequired": "El cuerpo de SKILL.md es obligatorio",
+			"bodyLarge": "El cuerpo de este SKILL.md supera el tamaño recomendado. Considera mover el material detallado a archivos en references/ y enlazarlos desde el cuerpo del skill.",
+			"fileTooLarge": "El archivo supera el límite de {{limit}}",
+			"urlRequired": "La URL es obligatoria",
+			"urlScheme": "La URL debe empezar por http:// o https://",
+			"dataUrlRequired": "La URL de datos es obligatoria",
+			"dataUrlFormat": "La URL de datos debe empezar por data: y contener ;base64,",
+			"textRequired": "El contenido de texto es obligatorio",
+			"unknownSource": "Tipo de origen desconocido: {{type}}",
+			"filenameRequired": "El nombre de archivo es obligatorio",
+			"filenameDots": "El nombre de archivo no puede ser . ni ..",
+			"filenameFolders": "El nombre de archivo no debe incluir carpetas",
+			"skillMdManaged": "SKILL.md se gestiona desde el cuerpo del skill",
+			"pathRequired": "La ruta del archivo es obligatoria",
+			"pathRelative": "La ruta debe ser relativa (sin / inicial)",
+			"pathNotFolder": "La ruta debe apuntar a un archivo, no a una carpeta",
+			"pathSlashes": "La ruta debe usar solo barras diagonales (/)",
+			"pathSegments": "La ruta no debe contener segmentos vacíos, de directorio actual ni de directorio superior"
+		},
+		"itemCount_one": "{{count}} elemento",
+		"itemCount_other": "{{count}} elementos"
 	},
 	"promptRepo": {
 		"loadFailed": "Error al cargar el repositorio de prompts",
@@ -956,7 +995,9 @@
 		"file": "Archivo",
 		"attachmentAlt": "adjunto",
 		"noChangePermission": "No tienes permiso para cambiar los prompts",
-		"noChangeFolderPermission": "No tienes permiso para cambiar las carpetas de prompts"
+		"noChangeFolderPermission": "No tienes permiso para cambiar las carpetas de prompts",
+		"noResponseBody": "Sin cuerpo de respuesta",
+		"mcpServerFallback": "Servidor MCP"
 	},
 	"docs": {
 		"title": "Documentación",
@@ -1155,7 +1196,9 @@
 			"thresholdLabel": "Umbral de temas nuevos",
 			"thresholdHint": "Número de solicitudes en espera que no coinciden con ningún tema antes de que Warp las agrupe en temas nuevos. Se comprueba cada hora. Un valor más bajo detecta temas antes con menos ejemplos; uno más alto espera a que los patrones sean más claros. De {{min}} a {{max}}.",
 			"thresholdError": "Debe ser un número entero entre {{min}} y {{max}}"
-		}
+		},
+		"alphaBadge": "ALFA",
+		"aboutAria": "Acerca de {{label}}"
 	},
 	"agentGateway": {
 		"title": "Ajustes de Agent Gateway",
@@ -1285,7 +1328,27 @@
 			"authSuggestion": "Autenticación sugerida: {{type}}",
 			"import": "Importar",
 			"importCount_one": "Importar {{count}} ruta",
-			"importCount_other": "Importar {{count}} rutas"
+			"importCount_other": "Importar {{count}} rutas",
+			"docEmpty": "El documento está vacío",
+			"docNotJson": "El documento no es un objeto JSON",
+			"docNotOpenapi": "El documento no es un objeto OpenAPI",
+			"warn": {
+				"schemeUndeclared": "El esquema de seguridad {{name}} es obligatorio pero no está declarado; configura el tipo de autenticación manualmente",
+				"apiKeyLocation": "El esquema de seguridad {{name}} usa una apiKey en {{location}}, que el relay no puede inyectar",
+				"unsupportedLocation": "una ubicación no compatible",
+				"httpScheme": "El esquema de seguridad {{name}} usa autenticación HTTP {{scheme}}, que el relay no puede inyectar",
+				"schemeType": "El esquema de seguridad {{name}} es {{type}}; configura el tipo de autenticación manualmente",
+				"unknownType": "desconocido",
+				"authOptional": "El documento hace opcional la autenticación; si la API necesita una clave, configura el tipo de autenticación manualmente",
+				"noSingleScheme": "Ninguna alternativa de seguridad del documento es un único esquema que el relay pueda inyectar; configura el tipo de autenticación manualmente",
+				"severalSchemes": "El documento declara varios esquemas de seguridad y no exige ninguno; configura el tipo de autenticación manualmente",
+				"noPaths": "El documento no declara ninguna ruta",
+				"refPaths_one": "{{paths}} está definido mediante $ref, que la importación no resuelve, por lo que esas operaciones no se importaron; añade sus rutas manualmente y revisa la lista de rutas.",
+				"refPaths_other": "{{paths}} están definidos mediante $ref, que la importación no resuelve, por lo que esas operaciones no se importaron; añade sus rutas manualmente y revisa la lista de rutas.",
+				"noMethods": "Ninguna operación del documento usa un método que el relay atienda",
+				"differentSchemes": "Las operaciones requieren esquemas de seguridad distintos y un endpoint aplica una sola autenticación; configura el tipo de autenticación manualmente",
+				"serverQuery": "La consulta de la URL del servidor ({{query}}) se omite en la URL base sugerida, porque la URL base de un relay no puede incluirla; los llamadores deben enviarla por su cuenta."
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}} (predeterminado del relay)",
@@ -1306,7 +1369,17 @@
 			"blockSizeInfo": "Factura por cada bloque iniciado de esta cantidad de unidades.",
 			"minimumLabel": "Unidades mínimas (opcional)",
 			"minimumInfo": "Mínimo de unidades facturadas una vez que se lee una cantidad.",
-			"formula": "Cada llamada contada cuesta <strong>{{formula}}</strong>"
+			"formula": "Cada llamada contada cuesta <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "Cuerpo de la respuesta",
+				"request": "Cuerpo de la solicitud"
+			},
+			"measures": {
+				"value": "Número en la ruta",
+				"chars": "Caracteres de la cadena en la ruta",
+				"bodyBytes": "Tamaño de todo el cuerpo (bytes)",
+				"bodyChars": "Caracteres de todo el cuerpo"
+			}
 		},
 		"preview": {
 			"path": "Ruta",
@@ -1421,7 +1494,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole o env.AWS_ROLE_ARN",
 			"externalIdLabel": "ID externo (opcional)",
 			"externalIdInfo": "Lo exige la política de confianza del rol al usar acceso entre cuentas",
-			"externalIdPlaceholder": "external-id o env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id o env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Token Bearer",
+				"header": "Encabezado personalizado",
+				"query": "Parámetro de consulta",
+				"basic": "Autenticación Basic",
+				"none": "Sin autenticación"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1492,6 +1572,21 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- o env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Quitar configuración",
 			"saveProxy": "Guardar configuración del proxy"
+		},
+		"pricing": {
+			"free": "Gratis",
+			"perCall": "${{price}} / llamada",
+			"perUnit": "${{price}} / unidad",
+			"perByte": "${{price}} / byte",
+			"perChar": "${{price}} / carácter",
+			"blockUnit_one": "${{price}} por {{count}} unidad",
+			"blockUnit_other": "${{price}} por {{count}} unidades",
+			"blockByte_one": "${{price}} por {{count}} byte",
+			"blockByte_other": "${{price}} por {{count}} bytes",
+			"blockChar_one": "${{price}} por {{count}} carácter",
+			"blockChar_other": "${{price}} por {{count}} caracteres",
+			"withMinimum": "{{pricing}}, mín. {{min}}",
+			"reportedCost": "coste informado"
 		}
 	},
 	"skillsSettings": {

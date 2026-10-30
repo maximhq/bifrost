@@ -335,7 +335,8 @@
 		"unregisteredNote": "현재 이 플래그를 읽는 코드는 없어요. 재정의는 저장되지만 Register() 호출이 추가될 때까지 비활성화돼요.",
 		"toastToggled": "{{name}}: {{state}}",
 		"enabledState": "활성화됨",
-		"disabledState": "비활성화됨"
+		"disabledState": "비활성화됨",
+		"enableAria": "{{name}} 활성화"
 	},
 	"mcpSettings": {
 		"title": "MCP 설정",
@@ -782,7 +783,44 @@
 		"showLess": "간단히 보기",
 		"showMore": "더 보기",
 		"skillNotFound": "스킬을 찾을 수 없어요",
-		"backToList": "목록으로 돌아가기"
+		"backToList": "목록으로 돌아가기",
+		"validation": {
+			"nameRequired": "이름은 필수입니다",
+			"nameTooLong": "이름은 64자 이하여야 합니다",
+			"nameFormat": "이름은 소문자 영숫자와 하이픈만 사용할 수 있습니다(처음, 끝, 연속 하이픈 불가)",
+			"nameReserved": "\"{{name}}\"은(는) 스킬 서빙 레이어에서 사용하는 예약된 이름입니다",
+			"descriptionRequired": "설명은 필수입니다",
+			"descriptionTooLong": "설명이 1024자 제한을 초과했습니다({{length}}/1024)",
+			"versionRequired": "버전은 필수입니다",
+			"versionFormat": "버전은 semver 형식이어야 합니다(예: 1.0.0 또는 1.0.0-beta.1)",
+			"versionParts": "버전의 각 부분은 0 이상의 정수여야 합니다",
+			"versionBump": "버전은 {{previous}}와(과) 달라야 합니다. 메이저({{major}}), 마이너({{minor}}), 패치({{patch}}) 중 하나 이상을 올리거나 접미사(예: -beta.1)를 변경하세요.",
+			"extraFrontmatterObject": "추가 frontmatter는 JSON 객체여야 합니다",
+			"reservedKeys": "예약된 키는 사용할 수 없습니다: {{keys}}",
+			"invalidJson": "JSON이 올바르지 않습니다",
+			"metadataObject": "메타데이터는 JSON 객체여야 합니다",
+			"metadataKeys": "메타데이터 키는 문자열이어야 합니다",
+			"metadataValue": "메타데이터 \"{{key}}\"의 값은 문자열이어야 합니다",
+			"bodyRequired": "SKILL.md 본문은 필수입니다",
+			"bodyLarge": "이 SKILL.md 본문이 권장 크기를 초과했습니다. 자세한 내용은 references/ 아래 파일로 옮기고 스킬 본문에서 링크하는 것을 고려하세요.",
+			"fileTooLarge": "파일이 {{limit}} 제한을 초과했습니다",
+			"urlRequired": "URL은 필수입니다",
+			"urlScheme": "URL은 http:// 또는 https://로 시작해야 합니다",
+			"dataUrlRequired": "데이터 URL은 필수입니다",
+			"dataUrlFormat": "데이터 URL은 data:로 시작하고 ;base64,를 포함해야 합니다",
+			"textRequired": "텍스트 내용은 필수입니다",
+			"unknownSource": "알 수 없는 소스 유형: {{type}}",
+			"filenameRequired": "파일 이름은 필수입니다",
+			"filenameDots": "파일 이름은 . 또는 ..일 수 없습니다",
+			"filenameFolders": "파일 이름에 폴더를 포함할 수 없습니다",
+			"skillMdManaged": "SKILL.md는 스킬 본문에서 관리됩니다",
+			"pathRequired": "파일 경로는 필수입니다",
+			"pathRelative": "경로는 상대 경로여야 합니다(맨 앞에 / 불가)",
+			"pathNotFolder": "경로는 폴더가 아닌 파일을 가리켜야 합니다",
+			"pathSlashes": "경로에는 슬래시(/)만 사용할 수 있습니다",
+			"pathSegments": "경로에 빈 세그먼트, 현재 디렉터리 또는 상위 디렉터리 세그먼트를 포함할 수 없습니다"
+		},
+		"itemCount_other": "{{count}}개 항목"
 	},
 	"promptRepo": {
 		"loadFailed": "프롬프트 저장소를 로드하지 못했어요.",
@@ -956,7 +994,9 @@
 		"file": "파일",
 		"attachmentAlt": "첨부 파일",
 		"noChangePermission": "프롬프트를 변경할 권한이 없습니다",
-		"noChangeFolderPermission": "프롬프트 폴더를 변경할 권한이 없습니다"
+		"noChangeFolderPermission": "프롬프트 폴더를 변경할 권한이 없습니다",
+		"noResponseBody": "응답 본문이 없습니다",
+		"mcpServerFallback": "MCP 서버"
 	},
 	"docs": {
 		"title": "문서",
@@ -1179,7 +1219,9 @@
 			"thresholdLabel": "새 주제 기준",
 			"thresholdHint": "Warp가 요청을 새 주제로 묶기 전에 어떤 주제와도 일치하지 않는 요청이 몇 개까지 쌓여야 하는지 설정합니다. 매시간 확인합니다. 값을 낮추면 더 적은 예시로 새 주제를 빨리 찾고, 높이면 패턴이 더 뚜렷해질 때까지 기다립니다. {{min}}~{{max}}.",
 			"thresholdError": "{{min}}~{{max}} 사이의 정수를 입력해야 합니다"
-		}
+		},
+		"alphaBadge": "알파",
+		"aboutAria": "{{label}} 정보"
 	},
 	"agentGateway": {
 		"title": "Agent Gateway 설정",
@@ -1309,7 +1351,26 @@
 			"authSuggestion": "인증 제안: {{type}}",
 			"import": "가져오기",
 			"importCount_one": "라우트 {{count}}개 가져오기",
-			"importCount_other": "라우트 {{count}}개 가져오기"
+			"importCount_other": "라우트 {{count}}개 가져오기",
+			"docEmpty": "문서가 비어 있습니다",
+			"docNotJson": "문서가 JSON 객체가 아닙니다",
+			"docNotOpenapi": "문서가 OpenAPI 객체가 아닙니다",
+			"warn": {
+				"schemeUndeclared": "보안 스킴 {{name}}이(가) 필요하지만 선언되지 않았습니다. 인증 유형을 직접 설정하세요",
+				"apiKeyLocation": "보안 스킴 {{name}}이(가) {{location}}에서 apiKey를 사용하며, Relay가 주입할 수 없습니다",
+				"unsupportedLocation": "지원되지 않는 위치",
+				"httpScheme": "보안 스킴 {{name}}이(가) HTTP {{scheme}} 인증을 사용하며, Relay가 주입할 수 없습니다",
+				"schemeType": "보안 스킴 {{name}}의 유형은 {{type}}입니다. 인증 유형을 직접 설정하세요",
+				"unknownType": "알 수 없음",
+				"authOptional": "문서에서 인증이 선택 사항으로 지정되어 있습니다. API에 키가 필요하면 인증 유형을 직접 설정하세요",
+				"noSingleScheme": "문서에 Relay가 주입할 수 있는 단일 스킴의 보안 대안이 없습니다. 인증 유형을 직접 설정하세요",
+				"severalSchemes": "문서에 여러 보안 스킴이 선언되어 있지만 필수로 지정된 것이 없습니다. 인증 유형을 직접 설정하세요",
+				"noPaths": "문서에 선언된 경로가 없습니다",
+				"refPaths_other": "{{paths}}은(는) $ref로 정의되어 있으며 가져오기에서 $ref를 해석하지 않으므로 해당 작업을 가져오지 못했습니다. 라우트를 직접 추가하고 라우트 목록을 확인하세요.",
+				"noMethods": "문서에 Relay가 처리하는 메서드를 사용하는 작업이 없습니다",
+				"differentSchemes": "작업마다 서로 다른 보안 스킴이 필요하지만 엔드포인트 하나에는 인증 하나만 적용할 수 있습니다. 인증 유형을 직접 설정하세요",
+				"serverQuery": "서버 URL의 쿼리({{query}})는 Relay 기본 URL에 쿼리를 포함할 수 없으므로 제안된 기본 URL에서 제외되었습니다. 호출자가 직접 전송해야 합니다."
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}} (릴레이 기본값)",
@@ -1330,7 +1391,17 @@
 			"blockSizeInfo": "이 단위 수만큼의 블록이 시작될 때마다 과금해요.",
 			"minimumLabel": "최소 단위 (선택사항)",
 			"minimumInfo": "수량을 읽으면 과금되는 최소 단위 수예요.",
-			"formula": "집계되는 호출당 비용은 <strong>{{formula}}</strong>이에요"
+			"formula": "집계되는 호출당 비용은 <strong>{{formula}}</strong>이에요",
+			"sources": {
+				"response": "응답 본문",
+				"request": "요청 본문"
+			},
+			"measures": {
+				"value": "경로의 숫자",
+				"chars": "경로에 있는 문자열의 문자 수",
+				"bodyBytes": "전체 본문 크기(바이트)",
+				"bodyChars": "전체 본문의 문자 수"
+			}
 		},
 		"preview": {
 			"path": "경로",
@@ -1445,7 +1516,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole 또는 env.AWS_ROLE_ARN",
 			"externalIdLabel": "외부 ID (선택사항)",
 			"externalIdInfo": "교차 계정 액세스를 사용할 때 역할의 신뢰 정책에서 요구해요",
-			"externalIdPlaceholder": "external-id 또는 env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id 또는 env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer 토큰",
+				"header": "사용자 지정 헤더",
+				"query": "쿼리 매개변수",
+				"basic": "Basic 인증",
+				"none": "인증 없음"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1516,6 +1594,18 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 또는 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "구성 제거",
 			"saveProxy": "프록시 구성 저장"
+		},
+		"pricing": {
+			"free": "무료",
+			"perCall": "${{price}} / 호출",
+			"perUnit": "${{price}} / 단위",
+			"perByte": "${{price}} / 바이트",
+			"perChar": "${{price}} / 문자",
+			"blockUnit_other": "${{price}} / {{count}}단위",
+			"blockByte_other": "${{price}} / {{count}}바이트",
+			"blockChar_other": "${{price}} / {{count}}자",
+			"withMinimum": "{{pricing}}, 최소 {{min}}",
+			"reportedCost": "보고된 비용"
 		}
 	},
 	"skillsSettings": {

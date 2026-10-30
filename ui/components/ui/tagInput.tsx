@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import React from "react";
+import { useTranslation } from "react-i18next";
 
 type OmittedInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">;
 
@@ -29,6 +30,7 @@ const TAG_CLASSES = "bg-accent dark:bg-card flex max-w-full shrink items-center 
 
 export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 	({ className, value, onValueChange, listHeight, submitOnComma = true, readOnly, ...props }, ref) => {
+		const { t } = useTranslation("common");
 		const [inputValue, setInputValue] = React.useState("");
 
 		const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -68,7 +70,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(
 				{tag}
 				{!readOnly && (
 					<button
-						aria-label={`Remove ${tag}`}
+						aria-label={t("combobox.removeAria", { label: tag })}
 						type="button"
 						className="ring-offset-background focus:ring-ring shrink-0 cursor-pointer rounded-sm outline-none focus:ring-2 focus:ring-offset-2"
 						onClick={() => removeTag(tag)}

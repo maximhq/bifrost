@@ -124,7 +124,10 @@
 			"barChart": "Graphique à barres",
 			"lineChart": "Graphique en courbes",
 			"directValue": "Direct : {{value}}",
-			"semanticValue": "Sémantique : {{value}}"
+			"semanticValue": "Sémantique : {{value}}",
+			"tokensPerSecValue": "{{value}} jetons/s",
+			"moreCount_one": "+{{count}} de plus",
+			"moreCount_other": "+{{count}} de plus"
 		},
 		"rankings": {
 			"topDimension": "Top {{dimension}}s",
@@ -136,7 +139,10 @@
 			"avgLatency": "Latence moyenne",
 			"noData": "Aucune donnée d'utilisation de {{dimension}} n'est disponible pour cette période.",
 			"attributedTooltipShort": "Attribué - une requête est comptabilisée pour chaque {{dimension}} dont elle fait partie, cela peut donc dépasser le nombre réel de requêtes.",
-			"attributedTooltipLong": "Une requête est comptabilisée dans chaque {{dimension}} à laquelle elle appartient, cela peut donc dépasser le nombre total de requêtes."
+			"attributedTooltipLong": "Une requête est comptabilisée dans chaque {{dimension}} à laquelle elle appartient, cela peut donc dépasser le nombre total de requêtes.",
+			"newBadge": "nouveau",
+			"requestsCount_one": "{{formattedCount}} requête",
+			"requestsCount_other": "{{formattedCount}} requêtes"
 		},
 		"noModelUsage": "Aucune donnée d'utilisation du modèle disponible pour cette période."
 	},
@@ -236,7 +242,13 @@
 			"toastCancelled": "Recalcul des coûts annulé",
 			"toastComplete": "Recalcul des coûts terminé",
 			"toastProgress": "Recalcul des coûts des journaux...",
-			"errorGeneric": "Impossible de recalculer les coûts"
+			"errorGeneric": "Impossible de recalculer les coûts",
+			"noLogsMatch": "Aucun log ne correspond aux filtres actuels.",
+			"toastStopped": "Arrêté après {{updated}} mis à jour et {{skipped}} ignorés",
+			"toastUpdatedSkipped": "{{updated}} mis à jour, {{skipped}} ignorés",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} vérifiés, {{updated}} mis à jour, {{skipped}} ignorés",
+			"toastChecked": "{{processed}} vérifiés, {{updated}} mis à jour, {{skipped}} ignorés",
+			"errorGenericStatus": "Échec du recalcul des coûts ({{status}})"
 		},
 		"session": {
 			"logs": "Journaux",
@@ -543,7 +555,12 @@
 				"detected": "La règle a signalé la requête et l’a laissée continuer sans modification."
 			},
 			"errorNotStored": "Le message d’erreur n’a pas été stocké, car la journalisation du contenu est désactivée pour cette requête.",
-			"errorNotStoredWithStatus": "Le message d’erreur n’a pas été stocké, car la journalisation du contenu est désactivée pour cette requête (HTTP {{statusCode}})."
+			"errorNotStoredWithStatus": "Le message d’erreur n’a pas été stocké, car la journalisation du contenu est désactivée pour cette requête (HTTP {{statusCode}}).",
+			"unknown": "Inconnu",
+			"sourceEventInitiated": "Déclenché par un événement",
+			"sourceLanguageModel": "Modèle de langage",
+			"batchItemResult": "Élément du lot {{type}}",
+			"providerReturnedHttp": "Le fournisseur a renvoyé HTTP {{status}}"
 		},
 		"media": {
 			"pause": "Pause",
@@ -757,16 +774,45 @@
 				"virtualKeys": "clés virtuelles ({{total}})",
 				"teams": "équipes ({{total}})",
 				"customers": "clients ({{total}})",
-				"period": "période {{value}}"
+				"period": "période {{value}}",
+				"relays": "relais ({{total}})",
+				"methods": "méthodes ({{total}})",
+				"kinds": "types ({{total}})",
+				"users": "utilisateurs ({{total}})",
+				"businessUnits": "unités commerciales ({{total}})",
+				"projects": "projets ({{total}})",
+				"apps": "applications ({{total}})",
+				"billableOnly": "facturables uniquement",
+				"nonBillableOnly": "non facturables uniquement",
+				"minCost": "coût min. {{value}}",
+				"maxCost": "coût max. {{value}}"
 			}
 		},
 		"fallbackChain": {
 			"openFinalAttempt": "Ouvrir la dernière tentative",
 			"title": "Chaîne de repli",
-			"viewing": "Affichage en cours"
+			"viewing": "Affichage en cours",
+			"outcome": {
+				"succeeded": "Requête réussie",
+				"failed": "Toutes les tentatives ont échoué",
+				"inProgress": "Toujours en cours"
+			},
+			"summary": {
+				"attempt": "Tentative {{position}} sur {{total}}",
+				"fellBack": "Tentative {{position}} sur {{total}}. Cette tentative a échoué et la requête a basculé vers {{label}}.",
+				"later": "Tentative {{position}} sur {{total}}. D'autres tentatives ont suivi."
+			},
+			"attempts_other": "{{count}} tentatives",
+			"attempts_one": "{{count}} tentative",
+			"attemptsWithTotal_other": "{{count}} tentatives · {{latency}} au total",
+			"attemptsWithTotal_one": "{{count}} tentative · {{latency}} au total",
+			"keyName": "clé {{name}}",
+			"retries_other": "{{count}} nouvelles tentatives",
+			"retries_one": "{{count}} nouvelle tentative"
 		},
 		"exportCsv": "Exporter en CSV",
-		"exportCsvDesc": "Télécharger les journaux correspondants au format CSV"
+		"exportCsvDesc": "Télécharger les journaux correspondants au format CSV",
+		"batchMixedModel": "mixte"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1122,8 @@
 			"overheadLatencySpans": "Spans de latence de surcharge",
 			"overheadLatencySpansHelp": "Spans de durée interne (initialisation, sélection de clé, phases du pipeline). Désactivé par défaut.",
 			"configJsonPrecedence": "Si <filter>plugin_span_filter</filter> est défini dans la configuration du plugin <plugin>{{pluginName}}</plugin> dans config.json, il prévaut sur ces paramètres après le redémarrage de Bifrost.",
-			"destinationOtel": "le collecteur OTEL"
+			"destinationOtel": "le collecteur OTEL",
+			"noChangePermission": "Vous n'avez pas l'autorisation de modifier les paramètres d'observabilité"
 		},
 		"savePrometheus": "Enregistrer la configuration Prometheus",
 		"saveOtel": "Enregistrer la configuration OTEL",
@@ -1233,7 +1280,12 @@
 		"passthrough_stream": "Flux passthrough",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "Realtime",
-		"realtime_turn": "Tour Realtime"
+		"realtime_turn": "Tour Realtime",
+		"model_retrieve": "Récupérer le modèle",
+		"live": "En direct",
+		"live_session": "Session en direct",
+		"live_content": "Enregistrement en direct",
+		"live_sideband": "Sideband en direct"
 	},
 	"celBuilder": {
 		"copied": "Copié",
@@ -1260,7 +1312,8 @@
 		"value": "Valeur",
 		"enterValue": "Saisissez une valeur...",
 		"commaSeparated": "Saisissez des valeurs séparées par des virgules ou un tableau JSON",
-		"celPlaceholder": "ex. model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "ex. model == \"claude-sonnet-4-6\"",
+		"remove": "Supprimer"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Règle de routage",
@@ -1717,6 +1770,12 @@
 			"stepRegister": "Enregistrez et activez l’agent amont dans Agent Gateway.",
 			"stepReplace": "Remplacez <code>{{agentName}}</code> par son nom enregistré.",
 			"stepVirtualKey": "Utilisez une clé virtuelle qui a accès à l’agent, ou supprimez l’en-tête <code>x-bf-vk</code> lorsque l’authentification est désactivée."
+		},
+		"interactive": {
+			"copied": "Copié",
+			"filterBy": "Filtrer par {{label}}",
+			"clickToFilter": "Cliquer pour filtrer · Clic droit pour copier",
+			"rightClickToCopy": "Clic droit pour copier"
 		}
 	},
 	"overhead": {

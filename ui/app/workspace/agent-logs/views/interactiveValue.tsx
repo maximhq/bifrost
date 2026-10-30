@@ -2,6 +2,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import type { AgentLogFilters } from "@/lib/types/agentLogs";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 export type FilterTarget = Partial<Omit<AgentLogFilters, "period" | "start_time" | "end_time">>;
 
@@ -21,8 +22,9 @@ export function InteractiveValue({
 	testId?: string;
 	className?: string;
 }) {
+	const { t } = useTranslation("observability");
 	const canFilter = Boolean(filter && onFilter);
-	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+	const { copy } = useCopyToClipboard({ successMessage: t("agentLogs.interactive.copied") });
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -42,13 +44,13 @@ export function InteractiveValue({
 						canFilter ? "cursor-pointer" : "cursor-context-menu",
 						className,
 					)}
-					aria-label={canFilter ? `Filter by ${label}` : label}
+					aria-label={canFilter ? t("agentLogs.interactive.filterBy", { label }) : label}
 					data-testid={testId}
 				>
 					{value}
 				</button>
 			</TooltipTrigger>
-			<TooltipContent>{canFilter ? "Click to filter · Right-click to copy" : "Right-click to copy"}</TooltipContent>
+			<TooltipContent>{canFilter ? t("agentLogs.interactive.clickToFilter") : t("agentLogs.interactive.rightClickToCopy")}</TooltipContent>
 		</Tooltip>
 	);
 }

@@ -22,7 +22,11 @@
 		"toTime": "Bis Zeitpunkt",
 		"timezone": "Zeitzone",
 		"selectTimezone": "Zeitzone auswählen",
-		"time": "Uhrzeit"
+		"time": "Uhrzeit",
+		"am": "AM",
+		"pm": "PM",
+		"hourPlaceholder": "HH",
+		"minutePlaceholder": "MM"
 	},
 	"timePeriods": {
 		"1h": "Letzten Stunde",
@@ -70,7 +74,10 @@
 		"agents": "Agenten",
 		"providers": "Anbieter",
 		"webhookEndpoints": "Webhook-Endpunkte",
-		"modelLimits": "Modelllimits"
+		"modelLimits": "Modelllimits",
+		"agent": "Agent",
+		"relay": "Relay",
+		"relays": "Relays"
 	},
 	"aboutField": "über {{field}}",
 	"thisField": "Dieses Feld",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}, ausgewählt{{disabled}}",
 		"optionNotSelectedAria": "{{label}}, nicht ausgewählt{{disabled}}",
 		"disabledSuffix": ", deaktiviert",
-		"clear": "Leeren"
+		"clear": "Leeren",
+		"moreCount": "+ {{count}} weitere"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "Geschäftsjahr beginnt",
@@ -195,7 +203,8 @@
 		"failedToLoad": "Laden fehlgeschlagen."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "Rücksetzzeitraum"
+		"resetPeriod": "Rücksetzzeitraum",
+		"noLimit": "Kein Limit"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "Der aufgelöste Wert wird nach dem Speichern angezeigt"
@@ -204,7 +213,9 @@
 		"label": "Agentenzugriff",
 		"tooltip": "Gewähre diesem Schlüssel Zugriff auf registrierte Agenten. Der Schlüssel kann dann jeden Agenten unter <path0>{{path}}</path0> aufrufen. Für Agenten, die für alle Schlüssel offen sind, ist keine Freigabe erforderlich.",
 		"selectPlaceholder": "Agent zum Hinzufügen auswählen",
-		"removeAria": "{{name}} entfernen"
+		"removeAria": "{{name}} entfernen",
+		"openToAll": "Für alle Schlüssel offen",
+		"disabled": "Deaktiviert"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "Für {{durations}} gelten gleitende Zeitfenster über die gesamte Dauer. Die Kalenderausrichtung gilt nur für 1d, 1w, 1M, 1Q und 1Y."
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "Bitte halte {{label}} zwischen {{min}} und {{max}}.",
 		"addString": "String hinzufügen",
-		"select": "Auswählen"
+		"select": "Auswählen",
+		"clear": "{{label}} löschen"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "Muss eine gültige URL sein",
 		"validEmail": "Muss eine gültige E-Mail-Adresse sein",
 		"grpcHostPortFormat": "Muss für gRPC im Format <host>:<port> vorliegen (z. B. {{example}})",
-		"invalidInput": "Ungültige Eingabe"
+		"invalidInput": "Ungültige Eingabe",
+		"vertexEndpointId": "Gib eine Vertex-Endpunkt-ID ein oder füge eine unterstützte Endpunkt-URL ein",
+		"mcp": {
+			"privateKeyRequired": "Für private_key_jwt ist ein privater Schlüssel erforderlich",
+			"secretRequiredForMethod": "Für die Wahl der Übertragungsart ist ein Client-Secret erforderlich",
+			"credentialResend": "Gib den Wert erneut ein: Audience, Upstream-Token-Endpunkt oder Assertion-Audience wurden geändert, daher wird der gespeicherte Wert nicht an das neue Ziel gesendet"
+		},
+		"relays": {
+			"costPerRequestNegative": "Die Kosten pro Anfrage dürfen nicht negativ sein",
+			"costPerUnitNegative": "Die Kosten pro Einheit dürfen nicht negativ sein",
+			"blockSizePositive": "Die Blockgröße muss größer als null sein",
+			"minimumUnitsNegative": "Die Mindesteinheiten dürfen nicht negativ sein",
+			"unitsPathRequiredRoute": "Der Einheitenpfad ist erforderlich: Diese Route rechnet pro Einheit ab, und weder sie noch das Relay nennt einen Pfad",
+			"unitsPathRequired": "Der Einheitenpfad ist erforderlich, außer die Messung liest den gesamten Body",
+			"unitsPathRequiredInherited": "Der Einheitenpfad ist erforderlich: Die Route {{method}} {{path}} rechnet pro Einheit ab und erbt ihn vom Relay",
+			"absoluteUrl": "Gib eine absolute http(s)-URL ein",
+			"pathRequired": "Pfad ist erforderlich",
+			"pathMustStartWithSlash": "Der Pfad muss mit / beginnen",
+			"doubleStarLast": "** ist nur als letztes Segment erlaubt",
+			"headerNameRequired": "Für die Header-Authentifizierung ist ein Header-Name erforderlich",
+			"queryParamRequired": "Für die Query-Authentifizierung ist ein Query-Parameter erforderlich",
+			"awsServiceRequired": "Für die SigV4-Authentifizierung ist ein AWS-Dienst erforderlich",
+			"awsServiceFormat": "Der AWS-Dienst muss [a-z0-9-]+ entsprechen",
+			"headerNameNoSpecial": "Der Header-Name darf keine Leerzeichen, Doppelpunkte oder Schrägstriche enthalten",
+			"matcherNeedsValue": "Ein Header-Matcher benötigt ein Wert-Glob",
+			"matcherNeedsName": "Ein Header-Matcher benötigt einen Header-Namen",
+			"jobIdPath": "Gib an, wo die Start-Antwort die Job-ID enthält",
+			"pollPathRequired": "Gib den Abfragepfad ein",
+			"pollPathRooted": "Gib einen Pfad ab Wurzel ein, z. B. {{example}}",
+			"statusPathRequired": "Gib an, wo die Abfrage-Antwort den Status enthält",
+			"succeededRequired": "Gib mindestens einen Erfolgsstatus ein",
+			"atLeastOneSecond": "Mindestens 1 Sekunde",
+			"headerMatchedDup": "Dieser Header wird auf dieser Route bereits abgeglichen",
+			"relayNameFormat": "Verwende 1-64 Buchstaben, Ziffern, Punkte, Bindestriche oder Unterstriche",
+			"relayNameDots": "Ein Relay darf nicht . oder .. heißen",
+			"baseUrlFormat": "Gib eine absolute http(s)-URL ohne Query, Fragment oder Benutzerinfo ein",
+			"headerValueRequired": "Gib einen Wert für diesen Header ein",
+			"headerNameEnter": "Gib einen Header-Namen ein",
+			"headerAlreadySet": "Dieser Header ist bereits gesetzt",
+			"lineError": "Zeile {{line}}: {{message}}",
+			"invalidPath": "ungültiger Pfad",
+			"regionSigV4": "Für SigV4 ist eine Region erforderlich",
+			"credentialRequired": "Für diesen Authentifizierungstyp sind Anmeldedaten erforderlich",
+			"proxyUrlRequired": "Proxy-URL ist erforderlich",
+			"rootedPathSearch": "Gib einen Pfad ab Wurzel ein, z. B. /v1/search",
+			"statusRange": "Der Status muss zwischen 100 und 599 liegen"
+		}
 	},
 	"permissionDenied": {
 		"create": "Du hast keine Berechtigung, {{entity}} zu erstellen.",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}} Quartale",
 		"year_one": "{{count}} Jahr",
 		"year_other": "{{count}} Jahre"
+	},
+	"viewToggle": {
+		"more": "Mehr anzeigen",
+		"less": "Weniger anzeigen"
+	},
+	"baseProviderSelector": {
+		"placeholder": "Basisformat auswählen",
+		"searchPlaceholder": "Formate suchen..."
+	},
+	"commandDialog": {
+		"title": "Befehlspalette",
+		"description": "Befehl zum Ausführen suchen..."
+	},
+	"copyToClipboard": {
+		"success": "In die Zwischenablage kopiert",
+		"failed": "Kopieren fehlgeschlagen"
+	},
+	"agentCard": {
+		"unnamedSkill": "Unbenannte Fähigkeit",
+		"unknown": "Unbekannt"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} +{{count}} weitere"
+	},
+	"badges": {
+		"beta": "BETA"
 	}
 }

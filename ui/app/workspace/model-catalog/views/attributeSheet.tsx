@@ -6,7 +6,7 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderLabels, ProviderName, RequestTypeLabels } from "@/lib/constants/logs";
+import { getRequestTypeLabel, ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	ModelDetails,
@@ -144,6 +144,7 @@ function formatPatchValue(key: string, value: unknown): string {
 export default function AttributeSheet({ model, overrides, onClose }: AttributeSheetProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
+	const { t: tObs } = useTranslation("observability");
 	const [isOpen, setIsOpen] = useState(true);
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -372,7 +373,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 													<div className="flex flex-wrap gap-1">
 														{override.request_types.map((rt) => (
 															<Badge key={rt} variant="outline" className="text-[10px]">
-																{RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt}
+																{getRequestTypeLabel(rt, tObs)}
 															</Badge>
 														))}
 													</div>
@@ -431,14 +432,14 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 											<Input
 												value={row.key}
 												onChange={(e) => handleRowChange(row.id, "key", e.target.value)}
-												placeholder="key"
+												placeholder={t("modelCatalog.attributeKeyPlaceholder")}
 												className="flex-1"
 												data-testid={`model-catalog-attribute-key-${i}`}
 											/>
 											<Input
 												value={row.value}
 												onChange={(e) => handleRowChange(row.id, "value", e.target.value)}
-												placeholder="value"
+												placeholder={t("modelCatalog.attributeValuePlaceholder")}
 												className="flex-1"
 												data-testid={`model-catalog-attribute-value-${i}`}
 											/>

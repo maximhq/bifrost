@@ -15,6 +15,7 @@ import { getScopeLabel } from "@/lib/utils/labels";
 import { normalizeFallback, summarizeTargetsTTFT } from "@/lib/utils/routingRules";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -275,7 +276,7 @@ function FallbackChain({ fallbacks }: { fallbacks: RoutingFallbackWire[] }) {
 // ─── main sheet ──────────────────────────────────────────────────────────────
 
 export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, hasPrev = false, hasNext = false }: Props) {
-	const { t } = useTranslation("models");
+	const { t, i18n } = useTranslation("models");
 	const formatTTFT = (targets: RoutingRule["targets"] | undefined) => {
 		const { ms, mixed } = summarizeTargetsTTFT(targets);
 		if (mixed) return t("routing.ttftMixed");
@@ -425,6 +426,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 									<span className="text-sm">
 										{formatDistanceToNow(new Date(rule.created_at), {
 											addSuffix: true,
+											locale: dateFnsLocale(i18n.language),
 										})}
 									</span>
 								</div>
@@ -433,6 +435,7 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 									<span className="text-sm">
 										{formatDistanceToNow(new Date(rule.updated_at), {
 											addSuffix: true,
+											locale: dateFnsLocale(i18n.language),
 										})}
 									</span>
 								</div>
