@@ -391,9 +391,17 @@ function translationOptions(argument) {
 	};
 }
 
-function namespaceFromType(typeNode) {
-	if (!typeNode || !ts.isTypeReferenceNode(typeNode) || typeNode.typeName.getText() !== "TFunction") {
+function namespaceFromType(typeNode, typeAliases = new Map(), seen = new Set()) {
+	if (!typeNode || !ts.isTypeReferenceNode(typeNode)) {
 		return undefined;
+	}
+	const typeName = typeNode.typeName.getText();
+	if (typeName !== "TFunction") {
+		if (seen.has(typeName) || !typeAliases.has(typeName)) {
+			return null;
+		}
+		seen.add(typeName);
+		return namespaceFromType(typeAliases.get(typeName), typeAliases, seen);
 	}
 	const namespaceArgument = typeNode.typeArguments?.[0];
 	if (!namespaceArgument) {
@@ -499,6 +507,12 @@ function sharesBehavior(left, right) {
 
 export function analyzeTranslationCalls(sourceFile) {
 	const entries = [];
+	const typeAliases = new Map();
+	for (const statement of sourceFile.statements) {
+		if (ts.isTypeAliasDeclaration(statement)) {
+			typeAliases.set(statement.name.text, statement.type);
+		}
+	}
 
 	function addEntry(node, namespace, keyExpression, optionsNode, kind, optionOverrides = {}, keyPrefix = null) {
 		const location = sourceLocation(sourceFile, node);
@@ -532,7 +546,7 @@ export function analyzeTranslationCalls(sourceFile) {
 			const functionScope = makeScope(scope);
 			for (const parameter of node.parameters) {
 				if (ts.isIdentifier(parameter.name)) {
-					const namespace = namespaceFromType(parameter.type);
+					const namespace = namespaceFromType(parameter.type, typeAliases);
 					if (namespace !== undefined) {
 						functionScope.aliases.set(parameter.name.text, { namespace, keyPrefix: null });
 					}

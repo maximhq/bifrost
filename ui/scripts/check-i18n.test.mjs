@@ -346,6 +346,18 @@ describe("analyzeTranslationCalls", () => {
 		expect(entries.map((entry) => entry.key)).toEqual(["enabled", "disabled"]);
 	});
 
+	it("resolves local TFunction type aliases", () => {
+		const [entry] = analyzeTranslationCalls(
+			makeSourceFile(`
+				type ObservabilityT = TFunction<"observability">;
+				type RelayT = ObservabilityT;
+				function render(t: RelayT) { return t("labels.time"); }
+			`),
+		);
+		expect(entry).toEqual(expect.objectContaining({ namespace: "observability", key: "labels.time" }));
+		expect(validateCall(entry, { observability: { labels: { time: "Time" } } })).toEqual([]);
+	});
+
 	it("reports an unresolved TFunction namespace instead of assuming common", () => {
 		const entries = analyzeTranslationCalls(makeSourceFile(`function render(t: TFunction<Namespace>) { return t("title"); }`));
 		expect(entries).toHaveLength(1);
