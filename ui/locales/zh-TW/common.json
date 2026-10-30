@@ -627,5 +627,6 @@
 		"unexpected": "發生非預期的錯誤",
 		"requestTimeout": "請求逾時",
 		"network": "網路錯誤"
-	}
+	},
+	"valueOrEnvVar": "{{value}} 或 {{env}}"
 }
