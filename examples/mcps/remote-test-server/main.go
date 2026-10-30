@@ -46,6 +46,10 @@ const (
 	// live upstream in environments that configure this fixture (the provider harness
 	// points its sse_mcp client here). Short enough not to trip the gateway's cap.
 	defaultInstructions = "Prefer echo for plain text; call add only with numeric operands."
+
+	// A 1x1 PNG and one silent sample of mono 8 kHz, 16-bit PCM WAV audio.
+	fixturePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+	fixtureWAV = "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA=="
 )
 
 func main() {
@@ -114,8 +118,36 @@ func chartTool() mcp.Tool {
 func chartHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	result := mcp.NewToolResultStructured(map[string]any{"points": 3}, "3 points")
 	// A 1x1 transparent PNG.
-	result.Content = append(result.Content, mcp.NewImageContent("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "image/png"))
+	result.Content = append(result.Content, mcp.NewImageContent(fixturePNG, "image/png"))
 	return result, nil
+}
+
+func captureMediaTool() mcp.Tool {
+	return mcp.NewTool(
+		"capture_media",
+		mcp.WithDescription("Return a deterministic image and audio capture with a structured title"),
+		mcp.WithBoolean("fail", mcp.Description("Return an error with the same media")),
+		mcp.WithOutputSchema[struct {
+			Title string `json:"title"`
+		}](),
+	)
+}
+
+func captureMediaHandler(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	fail, _ := req.GetArguments()["fail"].(bool)
+	text := "capture complete"
+	if fail {
+		text = "Error: capture media fixture failed"
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.NewTextContent(text),
+			mcp.NewImageContent(fixturePNG, "image/png"),
+			mcp.AudioContent{Type: "audio", Data: fixtureWAV, MIMEType: "audio/wav"},
+		},
+		StructuredContent: map[string]any{"title": "Fixture capture"},
+		IsError:           fail,
+	}, nil
 }
 
 // archiveHandler answers with a PDF, a zip and an SVG, so a gateway that sends only the media
@@ -156,6 +188,7 @@ func newMCPServer(instructions string) *server.MCPServer {
 
 	s.AddTool(chartTool(), chartHandler)
 	s.AddTool(mcp.NewTool("archive", mcp.WithDescription("Return a report, an archive, a text file and a diagram")), archiveHandler)
+	s.AddTool(captureMediaTool(), captureMediaHandler)
 
 	s.AddTool(mcp.NewTool(
 		"echo",
