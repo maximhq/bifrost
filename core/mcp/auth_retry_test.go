@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -1223,4 +1225,94 @@ func TestExecuteTool_AuthFailureRetry_Shared_ReconnectBudgetAloneIsNotAToolTimeo
 	if !errors.Is(err, ErrMCPToolCallFailed) {
 		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
 	}
+}
+
+// rotatingCredStore is a per-call credential store whose bearer a ForceRefresh
+// replaces with next, or, with refreshFails, cannot replace: the credential then
+// needs reauthorization, and resolving it returns reauth.
+type rotatingCredStore struct {
+	authRetryCredStore
+	mu           sync.Mutex
+	token, next  string
+	refreshFails bool
+	needsReauth  bool
+	reauth       error
+}
+
+// ConnectionHeaders returns the current bearer, or reauth once a refresh has failed.
+func (s *rotatingCredStore) ConnectionHeaders(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) (http.Header, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.needsReauth {
+		return nil, s.reauth
+	}
+	return http.Header{"Authorization": []string{"Bearer " + s.token}}, nil
+}
+
+// ForceRefresh rotates the bearer to next, or marks the credential as needing reauthorization.
+func (s *rotatingCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	s.forceRefreshCalls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshFails {
+		s.needsReauth = true
+		return errors.New("refresh token revoked")
+	}
+	s.token = s.next
+	return nil
+}
+
+// TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials: a per-user
+// token the upstream revoked before its stored expiry makes initialize answer
+// 401, before any tool runs. The connection refreshes the credential and dials
+// once more, so the call goes ahead. It used to fail with the 401 until the
+// stored expiry, since the refresh-and-retry only followed a failed tools/call.
+// When the refresh itself fails, the reauthorization the credential then needs
+// is returned at once, not the 401.
+func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testing.T) {
+	upstream := server.NewStreamableHTTPServer(server.NewMCPServer("rotating", "1.0.0", server.WithToolCapabilities(true)))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		upstream.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	newState := func() *schemas.MCPClientState {
+		config := &schemas.MCPClientConfig{
+			ID: "rotating-id", Name: "rotating", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypePerUserOauth,
+		}
+		return &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("a refresh that succeeds", func(t *testing.T) {
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", next: "fresh"}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		conn, release, err := m.AcquireClientConn(ctx, newState())
+		if err != nil {
+			t.Fatalf("AcquireClientConn: %v, want a connection on the refreshed token", err)
+		}
+		release()
+		if conn == nil {
+			t.Fatal("expected a connection")
+		}
+		if got := store.forceRefreshCalls.Load(); got != 1 {
+			t.Fatalf("ForceRefresh calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("a refresh that fails", func(t *testing.T) {
+		reauth := &schemas.MCPAuthRequiredError{MCPClientName: "rotating"}
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", refreshFails: true, reauth: reauth}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		_, _, err := m.AcquireClientConn(ctx, newState())
+		if !errors.Is(err, reauth) {
+			t.Fatalf("AcquireClientConn error = %v, want the reauthorization the credential now needs", err)
+		}
+	})
 }
