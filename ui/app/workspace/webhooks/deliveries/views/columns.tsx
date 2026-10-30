@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WEBHOOK_EVENTS } from "@/lib/types/webhooks";
 import { ColumnDef } from "@tanstack/react-table";
+import type { TFunction } from "i18next";
 import { format, formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, ChevronDown, ChevronRight, Loader2, RefreshCcw } from "lucide-react";
 
@@ -33,6 +34,7 @@ const idCell = (value: string | undefined, onCopy: (value: string) => void, test
 };
 
 interface CreateColumnsOptions {
+	t: TFunction<"governance">;
 	/** Endpoint id → display name, for the cross-endpoint view. */
 	endpointNames: Map<string, string>;
 	expandedIds: Set<string>;
@@ -46,6 +48,7 @@ interface CreateColumnsOptions {
 }
 
 export function createColumns({
+	t,
 	endpointNames,
 	expandedIds,
 	onToggleExpanded,
@@ -73,7 +76,7 @@ export function createColumns({
 							e.stopPropagation();
 							onToggleExpanded(row.original.webhookId);
 						}}
-						aria-label={expanded ? "Collapse sends" : "Expand sends"}
+						aria-label={expanded ? t("webhooks.deliveries.columns.collapseSends") : t("webhooks.deliveries.columns.expandSends")}
 						data-testid={`webhook-delivery-expand-${row.original.webhookId}`}
 					>
 						{expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
@@ -83,7 +86,7 @@ export function createColumns({
 		},
 		{
 			id: "time",
-			header: "Time",
+			header: t("webhooks.details.time"),
 			size: 140,
 			cell: ({ row }) => {
 				const timestamp = row.original.latest?.created_at;
@@ -101,7 +104,7 @@ export function createColumns({
 		},
 		{
 			id: "webhook",
-			header: "Webhook",
+			header: t("webhooks.deliveries.columns.webhook"),
 			size: 180,
 			cell: ({ row }) => {
 				const endpointId = row.original.latest?.endpoint_id;
@@ -118,13 +121,13 @@ export function createColumns({
 		},
 		{
 			id: "delivery_id",
-			header: "Delivery ID",
+			header: t("webhooks.deliveries.columns.deliveryId"),
 			size: 110,
 			cell: ({ row }) => idCell(row.original.webhookId, onCopy, `webhook-delivery-id-${row.original.webhookId}`),
 		},
 		{
 			id: "request_id",
-			header: "Request ID",
+			header: t("webhooks.details.requestId"),
 			size: 110,
 			cell: ({ row }) => {
 				const requestId = row.original.latest?.request_id;
@@ -147,14 +150,14 @@ export function createColumns({
 								<ArrowUpRight className="size-3 opacity-60 transition-opacity group-hover/request:opacity-100" />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent className="font-mono">{requestId} — open in logs</TooltipContent>
+						<TooltipContent className="font-mono">{t("webhooks.deliveries.columns.openInLogs", { id: requestId })}</TooltipContent>
 					</Tooltip>
 				);
 			},
 		},
 		{
 			id: "event",
-			header: "Event",
+			header: t("webhooks.details.event"),
 			size: 170,
 			cell: ({ row }) => {
 				const event = row.original.latest?.event;
@@ -168,7 +171,7 @@ export function createColumns({
 		},
 		{
 			id: "status",
-			header: "Status",
+			header: t("webhooks.details.status"),
 			size: 190,
 			cell: ({ row }) => {
 				const latest = row.original.latest;
@@ -178,7 +181,7 @@ export function createColumns({
 						{outcomeBadge(latest)}
 						{row.original.sends.length > 1 && (
 							<Badge variant="outline" className="text-muted-foreground font-normal">
-								{row.original.sends.length} sends
+								{t("webhooks.details.sends", { count: row.original.sends.length })}
 							</Badge>
 						)}
 					</div>
@@ -187,7 +190,7 @@ export function createColumns({
 		},
 		{
 			id: "responses",
-			header: "Responses",
+			header: t("webhooks.details.responses"),
 			size: 200,
 			cell: ({ row }) => {
 				const attempts = row.original.latestSend?.attempts;
@@ -206,12 +209,12 @@ export function createColumns({
 				// A delivery still working through its own retries would collide
 				// with a manual replay, so it stays disabled until it settles.
 				const reason = !canManage
-					? "You do not have permission to redeliver"
+					? t("webhooks.deliveries.columns.noPermission")
 					: redelivering
-						? "Redelivering..."
+						? t("webhooks.details.redelivering")
 						: latest.outcome === "retryable_failure"
-							? "Still retrying automatically - redelivery is available once it settles"
-							: "Redeliver";
+							? t("webhooks.details.redeliverRetrying")
+							: t("webhooks.details.redeliver");
 				return (
 					<Tooltip>
 						{/* A disabled button emits no pointer events, so the trigger wraps it -
@@ -227,7 +230,7 @@ export function createColumns({
 										e.stopPropagation();
 										onRedeliver(row.original);
 									}}
-									aria-label="Redeliver"
+									aria-label={t("webhooks.details.redeliver")}
 									data-testid={`webhook-delivery-redeliver-${row.original.webhookId}`}
 								>
 									{redelivering ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCcw className="size-3.5" />}
@@ -242,14 +245,14 @@ export function createColumns({
 	];
 }
 
-export const WEBHOOK_DELIVERY_COLUMN_LABELS: Record<string, string> = {
+export const getWebhookDeliveryColumnLabels = (t: TFunction<"governance">): Record<string, string> => ({
 	expand: "",
-	time: "Time",
-	webhook: "Webhook",
-	delivery_id: "Delivery ID",
-	request_id: "Request ID",
-	event: "Event",
-	status: "Status",
-	responses: "Responses",
-	actions: "Actions",
-};
+	time: t("webhooks.details.time"),
+	webhook: t("webhooks.deliveries.columns.webhook"),
+	delivery_id: t("webhooks.deliveries.columns.deliveryId"),
+	request_id: t("webhooks.details.requestId"),
+	event: t("webhooks.details.event"),
+	status: t("webhooks.details.status"),
+	responses: t("webhooks.details.responses"),
+	actions: t("webhooks.deliveries.columns.actions"),
+});

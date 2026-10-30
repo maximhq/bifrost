@@ -6,6 +6,7 @@ import type { LogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { Check, Loader2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { buildFallbackChain, fallbackChainOutcome, type FallbackChainOutcome } from "../sheets/logDetailView.utils";
 
 // The search endpoint's page cap. The server takes any number of fallbacks, so
@@ -117,6 +118,7 @@ interface FallbackChainProps {
 // Header strip: says in one line what the whole request did, and lets the
 // reader hop between attempts without leaving the sheet.
 export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackChainProps) {
+	const { t } = useTranslation("observability");
 	const outcome = fallbackChainOutcome(chain);
 	const last = chain[chain.length - 1];
 	const position = chain.findIndex((e) => e.id === currentId) + 1;
@@ -143,7 +145,7 @@ export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackCha
 						onClick={() => onOpenLog(last.id)}
 						data-testid="logdetails-fallback-open-final"
 					>
-						Open final attempt
+						{t("logs.fallbackChain.openFinalAttempt")}
 					</button>
 				)}
 			</div>
@@ -192,6 +194,7 @@ export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackCha
 // Routing tab block: one row per attempt with the facts that explain why the
 // next one ran. A row opens that attempt on click.
 export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackChainProps) {
+	const { t } = useTranslation("observability");
 	const outcome = fallbackChainOutcome(chain);
 	const totalMs = chain.reduce((sum, e) => sum + (e.latency ?? 0), 0);
 	const startMs = new Date(chain[0].timestamp).getTime();
@@ -199,7 +202,7 @@ export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackC
 		<div className="border-border rounded-sm border" data-testid="logdetails-fallback-timeline">
 			<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b px-4 py-3">
 				<div className="flex items-center gap-2">
-					<div className="text-sm font-medium">Fallback chain</div>
+					<div className="text-sm font-medium">{t("logs.fallbackChain.title")}</div>
 					<span className={cn("rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase", outcomeCopy[outcome].className)}>
 						{outcomeCopy[outcome].text}
 					</span>
@@ -270,7 +273,7 @@ export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackC
 												{entry.status === "processing" && <Loader2 className="h-3 w-3 animate-spin text-blue-500" />}
 												{isCurrent && (
 													<span className="bg-foreground/10 text-foreground rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase">
-														Viewing
+														{t("logs.fallbackChain.viewing")}
 													</span>
 												)}
 											</div>

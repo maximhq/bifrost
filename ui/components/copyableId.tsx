@@ -2,6 +2,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { cn } from "@/lib/utils";
 import { Check, Copy } from "lucide-react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 
 interface CopyableIdProps {
@@ -12,7 +13,7 @@ interface CopyableIdProps {
 	testId?: string;
 }
 
-const ENTITY_NOUN_KEYS: Record<string, string> = {
+const ENTITY_NOUN_KEYS: Partial<Record<string, ParseKeys<"common">>> = {
 	Team: "entities.team",
 	Customer: "entities.customer",
 	"Virtual key": "entities.virtualKey",

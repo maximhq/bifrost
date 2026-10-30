@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/utils/csv";
 import { Download, Loader2, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { formatRelayActiveFiltersSummary, normalizeRelayExportFilters, relayLogsToCSV } from "./relayLogsExportDialog.utils";
 
@@ -39,6 +40,7 @@ export function RelayLogsExportDialog({
 	sortBy = "timestamp",
 	order = "desc",
 }: RelayLogsExportDialogProps) {
+	const { t } = useTranslation("observability");
 	const [exportScope, setExportScope] = useState<RelayLogsExportScope>("current_page");
 	const [exportMaxLimit, setExportMaxLimit] = useState("");
 	const [isExporting, setIsExporting] = useState(false);
@@ -72,7 +74,7 @@ export function RelayLogsExportDialog({
 			exportRunRef.current++;
 			setIsExporting(false);
 			setProgress(null);
-			toast.info("Export cancelled", { id: "relay-logs-export-cancel" });
+			toast.info(t("logs.export.toastCancelled"), { id: "relay-logs-export-cancel" });
 		} else {
 			onOpenChange(false);
 		}
@@ -81,23 +83,23 @@ export function RelayLogsExportDialog({
 	const handleExport = async () => {
 		if (exportScope === "current_page") {
 			if (currentPageLogs.length === 0) {
-				toast.info("No relay logs on the current page to export");
+				toast.info(t("relayLogs.export.toastNoLogsOnPage"));
 				return;
 			}
 			downloadCSV(relayLogsToCSV(currentPageLogs), "relay-logs");
-			toast.success(`Exported ${currentPageLogs.length} relay logs`);
+			toast.success(t("relayLogs.export.toastExported", { count: currentPageLogs.length }));
 			onOpenChange(false);
 			return;
 		}
 
 		const userCap = exportMaxLimit ? Number(exportMaxLimit) : undefined;
 		if (userCap !== undefined && (!Number.isInteger(userCap) || userCap < 1)) {
-			toast.error("Max entries must be a whole number of at least 1");
+			toast.error(t("logs.export.toastInvalidMax"));
 			return;
 		}
 		const targetTotal = calculateExportTargetCount(totalLogs, userCap);
 		if (targetTotal === 0 || totalLogs === 0) {
-			toast.info("No relay logs matched the selected filters to export");
+			toast.info(t("relayLogs.export.toastNoMatch"));
 			return;
 		}
 
@@ -123,20 +125,20 @@ export function RelayLogsExportDialog({
 			});
 
 			if (isRunCancelled()) {
-				toast.info("Export cancelled", { id: "relay-logs-export-cancel" });
+				toast.info(t("logs.export.toastCancelled"), { id: "relay-logs-export-cancel" });
 				return;
 			}
 			if (collectedLogs.length === 0) {
-				toast.info("No relay logs matched the selected filters to export");
+				toast.info(t("relayLogs.export.toastNoMatch"));
 				onOpenChange(false);
 				return;
 			}
 
 			downloadCSV(relayLogsToCSV(collectedLogs), "relay-logs");
-			toast.success(`Exported ${collectedLogs.length} relay logs`);
+			toast.success(t("relayLogs.export.toastExported", { count: collectedLogs.length }));
 			onOpenChange(false);
 		} catch (error) {
-			if (!isRunCancelled()) toast.error(`Export failed: ${getErrorMessage(error)}`);
+			if (!isRunCancelled()) toast.error(t("logs.export.toastFailed", { error: getErrorMessage(error) }));
 		} finally {
 			if (!isRunCancelled()) {
 				setIsExporting(false);
@@ -158,13 +160,13 @@ export function RelayLogsExportDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="sm:max-w-[425px]" data-testid="relay-logs-export-dialog">
 				<DialogHeader className="pb-0">
-					<DialogTitle>Export Relay Logs</DialogTitle>
-					<DialogDescription>Download relay logs as CSV with current filters and sorting applied.</DialogDescription>
+					<DialogTitle>{t("relayLogs.export.title")}</DialogTitle>
+					<DialogDescription>{t("relayLogs.export.description")}</DialogDescription>
 				</DialogHeader>
 
 				<div className="space-y-4">
 					<div className="space-y-2">
-						<Label className="text-sm">Export scope</Label>
+						<Label className="text-sm">{t("logs.export.scope")}</Label>
 						<div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="relay-logs-export-scope">
 							<button
 								type="button"
@@ -173,8 +175,8 @@ export function RelayLogsExportDialog({
 								onClick={() => setExportScope("current_page")}
 								className={scopeButtonClass(exportScope === "current_page")}
 							>
-								<span className="font-medium">Current page</span>
-								<span className="text-muted-foreground text-xs">{currentPageLogs.length} entries</span>
+								<span className="font-medium">{t("logs.export.currentPage")}</span>
+								<span className="text-muted-foreground text-xs">{t("logs.export.entriesCount", { count: currentPageLogs.length })}</span>
 							</button>
 
 							<button
@@ -184,8 +186,8 @@ export function RelayLogsExportDialog({
 								onClick={() => setExportScope("all")}
 								className={scopeButtonClass(exportScope === "all")}
 							>
-								<span className="font-medium">All entries</span>
-								<span className="text-muted-foreground text-xs">{totalLogs.toLocaleString()} total</span>
+								<span className="font-medium">{t("logs.export.allEntries")}</span>
+								<span className="text-muted-foreground text-xs">{t("logs.export.totalCount", { total: totalLogs.toLocaleString() })}</span>
 							</button>
 						</div>
 					</div>
@@ -193,8 +195,10 @@ export function RelayLogsExportDialog({
 					{exportScope === "all" && (
 						<div className="space-y-2">
 							<Label htmlFor="relay-logs-export-max-limit" className="text-sm">
-								Max entries{" "}
-								<span className="text-muted-foreground font-normal">(optional, up to {DEFAULT_MAX_EXPORT_LIMIT.toLocaleString()})</span>
+								{t("logs.export.maxEntries")}{" "}
+								<span className="text-muted-foreground font-normal">
+								{t("relayLogs.export.maxEntriesHint", { max: DEFAULT_MAX_EXPORT_LIMIT.toLocaleString() })}
+								</span>
 							</Label>
 							<Input
 								id="relay-logs-export-max-limit"
@@ -203,7 +207,9 @@ export function RelayLogsExportDialog({
 								min="1"
 								max={DEFAULT_MAX_EXPORT_LIMIT}
 								disabled={isExporting}
-								placeholder={`Default ${Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString()}`}
+								placeholder={t("logs.export.defaultMax", {
+									value: Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString(),
+								})}
 								value={exportMaxLimit}
 								onChange={(e) => setExportMaxLimit(e.target.value)}
 							/>
@@ -211,19 +217,19 @@ export function RelayLogsExportDialog({
 					)}
 
 					{activeFilters.length > 0 && (
-						<p className="text-muted-foreground text-xs leading-relaxed">Filters applied: {activeFilters.join(", ")}</p>
+						<p className="text-muted-foreground text-xs leading-relaxed">{t("logs.export.filtersApplied", { filters: activeFilters.join(", ") })}</p>
 					)}
 
 					<div className="text-muted-foreground flex items-center gap-2">
 						<ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-						<p className="text-xs">Request and response bodies and headers are excluded from the export.</p>
+						<p className="text-xs">{t("relayLogs.export.bodiesExcluded")}</p>
 					</div>
 
 					{isExporting && progress && (
 						<div className="space-y-1.5 pt-1" data-testid="relay-logs-export-progress">
 							<Progress value={progress.total > 0 ? (progress.current / progress.total) * 100 : 0} className="h-1.5" />
 							<p className="text-muted-foreground text-center text-xs">
-								Exporting {progress.current.toLocaleString()} of {progress.total.toLocaleString()} logs...
+								{t("logs.export.progress", { current: progress.current.toLocaleString(), total: progress.total.toLocaleString() })}
 							</p>
 						</div>
 					)}
@@ -234,10 +240,10 @@ export function RelayLogsExportDialog({
 						{isExporting ? (
 							<>
 								<X className="mr-1 h-3.5 w-3.5" />
-								Cancel Export
+								{t("logs.export.cancelExport")}
 							</>
 						) : (
-							"Cancel"
+							t("labels.cancel")
 						)}
 					</Button>
 
@@ -245,12 +251,12 @@ export function RelayLogsExportDialog({
 						{isExporting ? (
 							<>
 								<Loader2 className="h-4 w-4 animate-spin" />
-								Exporting...
+								{t("logs.export.exporting")}
 							</>
 						) : (
 							<>
 								<Download className="h-4 w-4" />
-								Export CSV
+								{t("logs.export.exportCsv")}
 							</>
 						)}
 					</Button>

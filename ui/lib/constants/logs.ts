@@ -385,9 +385,9 @@ export const RequestTypeLabels = {
 	live_sideband: "Live Sideband",
 } as const;
 
-export function getRequestTypeLabel(type: string, t: TFunction): string {
+export function getRequestTypeLabel(type: string, t: TFunction<"observability">): string {
 	const label = RequestTypeLabels[type as keyof typeof RequestTypeLabels];
-	return label ? t(`requestTypes.${type.replaceAll(".", "_")}`, { ns: "observability", defaultValue: label }) : type;
+	return label ? t(`requestTypes.${type.replaceAll(".", "_")}`, { defaultValue: label }) : type;
 }
 
 export const RequestTypeColors = {
@@ -495,9 +495,9 @@ export const RoutingEngineUsedLabels = {
 	core: "Core",
 } as const;
 
-export function getRoutingEngineLabel(engine: string, t: TFunction): string {
+export function getRoutingEngineLabel(engine: string, t: TFunction<"observability">): string {
 	const label = RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels];
-	return label ? t(`routingEngineLabels.${engine.replaceAll("-", "_")}`, { ns: "observability", defaultValue: label }) : engine;
+	return label ? t(`routingEngineLabels.${engine.replaceAll("-", "_")}`, { defaultValue: label }) : engine;
 }
 
 export const RoutingEngineUsedColors = {

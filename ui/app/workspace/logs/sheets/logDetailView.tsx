@@ -30,6 +30,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { OverheadBreakdown } from "@/components/logs/overheadBreakdown";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
@@ -290,8 +291,8 @@ const formatToolChoice = (value: unknown): string => {
 // sets them, and a 0 is a real, useful count — e.g. "no failures yet"), so they
 // always render. The remaining states are Anthropic-specific and simply absent
 // for other providers, so those are dropped when not reported.
-const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
-	const optional: [string, number | undefined][] = [
+const batchRequestStates = (counts: BatchRequestCounts): [ParseKeys<"observability">, number][] => {
+	const optional: [ParseKeys<"observability">, number | undefined][] = [
 		["logs.detail.batchStates.succeeded", counts.succeeded],
 		["logs.detail.batchStates.expired", counts.expired],
 		["logs.detail.batchStates.canceled", counts.canceled],
@@ -300,7 +301,7 @@ const batchRequestStates = (counts: BatchRequestCounts): [string, number][] => {
 	return [
 		["logs.detail.batchStates.completed", counts.completed],
 		["logs.detail.batchStates.failed", counts.failed],
-		...optional.filter((entry): entry is [string, number] => Boolean(entry[1])),
+		...optional.filter((entry): entry is [ParseKeys<"observability">, number] => Boolean(entry[1])),
 	];
 };
 
@@ -326,7 +327,7 @@ const getInputTokensTooltip = (usage?: LLMUsage): string | undefined => {
 	return lines.join("\n");
 };
 
-const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
+const INPUT_COST_LABELS: [keyof InputCostDetails, ParseKeys<"observability">][] = [
 	["text_cost", "logs.detail.costDetails.text"],
 	["audio_cost", "logs.detail.costDetails.audio"],
 	["image_cost", "logs.detail.costDetails.image"],
@@ -335,7 +336,7 @@ const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
 	["request_cost", "logs.detail.costDetails.perRequestFee"],
 ];
 
-const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
+const OUTPUT_COST_LABELS: [keyof OutputCostDetails, ParseKeys<"observability">][] = [
 	["text_cost", "logs.detail.costDetails.text"],
 	["audio_cost", "logs.detail.costDetails.audio"],
 	["image_cost", "logs.detail.costDetails.image"],
@@ -347,7 +348,7 @@ const OUTPUT_COST_LABELS: [keyof OutputCostDetails, string][] = [
 // Lists the non-zero cost categories; undefined when there are none or text is the only one.
 const getCostDetailsTooltip = <T extends InputCostDetails | OutputCostDetails>(
 	details: T | undefined,
-	labels: [keyof T, string][],
+	labels: [keyof T, ParseKeys<"observability">][],
 ): string | undefined => {
 	if (!details) return undefined;
 	const set = labels.filter(([key]) => ((details[key] as number | undefined) ?? 0) > 0);
@@ -2762,7 +2763,7 @@ export function LogDetailView({
 											["assistant", "logs.detail.roles.assistant"],
 											["tool", "mcpLogs.detail.tool"],
 											["reasoning", "logs.detail.roles.reasoning"],
-										] as [MessageRole, string][]
+										] as [MessageRole, ParseKeys<"observability">][]
 									).map(([role, label]) => (
 										<DropdownMenuCheckboxItem
 											key={role}

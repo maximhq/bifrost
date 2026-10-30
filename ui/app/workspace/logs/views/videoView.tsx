@@ -218,7 +218,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 											<img
 												className="max-h-96 w-full rounded-sm border object-contain"
 												src={src}
-												alt="Video output frame"
+												alt={t("logs.video.outputFrameAlt")}
 												data-testid="video-view-output-image"
 											/>
 											{image.url && (
@@ -229,7 +229,7 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 													data-testid="video-view-open-image-url-link"
 													className="text-primary inline-flex items-center gap-1 text-xs underline"
 												>
-													Open image URL
+													{t("logs.video.openImageUrl")}
 													<ExternalLink className="h-3 w-3" />
 												</a>
 											)}

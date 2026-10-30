@@ -1,5 +1,6 @@
 import type { MCPCostHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { CHART_COLORS, formatCost, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
 import { barShape } from "./barShape";
@@ -15,6 +16,7 @@ interface MCPCostChartProps {
 }
 
 function CustomTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -27,7 +29,7 @@ function CustomTooltip({ active, payload }: any) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cost }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Cost</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cost")}</span>
 					</span>
 					<span className="font-medium">{formatCost(data.total_cost)}</span>
 				</div>

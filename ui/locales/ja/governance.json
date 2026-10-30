@@ -51,7 +51,15 @@
 			"updateAction": "顧客を更新",
 			"createAction": "顧客を作成",
 			"calendarAlignHelp": "カレンダー整合を有効にすると、この顧客の予算使用量が <bold0>$0.00</bold0> に、トークン/リクエストのレート制限カウンターが <bold1>0</bold1> にリセットされ、各リセット日が現在の期間の開始（例: 日・週・月・年の開始）に揃えられます。使用量のリセットは元に戻せませんが、カレンダー整合は後からオフにできます。保存時に反映されます。"
-		}
+		},
+		"detail": {
+			"title": "顧客の詳細",
+			"description": "この顧客の使用状況の詳細です。",
+			"info": "情報",
+			"name": "名前",
+			"noBudgets": "予算が設定されていません"
+		},
+		"actionsAria": "顧客 {{name}} の操作"
 	},
 	"teams": {
 		"title": "チーム",
@@ -98,10 +106,13 @@
 			"updateAction": "チームを更新",
 			"createAction": "チームを作成",
 			"calendarAlignHelp": "カレンダー整合を有効にすると、このチームの予算使用量が <bold0>$0.00</bold0> に、トークン/リクエストのレート制限カウンターが <bold1>0</bold1> にリセットされ、各リセット日が現在の期間の開始（例: 日・週・月・年の開始）に揃えられます。使用量のリセットは元に戻せませんが、カレンダー整合は後からオフにできます。保存時に反映されます。"
-		}
+		},
+		"actionsAria": "{{name}} のチーム操作"
 	},
 	"virtualKeys": {
-		"loadFailed": "仮想キーの読み込みに失敗しました: {{message}}"
+		"loadFailed": "仮想キーの読み込みに失敗しました: {{message}}",
+		"metadataFilterInvalid": "このリンクのメタデータフィルターのキーが無効なため、適用されませんでした。キーには 1〜256 文字の英字、数字、「.」、「_」、「-」を使用できます。",
+		"clearFilter": "フィルターをクリア"
 	},
 	"plugins": {
 		"title": "プラグイン",
@@ -353,7 +364,26 @@
 			"filterEvent": "イベント",
 			"filterResponseStatus": "レスポンスステータス",
 			"filterWebhooks": "Webhook",
-			"searchWebhooks": "webhook を検索…"
+			"searchWebhooks": "webhook を検索…",
+			"table": {
+				"waiting": "新しい配信を待機中...",
+				"empty": "配信が見つかりません。フィルターや期間を調整してみてください。",
+				"range": "{{total}} 件中 {{from}}-{{to}} 件の配信"
+			},
+			"header": {
+				"searchByDeliveryId": "配信 ID で検索",
+				"switchLookup": "リクエスト ID と配信 ID の検索を切り替え"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "配信 ID",
+				"actions": "操作",
+				"collapseSends": "送信を折りたたむ",
+				"expandSends": "送信を展開",
+				"noPermission": "再配信する権限がありません",
+				"openInLogs": "{{id}} — ログで開く"
+			},
+			"copyRequestId": "リクエスト ID {{id}} をコピー"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "可視性向上のためユーザーランキングをアンロック"
 	},
 	"promptDeployments": {
-		"unlockTitle": "プロンプトのバージョン管理と A/B テストのためプロンプトデプロイをアンロック。"
+		"unlockTitle": "プロンプトのバージョン管理と A/B テストのためプロンプトデプロイをアンロック。",
+		"accordionTitle": "デプロイメント"
 	},
 	"connectorsUnlock": {
 		"splunk": "オブザーバビリティ向上のためネイティブ Splunk データ取り込みをアンロック",
@@ -389,7 +420,8 @@
 		"datadog": "オブザーバビリティ向上のためネイティブ Datadog データ取り込みをアンロック",
 		"bigquery": "分析のためネイティブ BigQuery データ取り込みをアンロック",
 		"kafka": "リアルタイムオブザーバビリティのためネイティブ Kafka ログストリームをアンロック",
-		"kafkaDescription": "この機能は Bifrost エンタープライズライセンスの一部です。完了したリクエストトレースを JSON として Kafka トピックへストリームし、リアルタイム分析、アラート、下流処理に使います。"
+		"kafkaDescription": "この機能は Bifrost エンタープライズライセンスの一部です。完了したリクエストトレースを JSON として Kafka トピックへストリームし、リアルタイム分析、アラート、下流処理に使います。",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "パフォーマンス向上のためアクセスプロファイルをアンロック",
@@ -439,7 +471,9 @@
 		"reset": "リセット",
 		"addBudgetButton": "予算を追加",
 		"maximumSpend": "最大支出（USD）",
-		"noBudgetLimits": "予算の上限は設定されていません。"
+		"noBudgetLimits": "予算の上限は設定されていません。",
+		"removeBudgetAria": "予算 {{number}} を削除",
+		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。"
 	},
 	"filters": {
 		"filters": "フィルター",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} パターン",
 		"removeAria": "{{name}} を削除",
 		"noneLeftClick": "設定できるプロバイダーは残っていません。クリックして追加"
+	},
+	"orgChart": {
+		"unlockTitle": "組織図をアンロック",
+		"unlockDescription": "事業部、チーム、ユーザーをまたぐ予算、支出、モデル、ツールを 1 つのツリーで確認できます。この機能は Bifrost エンタープライズライセンスの一部です。"
+	},
+	"usage": {
+		"budgetAria": "予算使用量",
+		"tokenAria": "トークン使用量",
+		"requestAria": "リクエスト使用量",
+		"resets": "{{period}}にリセット",
+		"tokens": "{{value}} トークン",
+		"req": "{{value}} リクエスト",
+		"tokenTooltip": "{{used}} / {{max}} トークン",
+		"requestTooltip": "{{used}} / {{max}} リクエスト",
+		"keyCount_one": "{{count}} 個のキー",
+		"keyCount_other": "{{count}} 個のキー"
+	},
+	"budgetOverride": {
+		"updated": "予算の上書きを更新しました",
+		"added": "予算の上書きを追加しました",
+		"removed": "予算の上書きを削除しました",
+		"invalidInput": "入力が無効です",
+		"editOverride": "上書きを編集",
+		"addOverride": "上書きを追加",
+		"editTitle": "予算の上書きを編集",
+		"addTitle": "予算の上書きを追加",
+		"description": "基本の {{budget}} 予算を変更せずに、一時的に支出枠を追加します。",
+		"additionalBudget": "追加予算",
+		"duration": "期間",
+		"modeCycles": "指定したリセットサイクル数のあいだ",
+		"modeForever": "削除するまで",
+		"resetCycles": "リセットサイクル数",
+		"cycleHint": "現在のリセットサイクルが 1 サイクル目として数えられます。",
+		"validUntil": "<b0>{{date}}</b0> まで有効",
+		"currentEffectiveLimit": "現在の有効上限: <b0>{{limit}}</b0>",
+		"removeOverride": "上書きを削除",
+		"updateOverride": "上書きを更新",
+		"managerDescription": "基本上限を変更せずに、予算に一時的な支出枠を追加します。",
+		"rowActive": "+{{amount}} 上書き · 有効 {{effective}}",
+		"rowBase": "基本 {{amount}}",
+		"edit": "編集",
+		"remove": "削除",
+		"update": "更新",
+		"add": "追加"
 	}
 }

@@ -14,6 +14,7 @@ import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import { Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
@@ -317,7 +318,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 	);
 }
 
-function formatExpiry(iso: string, t: (key: string, options?: { count?: number }) => string): string {
+function formatExpiry(iso: string, t: TFunction<"login">): string {
 	const ts = new Date(iso).getTime();
 	if (Number.isNaN(ts)) return t("consent.soon");
 	try {
@@ -353,9 +354,7 @@ function RedirectToSignIn({ loginHref }: { loginHref: string }) {
 		<Shell>
 			<div className="text-center">
 				<h1 className="text-xl font-semibold tracking-tight">{t("consent.signInToContinue")}</h1>
-				<p className="text-muted-foreground mt-2 text-sm">
-					{t("consent.signInRequiredBody")}
-				</p>
+				<p className="text-muted-foreground mt-2 text-sm">{t("consent.signInRedirectBody")}</p>
 				<Button asChild className="mt-6 w-full">
 					<a href={loginHref} data-testid="oauth-consent-signin-required-link">
 						<LogIn className="mr-2 size-4" />

@@ -48,10 +48,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
+import type { ParseKeys } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { formatFileSize } from "./helpers";
 
-const FILE_SOURCE_OPTIONS = [
+const FILE_SOURCE_OPTIONS: { value: string; labelKey: ParseKeys<"config"> }[] = [
 	{ value: "text", labelKey: "skillsRepo.viaText" },
 	{ value: "url", labelKey: "skillsRepo.viaUrl" },
 	{ value: "dataurl", labelKey: "skillsRepo.viaDataUrl" },
