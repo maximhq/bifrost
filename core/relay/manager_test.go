@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,7 @@ type fakePipeline struct {
 	postErr   []*schemas.BifrostError
 	deny      *schemas.BifrostError
 	denyAfter time.Duration                 // how long the refusing pre-hook takes
+	preDelay  time.Duration                 // how long an admitting pre-hook takes
 	recover   *schemas.BifrostRelayResponse // replaces an error in the post-hook
 	drop      bool                          // the post-hook clears the response
 }
@@ -46,6 +48,7 @@ func (f *fakePipeline) RunRelayPreHooks(_ *schemas.BifrostContext, req *schemas.
 		time.Sleep(f.denyAfter)
 		return req, &schemas.RelayPluginShortCircuit{Error: f.deny}, 1
 	}
+	time.Sleep(f.preDelay)
 	return req, nil, 1
 }
 
@@ -179,6 +182,204 @@ func TestRelayProxyConfigFollowsProviderRule(t *testing.T) {
 			}
 		})
 	}
+}
+
+// spanRecorder records the attributes and end status of every span, by name; the root span is
+// "root", which is what the context's stamps (upstream latency, stream overhead) write to.
+type spanRecorder struct {
+	schemas.NoOpTracer
+	mu     sync.Mutex
+	attrs  map[string]map[string]any
+	status map[string]schemas.SpanStatus
+}
+
+func newSpanRecorder() *spanRecorder {
+	return &spanRecorder{attrs: map[string]map[string]any{}, status: map[string]schemas.SpanStatus{}}
+}
+
+func (r *spanRecorder) StartSpan(ctx context.Context, name string, _ schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	return ctx, name
+}
+
+func (r *spanRecorder) GetSpanHandleByID(_ string, spanID *string) schemas.SpanHandle {
+	if spanID == nil {
+		return "root"
+	}
+	return *spanID
+}
+
+func (r *spanRecorder) SetAttribute(h schemas.SpanHandle, key string, value any) {
+	name, _ := h.(string)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.attrs[name] == nil {
+		r.attrs[name] = map[string]any{}
+	}
+	r.attrs[name][key] = value
+}
+
+func (r *spanRecorder) EndSpan(h schemas.SpanHandle, status schemas.SpanStatus, _ string) {
+	name, _ := h.(string)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status[name] = status
+}
+
+func (r *spanRecorder) attr(span, key string) any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attrs[span][key]
+}
+
+func tracedCtx(t *testing.T, rec *spanRecorder) *schemas.BifrostContext {
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(rec))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-relay")
+	return ctx
+}
+
+// The last bytes of a reply are returned before EOF, never together with it, and the post-hooks
+// run only once the reader has taken them; a reader that closes before reading EOF ends the stream
+// as cancelled. (The gateway reads ahead of its caller, so this is about the reader, not the caller.)
+func TestStreamReturnsLastBytesBeforeEOF(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Length", "15")
+		_, _ = io.WriteString(w, "data: {\"a\":1}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := bearerConfig("last", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}}
+
+	m, pipeline := newTestManager(t, cfg)
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "last", Method: "POST", Path: "/s", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	require.NotNil(t, res.Stream)
+	buf := make([]byte, 1024)
+	n, err := res.Stream.Read(buf)
+	require.NoError(t, err, "the last bytes come without EOF")
+	require.Equal(t, 15, n)
+	require.Empty(t, pipeline.post, "the post-hooks wait until the reader asks for more after the last bytes")
+	n, err = res.Stream.Read(buf)
+	require.Equal(t, io.EOF, err)
+	require.Zero(t, n)
+	require.Len(t, pipeline.post, 1)
+	require.Nil(t, pipeline.postErr[0])
+	require.NoError(t, res.Stream.Close())
+
+	// A reader that closes before reading EOF ends the stream as cancelled.
+	m2, pipeline2 := newTestManager(t, cfg)
+	res, bErr = m2.Serve(testCtx(t), Request{Endpoint: "last", Method: "POST", Path: "/s", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err = res.Stream.Read(buf)
+	require.NoError(t, err)
+	require.NoError(t, res.Stream.Close())
+	require.Len(t, pipeline2.postErr, 1)
+	require.NotNil(t, pipeline2.postErr[0])
+	assert.Equal(t, schemas.RequestCancelled, *pipeline2.postErr[0].Error.Type)
+}
+
+// An upstream error on a streaming route is streamed with the upstream's status, as a passthrough
+// stream is, and the post-hooks see the error status once it ends.
+func TestStreamedRouteStreamsUpstreamError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, "data: {\"error\":\"slow down\"}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := bearerConfig("err", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "err", Method: "POST", Path: "/s", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	require.NotNil(t, res.Stream, "an error reply on a streaming route is streamed")
+	assert.Equal(t, http.StatusTooManyRequests, res.Stream.StatusCode)
+	body, err := io.ReadAll(res.Stream)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "slow down")
+	require.NoError(t, res.Stream.Close())
+	require.Len(t, pipeline.post, 1)
+	assert.Equal(t, http.StatusTooManyRequests, pipeline.post[0].StatusCode)
+}
+
+// A relay that cannot reach its upstream fails as an LLM call does: 502 provider_connection_failed,
+// timed from the start of the call (the pre-hooks included), and named as a relay request.
+func TestRelayTransportFailureMatchesLLM(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	cfg := bearerConfig("dead", deadURL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/x"}}
+	m, pipeline := newTestManager(t, cfg)
+	pipeline.preDelay = 60 * time.Millisecond
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "dead", Method: "POST", Path: "/x", Headers: map[string]string{}})
+	require.NotNil(t, bErr)
+	assert.Equal(t, http.StatusBadGateway, bErr.EffectiveHTTPStatus())
+	assert.Equal(t, schemas.ErrorTypeProviderConnectionFailed, schemas.ClassifyErrorType(bErr, schemas.RelayRequest))
+	assert.Equal(t, schemas.RelayRequest, bErr.ExtraFields.RequestType)
+	assert.GreaterOrEqual(t, bErr.ExtraFields.Latency, int64(60), "the error is timed from the start of the call, not the upstream attempt")
+}
+
+// The relay span carries the call's whole duration (a refused call included), the upstream time
+// in fractional milliseconds, and the error classified as LLM errors are; a streamed call stamps
+// the stream's own work on the root span, as an LLM stream does.
+func TestRelaySpanTimingAndClassification(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < 3; i++ {
+			_, _ = io.WriteString(w, `data: {"usage":{"credits":2}}`+"\n\n")
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := bearerConfig("spanned", upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{CostPath: "usage.credits"}
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}}
+
+	t.Run("refused call", func(t *testing.T) {
+		m, pipeline := newTestManager(t, cfg)
+		status := http.StatusPaymentRequired
+		pipeline.deny = &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "budget exceeded"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyBudgetExceeded}}
+		pipeline.denyAfter = 40 * time.Millisecond
+		rec := newSpanRecorder()
+		_, bErr := m.Serve(tracedCtx(t, rec), Request{Endpoint: "spanned", Method: "POST", Path: "/s", Headers: map[string]string{}})
+		require.NotNil(t, bErr)
+		assert.Equal(t, string(schemas.ErrorTypePolicyBudgetExceeded), rec.attr("relay.spanned", schemas.AttrErrorTypeSpec), "the decision, not a bare 402")
+		assert.Equal(t, false, rec.attr("relay.spanned", schemas.AttrBifrostRelayStreamed), "a call that got no reply was not streamed, whatever the route's mode")
+		duration, _ := rec.attr("relay.spanned", schemas.AttrBifrostRelayDurationMs).(float64)
+		assert.GreaterOrEqual(t, duration, 40.0, "a refused call records the time the pre-hooks held it")
+	})
+	t.Run("upstream error status is classified", func(t *testing.T) {
+		limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, "data: {\"error\":\"slow down\"}\n\n")
+		}))
+		t.Cleanup(limited.Close)
+		limitedCfg := bearerConfig("limited", limited.URL)
+		limitedCfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}}
+		m, _ := newTestManager(t, limitedCfg)
+		rec := newSpanRecorder()
+		res, bErr := m.Serve(tracedCtx(t, rec), Request{Endpoint: "limited", Method: "POST", Path: "/s", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		_, _ = io.ReadAll(res.Stream)
+		require.NoError(t, res.Stream.Close())
+		assert.Equal(t, string(schemas.ErrorTypeProviderRateLimited), rec.attr("relay.limited", schemas.AttrErrorTypeSpec), "a failure class, as an LLM provider's 429 is labelled, not the bare code")
+	})
+	t.Run("streamed call", func(t *testing.T) {
+		m, _ := newTestManager(t, cfg)
+		rec := newSpanRecorder()
+		res, bErr := m.Serve(tracedCtx(t, rec), Request{Endpoint: "spanned", Method: "POST", Path: "/s", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		_, _ = io.ReadAll(res.Stream)
+		require.NoError(t, res.Stream.Close())
+		upstreamMs, ok := rec.attr("relay.spanned", schemas.AttrBifrostRelayUpstreamDurationMs).(float64)
+		assert.True(t, ok, "upstream time is fractional milliseconds")
+		assert.Greater(t, upstreamMs, 0.0)
+		_, parsed := rec.attr("root", schemas.AttrBifrostStreamParseMs).(float64)
+		assert.True(t, parsed, "the stream's event parsing is stamped on the root span, as for an LLM stream")
+	})
 }
 
 func TestUpsertValidatesEndpoint(t *testing.T) {
@@ -721,7 +922,7 @@ func TestServeReplyDecidesStreaming(t *testing.T) {
 	require.NoError(t, res.Stream.Close())
 }
 
-func TestServeReadsModelUnderOperatorContentType(t *testing.T) {
+func TestServeReadsModelUnderSentContentType(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "{}") }))
 	defer upstream.Close()
 	cfg := bearerConfig("llm", upstream.URL)
@@ -730,15 +931,23 @@ func TestServeReadsModelUnderOperatorContentType(t *testing.T) {
 	cfg.Usage = &schemas.RelayUsageConfig{ModelPath: "model"}
 	m, pipeline := newTestManager(t, cfg)
 
-	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{"content-type": "text/plain"}, Body: []byte(`{"model":"gpt-x"}`)})
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "llm", Method: "POST", Path: "/chat", Body: []byte(`{"model":"gpt-x"}`)})
 	require.Nil(t, bErr)
 	require.Len(t, pipeline.pre, 1)
-	assert.Equal(t, "gpt-x", pipeline.pre[0].Model, "the upstream receives JSON, so the model is read as JSON")
+	assert.Equal(t, "gpt-x", pipeline.pre[0].Model, "with no caller Content-Type the upstream receives the operator's JSON one")
+
+	// The caller's Content-Type replaces the operator's on the wire, as on a passthrough call, so
+	// the body is read under it.
+	_, bErr = m.Serve(testCtx(t), Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{"content-type": "text/plain"}, Body: []byte(`{"model":"gpt-x"}`)})
+	require.Nil(t, bErr)
+	require.Len(t, pipeline.pre, 2)
+	assert.Empty(t, pipeline.pre[1].Model, "a text/plain body is not read as JSON")
 }
 
 // The pre-hook sees, for each header the matched route matches on, the value that selected the
-// route: the relay's own extra header beats the caller's copy, a missing caller header still shows
-// the operator's value, and a value read from the environment is handed over redacted.
+// route: the caller's copy beats the relay's own extra header, as on a passthrough call, a missing
+// caller header still shows the operator's value, and a value read from the environment is handed
+// over redacted.
 func TestServeReportsMatchedHeaderValues(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "{}") }))
 	defer upstream.Close()
@@ -758,8 +967,8 @@ func TestServeReportsMatchedHeaderValues(t *testing.T) {
 	require.Nil(t, bErr)
 	require.Len(t, pipeline.pre, 1)
 	assert.Equal(t, map[string]string{
-		"x-amz-target": "Textract.AnalyzeDocument", // the operator's value selected the route, not the caller's
-		"x-tenant":     schemas.RedactedAttrValue,  // set by the relay from the environment: never copied into a row
+		"x-amz-target": "Textract.GetDocumentAnalysis", // the caller's value replaces the operator's, as on a passthrough call
+		"x-tenant":     schemas.RedactedAttrValue,      // set by the relay from the environment: never copied into a row
 		"content-type": "application/x-amz-json-1.1",
 	}, pipeline.pre[0].RouteHeaders)
 
@@ -959,4 +1168,133 @@ func TestLargeReplyStaysBufferedWhenReadForUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestServeAppliesHeadersInPassthroughOrder pins the header precedence a provider passthrough call
+// has (SetExtraHeaders, then the caller's safe headers, then the key): the operator's extra header,
+// the caller's x-bf-eh-* header over it, the caller's own header over both, and the credential
+// last. x-bf-eh-* headers are forwarded whatever their name, each value on its own line.
+func TestServeAppliesHeadersInPassthroughOrder(t *testing.T) {
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("docs", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.ExtraHeaders = map[string]schemas.SecretVar{
+		"X-Tenant":  *schemas.NewSecretVar("operator"),
+		"X-Version": *schemas.NewSecretVar("operator"),
+		"X-Region":  *schemas.NewSecretVar("operator"),
+	}
+	m, _ := newTestManager(t, cfg)
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"x-version":        {"extra"},
+		"x-tenant":         {"extra"},
+		"x-trace":          {"a", "b"},
+		"x-upstream-token": {"tok"},
+		"authorization":    {"Bearer extra"},
+		"keep-alive":       {"timeout=5"},
+	})
+	_, bErr := m.Serve(ctx, Request{Endpoint: "docs", Method: "POST", Path: "/", Headers: map[string]string{"x-tenant": "caller"}})
+	require.Nil(t, bErr)
+	assert.Equal(t, "operator", got.Get("X-Region"), "an operator header nobody overrides is sent")
+	assert.Equal(t, "extra", got.Get("X-Version"), "x-bf-eh-* replaces the operator's header, as on a passthrough call")
+	assert.Equal(t, "caller", got.Get("X-Tenant"), "the caller's own header replaces both")
+	assert.Equal(t, []string{"a", "b"}, got.Values("X-Trace"), "each x-bf-eh-* value is sent on its own line")
+	assert.Equal(t, "tok", got.Get("X-Upstream-Token"), "an x-bf-eh-* header is forwarded whatever its name looks like")
+	assert.Equal(t, "Bearer sk-endpoint", got.Get("Authorization"), "the credential is applied last and always wins")
+	assert.Empty(t, got.Get("Keep-Alive"), "connection-level x-bf-eh-* headers are dropped, as SetExtraHeaders drops them")
+}
+
+// rawSpanRecorder is a spanRecorder whose connector asks for raw payloads, keeping the one span
+// the relay attaches its bodies to.
+type rawSpanRecorder struct {
+	*spanRecorder
+	span *schemas.Span
+}
+
+func (r *rawSpanRecorder) A2AContentDemand() (bool, bool)                    { return true, true }
+func (r *rawSpanRecorder) SpanFromHandle(_ schemas.SpanHandle) *schemas.Span { return r.span }
+
+// TestRelaySpanAttachesBodiesWhole pins that a relay span keeps the request and response bodies
+// whole when a connector asks for raw payloads: the relay sets no size bound of its own on them.
+func TestRelaySpanAttachesBodiesWhole(t *testing.T) {
+	large := strings.Repeat("r", 2<<20) // past the 1 MiB bound relay spans used to apply
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, large)
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("big", upstream.URL)
+	cfg.SkipRouteCheck = true
+	m, _ := newTestManager(t, cfg)
+	rec := &rawSpanRecorder{spanRecorder: newSpanRecorder(), span: &schemas.Span{}}
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(rec))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-relay")
+	_, bErr := m.Serve(ctx, Request{Endpoint: "big", Method: "POST", Path: "/", Headers: map[string]string{}, Body: []byte(large)})
+	require.Nil(t, bErr)
+	require.NotNil(t, rec.span.A2A, "the bodies are attached")
+	assert.Len(t, rec.span.A2A.RawRequest, len(large))
+	assert.Len(t, rec.span.A2A.RawResponse, len(large))
+}
+
+// TestStreamUsagePanicIsAnInternalError pins that a panic while reading a stream's usage ends the
+// stream as Bifrost's own fault (bifrost_internal), never as a caller cancellation, and that the
+// bytes read are still handed over.
+func TestStreamUsagePanicIsAnInternalError(t *testing.T) {
+	var gotErr *schemas.BifrostError
+	finished := false
+	s := &Stream{
+		ctx:     testCtx(t),
+		body:    io.NopCloser(strings.NewReader("")),
+		reader:  strings.NewReader("data: {\"usage\":1}\n\n"),
+		stop:    func() {},
+		counted: true,
+		framer:  &providerUtils.SSEFramer{},
+		observe: func([]byte) *schemas.RelayUsage { panic("bad usage mapping") },
+		finish: func(_ *schemas.BifrostRelayResponse, err *schemas.BifrostError) {
+			finished, gotErr = true, err
+		},
+	}
+	buf := make([]byte, 64)
+	n, err := s.Read(buf)
+	require.Error(t, err)
+	assert.Equal(t, len("data: {\"usage\":1}\n\n"), n, "the bytes read are still handed over")
+	require.True(t, finished)
+	require.NotNil(t, gotErr)
+	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
+}
+
+// TestStreamUsagePanicAtEOFIsAnInternalError pins the same for the last event, which only completes
+// when the upstream ends (no blank line after it) and is read when the framer is flushed: the panic
+// does not escape Read, where the gateway would recover it as a cancellation.
+func TestStreamUsagePanicAtEOFIsAnInternalError(t *testing.T) {
+	var gotErr *schemas.BifrostError
+	finished := false
+	s := &Stream{
+		ctx:     testCtx(t),
+		body:    io.NopCloser(strings.NewReader("")),
+		reader:  strings.NewReader("data: {\"usage\":1}"),
+		stop:    func() {},
+		counted: true,
+		framer:  &providerUtils.SSEFramer{},
+		observe: func([]byte) *schemas.RelayUsage { panic("bad usage mapping") },
+		finish: func(_ *schemas.BifrostRelayResponse, err *schemas.BifrostError) {
+			finished, gotErr = true, err
+		},
+	}
+	buf := make([]byte, 64)
+	var err error
+	require.NotPanics(t, func() {
+		for err == nil {
+			_, err = s.Read(buf)
+		}
+	})
+	require.Error(t, err)
+	require.True(t, finished)
+	require.NotNil(t, gotErr)
+	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
 }

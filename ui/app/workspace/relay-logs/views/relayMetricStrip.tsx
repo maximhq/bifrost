@@ -1,17 +1,16 @@
 import {
 	averaged,
 	formatCount,
+	LatencyMetricSegment,
 	muted,
 	negative,
 	positive,
 	RatioBar,
 	Sparkline,
 	toneClass,
-	warning,
 } from "@/app/workspace/logs/views/metricStrip";
 import {
 	buildSparkPoints,
-	formatMs,
 	formatPctChange,
 	formatPointDelta,
 	metricsState,
@@ -19,6 +18,7 @@ import {
 	windowTrend,
 } from "@/app/workspace/logs/views/metricStrip.utils";
 import { MetricSegment, MetricStripCard, MetricTooltipBody, MetricTooltipRow, MetricTrailing, MetricUnit } from "@/components/metricStrip";
+import type { LatencyHistogramResponse } from "@/lib/types/logs";
 import type { RelayHistogramResponse, RelayLogStatsResponse } from "@/lib/types/relays";
 import { COMPACT_NUMBER_FORMAT, formatCurrencyNumber } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
@@ -29,6 +29,8 @@ interface RelayMetricStripProps {
 	stats?: RelayLogStatsResponse;
 	/** The relay histogram; every sparkline reads one of its series. */
 	histogram?: RelayHistogramResponse;
+	/** The relay latency percentiles, read by the Avg Latency tile as on the LLM strip. */
+	latencyHistogram?: LatencyHistogramResponse;
 	loading?: boolean;
 	/** The /relay-logs/stats failure, if it failed; unknown so the strip does not depend on RTK Query's error union. */
 	error?: unknown;
@@ -39,7 +41,7 @@ interface RelayMetricStripProps {
  * trend chips as the LLM page's MetricStrip. One histogram carries every series, so the
  * sparklines cost no request beyond the one the volume chart already makes.
  */
-export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetricStripProps) {
+export function RelayMetricStrip({ stats, histogram, latencyHistogram, loading, error }: RelayMetricStripProps) {
 	const { t } = useTranslation("observability");
 	const state = metricsState(stats, loading ?? false, error);
 	const buckets = useMemo(() => histogram?.buckets ?? [], [histogram]);
@@ -51,10 +53,6 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 	);
 	const errorPoints = useMemo(
 		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.error + b.cancelled }))),
-		[buckets],
-	);
-	const latencyPoints = useMemo(
-		() => buildSparkPoints(buckets.map<SeriesPoint>((b) => ({ timestamp: b.timestamp, value: b.avg_latency ?? 0 }))),
 		[buckets],
 	);
 	const costPoints = useMemo(
@@ -77,7 +75,6 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 	// With no previous period to compare against, the window's own direction fills the slot.
 	const requestsSignal = requestsChange?.text ? requestsChange : windowTrend(requestPoints.map((point) => point.value));
 	const successChange = previous ? formatPointDelta(successRate, previous.success_rate) : undefined;
-	const latencyChange = previous ? formatPctChange(stats?.average_latency ?? 0, previous.average_latency, "lower-is-better") : undefined;
 	const costChange = previous ? formatPctChange(totalCost, previous.total_cost, "lower-is-better") : undefined;
 
 	return (
@@ -95,10 +92,10 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								className={toneClass[requestsSignal.tone]}
 								rows={(point, index) => (
 									<>
-										<MetricTooltipRow name={t("logs.stats.requests")}>{averaged(point, formatCount(point.value))}</MetricTooltipRow>
+										<MetricTooltipRow name={t("logs.stats.requests")}>{averaged(point, formatCount(point.value), t)}</MetricTooltipRow>
 										{errorPoints[index] && errorPoints[index].value > 0 && (
 											<MetricTooltipRow name={t("logs.stats.failed")} className={negative}>
-												{averaged(point, formatCount(errorPoints[index].value))}
+												{averaged(point, formatCount(errorPoints[index].value), t)}
 											</MetricTooltipRow>
 										)}
 									</>
@@ -151,31 +148,13 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 					<MetricUnit>%</MetricUnit>
 				</MetricSegment>
 
-				<MetricSegment
+				<LatencyMetricSegment
 					state={state}
-					title={t("logs.stats.avgLatency")}
+					averageLatency={stats?.average_latency}
+					latencyHistogram={latencyHistogram}
 					testId="relay-logs-stat-latency"
-					footer={
-						<>
-							<Sparkline
-								points={latencyPoints}
-								bucketSizeSeconds={bucketSizeSeconds}
-								className={warning}
-								rows={(point) => (
-									<MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value))}</MetricTooltipRow>
-								)}
-							/>
-							{latencyChange?.text && (
-								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[latencyChange.tone]}>
-									{latencyChange.text}
-								</MetricTrailing>
-							)}
-						</>
-					}
-				>
-					<NumberFlow value={Math.round(stats?.average_latency ?? 0)} />
-					<MetricUnit>ms</MetricUnit>
-				</MetricSegment>
+					trailingTestId="relay-logs-metric-trailing"
+				/>
 
 				<MetricSegment
 					state={state}
@@ -188,7 +167,7 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								bucketSizeSeconds={bucketSizeSeconds}
 								className={costChange ? toneClass[costChange.tone] : muted}
 								rows={(point) => (
-									<MetricTooltipRow name={t("labels.cost")}>{averaged(point, formatCurrencyNumber(point.value))}</MetricTooltipRow>
+									<MetricTooltipRow name={t("labels.cost")}>{averaged(point, formatCurrencyNumber(point.value), t)}</MetricTooltipRow>
 								)}
 							/>
 							{costChange?.text ? (

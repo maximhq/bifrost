@@ -7,7 +7,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetRelayLogFilterDataQuery } from "@/lib/store";
 import type { RelayLogFilterDimension, RelayLogFilterEntity, RelayLogFilters } from "@/lib/types/relays";
 import { formatCostBound, parseCostBound } from "@/lib/utils/relayLogQuery";
-import { PanelLeftClose, RotateCcw } from "lucide-react";
+import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -49,7 +49,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		const excluded = ["start_time", "end_time", "search", "period"];
+		const excluded = ["start_time", "end_time", "search", "content_search", "period"];
 		return Object.entries(filters).reduce((c, [key, value]) => {
 			if (excluded.includes(key)) return c;
 			if (Array.isArray(value)) return c + value.length;
@@ -181,6 +181,38 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						/>
 					</FilterSection>
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="session_id"
+						title={t("filters.sessionID")}
+						placeholder={t("filters.exactSessionID")}
+						testId="relay-session-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="job_id"
+						title={t("relayLogs.fields.job")}
+						placeholder={t("relayLogs.filters.exactJobID")}
+						testId="relay-job-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="parent_request_id"
+						title={t("logs.detail.parentRequestID")}
+						placeholder={t("relayLogs.filters.exactParentRequestID")}
+						testId="relay-parent-request-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="agent_correlation_id"
+						title={t("filters.agentCorrelationID")}
+						placeholder={t("filters.exactAgentCorrelationID")}
+						testId="relay-agent-correlation-id-filter"
+					/>
 					<NamesFilter
 						filters={filters}
 						onFiltersChange={onFiltersChange}
@@ -264,6 +296,37 @@ interface FilterComponentProps {
 	filters: RelayLogFilters;
 	onFiltersChange: (filters: RelayLogFilters) => void;
 	defaultOpen?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// ExactIDFilter – one exact correlation id (session, parent request, agent correlation), as on
+// the LLM and MCP sidebars.
+// ---------------------------------------------------------------------------
+
+interface ExactIDFilterProps extends FilterComponentProps {
+	filterKey: "session_id" | "job_id" | "parent_request_id" | "agent_correlation_id";
+	title: string;
+	placeholder: string;
+	/** Base test id: the section is `<testId>-toggle` and the field `<testId>-input`, as on the LLM sidebar. */
+	testId: string;
+}
+
+function ExactIDFilter({ filters, onFiltersChange, filterKey, title, placeholder, testId }: ExactIDFilterProps) {
+	const hasActive = !!filters[filterKey];
+	return (
+		<FilterSection title={title} defaultOpen={hasActive} testId={`${testId}-toggle`}>
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters[filterKey] || ""}
+					onChange={(event) => onFiltersChange({ ...filters, [filterKey]: event.target.value || undefined })}
+					placeholder={placeholder}
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid={`${testId}-input`}
+				/>
+			</div>
+		</FilterSection>
+	);
 }
 
 // ---------------------------------------------------------------------------

@@ -391,13 +391,11 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	if name, dup := ambiguousHeader(in.Headers); dup {
 		return nil, statusError(http.StatusBadRequest, fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
-	// The model is read under the content type the upstream receives: an operator's Content-Type
-	// replaces the caller's on the wire.
-	contentType := in.Headers["content-type"]
-	if ct, ok := e.operatorHeaders["content-type"]; ok {
-		contentType = ct
-	}
-	p := e.plan(in.Method, in.Path, in.Headers)
+	// Routes match, and the model is read, on the headers the upstream receives: the caller's, its
+	// x-bf-eh-* headers beneath them, then the operator's (see buildRequest).
+	headers := e.routeHeaders(in.Headers, callerExtraHeaders(ctx))
+	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
+	p := e.plan(in.Method, in.Path, headers)
 	if !p.allowed {
 		if p.route != nil {
 			return nil, statusError(http.StatusNotFound, fmt.Sprintf("route %s %s on relay %q is disabled", in.Method, in.Path, in.Endpoint))
@@ -427,7 +425,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	}
 	if p.route != nil {
 		req.RoutePath = e.cfg.Routes[p.index].Path
-		req.RouteHeaders = p.route.matchedHeaders(in.Headers, e.operatorLogHeaders)
+		req.RouteHeaders = p.route.matchedHeaders(headers, e.operatorLogHeaders)
 	}
 	if requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string); requestID == "" {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
@@ -474,13 +472,27 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 				resp.UpstreamLatency = upstream.Milliseconds()
 			}
 		}
+		if bErr != nil {
+			// An error carries the whole call's time, as a reply does, not only the upstream
+			// attempt the transport timed; and it names its request type for the error headers,
+			// the span and the error classification.
+			bErr.ExtraFields.Latency = time.Since(start).Milliseconds()
+			if bErr.ExtraFields.RequestType == "" {
+				bErr.ExtraFields.RequestType = schemas.RelayRequest
+			}
+		}
 		// The call is timed and its span ended whether or not hooks run: a manager with no plugin
 		// pipeline still traces. The operation span ends before the post-hooks, as for MCP tools,
 		// so its duration is the call and the hooks nest after it under the same parent.
 		span.end(ctx, resp, bErr)
+		if entrySpanID != nil {
+			// The post-hooks' spans are siblings of the ended relay span, not its children.
+			ctx.SetValue(schemas.BifrostContextKeySpanID, entrySpanID)
+		}
 		// The root span takes the upstream figure so the tracer can stamp Bifrost's overhead and
 		// the logging plugin can backfill the row from the trace, as it does for LLM rows.
 		ctx.StampUpstreamLatency()
+		ctx.StampStreamOverhead()
 		if pipeline == nil {
 			return resp, bErr
 		}
@@ -520,7 +532,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 			// A refused call still gets its operation span, so the relay metrics derived from it
 			// count denied grants, exhausted budgets and rate limits in the request and error
 			// totals, as the MCP post-hook counts a refused tool call.
-			span = startRelaySpan(ctx, entrySpanID, req)
+			span = startRelaySpan(ctx, entrySpanID, req, start)
 			resp, bErr := runPost(shortCircuit.Response, shortCircuit.Error)
 			if bErr != nil {
 				return nil, bErr
@@ -535,7 +547,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		}
 	}
 
-	span = startRelaySpan(ctx, entrySpanID, req)
+	span = startRelaySpan(ctx, entrySpanID, req, start)
 	upstream := upstreamRequest{method: req.Method, path: req.Path, rawQuery: req.RawQuery, headers: req.Headers, body: req.Body}
 	requestUnits := p.usage.requestUnits(req.Body)
 
@@ -555,15 +567,34 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		if openErr != nil {
 			return recovered(runPost(nil, openErr))
 		}
+		// Until a stream owns the reply, it is released here, whatever happens below (a panic
+		// included): the header bound and the upstream connection are never left open.
+		handedOff := false
+		defer func() {
+			if !handedOff {
+				releaseOpen()
+				_ = resp.Body.Close()
+			}
+		}()
 		finish := func(final *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) {
+			// Released whatever the post-hooks do, a panic included, so the pooled pipeline and
+			// the open reply are never lost.
+			defer releaseOnce()
+			defer releaseOpen()
 			final.RelayName = req.RelayName
 			runPost(final, bErr)
-			releaseOpen()
-			releaseOnce()
 		}
+		// Any status is streamed as the upstream sent it, an error reply included, as a passthrough
+		// stream is; the stream reports the status and its post-hooks log it as an error.
 		if p.stream != streamOff && (p.stream == streamOn || isEventStream(resp.Header.Get("Content-Type"))) {
 			streaming = true
+			// A streamed reply is accounted the way an LLM stream is: event parsing and the time spent
+			// blocked writing to the caller are measured, so the overhead is Bifrost's own work rather
+			// than the whole wall clock minus the upstream. Only a stream pays for the accumulator, as
+			// only handleStreamRequest resets it on the LLM path.
+			ctx.ResetStreamOverhead()
 			stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, finish)
+			handedOff = true
 			return &Result{Stream: stream}, nil
 		}
 		// Not an event stream: read and price it as a buffered reply, whatever the caller asked for,
@@ -574,14 +605,15 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 			reply, ahead, large, bErr = e.readOrHandOff(resp, start, threshold)
 			if large {
 				streaming = true
+				ctx.ResetStreamOverhead()
 				stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, finish)
 				stream.handOffLarge(ahead)
+				handedOff = true
 				return &Result{Stream: stream}, nil
 			}
 		} else {
 			reply, bErr = e.readBuffered(resp, start, true)
 		}
-		releaseOpen()
 	}
 	if bErr != nil {
 		return recovered(runPost(nil, bErr))

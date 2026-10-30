@@ -337,7 +337,7 @@
 			"servedByFallback": "提供元（フォールバック）",
 			"servedModel": "提供されたモデル",
 			"stopReason": "停止理由",
-			"parentRequestID": "保護者のリクエスト ID",
+			"parentRequestID": "親リクエスト ID",
 			"filterThisSession": "· このセッションをフィルター",
 			"selectedKey": "選択されたキー",
 			"selectedPrompt": "選択されたプロンプト",
@@ -900,6 +900,7 @@
 			"matchedRoute": "一致したルート",
 			"parentLog": "親ログ",
 			"responseBodyPreview": "レスポンス本文 (プレビュー)",
+			"filterByValue": "この値のリレー呼び出しを表示",
 			"queryParameters": "クエリパラメーター",
 			"matchedHeaders": "一致したヘッダー",
 			"errorNoMessageWithStatus": "リレーはメッセージなしでエラー（HTTP {{status}}）を返しました。",
@@ -920,7 +921,9 @@
 			"minCost": "最小 $",
 			"maxCost": "最大 $",
 			"minimumCost": "最小コスト",
-			"maximumCost": "最大コスト"
+			"maximumCost": "最大コスト",
+			"exactJobID": "完全一致のジョブ ID",
+			"exactParentRequestID": "完全一致の親リクエスト ID"
 		},
 		"grants": {
 			"label": "リレーへのアクセス",

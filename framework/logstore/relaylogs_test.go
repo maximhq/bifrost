@@ -232,7 +232,7 @@ func TestRelayLogLatencyAndSessionFilters(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
 		{ID: "fast", RequestID: "fast", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Latency: schemas.Ptr(40.0), SessionID: schemas.Ptr("s-1")},
-		{ID: "slow", RequestID: "slow", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Latency: schemas.Ptr(400.0), SessionID: schemas.Ptr("s-2")},
+		{ID: "slow", RequestID: "slow", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Latency: schemas.Ptr(400.0), SessionID: schemas.Ptr("s-2"), ParentRequestID: schemas.Ptr("parent-2"), AgentCorrelationID: schemas.Ptr("agent-2")},
 	})
 	require.NoError(t, err)
 	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{MinLatency: schemas.Ptr(100.0)}, PaginationOptions{Limit: 10})
@@ -251,6 +251,36 @@ func TestRelayLogLatencyAndSessionFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.SessionID)
 	assert.Equal(t, "s-1", *got.SessionID, "the session identity round-trips")
+	for _, f := range []RelayLogFilters{{ParentRequestID: "parent-2"}, {AgentCorrelationID: "agent-2"}} {
+		page, err = store.SearchRelayLogs(ctx, f, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Logs, 1, "filter %+v", f)
+		assert.Equal(t, "slow", page.Logs[0].ID)
+	}
+}
+
+// TestRelayLogContentSearch pins that content_search matches either body, as an MCP row's search
+// matches its arguments or result, and that a LIKE wildcard in the term is literal.
+func TestRelayLogContentSearch(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-content.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "req", RequestID: "req", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, RequestBody: schemas.Ptr(`{"query":"wombat facts"}`)},
+		{ID: "resp", RequestID: "resp", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, ResponseBody: schemas.Ptr(`{"answer":"50% off"}`)},
+		{ID: "none", RequestID: "none", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Path: "/wombat"},
+	})
+	require.NoError(t, err)
+	for term, want := range map[string]string{"wombat": "req", "50%": "resp"} {
+		page, err := store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: term}, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Logs, 1, "content_search %q matches the bodies only", term)
+		assert.Equal(t, want, page.Logs[0].ID)
+	}
+	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{ContentSearch: "%"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1, "a %% in the term is literal")
 }
 
 // TestFlushRelayLogsRemovesStaleProcessingRows pins the 30-minute reaper the LLM, MCP and A2A
