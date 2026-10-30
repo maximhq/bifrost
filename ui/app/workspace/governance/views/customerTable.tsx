@@ -350,7 +350,7 @@ export default function CustomersTable({
 													<TableCell>
 														{teamCount > 0 ? (
 															<Badge variant="outline" className="text-xs">
-																{teamCount} {teamCount === 1 ? "team" : "teams"}
+																{t("customers.teamCount", { count: teamCount })}
 															</Badge>
 														) : (
 															<span className="text-muted-foreground text-sm">-</span>

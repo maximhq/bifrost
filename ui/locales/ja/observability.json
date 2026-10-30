@@ -124,7 +124,9 @@
 			"barChart": "棒グラフ",
 			"lineChart": "折れ線グラフ",
 			"directValue": "直接: {{value}}",
-			"semanticValue": "セマンティック: {{value}}"
+			"semanticValue": "セマンティック: {{value}}",
+			"tokensPerSecValue": "{{value}} トークン/秒",
+			"moreCount_other": "他 {{count}} 件"
 		},
 		"rankings": {
 			"topDimension": "トップ {{dimension}}",
@@ -136,7 +138,9 @@
 			"avgLatency": "平均遅延",
 			"noData": "この期間の{{dimension}}使用データは利用できません。",
 			"attributedTooltipShort": "帰属 - リクエストは、それが属する各{{dimension}}に対してカウントされるため、実際のリクエスト数を超えることがあります。",
-			"attributedTooltipLong": "リクエストは属する各{{dimension}}にカウントされるため、これにより総リクエスト数を超えることがあります。"
+			"attributedTooltipLong": "リクエストは属する各{{dimension}}にカウントされるため、これにより総リクエスト数を超えることがあります。",
+			"newBadge": "新規",
+			"requestsCount_other": "{{formattedCount}} 件のリクエスト"
 		},
 		"noModelUsage": "この期間のモデル使用データは利用できません。"
 	},
@@ -144,7 +148,21 @@
 		"fallbackChain": {
 			"openFinalAttempt": "最終試行を開く",
 			"title": "フォールバックチェーン",
-			"viewing": "表示中"
+			"viewing": "表示中",
+			"outcome": {
+				"succeeded": "リクエスト成功",
+				"failed": "すべての試行が失敗",
+				"inProgress": "実行中"
+			},
+			"summary": {
+				"attempt": "{{total}} 回中 {{position}} 回目の試行",
+				"fellBack": "{{total}} 回中 {{position}} 回目の試行。この試行は失敗し、リクエストは {{label}} にフォールバックしました。",
+				"later": "{{total}} 回中 {{position}} 回目の試行。この後にも試行が実行されました。"
+			},
+			"attempts_other": "{{count}} 回の試行",
+			"attemptsWithTotal_other": "{{count}} 回の試行 · 合計 {{latency}}",
+			"keyName": "キー {{name}}",
+			"retries_other": "{{count}} 回のリトライ"
 		},
 		"searchPlaceholder": "ログを検索するか、リクエストを貼り付けてください ID",
 		"loggingSettings": "ログ設定",
@@ -241,7 +259,13 @@
 			"toastCancelled": "コスト再計算がキャンセルされました",
 			"toastComplete": "コスト再計算完了",
 			"toastProgress": "ログコストを再計算中...",
-			"errorGeneric": "コストの再計算に失敗しました"
+			"errorGeneric": "コストの再計算に失敗しました",
+			"noLogsMatch": "現在のフィルターに一致するログはありません。",
+			"toastStopped": "停止しました：更新 {{updated}} 件、スキップ {{skipped}} 件",
+			"toastUpdatedSkipped": "更新 {{updated}} 件、スキップ {{skipped}} 件",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} 件を確認、更新 {{updated}} 件、スキップ {{skipped}} 件",
+			"toastChecked": "{{processed}} 件を確認、更新 {{updated}} 件、スキップ {{skipped}} 件",
+			"errorGenericStatus": "コストの再計算に失敗しました（{{status}}）"
 		},
 		"session": {
 			"logs": "ログ",
@@ -548,7 +572,12 @@
 				"monitoredWouldTransform": "このルールは監視のみです。変換される状況でしたが、リクエストはそのまま続行されました。",
 				"monitored": "このルールは監視のみです。リクエストはそのまま続行されました。",
 				"detected": "ルールがリクエストにフラグを付け、そのまま続行させました。"
-			}
+			},
+			"unknown": "不明",
+			"sourceEventInitiated": "イベント起点",
+			"sourceLanguageModel": "言語モデル",
+			"batchItemResult": "バッチ項目 {{type}}",
+			"providerReturnedHttp": "プロバイダーが HTTP {{status}} を返しました"
 		},
 		"media": {
 			"pause": "一時停止",
@@ -764,9 +793,21 @@
 				"virtualKeys": "仮想キー（{{total}}）",
 				"teams": "チーム（{{total}}）",
 				"customers": "顧客（{{total}}）",
-				"period": "期間 {{value}}"
+				"period": "期間 {{value}}",
+				"relays": "リレー ({{total}})",
+				"methods": "メソッド ({{total}})",
+				"kinds": "種類 ({{total}})",
+				"users": "ユーザー ({{total}})",
+				"businessUnits": "事業部門 ({{total}})",
+				"projects": "プロジェクト ({{total}})",
+				"apps": "アプリ ({{total}})",
+				"billableOnly": "課金対象のみ",
+				"nonBillableOnly": "非課金のみ",
+				"minCost": "最小コスト {{value}}",
+				"maxCost": "最大コスト {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "混在"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1075,7 +1116,8 @@
 			"overheadLatencySpans": "オーバーヘッド遅延スパン",
 			"overheadLatencySpansHelp": "内部タイミング範囲（セットアップ、キー選択、パイプラインフェーズ）。デフォルトでは無効です。",
 			"configJsonPrecedence": "もし config.json の <plugin>{{pluginName}}</plugin> プラグイン設定で <filter>plugin_span_filter</filter> が設定されている場合、Bifrost を再起動した後、これらの設定より優先されます。",
-			"destinationOtel": "OTEL コレクター"
+			"destinationOtel": "OTEL コレクター",
+			"noChangePermission": "可観測性の設定を変更する権限がありません"
 		},
 		"savePrometheus": "Prometheus 設定を保存",
 		"saveOtel": "OTEL 設定を保存",
@@ -1232,7 +1274,12 @@
 		"passthrough_stream": "パススルーストリーム",
 		"websocket_responses": "WebSocket 応答",
 		"realtime": "リアルタイム",
-		"realtime_turn": "リアルタイムターン"
+		"realtime_turn": "リアルタイムターン",
+		"model_retrieve": "モデル取得",
+		"live": "ライブ",
+		"live_session": "ライブセッション",
+		"live_content": "ライブ録音",
+		"live_sideband": "ライブサイドバンド"
 	},
 	"celBuilder": {
 		"copied": "コピー済み",
@@ -1259,7 +1306,8 @@
 		"value": "値",
 		"enterValue": "値を入力してください...",
 		"commaSeparated": "カンマで区切られた値またはJSON配列を入力してください",
-		"celPlaceholder": "例: model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "例: model == \"claude-sonnet-4-6\"",
+		"remove": "削除"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "ルーティングルール",
@@ -1716,6 +1764,12 @@
 			"stepRegister": "Agent Gateway でアップストリームのエージェントを登録し、有効にします。",
 			"stepReplace": "<code>{{agentName}}</code> を登録した名前に置き換えます。",
 			"stepVirtualKey": "エージェントにアクセスできる仮想キーを使用するか、認証が無効な場合は <code>x-bf-vk</code> ヘッダーを削除します。"
+		},
+		"interactive": {
+			"copied": "コピーしました",
+			"filterBy": "{{label}}で絞り込む",
+			"clickToFilter": "クリックで絞り込み · 右クリックでコピー",
+			"rightClickToCopy": "右クリックでコピー"
 		}
 	},
 	"overhead": {

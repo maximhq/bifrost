@@ -913,7 +913,8 @@
 				"addRule": "Ajoutez une règle ou choisissez « Désactivé » pour ne rien transmettre"
 			}
 		},
-		"saveConfig": "Enregistrer la configuration"
+		"saveConfig": "Enregistrer la configuration",
+		"customBaseUrlRequired": "L'URL de base est obligatoire"
 	},
 	"modelCatalog": {
 		"title": "Catalogue de modèles",
@@ -1020,7 +1021,10 @@
 			"5": "Ven",
 			"6": "Sam"
 		},
-		"aboutModelsColumn": "À propos de la colonne Modèles"
+		"aboutModelsColumn": "À propos de la colonne Modèles",
+		"attributeKeyPlaceholder": "clé",
+		"attributeValuePlaceholder": "valeur",
+		"filterProviderAria": "Filtrer par fournisseur"
 	},
 	"virtualKeys": {
 		"emptyTitle": "Les clés virtuelles contrôlent l’accès, les budgets et les limites de débit",
@@ -1327,7 +1331,9 @@
 		"leavesGoverningOwnerUnassigned": "Configurez-la ci-dessous, faute de quoi elle refusera les requêtes une fois désassignée.",
 		"ownerProfileNoticeUnnamed": "Géré par le profil d’accès de ce/cette {{owner}}. Ses budgets, limites de débit et fournisseurs s’appliquent à cette clé.",
 		"relayAccess": "Accès aux relais",
-		"noRelaysGranted": "Aucun relais autorisé"
+		"noRelaysGranted": "Aucun relais autorisé",
+		"managedByProfileToggleHint": "Cette clé virtuelle est gérée par un profil d'accès. Activez-la ou désactivez-la depuis le profil.",
+		"noUpdatePermission": "Vous n'avez pas l'autorisation de modifier les clés virtuelles."
 	},
 	"modelLimits": {
 		"title": "Budgets et limites",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "Doit être supérieur à 0 et au plus égal à 1",
 		"actionsAria": "Actions pour le remplacement de tarification {{name}}",
-		"deleteDescriptionNamed": "Voulez-vous vraiment supprimer « {{name}} » ? Cette action est irréversible."
+		"deleteDescriptionNamed": "Voulez-vous vraiment supprimer « {{name}} » ? Cette action est irréversible.",
+		"noChangePermission": "Vous n'avez pas l'autorisation de modifier les remplacements de tarifs"
 	},
 	"routing": {
 		"rulesTitle": "Règles de routage",
@@ -1917,7 +1924,19 @@
 			"fallbackDecisionDesc": "Un modèle de décision détermine le niveau lorsque la correspondance sémantique ne donne aucun résultat, en utilisant les mêmes consignes de niveau que lorsqu’il est le classificateur principal.",
 			"impactFallback": "Tant que le classifieur n’est pas prêt, {{classifier}} de repli classe chaque requête à sa place. Les règles par niveau de complexité ne correspondent que s’il renvoie un niveau. Les autres règles de routage continuent normalement.",
 			"fallbackClassifierLlm": "le classifieur LLM",
-			"fallbackClassifierDecision": "le modèle de décision"
+			"fallbackClassifierDecision": "le modèle de décision",
+			"criteriaSignalItemMax": "Chaque signal doit comporter au plus {{max}} caractères",
+			"criteriaExampleItemMax": "Chaque exemple doit comporter au plus {{max}} caractères",
+			"criteriaSignalMin": "Ajoutez au moins un signal",
+			"criteriaExampleMin": "Ajoutez au moins un exemple",
+			"criteriaSignalMax_one": "Au plus {{count}} signal",
+			"criteriaSignalMax_other": "Au plus {{count}} signaux",
+			"criteriaExampleMax_one": "Au plus {{count}} exemple",
+			"criteriaExampleMax_other": "Au plus {{count}} exemples",
+			"enterDefinition": "Saisissez une définition",
+			"selectDecisionProvider": "Sélectionnez le fournisseur du modèle de décision",
+			"selectDecisionModel": "Sélectionnez le modèle de décision",
+			"enterDecisionTimeout": "Saisissez un délai d'expiration pour le modèle de décision"
 		},
 		"editDescription": "Mettez à jour la configuration de la règle de routage",
 		"createDescription": "Créez une nouvelle règle de routage basée sur CEL pour le routage intelligent des requêtes",
@@ -2119,5 +2138,10 @@
 		"searchOrTypeJev": "Rechercher ou saisir un modèle Jev…",
 		"searchOrType": "Rechercher ou saisir un modèle…",
 		"selectModel": "Sélectionner un modèle"
+	},
+	"pricing": {
+		"notAvailable": "Non disponible",
+		"perMillionTokens": "{{price}} / 1 M de jetons",
+		"perMillionCharacters": "{{price}} / 1 M de caractères"
 	}
 }

@@ -124,7 +124,9 @@
 			"barChart": "막대 차트",
 			"lineChart": "선 차트",
 			"directValue": "직접: {{value}}",
-			"semanticValue": "의미론적: {{value}}"
+			"semanticValue": "의미론적: {{value}}",
+			"tokensPerSecValue": "{{value}} 토큰/초",
+			"moreCount_other": "+{{count}}개 더"
 		},
 		"rankings": {
 			"topDimension": "인기 {{dimension}}",
@@ -136,7 +138,9 @@
 			"avgLatency": "평균 지연 시간",
 			"noData": "이 기간 동안 사용할 수 있는 {{dimension}} 사용 데이터가 없어요.",
 			"attributedTooltipShort": "기여됨 - 요청은 자신이 속한 각 {{dimension}}에 포함되므로 실제 요청 수를 초과할 수 있어요.",
-			"attributedTooltipLong": "요청은 자신이 속한 각 {{dimension}}에 포함되므로 총 요청 수를 초과할 수 있어요."
+			"attributedTooltipLong": "요청은 자신이 속한 각 {{dimension}}에 포함되므로 총 요청 수를 초과할 수 있어요.",
+			"newBadge": "신규",
+			"requestsCount_other": "{{formattedCount}}개 요청"
 		},
 		"noModelUsage": "이 기간 동안 사용할 수 있는 모델 사용 데이터가 없어요."
 	},
@@ -144,7 +148,21 @@
 		"fallbackChain": {
 			"openFinalAttempt": "마지막 시도 열기",
 			"title": "폴백 체인",
-			"viewing": "보는 중"
+			"viewing": "보는 중",
+			"outcome": {
+				"succeeded": "요청 성공",
+				"failed": "모든 시도 실패",
+				"inProgress": "실행 중"
+			},
+			"summary": {
+				"attempt": "{{total}}회 중 {{position}}번째 시도",
+				"fellBack": "{{total}}회 중 {{position}}번째 시도입니다. 이 시도가 실패하여 요청이 {{label}}(으)로 폴백되었습니다.",
+				"later": "{{total}}회 중 {{position}}번째 시도입니다. 이후에도 시도가 실행되었습니다."
+			},
+			"attempts_other": "{{count}}회 시도",
+			"attemptsWithTotal_other": "{{count}}회 시도 · 총 {{latency}}",
+			"keyName": "키 {{name}}",
+			"retries_other": "재시도 {{count}}회"
 		},
 		"searchPlaceholder": "로그 검색 또는 요청 붙여넣기 ID",
 		"loggingSettings": "로깅 설정",
@@ -241,7 +259,13 @@
 			"toastCancelled": "비용 재계산이 취소되었어요.",
 			"toastComplete": "비용 재계산 완료",
 			"toastProgress": "로그 비용을 다시 계산하는 중...",
-			"errorGeneric": "비용을 다시 계산하지 못했어요."
+			"errorGeneric": "비용을 다시 계산하지 못했어요.",
+			"noLogsMatch": "현재 필터와 일치하는 로그가 없습니다.",
+			"toastStopped": "중지됨: {{updated}}개 업데이트, {{skipped}}개 건너뜀",
+			"toastUpdatedSkipped": "{{updated}}개 업데이트, {{skipped}}개 건너뜀",
+			"toastCheckedOfTotal": "{{processed}}/{{total}}개 확인, {{updated}}개 업데이트, {{skipped}}개 건너뜀",
+			"toastChecked": "{{processed}}개 확인, {{updated}}개 업데이트, {{skipped}}개 건너뜀",
+			"errorGenericStatus": "비용 재계산 실패({{status}})"
 		},
 		"session": {
 			"logs": "로그",
@@ -548,7 +572,12 @@
 				"monitoredWouldTransform": "이 규칙은 모니터링만 해요. 내용을 변환했을 요청이지만 변경 없이 계속 진행되었어요.",
 				"monitored": "이 규칙은 모니터링만 해요. 요청은 변경 없이 계속 진행되었어요.",
 				"detected": "규칙이 요청을 플래그로 표시했고, 변경 없이 계속 진행하도록 했어요."
-			}
+			},
+			"unknown": "알 수 없음",
+			"sourceEventInitiated": "이벤트 시작",
+			"sourceLanguageModel": "언어 모델",
+			"batchItemResult": "배치 항목 {{type}}",
+			"providerReturnedHttp": "공급자가 HTTP {{status}}을(를) 반환했습니다"
 		},
 		"media": {
 			"pause": "일시중지",
@@ -764,9 +793,21 @@
 				"virtualKeys": "가상 키({{total}}개)",
 				"teams": "팀({{total}}개)",
 				"customers": "고객({{total}}개)",
-				"period": "기간 {{value}}"
+				"period": "기간 {{value}}",
+				"relays": "릴레이 ({{total}})",
+				"methods": "메서드 ({{total}})",
+				"kinds": "종류 ({{total}})",
+				"users": "사용자 ({{total}})",
+				"businessUnits": "사업 부서 ({{total}})",
+				"projects": "프로젝트 ({{total}})",
+				"apps": "앱 ({{total}})",
+				"billableOnly": "청구 대상만",
+				"nonBillableOnly": "비청구 대상만",
+				"minCost": "최소 비용 {{value}}",
+				"maxCost": "최대 비용 {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "혼합"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1117,8 @@
 			"overheadLatencySpans": "오버헤드 대기 시간 범위",
 			"overheadLatencySpansHelp": "내부 타이밍 범위(설정, 키 선택, 파이프라인 단계) 기본적으로 꺼져 있어요.",
 			"configJsonPrecedence": "config.json의 <plugin>{{pluginName}}</plugin> 플러그인 구성에 <filter>plugin_span_filter</filter>가 설정된 경우 Bifrost를 다시 시작한 후 이 설정이 이 설정보다 우선 적용돼요.",
-			"destinationOtel": "OTEL 수집기"
+			"destinationOtel": "OTEL 수집기",
+			"noChangePermission": "관측 가능성 설정을 변경할 권한이 없습니다"
 		},
 		"savePrometheus": "Prometheus 구성 저장",
 		"saveOtel": "OTEL 구성 저장",
@@ -1233,7 +1275,12 @@
 		"passthrough_stream": "통과 스트림",
 		"websocket_responses": "WebSocket 응답",
 		"realtime": "실시간",
-		"realtime_turn": "실시간 턴"
+		"realtime_turn": "실시간 턴",
+		"model_retrieve": "모델 조회",
+		"live": "라이브",
+		"live_session": "라이브 세션",
+		"live_content": "라이브 녹음",
+		"live_sideband": "라이브 사이드밴드"
 	},
 	"celBuilder": {
 		"copied": "복사됨",
@@ -1260,7 +1307,8 @@
 		"value": "가치",
 		"enterValue": "값을 입력하세요...",
 		"commaSeparated": "쉼표로 구분된 값 또는 JSON 배열을 입력하세요.",
-		"celPlaceholder": "예: model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "예: model == \"claude-sonnet-4-6\"",
+		"remove": "제거"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "라우팅 규칙",
@@ -1717,6 +1765,12 @@
 			"stepRegister": "Agent Gateway에서 업스트림 에이전트를 등록하고 활성화하세요.",
 			"stepReplace": "<code>{{agentName}}</code>을(를) 등록된 이름으로 바꾸세요.",
 			"stepVirtualKey": "에이전트에 접근할 수 있는 가상 키를 사용하거나, 인증이 비활성화된 경우 <code>x-bf-vk</code> 헤더를 제거하세요."
+		},
+		"interactive": {
+			"copied": "복사됨",
+			"filterBy": "{{label}}(으)로 필터",
+			"clickToFilter": "클릭하여 필터 · 우클릭하여 복사",
+			"rightClickToCopy": "우클릭하여 복사"
 		}
 	},
 	"overhead": {

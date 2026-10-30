@@ -22,7 +22,11 @@
 		"toTime": "结束时间",
 		"timezone": "时区",
 		"selectTimezone": "选择时区",
-		"time": "时间"
+		"time": "时间",
+		"am": "上午",
+		"pm": "下午",
+		"hourPlaceholder": "时",
+		"minutePlaceholder": "分"
 	},
 	"timePeriods": {
 		"1h": "最近 1 小时",
@@ -70,7 +74,10 @@
 		"agents": "Agent",
 		"providers": "供应商",
 		"webhookEndpoints": "Webhook 端点",
-		"modelLimits": "模型限额"
+		"modelLimits": "模型限额",
+		"agent": "Agent",
+		"relay": "中继",
+		"relays": "中继"
 	},
 	"aboutField": "关于{{field}}",
 	"thisField": "此字段",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}，已选择{{disabled}}",
 		"optionNotSelectedAria": "{{label}}，未选择{{disabled}}",
 		"disabledSuffix": "，已禁用",
-		"clear": "清除"
+		"clear": "清除",
+		"moreCount": "+ 另外 {{count}} 项"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "财年开始于",
@@ -195,7 +203,8 @@
 		"failedToLoad": "加载失败。"
 	},
 	"numberAndSelect": {
-		"resetPeriod": "重置周期"
+		"resetPeriod": "重置周期",
+		"noLimit": "无限制"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "解析后的值将在保存后显示"
@@ -204,7 +213,9 @@
 		"label": "Agent 访问权限",
 		"tooltip": "授予此密钥访问已注册 Agent 的权限。之后该密钥即可通过 <path0>{{path}}</path0> 调用各个 Agent。标记为对所有密钥开放的 Agent 无需授权。",
 		"selectPlaceholder": "选择要添加的 Agent",
-		"removeAria": "移除 {{name}}"
+		"removeAria": "移除 {{name}}",
+		"openToAll": "对所有密钥开放",
+		"disabled": "已禁用"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} 将在其完整时长内使用滚动窗口。日历对齐仅适用于 1d、1w、1M、1Q 和 1Y。"
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "请将{{label}}保持在 {{min}} 到 {{max}} 之间。",
 		"addString": "添加字符串",
-		"select": "选择"
+		"select": "选择",
+		"clear": "清除{{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "必须是有效的 URL",
 		"validEmail": "必须是有效的邮箱",
 		"grpcHostPortFormat": "gRPC 地址必须采用 <host>:<port> 格式（例如 {{example}}）",
-		"invalidInput": "输入无效"
+		"invalidInput": "输入无效",
+		"vertexEndpointId": "请输入 Vertex 端点 ID，或粘贴受支持的端点 URL",
+		"mcp": {
+			"privateKeyRequired": "private_key_jwt 需要私钥",
+			"secretRequiredForMethod": "选择发送方式需要客户端密钥",
+			"credentialResend": "请重新输入：受众、上游令牌端点或断言受众已更改，因此已保存的值不会发送到新目标"
+		},
+		"relays": {
+			"costPerRequestNegative": "每次请求的费用不能为负数",
+			"costPerUnitNegative": "每单位费用不能为负数",
+			"blockSizePositive": "块大小必须大于零",
+			"minimumUnitsNegative": "最小单位数不能为负数",
+			"unitsPathRequiredRoute": "需要单位路径：此路由按单位计费，但路由和中继都未指定路径",
+			"unitsPathRequired": "需要单位路径，除非度量读取整个请求体",
+			"unitsPathRequiredInherited": "需要单位路径：路由 {{method}} {{path}} 按单位计费，并从中继继承该路径",
+			"absoluteUrl": "请输入绝对 http(s) URL",
+			"pathRequired": "路径为必填项",
+			"pathMustStartWithSlash": "路径必须以 / 开头",
+			"doubleStarLast": "** 只能用作最后一段",
+			"headerNameRequired": "请求头认证需要请求头名称",
+			"queryParamRequired": "查询参数认证需要查询参数",
+			"awsServiceRequired": "SigV4 认证需要 AWS 服务",
+			"awsServiceFormat": "AWS 服务必须匹配 [a-z0-9-]+",
+			"headerNameNoSpecial": "请求头名称不能包含空格、冒号或斜杠",
+			"matcherNeedsValue": "请求头匹配器需要值通配符",
+			"matcherNeedsName": "请求头匹配器需要请求头名称",
+			"jobIdPath": "请输入启动响应中携带作业 ID 的位置",
+			"pollPathRequired": "请输入轮询路径",
+			"pollPathRooted": "请输入以 / 开头的路径，例如 {{example}}",
+			"statusPathRequired": "请输入轮询响应中携带状态的位置",
+			"succeededRequired": "请至少输入一个成功状态",
+			"atLeastOneSecond": "至少 1 秒",
+			"headerMatchedDup": "此请求头已在该路由上匹配",
+			"relayNameFormat": "请使用 1-64 个字母、数字、点、短横线或下划线",
+			"relayNameDots": "中继不能命名为 . 或 ..",
+			"baseUrlFormat": "请输入不含查询、片段或用户信息的绝对 http(s) URL",
+			"headerValueRequired": "请输入此请求头的值",
+			"headerNameEnter": "请输入请求头名称",
+			"headerAlreadySet": "此请求头已设置",
+			"lineError": "第 {{line}} 行：{{message}}",
+			"invalidPath": "路径无效",
+			"regionSigV4": "SigV4 需要区域",
+			"credentialRequired": "此认证类型需要凭据",
+			"proxyUrlRequired": "代理 URL 为必填项",
+			"rootedPathSearch": "请输入以 / 开头的路径，例如 /v1/search",
+			"statusRange": "状态码必须在 100 到 599 之间"
+		}
 	},
 	"permissionDenied": {
 		"create": "你没有创建{{entity}}的权限。",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}} 个季度",
 		"year_one": "{{count}} 年",
 		"year_other": "{{count}} 年"
+	},
+	"viewToggle": {
+		"more": "查看更多",
+		"less": "收起"
+	},
+	"baseProviderSelector": {
+		"placeholder": "选择基础格式",
+		"searchPlaceholder": "搜索格式..."
+	},
+	"commandDialog": {
+		"title": "命令面板",
+		"description": "搜索要运行的命令..."
+	},
+	"copyToClipboard": {
+		"success": "已复制到剪贴板",
+		"failed": "复制失败"
+	},
+	"agentCard": {
+		"unnamedSkill": "未命名技能",
+		"unknown": "未知"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} 另外 {{count}} 项"
+	},
+	"badges": {
+		"beta": "BETA"
 	}
 }

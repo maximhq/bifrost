@@ -22,7 +22,11 @@
 		"toTime": "종료 시간",
 		"timezone": "시간대",
 		"selectTimezone": "시간대 선택",
-		"time": "시간"
+		"time": "시간",
+		"am": "오전",
+		"pm": "오후",
+		"hourPlaceholder": "시",
+		"minutePlaceholder": "분"
 	},
 	"timePeriods": {
 		"1h": "지난 1시간",
@@ -70,7 +74,10 @@
 		"agents": "에이전트",
 		"providers": "프로바이더",
 		"webhookEndpoints": "웹훅 엔드포인트",
-		"modelLimits": "모델 한도"
+		"modelLimits": "모델 한도",
+		"agent": "에이전트",
+		"relay": "릴레이",
+		"relays": "릴레이"
 	},
 	"aboutField": "{{field}} 정보",
 	"thisField": "이 필드",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}, 선택됨{{disabled}}",
 		"optionNotSelectedAria": "{{label}}, 선택되지 않음{{disabled}}",
 		"disabledSuffix": ", 비활성화됨",
-		"clear": "지우기"
+		"clear": "지우기",
+		"moreCount": "+ {{count}}개 더"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "회계연도 시작",
@@ -195,7 +203,8 @@
 		"failedToLoad": "불러오지 못했어요."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "초기화 주기"
+		"resetPeriod": "초기화 주기",
+		"noLimit": "제한 없음"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "확인된 값은 저장 후에 표시돼요"
@@ -204,7 +213,9 @@
 		"label": "에이전트 액세스",
 		"tooltip": "이 키에 등록된 에이전트에 대한 액세스를 허용해요. 그러면 키로 각 에이전트를 <path0>{{path}}</path0>에서 호출할 수 있어요. 모든 키에 열려 있는 에이전트는 별도 허용이 필요 없어요.",
 		"selectPlaceholder": "추가할 에이전트 선택",
-		"removeAria": "{{name}} 제거"
+		"removeAria": "{{name}} 제거",
+		"openToAll": "모든 키에 공개",
+		"disabled": "비활성화됨"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}}은(는) 전체 기간 동안 롤링 윈도우를 사용해요. 달력 정렬은 1d, 1w, 1M, 1Q, 1Y에만 적용돼요."
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "{{label}}은(는) {{min}}에서 {{max}} 사이로 설정하세요.",
 		"addString": "문자열 추가",
-		"select": "선택"
+		"select": "선택",
+		"clear": "{{label}} 지우기"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "올바른 URL이어야 해요",
 		"validEmail": "올바른 이메일이어야 해요",
 		"grpcHostPortFormat": "gRPC는 <host>:<port> 형식이어야 해요 (예: {{example}})",
-		"invalidInput": "잘못된 입력이에요"
+		"invalidInput": "잘못된 입력이에요",
+		"vertexEndpointId": "Vertex 엔드포인트 ID를 입력하거나 지원되는 엔드포인트 URL을 붙여넣으세요",
+		"mcp": {
+			"privateKeyRequired": "private_key_jwt에는 개인 키가 필요합니다",
+			"secretRequiredForMethod": "전송 방식을 선택하려면 클라이언트 시크릿이 필요합니다",
+			"credentialResend": "다시 입력하세요. 대상, 업스트림 토큰 엔드포인트 또는 어설션 대상이 변경되어 저장된 값이 새 대상으로 전송되지 않습니다"
+		},
+		"relays": {
+			"costPerRequestNegative": "요청당 비용은 음수일 수 없습니다",
+			"costPerUnitNegative": "단위당 비용은 음수일 수 없습니다",
+			"blockSizePositive": "블록 크기는 0보다 커야 합니다",
+			"minimumUnitsNegative": "최소 단위 수는 음수일 수 없습니다",
+			"unitsPathRequiredRoute": "단위 경로가 필요합니다. 이 라우트는 단위당 과금되지만 라우트와 릴레이 모두 경로를 지정하지 않았습니다",
+			"unitsPathRequired": "측정이 본문 전체를 읽는 경우가 아니면 단위 경로가 필요합니다",
+			"unitsPathRequiredInherited": "단위 경로가 필요합니다. 라우트 {{method}} {{path}}는 단위당 과금되며 릴레이에서 경로를 상속합니다",
+			"absoluteUrl": "절대 http(s) URL을 입력하세요",
+			"pathRequired": "경로는 필수입니다",
+			"pathMustStartWithSlash": "경로는 /로 시작해야 합니다",
+			"doubleStarLast": "**는 마지막 세그먼트로만 사용할 수 있습니다",
+			"headerNameRequired": "헤더 인증에는 헤더 이름이 필요합니다",
+			"queryParamRequired": "쿼리 인증에는 쿼리 매개변수가 필요합니다",
+			"awsServiceRequired": "SigV4 인증에는 AWS 서비스가 필요합니다",
+			"awsServiceFormat": "AWS 서비스는 [a-z0-9-]+ 형식이어야 합니다",
+			"headerNameNoSpecial": "헤더 이름에는 공백, 콜론, 슬래시를 사용할 수 없습니다",
+			"matcherNeedsValue": "헤더 매처에는 값 글롭이 필요합니다",
+			"matcherNeedsName": "헤더 매처에는 헤더 이름이 필요합니다",
+			"jobIdPath": "시작 응답에서 작업 ID를 담는 위치를 입력하세요",
+			"pollPathRequired": "폴링 경로를 입력하세요",
+			"pollPathRooted": "{{example}} 같은 루트 경로를 입력하세요",
+			"statusPathRequired": "폴링 응답에서 상태를 담는 위치를 입력하세요",
+			"succeededRequired": "성공 상태를 하나 이상 입력하세요",
+			"atLeastOneSecond": "최소 1초",
+			"headerMatchedDup": "이 헤더는 이 라우트에서 이미 매칭되고 있습니다",
+			"relayNameFormat": "1~64자의 영문자, 숫자, 점, 대시 또는 밑줄을 사용하세요",
+			"relayNameDots": "릴레이 이름으로 . 또는 ..를 사용할 수 없습니다",
+			"baseUrlFormat": "쿼리, 프래그먼트, 사용자 정보가 없는 절대 http(s) URL을 입력하세요",
+			"headerValueRequired": "이 헤더의 값을 입력하세요",
+			"headerNameEnter": "헤더 이름을 입력하세요",
+			"headerAlreadySet": "이 헤더는 이미 설정되어 있습니다",
+			"lineError": "{{line}}행: {{message}}",
+			"invalidPath": "잘못된 경로",
+			"regionSigV4": "SigV4에는 리전이 필요합니다",
+			"credentialRequired": "이 인증 유형에는 자격 증명이 필요합니다",
+			"proxyUrlRequired": "프록시 URL은 필수입니다",
+			"rootedPathSearch": "/v1/search 같은 루트 경로를 입력하세요",
+			"statusRange": "상태 코드는 100에서 599 사이여야 합니다"
+		}
 	},
 	"permissionDenied": {
 		"create": "{{entity}}을(를) 만들 권한이 없어요.",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}}분기",
 		"year_one": "{{count}}년",
 		"year_other": "{{count}}년"
+	},
+	"viewToggle": {
+		"more": "더 보기",
+		"less": "간략히 보기"
+	},
+	"baseProviderSelector": {
+		"placeholder": "기본 형식 선택",
+		"searchPlaceholder": "형식 검색..."
+	},
+	"commandDialog": {
+		"title": "명령 팔레트",
+		"description": "실행할 명령 검색..."
+	},
+	"copyToClipboard": {
+		"success": "클립보드에 복사됨",
+		"failed": "복사하지 못했습니다"
+	},
+	"agentCard": {
+		"unnamedSkill": "이름 없는 스킬",
+		"unknown": "알 수 없음"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} 외 {{count}}개"
+	},
+	"badges": {
+		"beta": "베타"
 	}
 }

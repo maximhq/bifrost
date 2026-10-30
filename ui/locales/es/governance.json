@@ -59,7 +59,9 @@
 			"name": "Nombre",
 			"noBudgets": "No hay presupuestos configurados"
 		},
-		"actionsAria": "Acciones del cliente {{name}}"
+		"actionsAria": "Acciones del cliente {{name}}",
+		"teamCount_one": "{{count}} equipo",
+		"teamCount_other": "{{count}} equipos"
 	},
 	"teams": {
 		"title": "Equipos",
@@ -531,7 +533,13 @@
 			"custom pricing": "precios personalizados",
 			"configuration": "configuración",
 			"complexity router": "router de complejidad",
-			"routing rules": "reglas de enrutamiento"
+			"routing rules": "reglas de enrutamiento",
+			"relays": "relés",
+			"Agent gateway configuration": "configuración del gateway de agentes",
+			"guardrail incidents": "incidentes de guardrails",
+			"relay logs": "registros de relés",
+			"agent logs": "registros de agentes",
+			"Warp": "Warp"
 		}
 	},
 	"loggingDisabled": {

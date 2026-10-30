@@ -11,7 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { getProviderLabel, RequestTypeLabels } from "@/lib/constants/logs";
+import { getProviderLabel, getRequestTypeLabel } from "@/lib/constants/logs";
 import { getErrorMessage, useCreatePricingOverrideMutation, useGetProvidersQuery, useUpdatePricingOverrideMutation } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { getUserPicker } from "@/lib/registries/userPicker";
@@ -254,6 +254,7 @@ function isCompleteScopeLock(scopeLock?: PricingOverrideDrawerProps["scopeLock"]
 export default function PricingOverrideSheet({ open, onOpenChange, editingOverride, scopeLock, onSaved }: PricingOverrideDrawerProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
+	const { t: tObs } = useTranslation("observability");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("customPricing.allProvidersLower") }), [t]);
 	const { data: providersData, isLoading: isProvidersLoading, error: providersError } = useGetProvidersQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
@@ -863,7 +864,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 													>
 														<span className="truncate text-left">
 															{field.value.length > 0 ? (
-																field.value.map((rt) => RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt).join(", ")
+																field.value.map((rt) => getRequestTypeLabel(rt, tObs)).join(", ")
 															) : (
 																<span className="text-muted-foreground">{t("customPricing.selectRequestTypes")}</span>
 															)}
@@ -896,7 +897,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 																				if (next.length > 0) clearErrors("requestTypes");
 																			}}
 																		/>
-																		<span>{RequestTypeLabels[requestType as keyof typeof RequestTypeLabels] ?? requestType}</span>
+																		<span>{getRequestTypeLabel(requestType, tObs)}</span>
 																	</label>
 																);
 															})}
@@ -980,7 +981,7 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 								data-testid="pricing-override-save-btn"
 								type="submit"
 								disabled={isSaving || !canSave}
-								title={canSave ? undefined : "You do not have permission to change pricing overrides"}
+								title={canSave ? undefined : t("customPricing.noChangePermission")}
 							>
 								<Save className="h-4 w-4" />
 								{editingOverride ? t("customPricing.updateOverride") : t("customPricing.saveOverride")}

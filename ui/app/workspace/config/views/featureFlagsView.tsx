@@ -96,7 +96,7 @@ function FeatureFlagRow({ flag, canUpdate, onToggle }: FeatureFlagRowProps) {
 			</TableCell>
 			<TableCell className="w-px text-right align-top">
 				<Switch
-					aria-label={`Enable ${primaryLabel}`}
+					aria-label={t("featureFlags.enableAria", { name: primaryLabel })}
 					data-testid={`feature-flag-toggle-${flag.id}`}
 					size="md"
 					checked={flag.enabled}

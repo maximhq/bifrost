@@ -22,7 +22,11 @@
 		"toTime": "Ora di fine",
 		"timezone": "Fuso orario",
 		"selectTimezone": "Seleziona fuso orario",
-		"time": "Ora"
+		"time": "Ora",
+		"am": "AM",
+		"pm": "PM",
+		"hourPlaceholder": "HH",
+		"minutePlaceholder": "MM"
 	},
 	"timePeriods": {
 		"1h": "Ultima ora",
@@ -70,7 +74,10 @@
 		"agents": "agenti",
 		"providers": "provider",
 		"webhookEndpoints": "endpoint webhook",
-		"modelLimits": "limiti del modello"
+		"modelLimits": "limiti del modello",
+		"agent": "agente",
+		"relay": "relay",
+		"relays": "relay"
 	},
 	"aboutField": "Informazioni su {{field}}",
 	"thisField": "questo campo",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}, selezionata{{disabled}}",
 		"optionNotSelectedAria": "{{label}}, non selezionata{{disabled}}",
 		"disabledSuffix": ", disabilitata",
-		"clear": "Cancella"
+		"clear": "Cancella",
+		"moreCount": "+ altri {{count}}"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "L'anno fiscale inizia a",
@@ -195,7 +203,8 @@
 		"failedToLoad": "Impossibile caricare."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "Periodo di reimpostazione"
+		"resetPeriod": "Periodo di reimpostazione",
+		"noLimit": "Nessun limite"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "Il valore risolto apparirà dopo il salvataggio"
@@ -204,7 +213,9 @@
 		"label": "Accesso agli agenti",
 		"tooltip": "Concedi a questa chiave l'accesso agli agenti registrati. La chiave potrà quindi chiamare ogni agente su <path0>{{path}}</path0>. Gli agenti contrassegnati come aperti a tutte le chiavi non richiedono alcuna autorizzazione.",
 		"selectPlaceholder": "Seleziona un agente da aggiungere",
-		"removeAria": "Rimuovi {{name}}"
+		"removeAria": "Rimuovi {{name}}",
+		"openToAll": "Aperto a tutte le chiavi",
+		"disabled": "Disattivato"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} useranno finestre mobili per l'intera durata. L'allineamento al calendario si applica solo a 1d, 1w, 1M, 1Q e 1Y."
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "Mantieni {{label}} tra {{min}} e {{max}}.",
 		"addString": "Aggiungi stringa",
-		"select": "Seleziona"
+		"select": "Seleziona",
+		"clear": "Cancella {{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "Inserisci un URL valido",
 		"validEmail": "Inserisci un indirizzo email valido",
 		"grpcHostPortFormat": "Per gRPC, il formato deve essere <host>:<port> (ad es. {{example}})",
-		"invalidInput": "Input non valido"
+		"invalidInput": "Input non valido",
+		"vertexEndpointId": "Inserisci un ID endpoint Vertex o incolla un URL endpoint supportato",
+		"mcp": {
+			"privateKeyRequired": "Per private_key_jwt è richiesta una chiave privata",
+			"secretRequiredForMethod": "Per scegliere come viene inviato è richiesto un client secret",
+			"credentialResend": "Reinseriscilo: l'audience, l'endpoint token upstream o l'audience dell'asserzione sono cambiati, quindi il valore salvato non viene inviato alla nuova destinazione"
+		},
+		"relays": {
+			"costPerRequestNegative": "Il costo per richiesta non può essere negativo",
+			"costPerUnitNegative": "Il costo per unità non può essere negativo",
+			"blockSizePositive": "La dimensione del blocco deve essere maggiore di zero",
+			"minimumUnitsNegative": "Le unità minime non possono essere negative",
+			"unitsPathRequiredRoute": "Il percorso delle unità è obbligatorio: questa route addebita per unità e né essa né il relay indicano un percorso",
+			"unitsPathRequired": "Il percorso delle unità è obbligatorio, a meno che la misura non legga l'intero body",
+			"unitsPathRequiredInherited": "Il percorso delle unità è obbligatorio: la route {{method}} {{path}} addebita per unità e lo eredita dal relay",
+			"absoluteUrl": "Inserisci un URL http(s) assoluto",
+			"pathRequired": "Il percorso è obbligatorio",
+			"pathMustStartWithSlash": "Il percorso deve iniziare con /",
+			"doubleStarLast": "** è consentito solo come ultimo segmento",
+			"headerNameRequired": "Per l'autenticazione tramite header è richiesto il nome dell'header",
+			"queryParamRequired": "Per l'autenticazione tramite query è richiesto il parametro di query",
+			"awsServiceRequired": "Per l'autenticazione SigV4 è richiesto il servizio AWS",
+			"awsServiceFormat": "Il servizio AWS deve corrispondere a [a-z0-9-]+",
+			"headerNameNoSpecial": "Il nome dell'header non può contenere spazi, due punti o barre",
+			"matcherNeedsValue": "Un matcher di header richiede un glob del valore",
+			"matcherNeedsName": "Un matcher di header richiede un nome di header",
+			"jobIdPath": "Indica dove la risposta di avvio riporta l'ID del job",
+			"pollPathRequired": "Inserisci il percorso di polling",
+			"pollPathRooted": "Inserisci un percorso radicato come {{example}}",
+			"statusPathRequired": "Indica dove la risposta di polling riporta lo stato",
+			"succeededRequired": "Inserisci almeno uno stato di successo",
+			"atLeastOneSecond": "Almeno 1 secondo",
+			"headerMatchedDup": "Questo header è già confrontato su questa route",
+			"relayNameFormat": "Usa da 1 a 64 lettere, cifre, punti, trattini o trattini bassi",
+			"relayNameDots": "Un relay non può chiamarsi . o ..",
+			"baseUrlFormat": "Inserisci un URL http(s) assoluto senza query, frammento o informazioni utente",
+			"headerValueRequired": "Inserisci un valore per questo header",
+			"headerNameEnter": "Inserisci un nome di header",
+			"headerAlreadySet": "Questo header è già impostato",
+			"lineError": "Riga {{line}}: {{message}}",
+			"invalidPath": "percorso non valido",
+			"regionSigV4": "Per SigV4 è richiesta la regione",
+			"credentialRequired": "Per questo tipo di autenticazione è richiesta la credenziale",
+			"proxyUrlRequired": "L'URL del proxy è obbligatorio",
+			"rootedPathSearch": "Inserisci un percorso radicato come /v1/search",
+			"statusRange": "Lo stato deve essere compreso tra 100 e 599"
+		}
 	},
 	"permissionDenied": {
 		"create": "Non hai l'autorizzazione per creare {{entity}}.",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}} trimestri",
 		"year_one": "{{count}} anno",
 		"year_other": "{{count}} anni"
+	},
+	"viewToggle": {
+		"more": "Mostra altro",
+		"less": "Mostra meno"
+	},
+	"baseProviderSelector": {
+		"placeholder": "Seleziona il formato di base",
+		"searchPlaceholder": "Cerca formati..."
+	},
+	"commandDialog": {
+		"title": "Tavolozza dei comandi",
+		"description": "Cerca un comando da eseguire..."
+	},
+	"copyToClipboard": {
+		"success": "Copiato negli appunti",
+		"failed": "Copia non riuscita"
+	},
+	"agentCard": {
+		"unnamedSkill": "Competenza senza nome",
+		"unknown": "Sconosciuto"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} +altri {{count}}"
+	},
+	"badges": {
+		"beta": "BETA"
 	}
 }

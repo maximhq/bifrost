@@ -33,6 +33,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 interface VirtualMCPsTableProps {
 	virtualMcps: VirtualMCP[];
@@ -406,7 +407,7 @@ function formatDate(iso: string): string {
 	try {
 		const t = new Date(iso).getTime();
 		if (Number.isNaN(t)) return iso;
-		return new Date(t).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+		return new Date(t).toLocaleDateString(getLocale(), { year: "numeric", month: "short", day: "numeric" });
 	} catch {
 		return iso;
 	}

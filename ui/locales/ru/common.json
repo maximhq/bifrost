@@ -22,7 +22,11 @@
 		"toTime": "Время окончания",
 		"timezone": "Часовой пояс",
 		"selectTimezone": "Выберите часовой пояс",
-		"time": "Время"
+		"time": "Время",
+		"am": "AM",
+		"pm": "PM",
+		"hourPlaceholder": "ЧЧ",
+		"minutePlaceholder": "ММ"
 	},
 	"timePeriods": {
 		"1h": "Последний час",
@@ -70,7 +74,10 @@
 		"agents": "агенты",
 		"providers": "провайдеры",
 		"webhookEndpoints": "эндпоинты вебхуков",
-		"modelLimits": "ограничения модели"
+		"modelLimits": "ограничения модели",
+		"agent": "агент",
+		"relay": "ретранслятор",
+		"relays": "ретрансляторы"
 	},
 	"aboutField": "О поле {{field}}",
 	"thisField": "это поле",
@@ -173,7 +180,8 @@
 		"selectedList_few": "Выбрано {{count}} варианта: {{labels}}",
 		"selectedList_many": "Выбрано {{count}} вариантов: {{labels}}",
 		"clearAllAria_few": "Снять выбор со всех {{count}} выбранных вариантов",
-		"clearAllAria_many": "Снять выбор со всех {{count}} выбранных вариантов"
+		"clearAllAria_many": "Снять выбор со всех {{count}} выбранных вариантов",
+		"moreCount": "+ ещё {{count}}"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "Начало финансового года",
@@ -209,7 +217,8 @@
 		"failedToLoad": "Не удалось загрузить."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "Период сброса"
+		"resetPeriod": "Период сброса",
+		"noLimit": "Без ограничений"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "Разрешённое значение появится после сохранения"
@@ -218,7 +227,9 @@
 		"label": "Доступ к агентам",
 		"tooltip": "Предоставьте этому ключу доступ к зарегистрированным агентам. Тогда ключ сможет вызывать каждого агента по адресу <path0>{{path}}</path0>. Агентам, открытым для всех ключей, доступ предоставлять не нужно.",
 		"selectPlaceholder": "Выберите агента для добавления",
-		"removeAria": "Удалить {{name}}"
+		"removeAria": "Удалить {{name}}",
+		"openToAll": "Открыт для всех ключей",
+		"disabled": "Отключён"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "Для {{durations}} будут использоваться скользящие окна на всю длительность. Выравнивание по календарю применяется только к 1d, 1w, 1M, 1Q и 1Y."
@@ -315,7 +326,8 @@
 	"modelParameters": {
 		"keepBetween": "Укажите для параметра {{label}} значение от {{min}} до {{max}}.",
 		"addString": "Добавить строку",
-		"select": "Выбрать"
+		"select": "Выбрать",
+		"clear": "Очистить {{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -504,7 +516,53 @@
 		"validUrl": "Укажите корректный URL",
 		"validEmail": "Укажите корректный адрес электронной почты",
 		"grpcHostPortFormat": "Для gRPC укажите в формате <host>:<port> (например, {{example}})",
-		"invalidInput": "Некорректные данные"
+		"invalidInput": "Некорректные данные",
+		"vertexEndpointId": "Введите ID конечной точки Vertex или вставьте поддерживаемый URL конечной точки",
+		"mcp": {
+			"privateKeyRequired": "Для private_key_jwt требуется закрытый ключ",
+			"secretRequiredForMethod": "Для выбора способа отправки требуется секрет клиента",
+			"credentialResend": "Введите значение заново: изменился audience, upstream-эндпоинт токена или audience утверждения, поэтому сохранённое значение не отправляется на новую цель"
+		},
+		"relays": {
+			"costPerRequestNegative": "Стоимость запроса не может быть отрицательной",
+			"costPerUnitNegative": "Стоимость единицы не может быть отрицательной",
+			"blockSizePositive": "Размер блока должен быть больше нуля",
+			"minimumUnitsNegative": "Минимальное число единиц не может быть отрицательным",
+			"unitsPathRequiredRoute": "Требуется путь к единицам: этот маршрут тарифицируется по единицам, но ни у него, ни у релея путь не указан",
+			"unitsPathRequired": "Требуется путь к единицам, если только измерение не читает всё тело",
+			"unitsPathRequiredInherited": "Требуется путь к единицам: маршрут {{method}} {{path}} тарифицируется по единицам и наследует путь от релея",
+			"absoluteUrl": "Введите абсолютный URL http(s)",
+			"pathRequired": "Путь обязателен",
+			"pathMustStartWithSlash": "Путь должен начинаться с /",
+			"doubleStarLast": "** допускается только в последнем сегменте",
+			"headerNameRequired": "Для аутентификации через заголовок требуется имя заголовка",
+			"queryParamRequired": "Для аутентификации через параметр запроса требуется параметр запроса",
+			"awsServiceRequired": "Для аутентификации SigV4 требуется сервис AWS",
+			"awsServiceFormat": "Сервис AWS должен соответствовать [a-z0-9-]+",
+			"headerNameNoSpecial": "Имя заголовка не должно содержать пробелов, двоеточий и косых черт",
+			"matcherNeedsValue": "Для сопоставления заголовка нужен glob значения",
+			"matcherNeedsName": "Для сопоставления заголовка нужно имя заголовка",
+			"jobIdPath": "Укажите, где в ответе на запуск находится ID задания",
+			"pollPathRequired": "Введите путь опроса",
+			"pollPathRooted": "Введите путь от корня, например {{example}}",
+			"statusPathRequired": "Укажите, где в ответе опроса находится статус",
+			"succeededRequired": "Введите хотя бы один статус успеха",
+			"atLeastOneSecond": "Не менее 1 секунды",
+			"headerMatchedDup": "Этот заголовок уже сопоставляется на этом маршруте",
+			"relayNameFormat": "Используйте от 1 до 64 букв, цифр, точек, дефисов или подчёркиваний",
+			"relayNameDots": "Релей нельзя назвать . или ..",
+			"baseUrlFormat": "Введите абсолютный URL http(s) без запроса, фрагмента и данных пользователя",
+			"headerValueRequired": "Введите значение для этого заголовка",
+			"headerNameEnter": "Введите имя заголовка",
+			"headerAlreadySet": "Этот заголовок уже задан",
+			"lineError": "Строка {{line}}: {{message}}",
+			"invalidPath": "недопустимый путь",
+			"regionSigV4": "Для SigV4 требуется регион",
+			"credentialRequired": "Для этого типа аутентификации требуются учётные данные",
+			"proxyUrlRequired": "URL прокси обязателен",
+			"rootedPathSearch": "Введите путь от корня, например /v1/search",
+			"statusRange": "Статус должен быть от 100 до 599"
+		}
 	},
 	"permissionDenied": {
 		"create": "У вас нет разрешения на создание: {{entity}}.",
@@ -546,5 +604,31 @@
 		"quarter_many": "{{count}} кварталов",
 		"year_few": "{{count}} года",
 		"year_many": "{{count}} лет"
+	},
+	"viewToggle": {
+		"more": "Показать больше",
+		"less": "Показать меньше"
+	},
+	"baseProviderSelector": {
+		"placeholder": "Выберите базовый формат",
+		"searchPlaceholder": "Поиск форматов..."
+	},
+	"commandDialog": {
+		"title": "Палитра команд",
+		"description": "Найдите команду для выполнения..."
+	},
+	"copyToClipboard": {
+		"success": "Скопировано в буфер обмена",
+		"failed": "Не удалось скопировать"
+	},
+	"agentCard": {
+		"unnamedSkill": "Навык без названия",
+		"unknown": "Неизвестно"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} +ещё {{count}}"
+	},
+	"badges": {
+		"beta": "БЕТА"
 	}
 }
