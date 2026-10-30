@@ -52,6 +52,8 @@ import { ChevronDown, Clipboard, Download, Loader2, MoreVertical, Trash2 } from 
 import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import { getLocale } from "@/lib/i18n";
 
 interface MCPLogDetailSheetProps {
 	log: MCPToolLogEntry | null;
@@ -549,12 +551,20 @@ export function MCPLogDetailSheet({
 									<LogEntryDetailsView
 										className="w-full"
 										label={t("mcpLogs.detail.startTimestamp")}
-										value={startTimestamp && isValid(startTimestamp) ? format(startTimestamp, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA")}
+										value={
+											startTimestamp && isValid(startTimestamp)
+												? format(startTimestamp, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
+												: t("labels.nA")
+										}
 									/>
 									<LogEntryDetailsView
 										className="w-full"
 										label={endLabel}
-										value={endTimestamp && isValid(endTimestamp) ? format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA")}
+										value={
+											endTimestamp && isValid(endTimestamp)
+												? format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
+												: t("labels.nA")
+										}
 									/>
 									<LogEntryDetailsView
 										className="w-full"

@@ -5,6 +5,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { GaugeNeedle, getGaugeGeometry, useGaugeSize } from "./gaugeUtils";
 import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface LocalCacheTokenMeterChartProps {
 	data: LogStats | null;
@@ -14,6 +15,7 @@ interface LocalCacheTokenMeterChartProps {
 const METER_COLORS = { direct: "var(--chart-seq-1)", semantic: "var(--chart-seq-3)", remaining: "var(--chart-seq-5)" };
 
 function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps) {
+	useLocale();
 	const { t } = useTranslation("observability");
 	const { ref, width, height } = useGaugeSize();
 

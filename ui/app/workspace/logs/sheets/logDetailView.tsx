@@ -123,6 +123,7 @@ import {
 	messageToneClass,
 	type MessageRole,
 } from "../views/responsesItemRow";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 // Full-precision cost for the detail view; per-request costs are often < $0.01,
 // where formatCost's 2-4 dp rounding would hide the value.
@@ -1331,7 +1332,9 @@ export function LogDetailView({
 									label={t("logs.detail.startTimestamp")}
 									value={(() => {
 										const d = log.timestamp ? new Date(log.timestamp) : null;
-										return d && !isNaN(d.getTime()) ? format(d, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA");
+										return d && !isNaN(d.getTime())
+											? format(d, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
+											: t("labels.nA");
 									})()}
 								/>
 								<LogEntryDetailsView
@@ -1340,7 +1343,7 @@ export function LogDetailView({
 									value={(() => {
 										const d = log.timestamp ? new Date(log.timestamp) : null;
 										return d && !isNaN(d.getTime())
-											? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa")
+											? format(addMilliseconds(d, log.latency || 0), "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })
 											: t("labels.nA");
 									})()}
 								/>

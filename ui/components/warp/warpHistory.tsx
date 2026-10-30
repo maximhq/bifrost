@@ -20,6 +20,8 @@ import { formatDistanceToNow } from "date-fns";
 import { Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import { getLocale } from "@/lib/i18n";
 
 interface WarpHistoryProps {
 	activeConversationId?: string;
@@ -113,6 +115,7 @@ export default function WarpHistory({ activeConversationId, onOpen, onDeleted }:
 									<span className="whitespace-nowrap">
 										{formatDistanceToNow(new Date(conversation.updated_at), {
 											addSuffix: true,
+											locale: dateFnsLocale(getLocale()),
 										})}
 									</span>
 									<span aria-hidden>·</span>

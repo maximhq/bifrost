@@ -19,6 +19,7 @@ import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { shouldShowEmptyState } from "../deliveries.page.utils";
+import { getLocale } from "@/lib/i18n";
 
 export interface DeliveriesPagination {
 	limit: number;
@@ -256,9 +257,9 @@ export function DeliveriesTable({
 				<div className="flex items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{t("webhooks.deliveries.table.range", {
-							from: startItemDisplay.toLocaleString(),
-							to: endItemDisplay.toLocaleString(),
-							total: totalItems.toLocaleString(),
+							from: startItemDisplay.toLocaleString(getLocale()),
+							to: endItemDisplay.toLocaleString(getLocale()),
+							total: totalItems.toLocaleString(getLocale()),
 						})}
 					</div>
 
