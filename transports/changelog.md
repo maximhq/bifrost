@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **Boolean Tool Schema Compatibility** - Custom providers on the OpenAI base can opt in to boolean tool schema compatibility from configuration and the UI (thanks [@Xytronix](https://github.com/Xytronix)!)
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway

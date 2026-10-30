@@ -420,6 +420,39 @@ Add `wait_for_usage` when your upstream ends on `finish_reason` but still sends 
 
 With `wait_for_usage` the stream ends on whichever comes first: the usage chunk, two consecutive heartbeat comments, the upstream closing the connection, or `stream_idle_timeout_in_seconds`. If your upstream may go silent without ever sending usage, set `network_config.stream_idle_timeout_in_seconds` low (`5`, say) on that provider so the last case does not hold the request for the default 120 seconds.
 
+### Boolean Tool Schemas
+
+Some OpenAI-compatible upstreams reject valid boolean JSON Schema subschemas in tool
+parameters, for example `"items": true`, with errors such as
+`argument of type 'bool' is not iterable`. Enable this compatibility option only for
+an affected custom provider:
+
+```json
+{
+    "custom_provider_config": {
+        "base_provider_type": "openai",
+        "boolean_schema_nodes_unsupported": true
+    }
+}
+```
+
+On Chat Completions and Responses, including streaming, Bifrost replaces boolean
+subschemas with equivalent object schemas: `true` becomes `{}` and `false` becomes
+`{"not":{}}`. This preserves which values the schema accepts.
+
+The rewrite visits schema positions: values in `properties`, `patternProperties`,
+`$defs`, `definitions` and `dependentSchemas`; `items`, `contains`, `propertyNames`,
+`not`, `if`, `then`, `else`, `additionalItems` and `contentSchema`; and entries in
+`anyOf`, `oneOf`, `allOf`, `prefixItems` and tuple-form `items`.
+Object-valued `additionalProperties`, `unevaluatedProperties` and `unevaluatedItems`
+are visited, but their boolean forms are left unchanged. Instance data such as
+`enum`, `const`, `default` and `examples`, and unknown keywords, are never rewritten.
+
+The option defaults to `false`, applies only to the `openai` base provider, preserves
+schema key order, and does not mutate the caller's request. Without the option,
+outbound request bytes are unchanged. The same option is available as **Rewrite
+Boolean Tool Schemas?** in the custom-provider creation and API Structure forms.
+
 
 ### Request Path Overrides
 
