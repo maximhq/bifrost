@@ -453,6 +453,48 @@ func TestUpsertMCPLibraryEntry(t *testing.T) {
 	require.Equal(t, "updated", entries[0].Description)
 }
 
+// TestCreateCustomMCPLibraryEntry_ReplacesADeletedRemoteEntry checks that a
+// deleted remote entry frees its name for a custom entry, that the custom entry
+// keeps the remote sync off the slug, and that a live entry still blocks it.
+func TestCreateCustomMCPLibraryEntry_ReplacesADeletedRemoteEntry(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	remote := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://remote.example/mcp", Source: "remote"}
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, remote))
+
+	live := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://custom.example/mcp"}
+	require.ErrorIs(t, store.CreateCustomMCPLibraryEntry(ctx, live), ErrAlreadyExists, "a live remote entry keeps its name")
+
+	require.NoError(t, store.DeleteMCPLibraryEntry(ctx, remote.ID))
+
+	custom := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://custom.example/mcp"}
+	require.NoError(t, store.CreateCustomMCPLibraryEntry(ctx, custom))
+
+	entries, totalCount, err := store.GetMCPLibraryPaginated(ctx, MCPLibraryQueryParams{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), totalCount)
+	require.Len(t, entries, 1)
+	assert.Equal(t, custom.ID, entries[0].ID)
+	assert.Equal(t, "custom", entries[0].Source)
+	assert.Equal(t, "https://custom.example/mcp", entries[0].ConnectionURL)
+
+	protected, err := store.GetProtectedMCPLibrarySlugs(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, protected, "notes")
+
+	// A sync that still lists the remote entry leaves the custom one in place.
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://remote.example/mcp", Source: "remote"}))
+	entries, _, err = store.GetMCPLibraryPaginated(ctx, MCPLibraryQueryParams{})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "custom", entries[0].Source)
+	assert.Equal(t, "https://custom.example/mcp", entries[0].ConnectionURL)
+
+	again := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://other.example/mcp"}
+	require.ErrorIs(t, store.CreateCustomMCPLibraryEntry(ctx, again), ErrAlreadyExists, "a live custom entry keeps its name")
+}
+
 func TestValidateSkillVersionIncrementRequiresGreaterVersion(t *testing.T) {
 	tests := []struct {
 		name    string

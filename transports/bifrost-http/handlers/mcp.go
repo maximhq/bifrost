@@ -5036,7 +5036,8 @@ type CreateMCPLibraryEntryRequest struct {
 // createMCPLibraryEntry handles POST /api/mcp/library — publishes an org-internal
 // ("custom") MCP server into the library so other members can discover and
 // install it. The entry is protected from the remote sync (see Source/skip-set
-// in SyncMCPLibrary). A duplicate name (same generated slug) returns 409.
+// in SyncMCPLibrary). A duplicate of a listed entry's name (same generated slug)
+// returns 409; a deleted entry's name can be published again.
 func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")

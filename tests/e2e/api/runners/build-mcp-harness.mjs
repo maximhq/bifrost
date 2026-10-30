@@ -5327,6 +5327,30 @@ const LIB14 = folder("LIB-14 Deleted remote entry stays deleted after sync", `Se
   resetLibrary("LIB-14"),
 ]);
 
+const LIB15_URL = "http://127.0.0.1:9/lib15/mcp";
+// lib15Custom checks that the one listed "LIB-15 entry" is the published custom entry.
+const lib15Custom = (title) => request("LIB-15", title, "GET", libSearch("LIB-15 entry"), { asserts: [A.status(200), A.custom("one entry named \"LIB-15 entry\": the published one, source \"custom\", at its URL", [
+  byName("LIB-15 entry"),
+  "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+  "pm.expect(found[0].id).to.equal(Number(pm.collectionVariables.get('lib15_c')));",
+  "pm.expect(found[0].source).to.equal('custom');",
+  `pm.expect(found[0].connection_url).to.equal(${lit(LIB15_URL)});`,
+])] });
+const LIB15 = folder("LIB-15 Publish over a deleted remote entry's name", `Setup: ${LIB_BOOT_TEXT} plus remote entry "LIB-15 entry", synced; the entry is deleted while the catalog still lists it.`, [
+  readBoot("LIB-15"),
+  setCatalog("LIB-15", "setup: the catalog adds LIB-15 entry", [libEntry("LIB-15 entry", "lib15")]),
+  forceSync("LIB-15", "setup: force-sync", 6),
+  saveLibEntry("LIB-15", "setup: find the remote entry", "LIB-15 entry", "lib15_r"),
+  libDeleteAs("LIB-15", "setup: delete the remote entry", "lib15_r"),
+  libPublish("LIB-15", "publish \"LIB-15 entry\"", { name: "LIB-15 entry", connection_type: "http", connection_url: LIB15_URL }, "lib15_c"),
+  lib15Custom("the published entry is listed"),
+  forceSync("LIB-15", "force-sync with the remote entry still in the catalog", 5),
+  lib15Custom("the published entry is still listed"),
+  request("LIB-15", "publish \"LIB-15 entry\" again", "POST", LIBRARY, { body: { name: "LIB-15 entry", connection_type: "http", connection_url: LIB15_URL }, asserts: [A.status(409), A.msgEquals(LIB_DUP_MSG)] }),
+  libDeleteAs("LIB-15", "teardown: delete the custom entry", "lib15_c"),
+  resetLibrary("LIB-15"),
+]);
+
 const LIB21 = folder("LIB-21 Force-sync adds new entries", `Setup: ${LIB_BOOT_TEXT} plus two new entries, "LIB-21 first" and "LIB-21 second".`, [
   readBoot("LIB-21"),
   setCatalog("LIB-21", "setup: the catalog adds LIB-21 first and LIB-21 second", [libEntry("LIB-21 first", "lib21a"), libEntry("LIB-21 second", "lib21b")]),
@@ -7890,7 +7914,7 @@ const collection = {
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET13, SET20, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
   ],
