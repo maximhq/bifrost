@@ -4937,7 +4937,338 @@ const LIB36 = folder("LIB-36 Interval validation over the API", "Setup: PUT /api
 
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
+// The runner points the openai, anthropic and gemini providers at fleet server llm, which answers each model request
+// with the turns a test scripts for its scenario and logs what it was sent. Every request a test makes carries
+// "[scenario:<key>]" in its first user message; the key is the lowercased test ID, plus a leg when a test needs two.
+const LLM_CTL = "/control/llm/llm";
+const MODEL = "openai/mock-model";
+const LLM_TEXT = "the openai, anthropic and gemini providers point at the fleet's mock LLM (model mock-model), which answers each request with the turns scripted for its scenario and logs what it was sent";
+const marker = (key) => `[scenario:${key}]`;
+// llmScript replaces a scenario's turns (turns, then) on the mock LLM.
+const llmScript = (id, key, script, title) => request(id, title || `setup: script the mock LLM for ${key}`, "POST", `${LLM_CTL}/script`, {
+  base: CHAOS, noAuth: true, body: { scenario: key, ...script }, asserts: [A.status(200)],
+});
+const TEXT_OK = { then: { text: "ok" } };
+// llmCaptured reads a scenario's logged requests; asserts see them as `reqs` (ES5).
+const REQS = "var reqs = pm.response.json().requests || [];";
+const llmCaptured = (id, title, key, asserts) => request(id, title, "GET", `${LLM_CTL}/requests?scenario=${key}`, { base: CHAOS, noAuth: true, asserts: [A.status(200), ...asserts] });
+const reqCount = (n) => A.custom(`${n} model request${n === 1 ? "" : "s"} logged`, [REQS, `pm.expect(reqs.length, 'body: ' + pm.response.text()).to.equal(${n});`]);
+// toolsAre checks the declared tool names of request i, in order.
+const toolsAre = (i, names) => A.custom(`request ${i + 1} declares exactly ${lit(names)}`, [REQS, `pm.expect(reqs[${i}] && reqs[${i}].tools, 'body: ' + pm.response.text()).to.eql(${lit(names)});`]);
+const toolsInclude = (i, name) => A.custom(`request ${i + 1} declares ${name}`, [REQS, `pm.expect(reqs[${i}] && reqs[${i}].tools, 'body: ' + pm.response.text()).to.include(${lit(name)});`]);
+// MCP_BLOCKS counts the instruction blocks in a request's parsed body; the raw body escapes "<" as <.
+const MCP_TEXT = "function mcpText(r) { return JSON.stringify(r.json); }";
+const noInstructions = (i) => A.custom(`request ${i + 1} carries no <mcp_server block`, [REQS, MCP_TEXT, `pm.expect(mcpText(reqs[${i}]), 'request').to.not.include('<mcp_server');`]);
+const ALPHA_GREET_LLM = `${ALPHA_GREET_TEXT}; ${LLM_TEXT}`;
+const userMsg = (key, text = "hi") => ({ role: "user", content: `${marker(key)} ${text}` });
+// infChat sends a chat completion through route path (default /v1/chat/completions) with no admin credentials.
+const infChat = (id, title, key, asserts, { path = "/v1/chat/completions", body = {}, headers = [], messages, model = MODEL } = {}) => request(id, title, "POST", path, {
+  noAuth: true, noCookies: true, headers, asserts,
+  body: { model, messages: messages || [userMsg(key)], ...body },
+});
+const infResponses = (id, title, key, asserts, { body = {}, headers = [] } = {}) => request(id, title, "POST", "/v1/responses", {
+  noAuth: true, noCookies: true, headers, asserts, body: { model: MODEL, input: `${marker(key)} hi`, ...body },
+});
+const ALPHA3 = ["alpha-add", "alpha-echo", "alpha-greet"];
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
+const betaSetup = (id) => [
+  ...freshServer(id, "beta", ["zz", "aa"]),
+  createClient(id, httpClient(`${id.toLowerCase()}-beta`, "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+];
+const betaTeardown = (id) => deleteClient(id, `${id.toLowerCase()}-beta`);
+
+const INF01 = folder("INF-01 Chat injection, stream and not", `Setup: ${ALPHA_GREET_LLM}.`, [
+  ...alphaGreetSetup("INF-01"),
+  llmScript("INF-01", "inf01", TEXT_OK),
+  infChat("INF-01", "chat completion", "inf01", [A.status(200)]),
+  infChat("INF-01", "streamed chat completion", "inf01", [A.status(200), A.custom("the stream ends with [DONE]", ["pm.expect(pm.response.text().trim().slice(-12), 'stream').to.equal('data: [DONE]');"])], { body: { stream: true } }),
+  llmCaptured("INF-01", "both requests declare exactly the alpha tools, type function", "inf01", [reqCount(2), toolsAre(0, ALPHA3), toolsAre(1, ALPHA3), A.custom("every declared tool has type function", [REQS, "reqs.forEach(function (r) { r.json.tools.forEach(function (t) { pm.expect(t.type, JSON.stringify(t)).to.equal('function'); }); });"])]),
+  alphaGreetTeardown("INF-01"),
+]);
+
+const MY_TOOL = (desc) => ({ type: "function", function: { name: "my_tool", ...(desc ? { description: desc } : {}), parameters: { type: "object", properties: {} } } });
+const INF02 = folder("INF-02 Responses injection", `Setup: ${ALPHA_GREET_LLM}; the caller sends its own function tool my_tool.`, [
+  ...alphaGreetSetup("INF-02"),
+  llmScript("INF-02", "inf02", TEXT_OK),
+  infResponses("INF-02", "Responses request with my_tool", "inf02", [A.status(200)], { body: { tools: [{ type: "function", name: "my_tool", parameters: { type: "object", properties: {} } }] } }),
+  llmCaptured("INF-02", "the alpha function tools follow the caller's", "inf02", [reqCount(1), toolsAre(0, ["my_tool", ...ALPHA3]), A.custom("every declared tool has type function", [REQS, "reqs[0].json.tools.forEach(function (t) { pm.expect(t.type, JSON.stringify(t)).to.equal('function'); });"])]),
+  alphaGreetTeardown("INF-02"),
+]);
+
+const INF03 = folder("INF-03 Anthropic route", `Setup: ${ALPHA_GREET_LLM}; /anthropic/v1/messages with model mock-model and no Claude Code user agent; the mock LLM answers with a tool_use for alpha-echo.`, [
+  ...alphaGreetSetup("INF-03"),
+  llmScript("INF-03", "inf03", { then: { tool_calls: [{ id: "tu1", name: "alpha-echo", arguments: { text: "hi" } }] } }),
+  request("INF-03", "Anthropic messages request", "POST", "/anthropic/v1/messages", { noAuth: true, noCookies: true, body: { model: "mock-model", max_tokens: 64, messages: [userMsg("inf03")] }, asserts: [A.status(200), A.custom("the client gets a tool_use named alpha-echo", [
+    "var c = (pm.response.json().content || []).filter(function (b) { return b.type === 'tool_use'; });",
+    "pm.expect(c.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(c[0].name).to.equal('alpha-echo');",
+  ])] }),
+  llmCaptured("INF-03", "the request declares alpha-echo", "inf03", [reqCount(1), toolsInclude(0, "alpha-echo"), A.custom("it reached the anthropic format", [REQS, "pm.expect(reqs[0].format).to.equal('anthropic.messages');"])]),
+  alphaGreetTeardown("INF-03"),
+]);
+
+const GENAI_BODY = (key) => ({ contents: [{ role: "user", parts: [{ text: `${marker(key)} hi` }] }] });
+const INF04 = folder("INF-04 GenAI route", `Setup: ${ALPHA_GREET_LLM}; generateContent and streamGenerateContent on /genai with the bare model mock-model; the mock LLM answers with a functionCall for alpha-echo.`, [
+  ...alphaGreetSetup("INF-04"),
+  llmScript("INF-04", "inf04", { then: { tool_calls: [{ id: "fc1", name: "alpha-echo", arguments: { text: "hi" } }] } }),
+  request("INF-04", "generateContent", "POST", "/genai/v1beta/models/mock-model:generateContent", { noAuth: true, noCookies: true, body: GENAI_BODY("inf04"), asserts: [A.status(200), A.custom("the client gets a functionCall named alpha-echo", [
+    "var parts = ((pm.response.json().candidates || [])[0] || {}).content.parts || [];",
+    "var calls = parts.filter(function (p) { return p.functionCall; });",
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(calls[0].functionCall.name).to.equal('alpha-echo');",
+  ])] }),
+  request("INF-04", "streamGenerateContent", "POST", "/genai/v1beta/models/mock-model:streamGenerateContent?alt=sse", { noAuth: true, noCookies: true, body: GENAI_BODY("inf04"), asserts: [A.status(200), A.custom("the stream carries a functionCall named alpha-echo", [
+    "var names = [];",
+    "pm.response.text().split('\\n').forEach(function (l) { if (l.indexOf('data: ') !== 0) { return; } var d = JSON.parse(l.slice(6)); ((((d.candidates || [])[0] || {}).content || {}).parts || []).forEach(function (p) { if (p.functionCall) { names.push(p.functionCall.name); } }); });",
+    "pm.expect(names, 'stream: ' + pm.response.text()).to.eql(['alpha-echo']);",
+  ])] }),
+  llmCaptured("INF-04", "both requests declare alpha-echo", "inf04", [reqCount(2), toolsInclude(0, "alpha-echo"), toolsInclude(1, "alpha-echo"), A.custom("one plain and one streamed genai request", [REQS, "pm.expect(reqs.map(function (r) { return r.format + ':' + r.stream; })).to.eql(['genai:false', 'genai:true']);"])]),
+  alphaGreetTeardown("INF-04"),
+]);
+
+const ALIAS_ROUTES = ["/openai/v1/chat/completions", "/litellm/v1/chat/completions", "/langchain/v1/chat/completions", "/pydanticai/v1/chat/completions"];
+const INF06 = folder("INF-06 Alias routes", `Setup: ${ALPHA_GREET_LLM}; a chat request with model openai/mock-model on /openai, /litellm, /langchain and /pydanticai, and a Cohere v2 chat on /cohere/v2/chat.`, [
+  ...alphaGreetSetup("INF-06"),
+  llmScript("INF-06", "inf06", TEXT_OK),
+  ...ALIAS_ROUTES.map((p) => infChat("INF-06", `chat on ${p.split("/")[1]}`, "inf06", [A.status(200)], { path: p })),
+  infChat("INF-06", "Cohere v2 chat", "inf06", [A.status(200)], { path: "/cohere/v2/chat" }),
+  llmCaptured("INF-06", "every request carries the three alpha tools", "inf06", [reqCount(5), A.custom("each of the 5 requests declares exactly the alpha tools", [REQS, `reqs.forEach(function (r) { pm.expect(r.tools, r.path).to.eql(${lit(ALPHA3)}); });`])]),
+  alphaGreetTeardown("INF-06"),
+]);
+
+const INF07_BODY = `{"model":"mock-model","messages":[{"role":"user","content":"${marker("inf07")} hi"}]}`;
+const INF07 = folder("INF-07 Passthrough does not inject", `Setup: ${ALPHA_GREET_LLM}; /openai_passthrough/v1/chat/completions with a raw body naming model mock-model.`, [
+  ...freshServer("INF-07", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-07", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-07"),
+  llmScript("INF-07", "inf07", TEXT_OK),
+  request("INF-07", "passthrough chat completion", "POST", "/openai_passthrough/v1/chat/completions", { noAuth: true, noCookies: true, raw: INF07_BODY, asserts: [A.status(200)] }),
+  llmCaptured("INF-07", "the upstream got the sent body byte for byte", "inf07", [reqCount(1), A.custom("body equals the sent body: no alpha tool, no <mcp_server text", [REQS,
+    `pm.expect(reqs[0].body).to.equal(${lit(INF07_BODY)});`,
+    "pm.expect(reqs[0].tools).to.eql([]);",
+  ]), noInstructions(0)]),
+  alphaGreetTeardown("INF-07"),
+]);
+
+const INF09 = folder("INF-09 Caller tools merge with injected tools", `Setup: ${ALPHA_GREET_LLM}; the caller sends my_tool and its own alpha-echo with description "CALLER".`, [
+  ...alphaGreetSetup("INF-09"),
+  llmScript("INF-09", "inf09", TEXT_OK),
+  infChat("INF-09", "chat with the caller's tools", "inf09", [A.status(200)], { body: { tools: [MY_TOOL(), { type: "function", function: { name: "alpha-echo", description: "CALLER", parameters: { type: "object", properties: {} } } }] } }),
+  llmCaptured("INF-09", "my_tool, the caller's alpha-echo once, then alpha-add and alpha-greet", "inf09", [reqCount(1), toolsAre(0, ["my_tool", "alpha-echo", "alpha-add", "alpha-greet"]), A.custom("alpha-echo is the caller's, described \"CALLER\"", [REQS, "pm.expect(reqs[0].json.tools[1].function.description).to.equal('CALLER');"])]),
+  alphaGreetTeardown("INF-09"),
+]);
+
+const INF10 = folder("INF-10 Deterministic tool order", `Setup: ${ALPHA_GREET_LLM}; plus beta (zz, aa) registered as client beta with tools_to_execute ["*"], registered before alpha; two identical chat requests.`, [
+  ...betaSetup("INF-10"),
+  ...alphaGreetSetup("INF-10"),
+  llmScript("INF-10", "inf10", TEXT_OK),
+  infChat("INF-10", "first chat", "inf10", [A.status(200)]),
+  infChat("INF-10", "second chat", "inf10", [A.status(200)]),
+  llmCaptured("INF-10", "both requests declare the tools in the same order", "inf10", [reqCount(2), toolsAre(0, [...ALPHA3, "beta-aa", "beta-zz"]), toolsAre(1, [...ALPHA3, "beta-aa", "beta-zz"])]),
+  betaTeardown("INF-10"),
+  alphaGreetTeardown("INF-10"),
+]);
+
+const INF11 = folder("INF-11 Unsafe upstream names dropped", `Setup: ${ALPHA_GREET_LLM}; alpha then also serves "fresh", "bad/name" and "a..b", and the client's tools are refreshed.`, [
+  ...alphaGreetSetup("INF-11"),
+  mockPost("INF-11", "alpha", "tools/set", "setup: alpha also serves fresh, bad/name and a..b", { tools: ["echo", "add", "greet", "fresh", "bad/name", "a..b"].map((name) => ({ name })) }),
+  request("INF-11", "setup: refresh the client's tools", "POST", "/api/mcp/client/inf-11-alpha/refresh-tools", { asserts: [A.status(200)] }),
+  getClient("INF-11", "inf-11-alpha", "fresh is listed and neither unsafe name is", [A.custom("the listed tools are add, echo, fresh, greet", ["pm.expect(pm.response.json().clients[0].tools.map(function (t) { return t.name; }).sort(), 'body: ' + pm.response.text()).to.eql(['add', 'echo', 'fresh', 'greet']);"])]),
+  llmScript("INF-11", "inf11", TEXT_OK),
+  infChat("INF-11", "chat", "inf11", [A.status(200)]),
+  llmCaptured("INF-11", "alpha-fresh is injected and neither unsafe name is", "inf11", [reqCount(1), toolsAre(0, ["alpha-add", "alpha-echo", "alpha-fresh", "alpha-greet"])]),
+  execTool("INF-11", "execute alpha-bad/name", "alpha-bad/name", [A.status(400), A.msgContains("is not available or not permitted")]),
+  alphaGreetTeardown("INF-11"),
+]);
+
+const ccTool = (name) => ({ type: "function", function: { name, parameters: { type: "object", properties: {} } } });
+const INF12 = folder("INF-12 Claude Code and Codex dedupe", `Setup: ${ALPHA_GREET_LLM}; alpha also serves get-time; on /openai, user agent "claude-cli/2.0" sending mcp__bifrost__alpha-echo, then user agent "codex-cli/1.0" sending mcp__bifrost__alpha_get_time.`, [
+  ...freshServer("INF-12", "alpha", ["echo", "add", "greet", "get-time"]),
+  alphaClient("INF-12"),
+  llmScript("INF-12", "inf12", TEXT_OK),
+  infChat("INF-12", "Claude Code request", "inf12", [A.status(200)], { path: "/openai/v1/chat/completions", headers: [{ key: "User-Agent", value: "claude-cli/2.0" }], body: { tools: [ccTool("mcp__bifrost__alpha-echo")] } }),
+  infChat("INF-12", "Codex request", "inf12", [A.status(200)], { path: "/openai/v1/chat/completions", headers: [{ key: "User-Agent", value: "codex-cli/1.0" }], body: { tools: [ccTool("mcp__bifrost__alpha_get_time")] } }),
+  llmCaptured("INF-12", "no duplicate alpha-echo; alpha-get-time not injected for Codex", "inf12", [reqCount(2),
+    toolsAre(0, ["mcp__bifrost__alpha-echo", "alpha-add", "alpha-get-time", "alpha-greet"]),
+    toolsAre(1, ["mcp__bifrost__alpha_get_time", "alpha-add", "alpha-echo", "alpha-greet"]),
+  ]),
+  deleteClient("INF-12", "inf-12-alpha"),
+]);
+
+const INF14 = folder("INF-14 Auto-inject off", `Setup: ${ALPHA_GREET_LLM}; alpha has instructions; mcp_disable_auto_tool_inject true.`, [
+  readConfig("INF-14"),
+  ...freshServer("INF-14", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-14", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-14"),
+  putConfig("INF-14", "setup: mcp_disable_auto_tool_inject true", ["cc.mcp_disable_auto_tool_inject = true;"], [A.status(200)]),
+  request("INF-14", "the config reads true", "GET", "/api/config", { asserts: [A.status(200), A.custom("client_config.mcp_disable_auto_tool_inject is true", ["pm.expect(pm.response.json().client_config.mcp_disable_auto_tool_inject, 'body').to.equal(true);"])] }),
+  llmScript("INF-14", "inf14", TEXT_OK),
+  infChat("INF-14", "chat", "inf14", [A.status(200)]),
+  infResponses("INF-14", "Responses request", "inf14", [A.status(200)]),
+  llmCaptured("INF-14", "no alpha tool and no instructions in either", "inf14", [reqCount(2), toolsAre(0, []), toolsAre(1, []), noInstructions(0), noInstructions(1)]),
+  alphaGreetTeardown("INF-14"),
+  restoreConfig("INF-14"),
+]);
+
+const systemBlock = (i, name, text) => A.custom(`request ${i + 1} opens with ${name}'s instructions block as a system message`, [REQS, `pm.expect(reqs[${i}].json.messages[0]).to.eql({ role: 'system', content: ${lit(`<mcp_server name="${name}">\n${text}\n</mcp_server>`)} });`]);
+const INF15 = folder("INF-15 Opt-in headers with auto-inject off", `Setup: ${ALPHA_GREET_LLM}; alpha has instructions; mcp_disable_auto_tool_inject true; one chat with x-bf-mcp-include-clients alpha, then one with x-bf-mcp-include-tools alpha-echo.`, [
+  readConfig("INF-15"),
+  ...freshServer("INF-15", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-15", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-15", {}),
+  putConfig("INF-15", "setup: mcp_disable_auto_tool_inject true", ["cc.mcp_disable_auto_tool_inject = true;"], [A.status(200)]),
+  request("INF-15", "control: the config reads mcp_disable_auto_tool_inject true", "GET", "/api/config", { asserts: [A.status(200), A.custom("client_config.mcp_disable_auto_tool_inject is true", ["pm.expect(pm.response.json().client_config.mcp_disable_auto_tool_inject, 'body: ' + pm.response.text()).to.equal(true);"])] }),
+  llmScript("INF-15", "inf15", TEXT_OK),
+  infChat("INF-15", "chat with include-clients alpha", "inf15", [A.status(200)], { headers: [inc("clients", "alpha")] }),
+  infChat("INF-15", "chat with include-tools alpha-echo", "inf15", [A.status(200)], { headers: [inc("tools", "alpha-echo")] }),
+  infChat("INF-15", "control: chat with no include header", "inf15", [A.status(200)]),
+  llmCaptured("INF-15", "all alpha tools plus instructions, then only alpha-echo; nothing without a header", "inf15", [reqCount(3), toolsAre(0, ALPHA3), systemBlock(0, "alpha", "Alpha instructions"), toolsAre(1, ["alpha-echo"]), toolsAre(2, []), noInstructions(2)]),
+  alphaGreetTeardown("INF-15"),
+  restoreConfig("INF-15"),
+]);
+
+const INF16 = folder("INF-16 Header narrowing with auto-inject on", `Setup: ${ALPHA_GREET_LLM}; plus beta (zz, aa) as client beta; alpha and beta both have instructions; chats with x-bf-mcp-include-clients beta, x-bf-mcp-include-tools alpha-*, and x-bf-mcp-include-clients empty.`, [
+  ...freshServer("INF-16", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-16", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-16"),
+  ...freshServer("INF-16", "beta", ["zz", "aa"]),
+  setInstructions("INF-16", "beta", "Beta instructions", lit("Beta instructions")),
+  createClient("INF-16", httpClient("inf-16-beta", "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+  llmScript("INF-16", "inf16", TEXT_OK),
+  infChat("INF-16", "chat with include-clients beta", "inf16", [A.status(200)], { headers: [inc("clients", "beta")] }),
+  infChat("INF-16", "chat with include-tools alpha-*", "inf16", [A.status(200)], { headers: [inc("tools", "alpha-*")] }),
+  infChat("INF-16", "chat with include-clients empty", "inf16", [A.status(200)], { headers: [inc("clients", "")] }),
+  infChat("INF-16", "control: chat with no include header", "inf16", [A.status(200)]),
+  llmCaptured("INF-16", "beta only; all alpha; nothing; everything without a header", "inf16", [reqCount(4),
+    toolsAre(0, ["beta-aa", "beta-zz"]), systemBlock(0, "beta", "Beta instructions"),
+    toolsAre(1, ALPHA3), systemBlock(1, "alpha", "Alpha instructions"),
+    toolsAre(2, []), noInstructions(2),
+    toolsAre(3, [...ALPHA3, "beta-aa", "beta-zz"]),
+    A.custom("request 4 opens with both blocks, alpha then beta", [REQS, `pm.expect(reqs[3].json.messages[0]).to.eql({ role: 'system', content: ${lit(block("alpha", "Alpha instructions") + "\n\n" + block("beta", "Beta instructions"))} });`]),
+  ]),
+  deleteClient("INF-16", "inf-16-beta"),
+  alphaGreetTeardown("INF-16"),
+]);
+
+const INF17 = folder("INF-17 Headers cannot widen the allow-list", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha with tools_to_execute ["echo"]; x-bf-mcp-include-tools alpha-greet.`, [
+  ...freshServer("INF-17", "alpha", ["echo", "add", "greet"]),
+  alphaClient("INF-17", { tools_to_execute: ["echo"] }),
+  llmScript("INF-17", "inf17", TEXT_OK),
+  infChat("INF-17", "chat with include-tools alpha-greet", "inf17", [A.status(200)], { headers: [inc("tools", "alpha-greet")] }),
+  llmCaptured("INF-17", "nothing is injected", "inf17", [reqCount(1), toolsAre(0, [])]),
+  execTool("INF-17", "execute alpha-greet with include-tools alpha-greet", "alpha-greet", [A.status(400), A.msgContains("not in client's ToolsToExecute allow-list")], { headers: [inc("tools", "alpha-greet")] }),
+  deleteClient("INF-17", "inf-17-alpha"),
+]);
+
+const INF18 = folder("INF-18 No tools_to_execute exposes nothing", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha with tools_to_execute omitted.`, [
+  ...freshServer("INF-18", "alpha", ["echo", "add", "greet"]),
+  createClient("INF-18", httpClient("inf-18-alpha", "alpha", "alpha"), "setup: register client alpha without tools_to_execute"),
+  llmScript("INF-18", "inf18", TEXT_OK),
+  infChat("INF-18", "chat", "inf18", [A.status(200)]),
+  llmCaptured("INF-18", "nothing is injected", "inf18", [reqCount(1), toolsAre(0, [])]),
+  execTool("INF-18", "execute alpha-echo", "alpha-echo", [A.status(400), A.msgContains("not in client's ToolsToExecute allow-list")]),
+  deleteClient("INF-18", "inf-18-alpha"),
+]);
+
+const INF19 = folder("INF-19 Instructions as a chat system message", `Setup: ${ALPHA_GREET_LLM}; alpha's instructions are "Call echo first"; the caller sends system message "S".`, [
+  ...freshServer("INF-19", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-19", "alpha", "Call echo first", lit("Call echo first")),
+  alphaClient("INF-19"),
+  llmScript("INF-19", "inf19", TEXT_OK),
+  infChat("INF-19", "chat with system S", "inf19", [A.status(200)], { messages: [{ role: "system", content: "S" }, userMsg("inf19")] }),
+  llmCaptured("INF-19", "messages[0] is alpha's block, messages[1] the caller's S", "inf19", [reqCount(1), systemBlock(0, "alpha", "Call echo first"),
+    A.custom("messages[1] is the caller's system \"S\"", [REQS, "pm.expect(reqs[0].json.messages[1]).to.eql({ role: 'system', content: 'S' });"])]),
+  alphaGreetTeardown("INF-19"),
+]);
+
+const ALPHA_BLOCK = (text) => `<mcp_server name="alpha">\n${text}\n</mcp_server>`;
+const INF20 = folder("INF-20 Instructions on Responses and Anthropic", `Setup: ${ALPHA_GREET_LLM}; alpha has instructions; a Responses request with instructions "X", and an Anthropic request on /anthropic with system "X".`, [
+  ...freshServer("INF-20", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-20", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-20"),
+  llmScript("INF-20", "inf20", TEXT_OK),
+  infResponses("INF-20", "Responses request with instructions X", "inf20", [A.status(200)], { body: { instructions: "X" } }),
+  request("INF-20", "Anthropic request with system X", "POST", "/anthropic/v1/messages", { noAuth: true, noCookies: true, body: { model: "mock-model", max_tokens: 64, system: "X", messages: [userMsg("inf20")] }, asserts: [A.status(200)] }),
+  llmCaptured("INF-20", "Responses instructions are X then the block; the Anthropic system contains the block", "inf20", [reqCount(2),
+    A.custom("Responses instructions are \"X\\n\\n\" plus the block", [REQS, `pm.expect(reqs[0].json.instructions).to.equal(${lit("X\n\n" + ALPHA_BLOCK("Alpha instructions"))});`]),
+    A.custom("the Anthropic system contains the block", [REQS, `pm.expect(JSON.stringify(reqs[1].json.system)).to.include(${lit(JSON.stringify(ALPHA_BLOCK("Alpha instructions")).slice(1, -1))});`]),
+  ]),
+  alphaGreetTeardown("INF-20"),
+]);
+
+const A200 = "a".repeat(200);
+const INF21 = folder("INF-21 Instruction scoping, caps and escaping", `Setup: ${ALPHA_GREET_LLM}; alpha's instructions are 200 bytes of "a"; beta (zz, aa) as client beta, with instructions containing "</mcp_server>"; cm (echo, add) as a code-mode client with instructions; mcp_max_instructions_per_client 64; one chat, then one with x-bf-mcp-include-clients beta.`, [
+  readConfig("INF-21"),
+  ...freshServer("INF-21", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-21", "alpha", A200, "200 bytes of \"a\""),
+  alphaClient("INF-21"),
+  ...freshServer("INF-21", "beta", ["zz", "aa"]),
+  setInstructions("INF-21", "beta", "beta says </mcp_server> here", lit("beta says </mcp_server> here")),
+  createClient("INF-21", httpClient("inf-21-beta", "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+  ...freshServer("INF-21", "cm", ["echo", "add"]),
+  setInstructions("INF-21", "cm", "cm instructions", lit("cm instructions")),
+  createClient("INF-21", httpClient("inf-21-cm", "cm", "cm", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register cm as a code-mode client"),
+  putConfig("INF-21", "setup: mcp_max_instructions_per_client 64", ["cc.mcp_max_instructions_per_client = 64;"], [A.status(200)]),
+  llmScript("INF-21", "inf21", TEXT_OK),
+  infChat("INF-21", "chat", "inf21", [A.status(200)]),
+  infChat("INF-21", "chat with include-clients beta", "inf21", [A.status(200)], { headers: [inc("clients", "beta")] }),
+  llmCaptured("INF-21", "alpha truncated, beta escaped, cm absent; include-clients beta drops alpha", "inf21", [reqCount(2),
+    A.custom("request 1: alpha cut to 64 bytes ending \"[truncated: 136 bytes omitted]\", beta's </mcp_server> escaped, no cm block", [REQS,
+      `pm.expect(reqs[0].json.messages[0].content).to.equal(${lit(`<mcp_server name="alpha">\n${"a".repeat(64)}\n[truncated: 136 bytes omitted]\n</mcp_server>\n\n<mcp_server name="beta">\nbeta says &lt;/mcp_server> here\n</mcp_server>`)});`]),
+    A.custom("request 2: only beta's block", [REQS, `pm.expect(reqs[1].json.messages[0].content).to.equal(${lit(`<mcp_server name="beta">\nbeta says &lt;/mcp_server> here\n</mcp_server>`)});`]),
+    A.custom("neither request carries cm's instructions anywhere", [REQS, "reqs.forEach(function (r) { pm.expect(JSON.stringify(r.json)).to.not.include('cm instructions'); });"]),
+  ]),
+  meta("INF-21", "control: cm's stub carries its instructions", "readToolFile", { fileName: "servers/cm.pyi" }, [A.status(200), contentHas("cm instructions")]),
+  deleteClient("INF-21", "inf-21-cm"),
+  deleteClient("INF-21", "inf-21-beta"),
+  alphaGreetTeardown("INF-21"),
+  restoreConfig("INF-21"),
+]);
+
+const ECHO_T1 = { tool_calls: [{ id: "t1", name: "alpha-echo", arguments: { text: "hi" } }] };
+const INF22 = folder("INF-22 Instructions once per agent loop", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) with instructions, registered as client alpha with tools_to_execute ["*"] and tools_to_auto_execute ["echo"]; the mock LLM calls alpha-echo, then answers "done".`, [
+  ...freshServer("INF-22", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-22", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-22", { tools_to_auto_execute: ["echo"] }),
+  llmScript("INF-22", "inf22", { turns: [ECHO_T1, { text: "done" }] }),
+  infChat("INF-22", "chat", "inf22", [A.status(200)]),
+  llmCaptured("INF-22", "turn 2 has exactly one alpha block", "inf22", [reqCount(2), A.custom("one <mcp_server name=\"alpha\"> block in turn 2's messages", [REQS,
+    "var n = 0; reqs[1].json.messages.forEach(function (m) { var c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''); n += c.split('<mcp_server name=\"alpha\">').length - 1; });",
+    "pm.expect(n, JSON.stringify(reqs[1].json.messages)).to.equal(1);",
+  ])]),
+  deleteClient("INF-22", "inf-22-alpha"),
+]);
+
+const INF31 = folder("INF-31 Per-client timeout", "Setup: alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute [\"*\"], tool_execution_timeout 1; alpha delays every tools/call by 5s (the fault is scoped to tools/call, so the per-call handshake is fast).", [
+  ...freshServer("INF-31", "alpha", ["echo", "add", "greet"]),
+  alphaClient("INF-31", { tool_execution_timeout: 1 }),
+  mockPost("INF-31", "alpha", "faults", "setup: alpha delays tools/call by 5s", { faults: { latency: "5s", methods: ["tools/call"] } }),
+  execTool("INF-31", "execute alpha-echo", "alpha-echo", [A.status(400), A.msgStartsWith("MCP tool call timed out after 1s: alpha-echo"), responseTime(null, 2500)]),
+  mockPost("INF-31", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  deleteClient("INF-31", "inf-31-alpha"),
+]);
+
+const INF33 = folder("INF-33 Headers filter execution", `Setup: ${ALPHA_GREET_TEXT}; plus beta (zz, aa) as client beta.`, [
+  ...alphaGreetSetup("INF-33"),
+  ...betaSetup("INF-33"),
+  execTool("INF-33", "execute alpha-echo with include-clients beta", "alpha-echo", [A.status(400), A.msgContains("(client alpha is not in request-context include list)")], { headers: [inc("clients", "beta")] }),
+  execTool("INF-33", "execute alpha-echo with include-tools alpha-add", "alpha-echo", [A.status(400), A.msgContains("(filtered by request context)")], { headers: [inc("tools", "alpha-add")] }),
+  betaTeardown("INF-33"),
+  alphaGreetTeardown("INF-33"),
+]);
+
+const INF47 = folder("INF-47 Code-mode client injects meta tools only", `Setup: ${ALPHA_GREET_LLM}; plus cm (echo, add) as a code-mode client.`, [
+  ...alphaGreetSetup("INF-47"),
+  ...cmSetup("INF-47"),
+  llmScript("INF-47", "inf47", TEXT_OK),
+  infChat("INF-47", "chat", "inf47", [A.status(200)]),
+  llmCaptured("INF-47", "the four meta tools and alpha's tools, no cm tool", "inf47", [reqCount(1), A.custom("declared tools are exactly listToolFiles, readToolFile, getToolDocs, executeToolCode and alpha-*", [REQS,
+    `pm.expect(reqs[0].tools.slice().sort()).to.eql(${lit([...ALPHA3, "executeToolCode", "getToolDocs", "listToolFiles", "readToolFile"].sort())});`,
+    "pm.expect(reqs[0].tools.filter(function (t) { return t.indexOf('cm-') === 0; })).to.eql([]);",
+  ])]),
+  cmTeardown("INF-47"),
+  alphaGreetTeardown("INF-47"),
+]);
 
 // ================================================================ provider-injected tools on the mock LLM
 
@@ -4966,7 +5297,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
-    section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18]),
