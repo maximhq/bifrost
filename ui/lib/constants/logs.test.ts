@@ -58,7 +58,12 @@ describe("logs constants", () => {
 			en: { live: "Live", live_session: "Live Session", live_content: "Live Recording", live_sideband: "Live Sideband" },
 			de: { live: "Live", live_session: "Live-Sitzung", live_content: "Live-Aufzeichnung", live_sideband: "Live-Sideband" },
 			es: { live: "En vivo", live_session: "Sesión en vivo", live_content: "Grabación en vivo", live_sideband: "Sideband en vivo" },
-			fr: { live: "En direct", live_session: "Session en direct", live_content: "Enregistrement en direct", live_sideband: "Sideband en direct" },
+			fr: {
+				live: "En direct",
+				live_session: "Session en direct",
+				live_content: "Enregistrement en direct",
+				live_sideband: "Sideband en direct",
+			},
 			it: { live: "Live", live_session: "Sessione live", live_content: "Registrazione live", live_sideband: "Sideband live" },
 			ja: { live: "ライブ", live_session: "ライブセッション", live_content: "ライブ録音", live_sideband: "ライブサイドバンド" },
 			ko: { live: "라이브", live_session: "라이브 세션", live_content: "라이브 녹음", live_sideband: "라이브 사이드밴드" },
