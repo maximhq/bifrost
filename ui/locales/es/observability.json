@@ -905,6 +905,7 @@
 			"tokensNotPricedValue": "{{input}} de entrada / {{output}} de salida",
 			"matchedRoute": "Ruta coincidente",
 			"parentLog": "Log principal",
+			"responseBodyPreview": "Cuerpo de la respuesta (vista previa)",
 			"queryParameters": "Parámetros de consulta",
 			"matchedHeaders": "Encabezados coincidentes",
 			"errorNoMessageWithStatus": "El relay devolvió un error (HTTP {{status}}) sin mensaje.",

@@ -194,3 +194,145 @@ func TestRelayHistogramCountsCancelled(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 400, stats.TotalBytesOut)
 }
+
+// TestRelayLogStatsCountCancelledLikeLLMStats pins that the rate and counts are measured over
+// finished calls, cancelled ones included, as GetStats measures LLM rows, and that a row still
+// processing counts in the total but nowhere else.
+func TestRelayLogStatsCountCancelledLikeLLMStats(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-stats.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "ok", RequestID: "ok", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Latency: schemas.Ptr(100.0)},
+		{ID: "gone", RequestID: "gone", Timestamp: now, RelayName: "docs", Status: RelayLogStatusCancelled, Latency: schemas.Ptr(300.0)},
+		{ID: "open", RequestID: "open", Timestamp: now, RelayName: "docs", Status: RelayLogStatusProcessing, Latency: schemas.Ptr(9000.0)},
+	})
+	require.NoError(t, err)
+	stats, err := store.GetRelayLogStats(ctx, RelayLogFilters{})
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, stats.TotalRequests)
+	assert.EqualValues(t, 1, stats.SuccessCount)
+	assert.EqualValues(t, 1, stats.CancelledCount, "cancelled calls are counted on their own")
+	assert.InDelta(t, 50, stats.SuccessRate, 1e-9, "a cancelled call is a finished call that did not succeed")
+	assert.InDelta(t, 200, stats.AverageLatency, 1e-9, "a processing row's latency is not averaged in")
+
+	top, err := store.GetRelayTopEndpoints(ctx, RelayLogFilters{}, 5)
+	require.NoError(t, err)
+	require.Len(t, top.Endpoints, 1)
+	assert.InDelta(t, 200, top.Endpoints[0].AverageLatency, 1e-9)
+}
+
+// TestRelayLogLatencyAndSessionFilters pins the filters the LLM logs search offers: a latency band
+// and the session identity resolved at ingress.
+func TestRelayLogLatencyAndSessionFilters(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-filters.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC().Truncate(time.Second)
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "fast", RequestID: "fast", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Latency: schemas.Ptr(40.0), SessionID: schemas.Ptr("s-1")},
+		{ID: "slow", RequestID: "slow", Timestamp: now, RelayName: "docs", Status: RelayLogStatusSuccess, Latency: schemas.Ptr(400.0), SessionID: schemas.Ptr("s-2")},
+	})
+	require.NoError(t, err)
+	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{MinLatency: schemas.Ptr(100.0)}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1)
+	assert.Equal(t, "slow", page.Logs[0].ID)
+	page, err = store.SearchRelayLogs(ctx, RelayLogFilters{MaxLatency: schemas.Ptr(100.0)}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1)
+	assert.Equal(t, "fast", page.Logs[0].ID)
+	page, err = store.SearchRelayLogs(ctx, RelayLogFilters{SessionID: "s-2"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1)
+	assert.Equal(t, "slow", page.Logs[0].ID)
+	got, err := store.FindRelayLog(ctx, "fast")
+	require.NoError(t, err)
+	require.NotNil(t, got.SessionID)
+	assert.Equal(t, "s-1", *got.SessionID, "the session identity round-trips")
+}
+
+// TestFlushRelayLogsRemovesStaleProcessingRows pins the 30-minute reaper the LLM, MCP and A2A
+// tables already have: only processing rows older than the cutoff go.
+func TestFlushRelayLogsRemovesStaleProcessingRows(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-flush.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "stale", RequestID: "stale", Timestamp: now.Add(-31 * time.Minute), CreatedAt: now.Add(-31 * time.Minute), RelayName: "docs", Status: RelayLogStatusProcessing},
+		{ID: "fresh", RequestID: "fresh", Timestamp: now.Add(-29 * time.Minute), CreatedAt: now.Add(-29 * time.Minute), RelayName: "docs", Status: RelayLogStatusProcessing},
+		{ID: "done", RequestID: "done", Timestamp: now.Add(-31 * time.Minute), CreatedAt: now.Add(-31 * time.Minute), RelayName: "docs", Status: RelayLogStatusSuccess},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.FlushRelayLogs(ctx, now.Add(-30*time.Minute)))
+	_, err = store.FindRelayLog(ctx, "stale")
+	require.ErrorIs(t, err, ErrNotFound, "a processing row older than the cutoff is removed")
+	_, err = store.FindRelayLog(ctx, "fresh")
+	require.NoError(t, err, "a processing row inside the window stays")
+	_, err = store.FindRelayLog(ctx, "done")
+	require.NoError(t, err, "a finished row is never flushed")
+}
+
+// TestUpdateRelayLogAppliesSerializedColumns pins that a reconciling update written with the
+// serialized column names reads back through the parsed fields, as the row written in one shot does.
+func TestUpdateRelayLogAppliesSerializedColumns(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-update.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{{ID: "p", RequestID: "p", Timestamp: now, RelayName: "docs", Path: "/search?q=x", Status: RelayLogStatusProcessing, RequestBody: schemas.Ptr(`{"q":"x"}`)}})
+	require.NoError(t, err)
+	final := &RelayLog{Status: RelayLogStatusSuccess, StatusCode: 200, Latency: schemas.Ptr(42.0), TeamIDsParsed: []string{"t1", "t2"}, TeamNamesParsed: []string{"One", "Two"}, ResponseBody: schemas.Ptr(`{"ok":true}`), ErrorDetailsParsed: nil}
+	require.NoError(t, final.SerializeFields())
+	require.NoError(t, store.UpdateRelayLog(ctx, "p", map[string]any{
+		"status": final.Status, "status_code": final.StatusCode, "latency": final.Latency,
+		"team_ids": final.TeamIDs, "team_names": final.TeamNames, "response_body": final.ResponseBody,
+	}))
+	got, err := store.FindRelayLog(ctx, "p")
+	require.NoError(t, err)
+	assert.Equal(t, RelayLogStatusSuccess, got.Status)
+	assert.Equal(t, 200, got.StatusCode)
+	assert.Equal(t, 42.0, *got.Latency)
+	assert.Equal(t, []string{"t1", "t2"}, got.TeamIDsParsed, "the serialized column reads back parsed")
+	assert.Equal(t, `{"ok":true}`, *got.ResponseBody)
+	assert.Equal(t, `{"q":"x"}`, *got.RequestBody, "columns the update does not name are untouched")
+	require.ErrorIs(t, store.UpdateRelayLog(ctx, "missing", map[string]any{"status": "x"}), ErrNotFound)
+}
+
+// TestRelayLogSessionIDMigration pins relay_logs_add_session_id on an existing table and its rerun,
+// as TestRelayLogObjectColumnsMigration pins the object columns.
+func TestRelayLogSessionIDMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-session.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	assert.True(t, db.Migrator().HasColumn(&RelayLog{}, "session_id"), "session_id is created")
+	require.NoError(t, db.Migrator().DropIndex(&RelayLog{}, "idx_relay_logs_session_id"))
+	require.NoError(t, db.Migrator().DropColumn(&RelayLog{}, "session_id"))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_session_id").Error)
+	require.NoError(t, migrationAddRelayLogSessionID(ctx, db, testLogger{}))
+	assert.True(t, db.Migrator().HasColumn(&RelayLog{}, "session_id"), "session_id is added to an existing table")
+	assert.True(t, db.Migrator().HasIndex(&RelayLog{}, "idx_relay_logs_session_id"), "its index is created")
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_session_id").Error)
+	require.NoError(t, migrationAddRelayLogSessionID(ctx, db, testLogger{}), "a rerun over the existing column succeeds")
+}
+
+// TestUpdateRelayLogClearsColumnsWithNilPointers pins that a reconcile map carrying typed nil
+// pointers clears the columns, which a one-shot row without those values also leaves empty.
+func TestUpdateRelayLogClearsColumnsWithNilPointers(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-nil.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{{ID: "n", RequestID: "n", Timestamp: now, RelayName: "docs", Status: RelayLogStatusProcessing, Cost: schemas.Ptr(1.0), RequestBody: schemas.Ptr(`{"q":"x"}`)}})
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateRelayLog(ctx, "n", map[string]any{"status": RelayLogStatusSuccess, "cost": (*float64)(nil), "request_body": nil, "upstream_latency": (*float64)(nil)}))
+	got, err := store.FindRelayLog(ctx, "n")
+	require.NoError(t, err)
+	assert.Nil(t, got.Cost, "a typed nil pointer clears the column")
+	assert.Nil(t, got.RequestBody, "a nil body clears the column")
+	assert.Nil(t, got.UpstreamLatency)
+	assert.Equal(t, RelayLogStatusSuccess, got.Status)
+}

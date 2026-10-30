@@ -899,6 +899,7 @@
 			"tokensNotPricedValue": "入力 {{input}} / 出力 {{output}}",
 			"matchedRoute": "一致したルート",
 			"parentLog": "親ログ",
+			"responseBodyPreview": "レスポンス本文 (プレビュー)",
 			"queryParameters": "クエリパラメーター",
 			"matchedHeaders": "一致したヘッダー",
 			"errorNoMessageWithStatus": "リレーはメッセージなしでエラー（HTTP {{status}}）を返しました。",

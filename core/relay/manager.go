@@ -527,25 +527,46 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 
 	var reply *bufferedResult
 	var bErr *schemas.BifrostError
-	if p.stream == streamOff {
+	// With large-payload optimization on, a reply the relay would buffer is opened on the streaming
+	// client so one past the response threshold can be forwarded as a stream instead of held, as an
+	// LLM reply is, unless the route reads its usage or job from the body (readsReplyBody).
+	threshold := largeResponseThreshold(ctx)
+	if p.readsReplyBody() {
+		threshold = 0
+	}
+	if p.stream == streamOff && threshold <= 0 {
 		reply, bErr = e.doBuffered(ctx, upstream)
 	} else {
 		resp, start, releaseOpen, openErr := e.openStream(ctx, upstream)
 		if openErr != nil {
 			return recovered(runPost(nil, openErr))
 		}
-		if p.stream == streamOn || isEventStream(resp.Header.Get("Content-Type")) {
+		finish := func(final *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) {
+			final.RelayName = req.RelayName
+			runPost(final, bErr)
+			releaseOpen()
+			releaseOnce()
+		}
+		if p.stream != streamOff && (p.stream == streamOn || isEventStream(resp.Header.Get("Content-Type"))) {
 			streaming = true
-			stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, func(final *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) {
-				final.RelayName = req.RelayName
-				runPost(final, bErr)
-				releaseOpen()
-				releaseOnce()
-			})
+			stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, finish)
 			return &Result{Stream: stream}, nil
 		}
-		// Not an event stream: read and price it as a buffered reply, whatever the caller asked for.
-		reply, bErr = e.readBuffered(resp, start, true)
+		// Not an event stream: read and price it as a buffered reply, whatever the caller asked for,
+		// unless it is past the large-payload response threshold.
+		if threshold > 0 {
+			var ahead []byte
+			var large bool
+			reply, ahead, large, bErr = e.readOrHandOff(resp, start, threshold)
+			if large {
+				streaming = true
+				stream := newStream(ctx, e, resp, start, p.usage, p.billing, requestUnits, finish)
+				stream.handOffLarge(ahead)
+				return &Result{Stream: stream}, nil
+			}
+		} else {
+			reply, bErr = e.readBuffered(resp, start, true)
+		}
 		releaseOpen()
 	}
 	if bErr != nil {

@@ -260,6 +260,7 @@ type LogStore interface {
 	HasRelayLogs(ctx context.Context) (bool, error)
 	DeleteRelayLogs(ctx context.Context, ids []string) error
 	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+	FlushRelayLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error

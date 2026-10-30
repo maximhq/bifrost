@@ -29,8 +29,11 @@ type RelayLog struct {
 	Status     string `gorm:"type:varchar(32);index:idx_relay_logs_status;not null" json:"status"` // success | error | cancelled
 	StatusCode int    `json:"status_code"`
 	Streamed   bool   `json:"streamed"`
-	Billable   bool   `json:"billable"`
-	Model      string `gorm:"type:varchar(255)" json:"model,omitempty"`
+	// The reply passed the large-payload response threshold and was forwarded without being held,
+	// so the row keeps only a preview of it, as is_large_payload_response marks an LLM row.
+	IsLargePayloadResponse bool   `gorm:"default:false" json:"is_large_payload_response,omitempty"`
+	Billable               bool   `json:"billable"`
+	Model                  string `gorm:"type:varchar(255)" json:"model,omitempty"`
 
 	Latency           *float64 `json:"latency,omitempty"`          // milliseconds, pre-hooks to the end of the reply
 	UpstreamLatency   *float64 `json:"upstream_latency,omitempty"` // milliseconds blocked on the upstream socket; nil = unmeasured
@@ -66,9 +69,10 @@ type RelayLog struct {
 	BusinessUnitName *string `gorm:"type:varchar(255)" json:"business_unit_name,omitempty"`
 	ProjectID        *string `gorm:"type:varchar(255);index:idx_relay_logs_project_id" json:"project_id,omitempty"`
 	ProjectName      *string `gorm:"type:varchar(255)" json:"project_name,omitempty"`
-	UserAgent        *string `gorm:"type:varchar(512);index:idx_relay_logs_user_agent" json:"user_agent,omitempty"` // Raw HTTP User-Agent of the calling client
-	App              *string `gorm:"type:varchar(128);index:idx_relay_logs_app" json:"app,omitempty"`               // Backend-detected client app derived from user_agent
-	ClientIP         *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                   // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
+	SessionID        *string `gorm:"type:varchar(255);index:idx_relay_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Opaque session identity resolved at ingress, as on logs and mcp_tool_logs
+	UserAgent        *string `gorm:"type:varchar(512);index:idx_relay_logs_user_agent" json:"user_agent,omitempty"`                              // Raw HTTP User-Agent of the calling client
+	App              *string `gorm:"type:varchar(128);index:idx_relay_logs_app" json:"app,omitempty"`                                            // Backend-detected client app derived from user_agent
+	ClientIP         *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                                                // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	// Every team, customer and business unit the call settled, as on logs and mcp_tool_logs: the
 	// scalar columns keep the first, these keep them all, and the dimension filters read both.
 	TeamIDs                 *string               `gorm:"type:text" json:"-"` // JSON serialized []string
@@ -110,9 +114,14 @@ const (
 	RelayLogKindCall = "call"
 	RelayLogKindJob  = "job"
 
-	RelayLogStatusSuccess   = "success"
-	RelayLogStatusError     = "error"
-	RelayLogStatusCancelled = "cancelled"
+	RelayLogStatusProcessing = "processing" // a row persisted at eviction before its call ended, as on LLM rows
+	RelayLogStatusSuccess    = "success"
+	RelayLogStatusError      = "error"
+	RelayLogStatusCancelled  = "cancelled"
+
+	// RelayLogObjectType is the request type name an operator uses to exclude relay rows from
+	// object-storage offload (object_storage_exclude_request_types), beside the LLM object types.
+	RelayLogObjectType = "relay"
 )
 
 func (RelayLog) TableName() string { return "relay_logs" }
@@ -254,8 +263,11 @@ type RelayLogFilters struct {
 	EndTime         *time.Time `json:"end_time,omitempty"`
 	MinCost         *float64   `json:"min_cost,omitempty"`
 	MaxCost         *float64   `json:"max_cost,omitempty"`
+	MinLatency      *float64   `json:"min_latency,omitempty"` // milliseconds, as on the LLM logs filters
+	MaxLatency      *float64   `json:"max_latency,omitempty"`
 	RequestID       string     `json:"request_id,omitempty"`
 	JobID           string     `json:"job_id,omitempty"`
+	SessionID       string     `json:"session_id,omitempty"`
 	// Search matches the path, route, model and request id: metadata columns only, never bodies.
 	Search string `json:"search,omitempty"`
 }
@@ -272,8 +284,9 @@ type RelayLogStats struct {
 	TotalRequests  int64   `json:"total_requests"`
 	SuccessCount   int64   `json:"success_count"`
 	ErrorCount     int64   `json:"error_count"`
-	SuccessRate    float64 `json:"success_rate"`    // percentage of requests that succeeded
-	AverageLatency float64 `json:"average_latency"` // milliseconds
+	CancelledCount int64   `json:"cancelled_count"`
+	SuccessRate    float64 `json:"success_rate"`    // percentage of finished calls that succeeded, cancelled ones counted, as on the LLM logs stats
+	AverageLatency float64 `json:"average_latency"` // milliseconds, over finished calls
 	TotalCost      float64 `json:"total_cost"`
 	TotalUnits     float64 `json:"total_units"`
 	TotalBytesOut  int64   `json:"total_bytes_out"`
@@ -384,11 +397,20 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 	if f.MaxCost != nil {
 		query = query.Where("cost <= ?", *f.MaxCost)
 	}
+	if f.MinLatency != nil {
+		query = query.Where("latency >= ?", *f.MinLatency)
+	}
+	if f.MaxLatency != nil {
+		query = query.Where("latency <= ?", *f.MaxLatency)
+	}
 	if f.RequestID != "" {
 		query = query.Where("request_id = ?", f.RequestID)
 	}
 	if f.JobID != "" {
 		query = query.Where("job_id = ?", f.JobID)
+	}
+	if f.SessionID != "" {
+		query = query.Where("session_id = ?", f.SessionID)
 	}
 	if search := strings.TrimSpace(f.Search); search != "" {
 		like := "%" + escapeLike(search) + "%"
@@ -481,13 +503,17 @@ func (s *RDBLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilte
 	return &RelayLogSearchResult{Logs: logs, Pagination: pagination, HasLogs: hasLogs}, nil
 }
 
-// GetRelayLogStats aggregates the rows matching the filters.
+// GetRelayLogStats aggregates the rows matching the filters. total counts every row; the rate,
+// counts and latency are measured over finished calls only (success, error, cancelled), as
+// GetStats measures LLM rows, so a row still processing never skews them.
 func (s *RDBLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error) {
 	query := s.applyRelayLogFilters(s.ScopedDB(ctx).Model(&RelayLog{}), filters)
 	var row struct {
 		Total          int64   `gorm:"column:total"`
+		Completed      int64   `gorm:"column:completed_count"`
 		SuccessCount   int64   `gorm:"column:success_count"`
 		ErrorCount     int64   `gorm:"column:error_count"`
+		CancelledCount int64   `gorm:"column:cancelled_count"`
 		AverageLatency float64 `gorm:"column:average_latency"`
 		TotalCost      float64 `gorm:"column:total_cost"`
 		TotalUnits     float64 `gorm:"column:total_units"`
@@ -495,9 +521,11 @@ func (s *RDBLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogFilt
 	}
 	if err := query.Select(`
 			COUNT(*) as total,
+			SUM(CASE WHEN status IN ('success', 'error', 'cancelled') THEN 1 ELSE 0 END) as completed_count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
 			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
-			COALESCE(AVG(latency), 0) as average_latency,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
+			COALESCE(AVG(CASE WHEN status IN ('success', 'error', 'cancelled') THEN latency END), 0) as average_latency,
 			COALESCE(SUM(cost), 0) as total_cost,
 			COALESCE(SUM(billed_units), 0) as total_units,
 			COALESCE(SUM(bytes_out), 0) as total_bytes_out
@@ -505,11 +533,11 @@ func (s *RDBLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogFilt
 		return nil, fmt.Errorf("failed to get relay log stats: %w", err)
 	}
 	stats := &RelayLogStats{
-		TotalRequests: row.Total, SuccessCount: row.SuccessCount, ErrorCount: row.ErrorCount,
+		TotalRequests: row.Total, SuccessCount: row.SuccessCount, ErrorCount: row.ErrorCount, CancelledCount: row.CancelledCount,
 		AverageLatency: row.AverageLatency, TotalCost: row.TotalCost, TotalUnits: row.TotalUnits, TotalBytesOut: row.TotalBytesOut,
 	}
-	if terminal := row.SuccessCount + row.ErrorCount; terminal > 0 {
-		stats.SuccessRate = float64(row.SuccessCount) / float64(terminal) * 100
+	if row.Completed > 0 {
+		stats.SuccessRate = float64(row.SuccessCount) / float64(row.Completed) * 100
 	}
 	return stats, nil
 }
@@ -587,7 +615,7 @@ func (s *RDBLogStore) GetRelayTopEndpoints(ctx context.Context, filters RelayLog
 		AverageLatency float64 `gorm:"column:average_latency"`
 	}
 	if err := query.
-		Select("relay_name, COUNT(*) as count, SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, COALESCE(SUM(cost), 0) as total_cost, COALESCE(AVG(latency), 0) as average_latency").
+		Select("relay_name, COUNT(*) as count, SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count, COALESCE(SUM(cost), 0) as total_cost, COALESCE(AVG(CASE WHEN status IN ('success', 'error', 'cancelled') THEN latency END), 0) as average_latency").
 		Group("relay_name").
 		Order("count DESC, relay_name ASC").
 		Limit(limit).
@@ -741,6 +769,15 @@ func (s *RDBLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time
 		return 0, nil // ClickHouseLogStore overrides this with a lightweight delete
 	}
 	return s.deleteExpiredBatch(ctx, "relay_logs", "timestamp", cutoff, batchSize)
+}
+
+// FlushRelayLogs deletes rows still marked processing after since, as Flush does for LLM rows: a
+// partial row persisted at eviction whose call never finished.
+func (s *RDBLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	if err := s.db.WithContext(ctx).Where("status = ? AND created_at < ?", RelayLogStatusProcessing, since).Delete(&RelayLog{}).Error; err != nil {
+		return fmt.Errorf("failed to cleanup old processing relay logs: %w", err)
+	}
+	return nil
 }
 
 // HasRelayLogs reports whether any row is stored, for the empty state.

@@ -462,30 +462,60 @@ func TestServeStreamCapturesRetainedHiddenContent(t *testing.T) {
 	}
 }
 
-func TestServeStreamCapturedBodyIsBoundedAtCap(t *testing.T) {
-	previous := maxBufferedResponseBytes
-	maxBufferedResponseBytes = 4096
-	t.Cleanup(func() { maxBufferedResponseBytes = previous })
-	oversized := strings.Repeat("x", int(maxBufferedResponseBytes)+1024)
+// pastFormerCap is just over the 64 MiB the relay once refused a buffered reply above and cut a
+// streamed capture at, so the size tests fail against that bound and pass without it.
+const pastFormerCap = 64<<20 + 1<<20
+
+// sizedUpstream serves size bytes in 1 MiB writes, so the test never holds the reply as one string.
+func sizedUpstream(t *testing.T, contentType string, size int) *httptest.Server {
+	t.Helper()
+	chunk := []byte(strings.Repeat("x", 1<<20))
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, oversized)
+		w.Header().Set("Content-Type", contentType)
+		for sent := 0; sent < size; sent += len(chunk) {
+			if _, err := w.Write(chunk[:min(len(chunk), size-sent)]); err != nil {
+				return
+			}
+		}
 	}))
-	defer upstream.Close()
-	cfg := bearerConfig("llm", upstream.URL)
-	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/chat", Stream: schemas.Ptr(true)}}
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+// A buffered reply has no size bound of the relay's own, as a provider's unary reply has none: a
+// large JSON or binary reply on a route that does not stream is relayed whole, never refused.
+func TestServeBufferedRelaysLargeReplyWhole(t *testing.T) {
+	upstream := sizedUpstream(t, "application/octet-stream", pastFormerCap)
+	cfg := bearerConfig("files", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "GET", Path: "/download", Stream: schemas.Ptr(false)}}
+	m, pipeline := newTestManager(t, cfg)
+
+	res, bErr := m.Serve(testCtx(t), Request{Endpoint: "files", Method: "GET", Path: "/download", Headers: map[string]string{}})
+	require.Nil(t, bErr, "a large buffered reply is not refused for its size")
+	require.NotNil(t, res.Response)
+	assert.Equal(t, http.StatusOK, res.Response.StatusCode)
+	assert.Equal(t, pastFormerCap, len(res.Response.Body))
+	require.Len(t, pipeline.post, 1)
+	assert.Equal(t, int64(pastFormerCap), pipeline.post[0].BytesOut)
+}
+
+// A streamed reply is captured whole for the log row past any former bound, as the stream
+// accumulator keeps an LLM stream.
+func TestServeStreamCapturesPastFormerCap(t *testing.T) {
+	upstream := sizedUpstream(t, "application/octet-stream", pastFormerCap)
+	cfg := bearerConfig("files", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "GET", Path: "/download", Stream: schemas.Ptr(true)}}
 	m, pipeline := newTestManager(t, cfg)
 
 	ctx := testCtx(t)
 	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
-	res, bErr := m.Serve(ctx, Request{Endpoint: "llm", Method: "POST", Path: "/chat", Headers: map[string]string{}})
+	res, bErr := m.Serve(ctx, Request{Endpoint: "files", Method: "GET", Path: "/download", Headers: map[string]string{}})
 	require.Nil(t, bErr)
-	_, err := io.ReadAll(res.Stream)
+	_, err := io.Copy(io.Discard, res.Stream)
 	require.NoError(t, err)
 	require.NoError(t, res.Stream.Close())
-
 	require.Len(t, pipeline.post, 1)
-	assert.Equal(t, int(maxBufferedResponseBytes), len(pipeline.post[0].Body), "capture never grows past the buffered-reply bound, however large the reply")
+	assert.Equal(t, pastFormerCap, len(pipeline.post[0].Body), "the capture is not cut at a size of the relay's own")
 }
 
 func TestServeJobRouteHandsBackJob(t *testing.T) {
@@ -751,4 +781,134 @@ func TestGlobalProxyErrorRefusesEndpoint(t *testing.T) {
 	own := bearerConfig("own", "https://search.example.com")
 	own.ProxyConfig = &schemas.ProxyConfig{Type: schemas.EnvProxy}
 	require.NoError(t, m.Upsert(own), "an endpoint with its own proxy_config never reads the global proxy")
+}
+
+// TestLargeBufferedReplyIsForwardedAsStream pins the large-payload response threshold on the relay,
+// as FinalizeResponseWithLargeDetection applies it to an LLM reply: a reply the relay would buffer is
+// forwarded as a stream once it is past the threshold (known length or not), arrives whole, and the
+// log row keeps only a preview; a reply within it, or any reply with no threshold set, is buffered.
+func TestLargeBufferedReplyIsForwardedAsStream(t *testing.T) {
+	previous := largeResponsePreviewBytes
+	largeResponsePreviewBytes = 16
+	t.Cleanup(func() { largeResponsePreviewBytes = previous })
+	big := strings.Repeat("a", 4096)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		body := big
+		if r.URL.Query().Get("small") == "1" {
+			body = "small reply"
+		}
+		if r.URL.Query().Get("chunked") == "1" {
+			_, _ = io.WriteString(w, body[:len(body)/2])
+			w.(http.Flusher).Flush()
+			_, _ = io.WriteString(w, body[len(body)/2:])
+			return
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(upstream.Close)
+	ctxWith := func(threshold int64) *schemas.BifrostContext {
+		ctx := testCtx(t)
+		ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, true)
+		if threshold > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, threshold)
+		}
+		return ctx
+	}
+	for _, mode := range []struct {
+		name   string
+		stream *bool
+	}{{"stream off", schemas.Ptr(false)}, {"auto", nil}} {
+		for _, query := range []string{"", "chunked=1"} {
+			t.Run(mode.name+" "+query, func(t *testing.T) {
+				cfg := bearerConfig("big", upstream.URL)
+				cfg.Routes = []schemas.RelayRouteConfig{{Method: "GET", Path: "/f", Stream: mode.stream}}
+				m, pipeline := newTestManager(t, cfg)
+
+				res, bErr := m.Serve(ctxWith(1024), Request{Endpoint: "big", Method: "GET", Path: "/f", RawQuery: query, Headers: map[string]string{}})
+				require.Nil(t, bErr)
+				require.NotNil(t, res.Stream, "a reply past the threshold is forwarded, not held")
+				got, err := io.ReadAll(res.Stream)
+				require.NoError(t, err)
+				require.NoError(t, res.Stream.Close())
+				assert.Equal(t, big, string(got), "the caller gets the whole reply, the bytes read while deciding included")
+				require.Len(t, pipeline.post, 1)
+				assert.True(t, pipeline.post[0].LargeResponse)
+				assert.True(t, pipeline.post[0].Streamed)
+				assert.Equal(t, big[:16], string(pipeline.post[0].Body), "the log row keeps a preview")
+				assert.EqualValues(t, len(big), pipeline.post[0].BytesOut)
+
+				small := query + "&small=1"
+				res, bErr = m.Serve(ctxWith(1024), Request{Endpoint: "big", Method: "GET", Path: "/f", RawQuery: strings.TrimPrefix(small, "&"), Headers: map[string]string{}})
+				require.Nil(t, bErr)
+				require.NotNil(t, res.Response, "a reply within the threshold is buffered as before")
+				assert.Equal(t, "small reply", string(res.Response.Body))
+				assert.False(t, pipeline.post[1].LargeResponse)
+
+				res, bErr = m.Serve(ctxWith(0), Request{Endpoint: "big", Method: "GET", Path: "/f", RawQuery: query, Headers: map[string]string{}})
+				require.Nil(t, bErr)
+				require.NotNil(t, res.Response, "with no threshold every reply is buffered, as in OSS")
+				assert.Equal(t, big, string(res.Response.Body))
+			})
+		}
+	}
+}
+
+// TestLargeReplyStaysBufferedWhenReadForUsage pins that a large reply is still read whole when
+// the route reads something from its body (a priced field, or a job id): the fields can sit
+// anywhere in the reply, so a hand-off would charge the default or lose the job. A route priced
+// without reading the body is still handed off.
+func TestLargeReplyStaysBufferedWhenReadForUsage(t *testing.T) {
+	padding := strings.Repeat("a", 4096)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The fields come after the padding, past any preview.
+		_, _ = io.WriteString(w, `{"padding":"`+padding+`","JobId":"j-1","usage":{"credits":5}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	ctx := func() *schemas.BifrostContext {
+		c := testCtx(t)
+		c.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+		return c
+	}
+	for _, tc := range []struct {
+		name     string
+		route    schemas.RelayRouteConfig
+		buffered bool
+	}{
+		{"priced from a reply field", schemas.RelayRouteConfig{Method: "POST", Path: "/r", Usage: &schemas.RelayUsageConfig{UnitsPath: "usage.credits", CostPerUnit: schemas.Ptr(0.5)}}, true},
+		{"starts a job", schemas.RelayRouteConfig{Method: "POST", Path: "/r", Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, Job: &schemas.RelayJobConfig{
+			IDPath: "JobId", StatusPath: "status", Succeeded: []string{"SUCCEEDED"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"},
+		}}, true},
+		{"flat fee only", schemas.RelayRouteConfig{Method: "POST", Path: "/r", Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := bearerConfig("big", upstream.URL)
+			cfg.Routes = []schemas.RelayRouteConfig{tc.route}
+			m, pipeline := newTestManager(t, cfg)
+			res, bErr := m.Serve(ctx(), Request{Endpoint: "big", Method: "POST", Path: "/r", Headers: map[string]string{}})
+			require.Nil(t, bErr)
+			if !tc.buffered {
+				require.NotNil(t, res.Stream, "nothing is read from the body, so the reply is handed off")
+				_, _ = io.ReadAll(res.Stream)
+				require.NoError(t, res.Stream.Close())
+				require.Len(t, pipeline.post, 1)
+				assert.True(t, pipeline.post[0].LargeResponse)
+				require.NotNil(t, pipeline.post[0].Usage)
+				assert.InDelta(t, 0.01, pipeline.post[0].Usage.Cost, 1e-9)
+				return
+			}
+			require.NotNil(t, res.Response, "the route reads the body, so the reply is held whole")
+			require.Len(t, pipeline.post, 1)
+			assert.False(t, pipeline.post[0].LargeResponse)
+			require.NotNil(t, pipeline.post[0].Usage)
+			if tc.route.Job != nil {
+				require.NotNil(t, pipeline.post[0].Usage.Job, "the job id is read past the preview")
+				assert.Equal(t, "j-1", pipeline.post[0].Usage.Job.ID)
+			} else {
+				assert.InDelta(t, 2.5, pipeline.post[0].Usage.Cost, 1e-9, "the units field is read past the preview")
+			}
+		})
+	}
 }
