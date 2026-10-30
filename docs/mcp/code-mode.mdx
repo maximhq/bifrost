@@ -610,15 +610,18 @@ A nested tool call hands the script a value, not text:
 
 | The server returns | The script receives |
 |--------------------|---------------------|
-| `structuredContent` | That object, as a dict. The text blocks beside it are ignored |
+| `structuredContent` | That object, as a dict. The text blocks beside it are ignored; image/audio blocks are named by placeholders under `_media` when the object does not already use that key |
 | One text block holding JSON | The decoded dict, list or scalar |
 | Several text blocks, each holding JSON | A list with one element per block |
 | JSON wrapped in a JSON string (`"{\"a\": 1}"`) | The decoded object or array. A wrapped scalar such as `"123"` stays a str |
 | Any other text | A str, as sent. `json.decode` parses a str that holds JSON and raises on plain text |
+| Image or audio blocks | Compact placeholders, never the base64 payload |
 | `isError: true` | An error value: `hasattr(r, "error")` is True and `r.error` holds the message, without a leading `Error: `. Returned as-is it becomes `{"error": "<message>"}`. The script keeps running and decides what the failure means |
 | Text starting with `Error: `, without `isError` | Nothing: the call raises, the script stops, and the error message is returned to the model |
 
 Responses stay inside the sandbox: the model sees only the script's print output and its `result`. A nested call that answered with `isError` is the exception: the reply notes it as `[TOOL] server.tool returned an error: <message>`, and a run that finishes ends with `Execution completed, but N nested tool calls failed.` rather than claiming a clean run.
+
+For MCP gateway callers, successful `executeToolCode` replies also carry image/audio blocks from successful nested calls after the reply text. Forwarding is limited to 20 blocks and 20 MiB of base64 payload per run; the reply reports blocks omitted by these limits. A failed run forwards no media. Post-hooks see each block's placeholder, and rewriting a nested result or the final reply withholds its media so redaction cannot be bypassed. Media beside non-object `structuredContent`, or an object that already uses `_media`, is withheld because its projection cannot name those blocks.
 
 ### Handling Failed Calls
 

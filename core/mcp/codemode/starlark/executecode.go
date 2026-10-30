@@ -23,6 +23,89 @@ type ExecutionResult struct {
 	Errors          *ExecutionError      `json:"errors,omitempty"`
 	Environment     ExecutionEnvironment `json:"environment"`
 	FailedToolCalls int                  `json:"failed_tool_calls,omitempty"` // nested calls that returned an error result
+	Media           []mcp.Content        `json:"-"`                           // image/audio blocks from nested results
+	DroppedMedia    int                  `json:"-"`                           // media blocks over the forwarding bounds
+}
+
+// Media stays out of script values; only a bounded set rides on the gateway reply.
+const (
+	maxForwardedMediaBlocks = 20
+	maxForwardedMediaBytes  = 20 << 20
+)
+
+// A script's nested calls run serially, so the collector needs no lock.
+type mediaCollector struct {
+	blocks  []mcp.Content
+	bytes   int
+	dropped int
+}
+
+// mediaBlock normalizes image/audio blocks and returns their kind and encoded data.
+func mediaBlock(block mcp.Content) (mcp.Content, string, string) {
+	switch content := codemcp.ContentValue(block).(type) {
+	case mcp.ImageContent:
+		return content, orKind(content.MIMEType, "image"), content.Data
+	case mcp.AudioContent:
+		return content, orKind(content.MIMEType, "audio"), content.Data
+	}
+	return nil, "", ""
+}
+
+func (c *mediaCollector) add(result *mcp.CallToolResult) {
+	if c == nil || result == nil || result.IsError {
+		return
+	}
+	for _, block := range result.Content {
+		media, _, data := mediaBlock(block)
+		if data == "" {
+			continue
+		}
+		if len(c.blocks) >= maxForwardedMediaBlocks || len(data) > maxForwardedMediaBytes-c.bytes {
+			c.dropped++
+			continue
+		}
+		c.blocks = append(c.blocks, media)
+		c.bytes += len(data)
+	}
+}
+
+// hookVisibleMedia requires unchanged post-hook content that named every media block.
+func hookVisibleMedia(msg *schemas.ChatMessage) *mcp.CallToolResult {
+	if msg == nil || msg.ChatToolMessage == nil {
+		return nil
+	}
+	result := msg.ChatToolMessage.MCPResult(msg.Content)
+	if result == nil || result.IsError {
+		return nil
+	}
+	if result.StructuredContent != nil {
+		if _, ok := structuredMediaObject(result); !ok {
+			return nil
+		}
+	}
+	return result
+}
+
+// attachMedia snapshots the reply text so an outer rewrite withholds its media.
+func attachMedia(message *schemas.ChatMessage, media []mcp.Content) {
+	content := make([]mcp.Content, 0, len(media)+1)
+	content = append(content, mcp.NewTextContent(*message.Content.ContentStr))
+	content = append(content, media...)
+	result := &mcp.CallToolResult{Content: content}
+	if message.ChatToolMessage.IsError != nil {
+		result.IsError = *message.ChatToolMessage.IsError
+	}
+	message.ChatToolMessage.SetMCPResult(result, message.Content)
+}
+
+// attachedMediaLine keeps the attached blocks visible to text-only hooks and logs.
+func attachedMediaLine(media []mcp.Content) string {
+	names := make([]string, 0, len(media))
+	for _, block := range media {
+		_, kind, data := mediaBlock(block)
+		names = append(names, schemas.MediaPlaceholder(kind, len(data)))
+	}
+	return "\nAttached media: " + strings.Join(names, " ")
 }
 
 // ExecutionErrorType represents the type of execution error
@@ -191,6 +274,12 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 					s.logger.Debug("%s Failed to marshal result to JSON: %v", codemcp.CodeModeLogPrefix, err)
 				}
 			}
+			if len(result.Media) > 0 {
+				responseText += attachedMediaLine(result.Media)
+			}
+			if result.DroppedMedia > 0 {
+				responseText += fmt.Sprintf("\nNote: %d media block(s) from nested tool results exceeded the forwarding limit and were not attached.", result.DroppedMedia)
+			}
 			// No environment footer here: the server keys help a failed run recover, while
 			// a successful one would only carry them into every reply.
 			s.logger.Debug("%s Success response formatted. Response length: %d chars", codemcp.CodeModeLogPrefix, len(responseText))
@@ -200,7 +289,11 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 	s.logger.Debug("%s Returning tool response message. Execution success: %v", codemcp.CodeModeLogPrefix, executionSuccess)
 	// A failed sandbox run already reports the failure in responseText, but without
 	// the marker the model reads that text as an ordinary result.
-	return createToolResponseMessage(toolCall, responseText, !executionSuccess), nil
+	message := createToolResponseMessage(toolCall, responseText, !executionSuccess)
+	if executionSuccess && len(result.Media) > 0 {
+		attachMedia(message, result.Media)
+	}
+	return message, nil
 }
 
 // executeCode executes Python (Starlark) code in a sandboxed interpreter with MCP tool bindings.
@@ -229,11 +322,28 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	defer cancel()
 	// A script's tool calls run one at a time on its thread, so a plain counter is safe.
 	failedCalls := 0
-	result := runSandbox(timeoutCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
+	var media *mediaCollector
+	runCtx := context.Context(timeoutCtx)
+	if gateway, _ := ctx.Value(schemas.BifrostContextKeyIsMCPGateway).(bool); gateway {
+		media = &mediaCollector{}
+		runCtx = context.WithValue(timeoutCtx, mediaCollectorKey{}, media)
+	}
+	result := runSandbox(runCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
 		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log, func() { failedCalls++ })
 	})
 	result.FailedToolCalls = failedCalls
+	if media != nil {
+		result.Media = media.blocks
+		result.DroppedMedia = media.dropped
+	}
 	return result
+}
+
+type mediaCollectorKey struct{}
+
+func contextMediaCollector(ctx context.Context) *mediaCollector {
+	collector, _ := ctx.Value(mediaCollectorKey{}).(*mediaCollector)
+	return collector
 }
 
 // completionLine closes the reply of a run that finished. A nested call that returned an
@@ -443,8 +553,12 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		}
 		logToolName = strings.ReplaceAll(effectiveToolName, "-", "_")
 
+		message := createToolResponseMessage(toolCallReq, rawResult, isErrorResult)
+		if contextMediaCollector(ctx) != nil {
+			message.ChatToolMessage.SetMCPResult(toolResponse, message.Content)
+		}
 		return &schemas.BifrostMCPResponse{
-			ChatMessage: createToolResponseMessage(toolCallReq, rawResult, isErrorResult),
+			ChatMessage: message,
 			ExtraFields: schemas.BifrostMCPResponseExtraFields{
 				ClientName: clientName,
 				ToolName:   effectiveToolName,
@@ -497,6 +611,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		// A successful result goes to the script, not the model: the model sees only what
 		// the script prints or returns. The payload itself is in the MCP tool log.
 		s.logger.Debug("%s Tool returned %d bytes: %s.%s", codemcp.CodeModeLogPrefix, len(text), clientName, logToolName)
+		contextMediaCollector(ctx).add(hookVisibleMedia(msg))
 		return extractResultFromChatMessage(msg), nil
 	}
 

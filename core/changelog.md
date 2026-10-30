@@ -1,0 +1,1 @@
+[fix]: forward nested code mode image/audio results to MCP gateway callers [@Xytronix](https://github.com/Xytronix)
