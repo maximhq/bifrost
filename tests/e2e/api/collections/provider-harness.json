@@ -298484,11 +298484,11 @@
       ]
     },
     {
-      "name": "297. Log detail lookup takes the row timestamp (log-detail-timestamp)",
+      "name": "297. Log detail lookup takes the row timestamp (#9316 / PR #9342)",
       "description": "With a ClickHouse logs_store, opening one log (GET /api/logs/{id}) filtered on id alone, which uses neither the monthly partitions nor the (timestamp, id) sort key, so ClickHouse read every granule of logs and the detail drawer never loaded (#9316). The route now takes an optional RFC 3339 timestamp query parameter, the row timestamp from the list response, which the ClickHouse store uses to bound the lookup; the UI sends it. The hint is only a hint: a timestamp that misses the row falls back to the id alone, and other stores ignore it. A malformed value is rejected with 400 (red before the change, which ignored the parameter and answered 200). The seed is one cheap openai request in a fresh session. The pruning itself is not visible over HTTP (and the harness profile logs to SQLite); it is pinned by the Go test TestClickHouseIDLookupsPruneParts.",
       "item": [
         {
-          "name": "openai gpt-4o-mini log-detail-timestamp seed: chat request",
+          "name": "openai gpt-4o-mini log-detail-timestamp seed: chat request - #9316",
           "event": [
             {
               "listen": "prerequest",
@@ -298542,7 +298542,7 @@
           }
         },
         {
-          "name": "openai log-detail-timestamp: list reports the row timestamp",
+          "name": "openai gpt-4o-mini log-detail-timestamp: list reports the row timestamp - #9316",
           "event": [
             {
               "listen": "test",
@@ -298580,7 +298580,7 @@
           }
         },
         {
-          "name": "openai log-detail-timestamp: detail with the row timestamp returns the row",
+          "name": "openai gpt-4o-mini log-detail-timestamp: detail with the row timestamp returns the row - #9316",
           "event": [
             {
               "listen": "prerequest",
@@ -298613,7 +298613,7 @@
           }
         },
         {
-          "name": "openai log-detail-timestamp: detail with a stale timestamp still finds the row",
+          "name": "openai gpt-4o-mini log-detail-timestamp: detail with a stale timestamp still finds the row - #9316",
           "event": [
             {
               "listen": "prerequest",
@@ -298646,7 +298646,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai log-detail-timestamp: detail rejects a malformed timestamp",
+          "name": "[EXPECT-400] openai gpt-4o-mini log-detail-timestamp: detail rejects a malformed timestamp - #9316",
           "event": [
             {
               "listen": "test",
@@ -298668,7 +298668,7 @@
           }
         },
         {
-          "name": "openai log-detail-timestamp cleanup: delete the seeded log",
+          "name": "openai gpt-4o-mini log-detail-timestamp cleanup: delete the seeded log - #9316",
           "event": [
             {
               "listen": "test",
