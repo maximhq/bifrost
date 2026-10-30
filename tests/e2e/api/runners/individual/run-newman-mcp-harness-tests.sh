@@ -231,6 +231,7 @@ cmd=(newman run "$COLLECTION"
     --env-var "admin_auth_header=$ADMIN_AUTH_HEADER"
     --env-var "chaos_url=http://127.0.0.1:$CHAOS_PORT"
     --env-var "chaos_bin=$CHAOS_DIR/mcpchaos"
+    --env-var "setup_token=$SETUP_TOKEN"
     --timeout-script 60000 --timeout-request 120000
     -r "$REPORTERS")
 [ -n "$FOLDER" ] && cmd+=(--folder "$FOLDER")

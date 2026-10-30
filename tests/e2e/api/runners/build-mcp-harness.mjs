@@ -2089,10 +2089,263 @@ const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_
 // ================================================================ EP slugs, credentials and auth modes
 
 const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
+const wwwExact = (iss) => A.custom(`WWW-Authenticate is Bearer resource_metadata="${iss || "<base URL>"}/.well-known/oauth-protected-resource/mcp"`, [
+  `var want = 'Bearer resource_metadata="' + ${iss ? lit(iss) : "pm.variables.get('base_url')"} + '/.well-known/oauth-protected-resource/mcp"';`,
+  "pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.equal(want);",
+]);
+const noWww = () => A.custom("there is no WWW-Authenticate", ["pm.expect(pm.response.headers.has('WWW-Authenticate'), 'WWW-Authenticate: ' + pm.response.headers.get('WWW-Authenticate')).to.equal(false);"]);
+const jsonNotStream = () => A.custom("a JSON body, not an event stream", [
+  "var ct = pm.response.headers.get('Content-Type') || '';",
+  "pm.expect(ct, 'Content-Type').to.include('application/json');",
+  "pm.expect(ct, 'Content-Type').to.not.include('text/event-stream');",
+  "pm.expect(function () { JSON.parse(pm.response.text()); }, 'body: ' + pm.response.text()).to.not.throw();",
+]);
 // list sends tools/list to path with the given extra headers and no admin credentials.
 const list = (id, title, path, headers, asserts) => rpc(id, title, listMsg, { path, headers: [MCP_ACCEPT, ...headers], asserts });
+const bearer = (value) => ({ key: "Authorization", value: `Bearer ${value}` });
+const vkVar = (id, label) => `{{${id.toLowerCase()}_${label}}}`;
+const ALL_TOOLS = ["alpha-add", "alpha-echo", "beta-echo"];
+// team is the virtual MCP over the fleet's alpha echo and every beta tool, attached to the full-access VK.
+const TEAM_TEXT = "a virtual MCP \"team\" with alpha [\"echo\"] and beta [\"*\"], attached to the full-access VK";
+const teamSetup = (id) => {
+  const p = id.toLowerCase();
+  return [
+    request(id, "setup: create the virtual MCP team", "POST", "/api/mcp/virtual-mcps", {
+      body: { name: "team", tools: [{ mcp_client_id: `${p}-alpha`, tool_names: ["echo"] }, { mcp_client_id: `${p}-beta`, tool_names: ["*"] }] },
+      asserts: [A.status(201)], extraTests: [`pm.collectionVariables.set(${lit(p + "_team_id")}, pm.response.json().virtual_mcp.id);`],
+    }),
+    request(id, "setup: attach team to the full-access VK", "POST", `/api/mcp/virtual-mcps/{{${p}_team_id}}/virtual-keys/{{${p}_full_id}}`, { asserts: [A.status(200)] }),
+  ];
+};
+const teamTeardown = (id) => request(id, "teardown: delete the virtual MCP team", "DELETE", `/api/mcp/virtual-mcps/{{${id.toLowerCase()}_team_id}}`, { asserts: [A.status(200)] });
+// grantFor runs a whole grant for one VK label: authorize, consent through the temp token, exchange.
+// The access token lands in <flow>_at.
+const grantFor = (id, clientVar, flow, label) => [
+  authorize(id, clientVar, flow, `setup: authorize a grant for ${VKS[label].label}`),
+  consent(id, flow, `setup: consent with ${VKS[label].label}`, "temp", { mode: "vk", value: vkVar(id, label) }, [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange the code for ${VKS[label].label}'s token`, codeParams(flow, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
+const ACCESS_DENIED = [A.status(403), A.msgEquals("access_denied")];
+const OAUTH_MODE_MSG = "this server requires OAuth JWT authentication; header credentials are not accepted in oauth mode";
+
+const EP34 = folder("EP-34 GET refusals", "Setup: GET /mcp with Accept: text/event-stream; mcp_server_auth_mode oauth with no token, then headers with enforce_auth_on_inference off on /mcp/nope.", [
+  readConfig("EP-34"),
+  authMode("EP-34", "O", false),
+  request("EP-34", "GET /mcp in oauth mode with no token", "GET", "/mcp", { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }], asserts: [A.status(401), wwwPresent(), jsonNotStream()] }),
+  authMode("EP-34", "H", false),
+  request("EP-34", "GET /mcp/nope", "GET", "/mcp/nope", { noAuth: true, headers: [{ key: "Accept", value: "text/event-stream" }], asserts: [...ACCESS_DENIED, jsonNotStream()] }),
+  restoreConfig("EP-34"),
+]);
+
+const EP36 = folder("EP-36 Client slug gated by grant and state", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}) and the full-access VK (${VKS.full.text}); alpha is disabled later.`, [
+  ...fleetSetup("EP-36"), createVK("EP-36", "echo"), createVK("EP-36", "full"),
+  list("EP-36", "/mcp/beta with the echo-only VK", "/mcp/beta", [vkHeader("EP-36", "echo")], ACCESS_DENIED),
+  list("EP-36", "/mcp/beta with the full-access VK", "/mcp/beta", [vkHeader("EP-36", "full")], [A.status(200), toolNamesInList(["beta-echo"])]),
+  list("EP-36", "control: /mcp/alpha with the full-access VK before the disable", "/mcp/alpha", [vkHeader("EP-36", "full")], [A.status(200), toolNamesInList(["alpha-add", "alpha-echo"])]),
+  request("EP-36", "setup: disable alpha", "PUT", "/api/mcp/client/ep-36-alpha", { body: { disabled: true }, asserts: [A.status(200)] }),
+  list("EP-36", "/mcp/alpha with the full-access VK after the disable", "/mcp/alpha", [vkHeader("EP-36", "full")], [A.status(403)]),
+  deleteVK("EP-36", "echo"), deleteVK("EP-36", "full"),
+  ...fleetTeardown("EP-36"),
+]);
+
+const EP38 = folder("EP-38 Virtual MCP slug refusals", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); ${TEAM_TEXT}; mcp_server_auth_mode headers, enforce_auth_on_inference off.`, [
+  readConfig("EP-38"), authMode("EP-38", "H", false),
+  ...fleetSetup("EP-38"), createVK("EP-38", "full"), createVK("EP-38", "echo"), ...teamSetup("EP-38"),
+  list("EP-38", "/mcp/team anonymously", "/mcp/team", [], ACCESS_DENIED),
+  list("EP-38", "/mcp/team with the echo-only VK, which team is not attached to", "/mcp/team", [vkHeader("EP-38", "echo")], ACCESS_DENIED),
+  list("EP-38", "control: /mcp/team with the full-access VK", "/mcp/team", [vkHeader("EP-38", "full")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  request("EP-38", "setup: disable team", "PUT", "/api/mcp/virtual-mcps/{{ep-38_team_id}}", { body: { enabled: false }, asserts: [A.status(200)] }),
+  list("EP-38", "/mcp/team with the full-access VK after the disable", "/mcp/team", [vkHeader("EP-38", "full")], ACCESS_DENIED),
+  list("EP-38", "/mcp/nope with the full-access VK", "/mcp/nope", [vkHeader("EP-38", "full")], ACCESS_DENIED),
+  teamTeardown("EP-38"), deleteVK("EP-38", "full"), deleteVK("EP-38", "echo"),
+  ...fleetTeardown("EP-38"),
+  restoreConfig("EP-38"),
+]);
+
+const EP39 = folder("EP-39 Slug collisions across namespaces", "Setup: alpha (echo, add) registered as client alpha; a virtual MCP named team.", [
+  ...freshServer("EP-39", "alpha", ["echo", "add"]),
+  createClient("EP-39", httpClient("ep-39-alpha", "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha"),
+  request("EP-39", "setup: create the virtual MCP team", "POST", "/api/mcp/virtual-mcps", { body: { name: "team", tools: [] }, asserts: [A.status(201)],
+    extraTests: ["pm.collectionVariables.set('ep-39_team_id', pm.response.json().virtual_mcp.id);"] }),
+  request("EP-39", "a virtual MCP with slug \"alpha\"", "POST", "/api/mcp/virtual-mcps", { body: { name: "EP-39 alpha slug", endpoint_slug: "alpha", tools: [] },
+    asserts: [A.status(409), A.msgEquals("an MCP endpoint with this slug already exists")] }),
+  createExpect("EP-39", "a client named \"team\"", httpClient("ep-39-team", "team", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  request("EP-39", "teardown: the client named team was never created", "DELETE", "/api/mcp/client/ep-39-team", { asserts: [A.status(404)] }),
+  request("EP-39", "teardown: delete the virtual MCP team", "DELETE", "/api/mcp/virtual-mcps/{{ep-39_team_id}}", { asserts: [A.status(200)] }),
+  deleteClient("EP-39", "ep-39-alpha"),
+]);
+
+// EP40_CARRIERS are the six headers a VK can ride in; each request carries exactly one.
+const EP40_CARRIERS = [
+  ["x-bf-vk", (v) => ({ key: "x-bf-vk", value: v })],
+  ["Authorization: Bearer", (v) => ({ key: "Authorization", value: `Bearer ${v}` })],
+  ["Authorization: bearer (lowercase)", (v) => ({ key: "Authorization", value: `bearer ${v}` })],
+  ["x-api-key", (v) => ({ key: "x-api-key", value: v })],
+  ["x-goog-api-key", (v) => ({ key: "x-goog-api-key", value: v })],
+  ["api-key", (v) => ({ key: "api-key", value: v })],
+];
+const EP40 = folder("EP-40 VK header carriers", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); enforce_auth_on_inference on, in mcp_server_auth_mode headers and then both.`, [
+  readConfig("EP-40"), ...fleetSetup("EP-40"), createVK("EP-40", "full"),   ...["H", "B"].flatMap((m) => [
+    authMode("EP-40", m, true),
+    noCredControl("EP-40", `${MODE_NAMES[m]}: `),
+    ...EP40_CARRIERS.map(([label, header]) => list("EP-40", `${MODE_NAMES[m]}: the VK in ${label}`, "/mcp", [header(vkVar("EP-40", "full"))], [A.status(200), toolNamesInList(ALL_TOOLS)])),
+  ]),
+  restoreConfig("EP-40"), deleteVK("EP-40", "full"), ...fleetTeardown("EP-40"),
+]);
+
+const EP41 = folder("EP-41 No credential by mode", `Setup: tools/list on /mcp with no credential, in each mcp_server_auth_mode (headers, both, oauth) with enforce_auth_on_inference off and on; both and oauth set issuer_url ${OTHER_ISS} (another origin than the requests).`, [
+  readConfig("EP-41"),
+  ...[
+    ["H", false, [A.status(200)]],
+    ["B", false, [A.status(200)]],
+    ["H", true, [A.status(401), A.msgContains("virtual key required to access mcp server"), noWww()]],
+    ["B", true, [A.status(401), wwwExact(OTHER_ISS)]],
+    ["O", false, [A.status(401), wwwExact(OTHER_ISS)]],
+    ["O", true, [A.status(401), wwwExact(OTHER_ISS)]],
+  ].flatMap(([m, enforce, asserts]) => [
+    authMode("EP-41", m, enforce, true, OTHER_ISS),
+    list("EP-41", `${MODE_NAMES[m]}, enforce_auth_on_inference ${enforce ? "on" : "off"}: no credential`, "/mcp", [], asserts),
+  ]),
+  restoreConfig("EP-41"),
+]);
+
+const EP42 = folder("EP-42 Header credentials in oauth mode", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth, enforce_auth_on_inference off.`, [
+  readConfig("EP-42"), ...fleetSetup("EP-42"), createVK("EP-42", "full"),
+  authMode("EP-42", "B", true),
+  list("EP-42", "control: both mode, enforcement on: the VK in x-bf-vk", "/mcp", [vkHeader("EP-42", "full")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  list("EP-42", "control: both mode, enforcement on: the VK as a Bearer token", "/mcp", [bearer(vkVar("EP-42", "full"))], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  authMode("EP-42", "O", false),
+  list("EP-42", "the VK in x-bf-vk", "/mcp", [vkHeader("EP-42", "full")], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
+  list("EP-42", "the VK as a Bearer token", "/mcp", [bearer(vkVar("EP-42", "full"))], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
+  restoreConfig("EP-42"), deleteVK("EP-42", "full"), ...fleetTeardown("EP-42"),
+]);
+
+// EP-43's expired key is created to lapse 3s later, since the API refuses an expiry in the past.
+const EP43 = folder("EP-43 Unknown, inactive, expired VK", "Setup: an unknown key (sk-bf-ep43-no-such-key), an inactive key and a key that expires 3s after it is created; mcp_server_auth_mode headers and then both, enforce_auth_on_inference off.", [
+  readConfig("EP-43"),
+  vkCreate("EP-43", "setup: create an inactive VK", { name: "EP-43 inactive VK", is_active: false }, "ep43_inactive"),
+  request("EP-43", "setup: create a VK that expires in 3s", "POST", "/api/governance/virtual-keys", {
+    raw: "{\"name\":\"EP-43 expiring VK\",\"expires_at\":\"{{ep43_expires_at}}\"}", pre: ["pm.variables.set('ep43_expires_at', new Date(Date.now() + 3000).toISOString());"], asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('ep43_expired_id', pm.response.json().virtual_key.id);", "pm.collectionVariables.set('ep43_expired', pm.response.json().virtual_key.value);"],
+  }),
+  ...["H", "B"].flatMap((m, pass) => [
+    authMode("EP-43", m, false),
+    rpc("EP-43", `${MODE_NAMES[m]}: an unknown VK`, listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "sk-bf-ep43-no-such-key" }], asserts: [A.status(401), A.msgEquals("access not found. The provided credential does not exist or has been revoked.")] }),
+    rpc("EP-43", `${MODE_NAMES[m]}: the inactive VK`, listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{ep43_inactive}}" }], asserts: [A.status(403), A.msgEquals("virtual key is inactive")] }),
+    request("EP-43", `${MODE_NAMES[m]}: the expired VK`, "POST", "/mcp", {
+      noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{ep43_expired}}" }],
+      ...(pass === 0 ? { pre: ["setTimeout(function () {}, 4000);"] } : {}), asserts: [A.status(403), A.msgEquals("virtual key has expired")],
+    }),
+  ]),
+  restoreConfig("EP-43"),
+  vkDelete("EP-43", "teardown: delete the inactive VK", "ep43_inactive"),
+  vkDelete("EP-43", "teardown: delete the expired VK", "ep43_expired"),
+]);
+
+// EP44_TOKENS builds the four bad tokens from the JWKS response and the grant's token:
+// garbage (JWT-shaped, so it is treated as a JWT), the token with its scope changed, alg none,
+// and HS256 signed with the server's public key PEM, rebuilt from the JWKS as Go encodes it.
+const EP44_TOKENS = [
+  "var C = require('crypto-js');",
+  "function b64u(words) { return C.enc.Base64.stringify(words).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, ''); }",
+  "function enc(o) { return b64u(C.enc.Utf8.parse(JSON.stringify(o))); }",
+  "function pemFromJwk(n, e) {",
+  "  function bytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) { s += '='; } var w = C.enc.Base64.parse(s); var out = []; for (var i = 0; i < w.sigBytes; i++) { out.push((w.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff); } return out; }",
+  "  function len(k) { if (k < 128) { return [k]; } var b = []; while (k > 0) { b.unshift(k & 0xff); k = k >>> 8; } return [0x80 | b.length].concat(b); }",
+  "  function tlv(tag, body) { return [tag].concat(len(body.length), body); }",
+  "  function int(b) { while (b.length > 1 && b[0] === 0) { b = b.slice(1); } if (b[0] & 0x80) { b = [0].concat(b); } return tlv(0x02, b); }",
+  "  var rsa = tlv(0x30, int(bytes(n)).concat(int(bytes(e))));",
+  "  var alg = tlv(0x30, [0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);",
+  "  var spki = tlv(0x30, alg.concat(tlv(0x03, [0].concat(rsa))));",
+  "  var words = []; for (var j = 0; j < spki.length; j++) { words[j >>> 2] |= spki[j] << (24 - (j % 4) * 8); }",
+  "  var b64 = C.enc.Base64.stringify(C.lib.WordArray.create(words, spki.length));",
+  "  return '-----BEGIN PUBLIC KEY-----\\n' + b64.match(/.{1,64}/g).join('\\n') + '\\n-----END PUBLIC KEY-----\\n';",
+  "}",
+  "var key = pm.response.json().keys[0];",
+  "var parts = pm.collectionVariables.get('ep44_g_at').split('.');",
+  "var p = parts[1].replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) { p += '='; }",
+  "var payload = JSON.parse(C.enc.Base64.parse(p).toString(C.enc.Utf8));",
+  "payload.scope = 'mcp-tampered';",
+  "pm.collectionVariables.set('ep44_garbage', 'eyJnYXJiYWdl.bm90LWEtand0.c2ln');",
+  "pm.collectionVariables.set('ep44_tampered', parts[0] + '.' + enc(payload) + '.' + parts[2]);",
+  "pm.collectionVariables.set('ep44_none', enc({ alg: 'none', typ: 'JWT', kid: key.kid }) + '.' + parts[1] + '.');",
+  "var hs = enc({ alg: 'HS256', typ: 'JWT', kid: key.kid }) + '.' + parts[1];",
+  "pm.collectionVariables.set('ep44_hs256', hs + '.' + b64u(C.HmacSHA256(hs, pemFromJwk(key.n, key.e))));",
+];
+// EP44_CASES pairs each bad token with the reason the verifier gives for it, so a case cannot pass on another's.
+const EP44_CASES = [["garbage", "ep44_garbage", "token is malformed"], ["tampered", "ep44_tampered", "crypto/rsa: verification error"], ["alg none", "ep44_none", "signing method none is invalid"], ["HS256 signed with the public key", "ep44_hs256", "signing method HS256 is invalid"]];
+const INVALID_TOKEN = [A.status(401), A.msgStartsWith("invalid token"), wwwPresent()];
+const EP44 = folder("EP-44 Invalid bearer JWTs", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a grant consented with that VK gives the token the bad tokens are built from: garbage (JWT-shaped), its payload with scope changed, alg none, and HS256 signed with the public key PEM.`, [
+  readConfig("EP-44"), ...fleetSetup("EP-44"), createVK("EP-44", "full"), authMode("EP-44", "B", false),
+  register("EP-44", "ep44_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...grantFor("EP-44", "ep44_client", "ep44_g", "full"),
+  request("EP-44", "setup: read the JWKS and build the bad tokens", "GET", "/.well-known/jwks.json", { noAuth: true, asserts: [A.status(200)], extraTests: EP44_TOKENS }),
+  list("EP-44", "control: both: the untouched token", "/mcp", [bearer("{{ep44_g_at}}")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  ...EP44_CASES.map(([label, v, reason]) => list("EP-44", `both: a ${label} token`, "/mcp", [bearer(`{{${v}}}`)], [...INVALID_TOKEN, A.msgContains(reason)])),
+  authMode("EP-44", "O", false),
+  list("EP-44", "control: oauth: the untouched token", "/mcp", [bearer("{{ep44_g_at}}")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  ...EP44_CASES.map(([label, v, reason]) => list("EP-44", `oauth: a ${label} token`, "/mcp", [bearer(`{{${v}}}`)], [...INVALID_TOKEN, A.msgContains(reason)])),
+  authMode("EP-44", "H", false, false),
+  list("EP-44", "headers: the garbage token is anonymous", "/mcp", [bearer("{{ep44_garbage}}")], [A.status(200)]),
+  restoreConfig("EP-44"), deleteVK("EP-44", "full"), ...fleetTeardown("EP-44"),
+]);
+
+const CONFLICT_MSG = "conflicting credentials: an OAuth token and a virtual key header were both provided; send only the OAuth token";
+const EP45 = folder("EP-45 JWT plus a VK header", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a token from a grant consented with that VK.`, [
+  readConfig("EP-45"), ...fleetSetup("EP-45"), createVK("EP-45", "full"), authMode("EP-45", "B", false),
+  register("EP-45", "ep45_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...grantFor("EP-45", "ep45_client", "ep45_g", "full"),
+  list("EP-45", "control: the token alone", "/mcp", [bearer("{{ep45_g_at}}")], [A.status(200)]),
+  list("EP-45", "the token plus x-bf-vk", "/mcp", [bearer("{{ep45_g_at}}"), vkHeader("EP-45", "full")], [A.status(401), A.msgEquals(CONFLICT_MSG)]),
+  list("EP-45", "the token plus x-api-key", "/mcp", [bearer("{{ep45_g_at}}"), { key: "x-api-key", value: vkVar("EP-45", "full") }], [A.status(401), A.msgEquals(CONFLICT_MSG)]),
+  restoreConfig("EP-45"), deleteVK("EP-45", "full"), ...fleetTeardown("EP-45"),
+]);
 
 const NO_VK_401 = [A.status(401), A.msgContains("virtual key required to access mcp server"), wwwPresent()];
+const EP46 = folder("EP-46 Non-credentials do not open /mcp", `Setup: ${BOTH}, temp-token auth on, enforce_auth_on_inference on; a registered client's authorize gives a temp token. Each request carries one of: that temp token, the admin's Basic credentials, x-bf-mcp-session-id, the setup token.`, [
+  readConfig("EP-46"), authMode("EP-46", "B", true),
+  register("EP-46", "ep46_client"),
+  authorize("EP-46", "ep46_client", "ep46_f", "setup: authorize to get a temp token"),
+  flowGet("EP-46", "ep46_f", "control: the temp token opens its own flow", "temp", [A.status(200)]),
+  ...[["B", NO_VK_401]].flatMap(([m, refused]) => {
+    const p = m === "B" ? "" : `${MODE_NAMES[m]}: `;
+    return [
+      ...(m === "B" ? [] : [authMode("EP-46", m, true)]),
+      list("EP-46", `${p}the temp token`, "/mcp", [{ key: "X-Bifrost-Temp-Token", value: "{{ep46_f_tt}}" }], refused),
+      list("EP-46", `${p}the admin's Basic credentials`, "/mcp", [{ key: "Authorization", value: "{{admin_auth_header}}" }], refused),
+      list("EP-46", `${p}x-bf-mcp-session-id`, "/mcp", [{ key: "x-bf-mcp-session-id", value: "ep46-session" }], refused),
+      list("EP-46", `${p}the setup token`, "/mcp", [{ key: "X-Bifrost-Setup-Token", value: "{{setup_token}}" }], [...refused, A.custom("the setup token variable holds a value", ["var t = pm.variables.get('setup_token');", "pm.expect(t, 'setup_token').to.be.a('string').and.not.empty;", "pm.expect(t.indexOf('{{')).to.equal(-1);"])]),
+    ];
+  }),
+  restoreConfig("EP-46"),
+]);
+
+const EP47 = folder("EP-47 VK JWT matches the VK header", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}) and the echo-only VK (${VKS.echo.text}); ${TEAM_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference on; one registered client gets a grant consented with each VK.`, [
+  readConfig("EP-47"), ...fleetSetup("EP-47"), createVK("EP-47", "full"), createVK("EP-47", "echo"), ...teamSetup("EP-47"), authMode("EP-47", "B", true),
+  register("EP-47", "ep47_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...grantFor("EP-47", "ep47_client", "ep47_r", "echo"),
+  ...grantFor("EP-47", "ep47_client", "ep47_a", "full"),
+  list("EP-47", "the echo-only VK's token lists", "/mcp", [bearer("{{ep47_r_at}}")], [A.status(200), toolNamesInList(["alpha-echo"])]),
+  rpc("EP-47", "the echo-only VK's token calls alpha-add", call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, bearer("{{ep47_r_at}}")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-add' is not allowed", null)] }),
+  mockGet("EP-47", "alpha", "alpha received no tool call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
+  list("EP-47", "the full-access VK's token lists /mcp/team", "/mcp/team", [bearer("{{ep47_a_at}}")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  restoreConfig("EP-47"), teamTeardown("EP-47"), deleteVK("EP-47", "full"), deleteVK("EP-47", "echo"), ...fleetTeardown("EP-47"),
+]);
+
+const EP49 = folder("EP-49 Session-mode JWT", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); ${TEAM_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a session-mode token as in OAS-20 (consent by the admin with Bearer base64(admin:pw)); enforce_auth_on_inference on for the last case.`, [
+  readConfig("EP-49"), ...fleetSetup("EP-49"), createVK("EP-49", "full"), ...teamSetup("EP-49"), authMode("EP-49", "B", false),
+  register("EP-49", "ep49_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  authorize("EP-49", "ep49_client", "ep49_s", "setup: authorize"),
+  consent("EP-49", "ep49_s", "setup: consent in session mode as the admin", "bearer", { mode: "session", value: "" }, [A.status(200), codeIssued()], { extraTests: saveCode("ep49_s") }),
+  tokenReq("EP-49", "setup: exchange the code for a session-mode token", codeParams("ep49_s", "ep49_client"), [A.status(200), sessionBfMode("session")], { extraTests: saveTokens("ep49_s") }),
+  list("EP-49", "the session token lists the anonymous tools", "/mcp", [bearer("{{ep49_s_at}}")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  list("EP-49", "control: /mcp/team with the full-access VK", "/mcp/team", [vkHeader("EP-49", "full")], [A.status(200)]),
+  list("EP-49", "the session token on /mcp/team", "/mcp/team", [bearer("{{ep49_s_at}}")], [A.status(403)]),
+  authMode("EP-49", "B", true),
+  list("EP-49", "the session token with enforce_auth_on_inference on", "/mcp", [bearer("{{ep49_s_at}}")], [A.status(401), A.msgContains("session-mode tokens are not accepted when authentication is enforced")]),
+  revokeGrants("EP-49", "ep49_client"),
+  restoreConfig("EP-49"), teamTeardown("EP-49"), deleteVK("EP-49", "full"), ...fleetTeardown("EP-49"),
+]);
 
 // EP-12, EP-14 and EP-24 sit below the OAuth helpers because their both and oauth passes use them.
 // EP-12 runs once per mode that accepts header credentials; both adds WWW-Authenticate to the no-credential refusal.
@@ -2131,6 +2384,25 @@ const EP24 = folder("EP-24 Listed but not granted", `Setup: ${FLEET}; the echo-o
   mockGet("EP-24", "alpha", "alpha ran only the control call", [A.custom("calls is {echo: 1}", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({ echo: 1 });"])]),
   deleteVK("EP-24", "echo"), deleteVK("EP-24", "none"),
   ...fleetTeardown("EP-24"),
+]);
+
+// EP-53 polls for up to about 15s until the asynchronous log write lands and is no longer "processing".
+const EP53_POLL = [
+  "var left = 30;",
+  "function poll() {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/r1', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const EP53 = folder("EP-53 Log entry for a /mcp call", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); tools/call alpha-echo with x-request-id r1.`, [
+  ...fleetSetup("EP-53"), createVK("EP-53", "full"),
+  rpc("EP-53", "setup: tools/call alpha-echo with x-request-id r1", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-53", "full"), { key: "x-request-id", value: "r1" }], asserts: [A.status(200)] }),
+  request("EP-53", "GET /api/mcp-logs/r1", "GET", "/api/mcp-logs/r1", { pre: EP53_POLL, asserts: [A.status(200), A.jsonEquals("status", "success"), A.jsonEquals("tool_name", "echo"), A.jsonEquals("server_label", "alpha"), A.custom("virtual_key_id is the full-access VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('ep-53_full_id'));"])] }),
+  request("EP-53", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["r1"] }, asserts: [A.status(200)] }),
+  deleteVK("EP-53", "full"), ...fleetTeardown("EP-53"),
 ]);
 
 // ================================================================ INF direct execute and code mode
@@ -2172,7 +2444,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN17, CONN18, CONN22]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
