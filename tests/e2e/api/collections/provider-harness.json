@@ -298482,6 +298482,55 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Complexity Router decision.min_confidence (decision min confidence)",
+      "description": "decision.min_confidence is the confidence a decision-model answer must reach to publish its complexity tier. An out-of-range value is refused by the management API before anything is saved, so this case changes no router state and calls no provider. Before the field existed the same body failed as a generic 'Invalid request payload'. The gate's effect on routing needs a global router change and a paid decision call, so it is pinned by the Go tests in plugins/routing instead.",
+      "item": [
+        {
+          "name": "[EXPECT-400] PUT /api/routing/complexity-analyzer-config rejects typesafe decision min_confidence above 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('out-of-range min_confidence is refused by name', function () {",
+                  "  pm.expect(pm.response.code, 'expected the validation rejection: ' + text).to.equal(400);",
+                  "  pm.expect(text, 'expected the min_confidence bound in the error: ' + text).to.include('decision min_confidence must be between 0 and 1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"classifier\":\"decision\",\"keywords\":{\"simple_keywords\":[\"simple\"],\"medium_keywords\":[\"medium\"],\"complex_keywords\":[\"complex\"]},\"decision\":{\"min_confidence\":1.5}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-analyzer-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-analyzer-config"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

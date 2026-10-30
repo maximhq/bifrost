@@ -34,6 +34,8 @@ export interface DecisionConfig {
 	model?: string;
 	previous_message_count: number;
 	timeout?: string;
+	// The confidence an answer must reach to publish its tier. 0 or omitted keeps every answer.
+	min_confidence?: number;
 	criteria?: Partial<Record<DecisionTier, DecisionTierCriteria>>;
 }
 
@@ -203,6 +205,7 @@ export const DEFAULT_SEMANTIC_TIMEOUT_MS = 1500;
 export const DEFAULT_DECISION_TIMEOUT_MS = 1500;
 export const DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT = 1;
 export const MAX_DECISION_PREVIOUS_MESSAGE_COUNT = 5;
+export const DEFAULT_DECISION_MIN_CONFIDENCE = 0;
 
 // Server-side bounds from validateComplexityDecisionGuidance in framework/configstore.
 export const MAX_DECISION_DEFINITION_CHARACTERS = 500;
@@ -263,12 +266,15 @@ export const DATABRICKS_DECISION_MODEL = "ai_decide";
 // The picker lists the Clef models Cloudflare Workers AI serves.
 export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";
 
-// DEFAULT_DECISION_CONFIG supplies the model, history window, and timeout for decision-model requests.
-export const DEFAULT_DECISION_CONFIG: Required<Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout">> = {
+// DEFAULT_DECISION_CONFIG supplies the model, history window, timeout, and confidence floor for decision-model requests.
+export const DEFAULT_DECISION_CONFIG: Required<
+	Pick<DecisionConfig, "provider" | "model" | "previous_message_count" | "timeout" | "min_confidence">
+> = {
 	provider: DEFAULT_DECISION_PROVIDER,
 	model: DEFAULT_DECISION_MODEL,
 	previous_message_count: DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT,
 	timeout: `${DEFAULT_DECISION_TIMEOUT_MS}ms`,
+	min_confidence: DEFAULT_DECISION_MIN_CONFIDENCE,
 };
 
 // Seeded when a deployment has no semantic block saved yet. Provider and model

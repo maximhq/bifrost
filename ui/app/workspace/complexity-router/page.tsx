@@ -199,7 +199,8 @@ export default function ComplexityRouterPage() {
 		dirtyFields.decision?.provider ||
 		dirtyFields.decision?.model ||
 		dirtyFields.decision?.previous_message_count ||
-		dirtyFields.decision?.timeout,
+		dirtyFields.decision?.timeout ||
+		dirtyFields.decision?.min_confidence,
 	);
 	const hasUnsavedEmbeddingConfigChanges =
 		Object.values(dirtyFields.semantic ?? {}).some(Boolean) || Object.values(dirtyFields.llm ?? {}).some(Boolean);
@@ -431,7 +432,8 @@ export default function ComplexityRouterPage() {
 			formErrors.decision?.provider ||
 			formErrors.decision?.model ||
 			formErrors.decision?.previous_message_count ||
-			formErrors.decision?.timeout,
+			formErrors.decision?.timeout ||
+			formErrors.decision?.min_confidence,
 		);
 		setEmbeddingSheetOpen(Boolean(formErrors.semantic || formErrors.llm || (decisionSheetError && liveClassifier === "semantic")));
 		setDecisionSheetOpen(decisionSheetError && liveClassifier === "decision");

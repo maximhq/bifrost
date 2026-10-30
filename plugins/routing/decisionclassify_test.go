@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -570,4 +571,140 @@ func hasRoutingLog(ctx *schemas.BifrostContext, fragment string) bool {
 		}
 	}
 	return false
+}
+
+// TestClassifyDecisionComplexityMinConfidence pins the gate: an answer below
+// min_confidence publishes no tier, one at or above it does, and an answer that
+// reports no confidence is kept, since rejecting it would stop a model that
+// never reports one from routing at all.
+func TestClassifyDecisionComplexityMinConfidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		minConfidence float64
+		confidence    *float64
+		probabilities []float64 // SIMPLE, MEDIUM, COMPLEX
+		wantTier      bool
+		wantLog       string
+	}{
+		{name: "unset keeps a low answer", confidence: schemas.Ptr(0.01), wantTier: true},
+		{name: "below is rejected", minConfidence: 0.8, confidence: schemas.Ptr(0.79), wantLog: "rejected: tier=COMPLEX confidence=0.79 below min_confidence=0.80"},
+		{name: "equal is kept", minConfidence: 0.8, confidence: schemas.Ptr(0.8), wantTier: true},
+		{name: "above is kept", minConfidence: 0.8, confidence: schemas.Ptr(0.95), wantTier: true},
+		{name: "no confidence or probabilities is kept", minConfidence: 0.8, wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "derived below is rejected", minConfidence: 0.8, probabilities: []float64{0.1, 0.3, 0.6}, wantLog: "confidence=0.40 (derived from probabilities) below min_confidence=0.80"},
+		{name: "derived above is kept", minConfidence: 0.8, probabilities: []float64{0.02, 0.03, 0.95}, wantTier: true, wantLog: "confidence=0.92 (derived from probabilities)"},
+		{name: "reported confidence is never replaced", minConfidence: 0.92, confidence: schemas.Ptr(0.9029), probabilities: []float64{0.0136, 0.0196, 0.9668}, wantLog: "confidence=0.90 below min_confidence=0.92"},
+		{name: "distribution short of 1 is not derived", minConfidence: 0.8, probabilities: []float64{0.05, 0.05, 0.3}, wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "threshold off derives nothing", probabilities: []float64{0.1, 0.3, 0.6}, wantTier: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := decisionChoiceResponse("COMPLEX")
+			response.Answers[0].Confidence = tt.confidence
+			for i, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
+				if tt.probabilities != nil {
+					response.Answers[0].Probabilities = append(response.Answers[0].Probabilities, schemas.DecisionProbability{Value: schemas.DecisionScalar{Str: schemas.Ptr(tier)}, Probability: tt.probabilities[i]})
+				}
+			}
+			p := decisionTestPlugin(&complexity.DecisionConfig{MinConfidence: tt.minConfidence}, func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return response, nil
+			})
+			proposal := p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
+			if tt.wantTier {
+				require.NotNil(t, proposal.Result)
+				assert.Equal(t, complexity.TierComplex, proposal.Result.Tier)
+				assert.Equal(t, complexity.MechanismDecision, proposal.Mechanism)
+			} else {
+				assert.Nil(t, proposal.Result)
+				assert.Equal(t, complexity.MechanismSkipped, proposal.Mechanism)
+				assert.Equal(t, schemas.LogLevelInfo, proposal.LogLevel, "a low-confidence answer is expected behaviour, not a failure")
+			}
+			assert.Contains(t, proposal.LogMessage, tt.wantLog)
+			if tt.minConfidence == 0 {
+				assert.NotContains(t, proposal.LogMessage, "derived")
+			}
+		})
+	}
+}
+
+// TestDecisionConfidenceFromProbabilities pins the formula's end points and the
+// distributions it must refuse.
+func TestDecisionConfidenceFromProbabilities(t *testing.T) {
+	distribution := func(values map[string]float64) []schemas.DecisionProbability {
+		out := make([]schemas.DecisionProbability, 0, len(values))
+		for tier, probability := range values {
+			out = append(out, schemas.DecisionProbability{Value: schemas.DecisionScalar{Str: schemas.Ptr(tier)}, Probability: probability})
+		}
+		return out
+	}
+	third := 1.0 / 3
+	value, ok := decisionConfidenceFromProbabilities(distribution(map[string]float64{"SIMPLE": third, "MEDIUM": third, "COMPLEX": third}))
+	require.True(t, ok)
+	assert.InDelta(t, 0, value, 1e-9, "an even spread is no confidence")
+	value, ok = decisionConfidenceFromProbabilities(distribution(map[string]float64{"SIMPLE": 0, "MEDIUM": 0, "COMPLEX": 1}))
+	require.True(t, ok)
+	assert.InDelta(t, 1, value, 1e-9)
+	value, ok = decisionConfidenceFromProbabilities(distribution(map[string]float64{"SIMPLE": 0.1, "MEDIUM": 0.1, "COMPLEX": 0.8}))
+	require.True(t, ok)
+	assert.InDelta(t, 0.7, value, 1e-9)
+
+	for name, refused := range map[string][]schemas.DecisionProbability{
+		"empty":         nil,
+		"missing tier":  distribution(map[string]float64{"SIMPLE": 0.5, "MEDIUM": 0.5}),
+		"unknown tier":  distribution(map[string]float64{"SIMPLE": 0.5, "MEDIUM": 0.25, "OTHER": 0.25}),
+		"sums below 1":  distribution(map[string]float64{"SIMPLE": 0.1, "MEDIUM": 0.1, "COMPLEX": 0.3}),
+		"negative":      distribution(map[string]float64{"SIMPLE": -0.5, "MEDIUM": 0.5, "COMPLEX": 1}),
+		"repeated tier": {{Value: schemas.DecisionScalar{Str: schemas.Ptr("SIMPLE")}, Probability: 0.5}, {Value: schemas.DecisionScalar{Str: schemas.Ptr("SIMPLE")}, Probability: 0.25}, {Value: schemas.DecisionScalar{Str: schemas.Ptr("COMPLEX")}, Probability: 0.25}},
+	} {
+		_, ok := decisionConfidenceFromProbabilities(refused)
+		assert.False(t, ok, name)
+	}
+}
+
+// TestClassifyDecisionComplexityMinConfidenceKeepsUsage pins that a rejected
+// answer is still billed: the decision call happened and the provider charged it.
+func TestClassifyDecisionComplexityMinConfidenceKeepsUsage(t *testing.T) {
+	response := decisionChoiceResponse("COMPLEX")
+	response.Answers[0].Confidence = schemas.Ptr(0.1)
+	p := decisionTestPlugin(&complexity.DecisionConfig{MinConfidence: 0.8}, func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		return response, nil
+	})
+	ctx := decisionTestContext(t)
+	proposal := p.classifyDecisionComplexity(ctx, decisionTestInput())
+	require.Nil(t, proposal.Result)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, usage.Calls, 1)
+}
+
+// BenchmarkClassifyDecisionComplexity measures the classifier around a stubbed
+// decision call, so the numbers are the gateway's own cost, not the model's.
+func BenchmarkClassifyDecisionComplexity(b *testing.B) {
+	for _, bench := range []struct {
+		name          string
+		minConfidence float64
+		derive        bool
+	}{{"GateOff", 0, false}, {"GateKeeps", 0.5, false}, {"GateRejects", 0.95, false}, {"GateDerives", 0.5, true}} {
+		b.Run(bench.name, func(b *testing.B) {
+			confidence := 0.9
+			response := decisionChoiceResponse("MEDIUM")
+			response.Answers[0].Confidence = &confidence
+			if bench.derive {
+				response.Answers[0].Confidence = nil
+				for _, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
+					response.Answers[0].Probabilities = append(response.Answers[0].Probabilities, schemas.DecisionProbability{Value: schemas.DecisionScalar{Str: schemas.Ptr(tier)}, Probability: 1.0 / 3})
+				}
+			}
+			p := decisionTestPlugin(&complexity.DecisionConfig{MinConfidence: bench.minConfidence}, func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return response, nil
+			})
+			input := decisionTestInput()
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				p.classifyDecisionComplexity(ctx, input)
+				ctx.Cancel()
+			}
+		})
+	}
 }

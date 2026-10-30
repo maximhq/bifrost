@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 )
 
 const decisionComplexityQuestion = "complexity_tier"
+
+// decisionProbabilitySumTolerance absorbs provider rounding when a distribution is checked for summing to 1.
+const decisionProbabilitySumTolerance = 0.01
 
 // DecisionRequestExecutor calls Bifrost's first-class decision endpoint.
 type DecisionRequestExecutor func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError)
@@ -135,6 +139,16 @@ func (p *RoutingPlugin) classifyDecisionComplexity(ctx *schemas.BifrostContext, 
 		value, _ := answer.Choice.Key()
 		return complexityProposal{Mechanism: complexity.MechanismSkipped, LogLevel: schemas.LogLevelWarn, LogMessage: fmt.Sprintf("Decision model complexity returned an invalid tier %q (model=%s)", value, configuredModel)}
 	}
+	confidence, confidenceSource := answer.Confidence, ""
+	minConfidence := decisionConfig.MinConfidence
+	if minConfidence > 0 && confidence == nil {
+		if derived, ok := decisionConfidenceFromProbabilities(answer.Probabilities); ok {
+			confidence, confidenceSource = &derived, " (derived from probabilities)"
+		}
+	}
+	if minConfidence > 0 && confidence != nil && *confidence < minConfidence {
+		return complexityProposal{Mechanism: complexity.MechanismSkipped, LogLevel: schemas.LogLevelInfo, LogMessage: fmt.Sprintf("Decision model complexity rejected: tier=%s confidence=%.2f%s below min_confidence=%.2f model=%s, so no complexity tier is published", tier, *confidence, confidenceSource, minConfidence, configuredModel)}
+	}
 	// The log names the configured model, which is what the operator chose and
 	// recognises; the served model (e.g. Laya's "laya-rl-agent") is on the
 	// routing call recorded above.
@@ -145,13 +159,49 @@ func (p *RoutingPlugin) classifyDecisionComplexity(ctx *schemas.BifrostContext, 
 		LogLevel:  schemas.LogLevelInfo,
 	}
 	message := fmt.Sprintf("Decision model complexity: tier=%s", tier)
-	if answer.Confidence != nil {
-		confidence := *answer.Confidence
-		proposal.Confidence = &confidence
-		message += fmt.Sprintf(" confidence=%.2f", confidence)
+	if confidence != nil {
+		value := *confidence
+		proposal.Confidence = &value
+		message += fmt.Sprintf(" confidence=%.2f%s", value, confidenceSource)
+	} else if minConfidence > 0 {
+		message += " (reported no usable confidence, so min_confidence did not apply)"
 	}
 	proposal.LogMessage = message + fmt.Sprintf(" model=%s", configuredModel)
 	return proposal
+}
+
+// decisionConfidenceFromProbabilities derives confidence for an answer that
+// reports none, using Typesafe's choice formula, (p_max - 1/n) / (1 - 1/n), with
+// n fixed at the three tiers. It only stands in for a missing value: a reported
+// confidence is never replaced, because live models do not always match the
+// formula. A distribution that misses a tier or does not sum to 1 yields nothing,
+// since rescaling it would report a weak read as a confident one.
+func decisionConfidenceFromProbabilities(probabilities []schemas.DecisionProbability) (float64, bool) {
+	if len(probabilities) != 3 {
+		return 0, false
+	}
+	var hasSimple, hasMedium, hasComplex bool
+	var sum, top float64
+	for _, entry := range probabilities {
+		tier, ok := complexityTierFromDecisionChoice(entry.Value)
+		if !ok || entry.Probability < 0 {
+			return 0, false
+		}
+		switch tier {
+		case complexity.TierSimple:
+			hasSimple = true
+		case complexity.TierMedium:
+			hasMedium = true
+		case complexity.TierComplex:
+			hasComplex = true
+		}
+		sum += entry.Probability
+		top = math.Max(top, entry.Probability)
+	}
+	if !hasSimple || !hasMedium || !hasComplex || math.Abs(sum-1) > decisionProbabilitySumTolerance {
+		return 0, false
+	}
+	return math.Min(1, math.Max(0, (3*top-1)/2)), true
 }
 
 // decisionConversationInput sends the conversation window as user messages,

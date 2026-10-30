@@ -227,6 +227,7 @@ Laya reports 0 output tokens, so only its input rate is charged. Nimble reports 
 Pick the custom provider as the decision model in [**Complexity Router**](/features/complexity-router#choosing-the-decision-model). Nimble's models come from its listing. For Laya, which lists none, the UI offers the known checkpoints, starting on `english` when the provider is named after Laya.
 
 - **Keep guidance short on Laya.** All tier guidance is sent on every request, and `english` reads only 512 tokens. `multilingual` reads 1,024.
+- **Confidence floor.** `decision.min_confidence` in the Complexity Router is checked by Bifrost against the answer's `confidence`, or against one derived from its probabilities when that is missing. It is separate from Laya's own `min_confidence` request field, which the router does not send.
 - **Keep the model loaded.** A request that waits for a model to load goes unclassified once it passes `decision.timeout` (`1.5s` by default). For Laya, keep `LAYA_PRELOAD=1` with every checkpoint you use, or raise `LAYA_MAX_LOADED`. For Nimble on Modal, keep the deployment warm, since waking takes minutes.
 
 ---

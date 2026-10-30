@@ -406,6 +406,27 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 				/>
 				{errors?.timeout && <p className="text-destructive text-xs">{errors.timeout.message}</p>}
 			</div>
+			<div className="space-y-2">
+				<FieldLabel
+					htmlFor="decision-min-confidence"
+					tooltip="The confidence an answer must reach to publish its tier, from 0 to 1. An answer below it publishes no tier, so the request stays on its original model unless session state supplies one, and the decision call is still billed. If the model reports no confidence, it is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."
+				>
+					Confidence threshold
+				</FieldLabel>
+				<Input
+					id="decision-min-confidence"
+					data-testid="complexity-router-decision-min-confidence-input"
+					type="number"
+					min={0}
+					max={1}
+					step={0.01}
+					{...register("decision.min_confidence", { valueAsNumber: true })}
+					disabled={!canUpdate}
+					aria-invalid={errors?.min_confidence ? true : undefined}
+					className={cn("font-mono", errors?.min_confidence && "border-destructive focus-visible:ring-destructive")}
+				/>
+				{errors?.min_confidence && <p className="text-destructive text-xs">{errors.min_confidence.message}</p>}
+			</div>
 		</div>
 	);
 }
