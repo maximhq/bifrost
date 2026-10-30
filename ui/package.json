@@ -17,7 +17,8 @@
 		"format:changed": "sh scripts/formatChanged.sh",
 		"format:changed:check": "sh scripts/formatChanged.sh --check",
 		"format:enterprise": "oxfmt app/enterprise/",
-		"i18n:check": "node scripts/i18nCheck.mjs"
+		"i18n:check": "node scripts/i18nCheck.mjs",
+		"i18n:inventory": "node scripts/check-i18n.mjs --baseline origin/dev --inventory-only"
 	},
 	"dependencies": {
 		"@bprogress/core": "1.3.4",
