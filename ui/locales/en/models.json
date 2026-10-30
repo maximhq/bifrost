@@ -432,7 +432,9 @@
 		},
 		"custom": {
 			"waitForUsage": "Wait For Trailing Usage Chunk?",
-			"waitForUsageHelp": "Keep reading after finish_reason so the trailing usage chunk is collected. Without this the request records zero tokens and zero cost"
+			"waitForUsageHelp": "Keep reading after finish_reason so the trailing usage chunk is collected. Without this the request records zero tokens and zero cost",
+			"rewriteBooleanToolSchemas": "Rewrite Boolean Tool Schemas?",
+			"rewriteBooleanToolSchemasHelp": "Send boolean tool subschemas such as items: true in equivalent object form for upstreams whose validators reject boolean schemas"
 		},
 		"allowedRequests": {
 			"types": {

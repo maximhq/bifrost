@@ -5428,19 +5428,37 @@ func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaP
 // ResponsesToolFunction and ResponsesToolNamespace are embedded by pointer, so a
 // changed one is replaced rather than written through.
 func ApplyResponsesToolSchemaPolicy(tools []schemas.ResponsesTool, p ToolSchemaPolicy) ([]schemas.ResponsesTool, bool) {
+	return rewriteResponsesToolParameters(tools, func(params *schemas.ToolFunctionParameters) (*schemas.ToolFunctionParameters, bool) {
+		return ApplyToolSchemaPolicy(params, p)
+	})
+}
+
+// ApplyChatToolSchemaPolicy is the Chat Completions parallel of
+// ApplyResponsesToolSchemaPolicy, with the same copy-on-write guarantee.
+func ApplyChatToolSchemaPolicy(tools []schemas.ChatTool, p ToolSchemaPolicy) ([]schemas.ChatTool, bool) {
+	return rewriteChatToolParameters(tools, func(params *schemas.ToolFunctionParameters) (*schemas.ToolFunctionParameters, bool) {
+		return ApplyToolSchemaPolicy(params, p)
+	})
+}
+
+// toolParametersRewrite rewrites one tool parameter schema copy-on-write.
+type toolParametersRewrite func(*schemas.ToolFunctionParameters) (*schemas.ToolFunctionParameters, bool)
+
+// rewriteResponsesToolParameters also visits namespace members without mutating tools.
+func rewriteResponsesToolParameters(tools []schemas.ResponsesTool, rewrite toolParametersRewrite) ([]schemas.ResponsesTool, bool) {
 	var updated []schemas.ResponsesTool
 	for i := range tools {
 		function, namespace := tools[i].ResponsesToolFunction, tools[i].ResponsesToolNamespace
 		changed := false
 		if function != nil && function.Parameters != nil {
-			if normalized, ok := ApplyToolSchemaPolicy(function.Parameters, p); ok {
+			if normalized, ok := rewrite(function.Parameters); ok {
 				cp := *function
 				cp.Parameters = normalized
 				function, changed = &cp, true
 			}
 		}
 		if namespace != nil {
-			if members, ok := ApplyResponsesToolSchemaPolicy(namespace.Tools, p); ok {
+			if members, ok := rewriteResponsesToolParameters(namespace.Tools, rewrite); ok {
 				cp := *namespace
 				cp.Tools = members
 				namespace, changed = &cp, true
@@ -5461,15 +5479,15 @@ func ApplyResponsesToolSchemaPolicy(tools []schemas.ResponsesTool, p ToolSchemaP
 	return updated, true
 }
 
-// ApplyChatToolSchemaPolicy is the Chat Completions parallel of
-// ApplyResponsesToolSchemaPolicy, with the same copy-on-write guarantee.
-func ApplyChatToolSchemaPolicy(tools []schemas.ChatTool, p ToolSchemaPolicy) ([]schemas.ChatTool, bool) {
+// rewriteChatToolParameters is the Chat Completions parallel of
+// rewriteResponsesToolParameters.
+func rewriteChatToolParameters(tools []schemas.ChatTool, rewrite toolParametersRewrite) ([]schemas.ChatTool, bool) {
 	var updated []schemas.ChatTool
 	for i := range tools {
 		if tools[i].Function == nil || tools[i].Function.Parameters == nil {
 			continue
 		}
-		normalized, changed := ApplyToolSchemaPolicy(tools[i].Function.Parameters, p)
+		normalized, changed := rewrite(tools[i].Function.Parameters)
 		if !changed {
 			continue
 		}
@@ -5480,6 +5498,7 @@ func ApplyChatToolSchemaPolicy(tools []schemas.ChatTool, p ToolSchemaPolicy) ([]
 		function := *tools[i].Function
 		function.Parameters = normalized
 		updated[i].Function = &function
+		updated[i].InvalidateSerialized()
 	}
 	if updated == nil {
 		return tools, false

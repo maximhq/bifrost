@@ -1,3 +1,5 @@
+[feat]: expose boolean tool schema compatibility in custom-provider configuration and UI [@Xytronix](https://github.com/Xytronix)
+
 ## ✨ Features
 
 - **Relays** - New relays call non-LLM APIs (Tavily, AWS Textract, Azure Speech, ...) through `/relay/{name}/{path}` with one stored credential, per-route pricing and usage mapping, and streaming. Virtual keys get `relay_grants`, and relay calls are charged to the caller's virtual key, team and customer budgets. Relay Logs record metadata, route-matched headers and (with content logging on) streamed response bodies. Routes can be imported from an OpenAPI document pasted, uploaded or fetched by URL, and header matchers accept any header name. Relays sync from config.json, and a credential is tracked by its `env.` reference, so rotating the value does not re-sync the config

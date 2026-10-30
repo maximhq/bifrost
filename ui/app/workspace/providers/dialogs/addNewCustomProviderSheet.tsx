@@ -31,6 +31,7 @@ const formSchema = z.object({
 	is_key_less: z.boolean().optional(),
 	does_not_send_done_marker: z.boolean().optional(),
 	wait_for_usage: z.boolean().optional(),
+	boolean_schema_nodes_unsupported: z.boolean().optional(),
 	allow_private_network: z.boolean().optional(),
 });
 
@@ -101,6 +102,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			is_key_less: false,
 			does_not_send_done_marker: false,
 			wait_for_usage: false,
+			boolean_schema_nodes_unsupported: false,
 			allow_private_network: false,
 		},
 	});
@@ -121,6 +123,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				is_key_less: data.is_key_less ?? false,
 				does_not_send_done_marker: data.does_not_send_done_marker ?? false,
 				wait_for_usage: data.wait_for_usage ?? false,
+				boolean_schema_nodes_unsupported: data.baseFormat === "openai" ? (data.boolean_schema_nodes_unsupported ?? false) : false,
 			},
 			network_config: {
 				base_url: data.base_url,
@@ -333,6 +336,32 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												onCheckedChange={field.onChange}
 												disabled={!hasProviderCreateAccess}
 												data-testid="custom-provider-wait-for-usage-switch"
+											/>
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
+						{baseFormat === "openai" && (
+							<FormField
+								control={form.control}
+								name="boolean_schema_nodes_unsupported"
+								render={({ field }) => (
+									<FormItem>
+										<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+											<div className="space-y-0.5">
+												<label htmlFor="boolean-schema-nodes-unsupported" className="text-sm font-medium">
+													{t("providers.custom.rewriteBooleanToolSchemas")}
+												</label>
+												<p className="text-muted-foreground text-sm">{t("providers.custom.rewriteBooleanToolSchemasHelp")}</p>
+											</div>
+											<Switch
+												id="boolean-schema-nodes-unsupported"
+												size="md"
+												checked={field.value ?? false}
+												onCheckedChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
+												data-testid="custom-provider-boolean-schema-nodes-unsupported-switch"
 											/>
 										</div>
 									</FormItem>
