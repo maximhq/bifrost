@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "重新授權未完成",
 			"toolsRefreshed": "工具已重新整理",
 			"toolsRefreshedDesc_one": "用戶端 {{name}} 現在提供 {{count}} 個工具。",
-			"toolsRefreshedDesc_other": "用戶端 {{name}} 現在提供 {{count}} 個工具。"
+			"toolsRefreshedDesc_other": "用戶端 {{name}} 現在提供 {{count}} 個工具。",
+			"oauthVerifiedPerUser": "OAuth 設定驗證成功。每位使用者將個別進行驗證。",
+			"clientConnected": "MCP 用戶端已成功連線"
 		},
 		"filter": {
 			"connectionType": "連線型別",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "基本 URL 為必填項",
 			"invalidAllowedExtraHeadersTitle": "允許的額外標頭無效",
 			"invalidAllowedExtraHeadersDesc": "通配符“*”不能與特定標頭名稱組合。",
-			"allowedExtraHeadersPlaceholder": "*，或：授權，x-user-id"
+			"allowedExtraHeadersPlaceholder": "*，或：授權，x-user-id",
+			"useGlobalSetting": "使用全域設定",
+			"useGlobalSettingWithValue": "使用全域設定（{{value}}）",
+			"maxProtocolAuto": "自動（最新）"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "此伺服器需要一次性驗證：Bifrost 交換你已登入身份的令牌、測試連線並發現工具。之後呼叫方會在每次工具呼叫時自動交換各自的身份令牌。",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "客戶端的連線狀態（健康、不穩定、需要重新授權等）。 「不穩定」反映了 Bifrost 自己對伺服器的連接檢查，而不是透過它進行的工具呼叫的結果：它會自我修復並且從不阻止工具呼叫。對於每個使用者用戶端（OAuth、標頭、令牌交換），這反映了 Bifrost 自己保留的管理憑證（僅用於定期刷新工具清單），而不是任何單一使用者自己的會話，無論哪種方式都不受影響。",
 		"columnGuidanceAria": "{{label}} 柱導",
 		"vkCount_one": "{{count}} VK",
-		"vkCount_other": "{{count}} VK"
+		"vkCount_other": "{{count}} VK",
+		"failure": {
+			"stageConnect": "連線中",
+			"stagePing": "Ping",
+			"stageListTools": "正在列出工具",
+			"stageToolDiscovery": "正在探索工具",
+			"stageTransportLost": "連線已中斷",
+			"stageCredential": "憑證",
+			"titleDegraded": "各執行個體對此伺服器狀態的判斷不一致",
+			"titleUnstableAll": "上次連線檢查在所有執行個體上皆失敗",
+			"titleUnstable": "上次連線檢查失敗",
+			"titleNeedsReauth": "需要重新授權",
+			"titleError": "未在執行階段中註冊",
+			"titleDefault": "連線狀態",
+			"lastFailedAgo": "上次失敗於 {{age}} 前",
+			"lastFailedRun": "上次失敗於 {{age}} 前 · {{state}}已持續 {{duration}}",
+			"stateNeedsReauth": "需要重新授權",
+			"stateUnstable": "不穩定"
+		}
 	},
 	"library": {
 		"title": "MCP 伺服器庫",

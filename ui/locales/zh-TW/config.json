@@ -335,7 +335,8 @@
 		"unregisteredNote": "目前沒有程式碼讀取此開關。覆蓋值已儲存，但在新增 Register() 呼叫前不會生效。",
 		"toastToggled": "{{name}} 已{{state}}",
 		"enabledState": "啟用",
-		"disabledState": "停用"
+		"disabledState": "停用",
+		"enableAria": "啟用 {{name}}"
 	},
 	"mcpSettings": {
 		"title": "MCP 設定",
@@ -782,7 +783,44 @@
 		"showLess": "顯示更少",
 		"showMore": "顯示更多",
 		"skillNotFound": "未找到技能",
-		"backToList": "返回清單"
+		"backToList": "返回清單",
+		"validation": {
+			"nameRequired": "名稱為必填項目",
+			"nameTooLong": "名稱不能超過 64 個字元",
+			"nameFormat": "名稱只能包含小寫字母、數字和連字號（連字號不能位於開頭、結尾，也不能連續出現）",
+			"nameReserved": "\"{{name}}\" 是技能服務層使用的保留名稱",
+			"descriptionRequired": "描述為必填項目",
+			"descriptionTooLong": "描述超過 1024 個字元的限制（{{length}}/1024）",
+			"versionRequired": "版本為必填項目",
+			"versionFormat": "版本必須符合 semver 格式（例如 1.0.0 或 1.0.0-beta.1）",
+			"versionParts": "版本各部分必須為非負整數",
+			"versionBump": "版本必須與 {{previous}} 不同。請至少提升以下其中之一：主版本（{{major}}）、次版本（{{minor}}）、修補版本（{{patch}}），或修改後綴（例如 -beta.1）。",
+			"extraFrontmatterObject": "額外 frontmatter 必須是 JSON 物件",
+			"reservedKeys": "不能使用保留鍵：{{keys}}",
+			"invalidJson": "JSON 無效",
+			"metadataObject": "中繼資料必須是 JSON 物件",
+			"metadataKeys": "中繼資料的鍵必須是字串",
+			"metadataValue": "中繼資料 \"{{key}}\" 的值必須是字串",
+			"bodyRequired": "SKILL.md 內文為必填項目",
+			"bodyLarge": "此 SKILL.md 內文超過建議大小。建議將詳細內容移到 references/ 下的檔案中，並在技能內文中連結這些檔案。",
+			"fileTooLarge": "檔案超過 {{limit}} 的限制",
+			"urlRequired": "URL 為必填項目",
+			"urlScheme": "URL 必須以 http:// 或 https:// 開頭",
+			"dataUrlRequired": "資料 URL 為必填項目",
+			"dataUrlFormat": "資料 URL 必須以 data: 開頭並包含 ;base64,",
+			"textRequired": "文字內容為必填項目",
+			"unknownSource": "未知的來源類型：{{type}}",
+			"filenameRequired": "檔名為必填項目",
+			"filenameDots": "檔名不能是 . 或 ..",
+			"filenameFolders": "檔名不能包含資料夾",
+			"skillMdManaged": "SKILL.md 由技能內文管理",
+			"pathRequired": "檔案路徑為必填項目",
+			"pathRelative": "路徑必須是相對路徑（不能以 / 開頭）",
+			"pathNotFolder": "路徑必須指向檔案，而不是資料夾",
+			"pathSlashes": "路徑只能使用正斜線",
+			"pathSegments": "路徑不能包含空白段、目前目錄段或上層目錄段"
+		},
+		"itemCount_other": "{{count}} 項"
 	},
 	"promptRepo": {
 		"loadFailed": "載入提示詞倉庫失敗",
@@ -956,7 +994,9 @@
 		"file": "檔案",
 		"attachmentAlt": "附件",
 		"noChangePermission": "你沒有變更提示詞的權限",
-		"noChangeFolderPermission": "你沒有變更提示詞資料夾的權限"
+		"noChangeFolderPermission": "你沒有變更提示詞資料夾的權限",
+		"noResponseBody": "無回應內容",
+		"mcpServerFallback": "MCP 伺服器"
 	},
 	"docs": {
 		"title": "文件",
@@ -1179,7 +1219,9 @@
 			"thresholdLabel": "新主題門檻",
 			"thresholdHint": "有多少個不符合任何主題的請求必須等待，Warp 才會將它們分成新主題；每小時檢查一次。數值越低，越少範例就能更快發現新主題；數值越高，則會等待更明確的模式。範圍：{{min}} 到 {{max}}。",
 			"thresholdError": "必須是介於 {{min}} 到 {{max}} 之間的整數"
-		}
+		},
+		"alphaBadge": "ALPHA",
+		"aboutAria": "關於{{label}}"
 	},
 	"skillsSettings": {
 		"description": "配置技能庫市集的對外服務。",
@@ -1317,7 +1359,26 @@
 			"authSuggestion": "建議驗證方式：{{type}}",
 			"import": "匯入",
 			"importCount_one": "匯入 {{count}} 條路由",
-			"importCount_other": "匯入 {{count}} 條路由"
+			"importCount_other": "匯入 {{count}} 條路由",
+			"docEmpty": "文件為空",
+			"docNotJson": "文件不是 JSON 物件",
+			"docNotOpenapi": "文件不是 OpenAPI 物件",
+			"warn": {
+				"schemeUndeclared": "安全性方案 {{name}} 為必要但未宣告，請手動設定驗證類型",
+				"apiKeyLocation": "安全性方案 {{name}} 在 {{location}} 中使用 apiKey，Relay 無法注入",
+				"unsupportedLocation": "不受支援的位置",
+				"httpScheme": "安全性方案 {{name}} 使用 HTTP {{scheme}} 驗證，Relay 無法注入",
+				"schemeType": "安全性方案 {{name}} 的類型為 {{type}}，請手動設定驗證類型",
+				"unknownType": "未知",
+				"authOptional": "文件將驗證設為選用；如果 API 需要金鑰，請手動設定驗證類型",
+				"noSingleScheme": "文件中沒有任何安全性方案選項是 Relay 可注入的單一方案，請手動設定驗證類型",
+				"severalSchemes": "文件宣告了多個安全性方案但未要求任何一個，請手動設定驗證類型",
+				"noPaths": "文件未宣告任何路徑",
+				"refPaths_other": "{{paths}} 透過 $ref 定義，匯入不會解析 $ref，因此這些操作未被匯入；請手動新增其路由並檢查路由清單。",
+				"noMethods": "文件中沒有任何操作使用 Relay 支援的方法",
+				"differentSchemes": "各操作要求不同的安全性方案，而一個端點只能套用一種驗證，請手動設定驗證類型",
+				"serverQuery": "伺服器 URL 的查詢參數（{{query}}）未包含在建議的基礎 URL 中，因為 Relay 基礎 URL 不能帶有查詢參數；呼叫端必須自行傳送。"
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}}（轉送預設值）",
@@ -1338,7 +1399,17 @@
 			"blockSizeInfo": "每開始一個此單位數量的區塊即計費一次。",
 			"minimumLabel": "最低單位數（選填）",
 			"minimumInfo": "一旦讀取到數量，最少計費的單位數。",
-			"formula": "每次計入的呼叫費用為 <strong>{{formula}}</strong>"
+			"formula": "每次計入的呼叫費用為 <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "回應主體",
+				"request": "請求主體"
+			},
+			"measures": {
+				"value": "路徑處的數值",
+				"chars": "路徑處字串的字元數",
+				"bodyBytes": "整個主體的大小（位元組）",
+				"bodyChars": "整個主體的字元數"
+			}
 		},
 		"preview": {
 			"path": "路徑",
@@ -1453,7 +1524,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole 或 env.AWS_ROLE_ARN",
 			"externalIdLabel": "外部 ID（選填）",
 			"externalIdInfo": "使用跨帳戶存取時，角色的信任政策可能要求此項",
-			"externalIdPlaceholder": "external-id 或 env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id 或 env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer 權杖",
+				"header": "自訂標頭",
+				"query": "查詢參數",
+				"basic": "Basic 驗證",
+				"none": "無驗證"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1524,6 +1602,18 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- 或 env.PROXY_CA_CERT_PEM",
 			"removeConfig": "移除設定",
 			"saveProxy": "儲存代理設定"
+		},
+		"pricing": {
+			"free": "免費",
+			"perCall": "${{price}} / 次呼叫",
+			"perUnit": "${{price}} / 單位",
+			"perByte": "${{price}} / 位元組",
+			"perChar": "${{price}} / 字元",
+			"blockUnit_other": "${{price}} / {{count}} 單位",
+			"blockByte_other": "${{price}} / {{count}} 位元組",
+			"blockChar_other": "${{price}} / {{count}} 字元",
+			"withMinimum": "{{pricing}}，最少 {{min}}",
+			"reportedCost": "回報成本"
 		}
 	}
 }

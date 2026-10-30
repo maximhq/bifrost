@@ -23,6 +23,7 @@ import { getErrorMessage } from "@/lib/store";
 import { useDeleteAgentPushConfigMutation, useGetAgentPushConfigsQuery } from "@/lib/store/apis/agentsApi";
 import type { AgentPushConfigView } from "@/lib/types/agents";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronLeft, ChevronRight, PanelLeftClose, RotateCcw, Search, Trash2 } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
@@ -249,7 +250,7 @@ function PushConfigFilterSidebar({
 }
 
 export default function PushConfigsPage() {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const hasDeleteAccess = useRbac(RbacResource.AgentGateway, RbacOperation.Delete);
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -398,7 +399,7 @@ export default function PushConfigsPage() {
 														/>
 													</TableCell>
 													<TableCell className="text-muted-foreground text-sm">
-														{formatDistanceToNow(new Date(config.updated_at), { addSuffix: true })}
+														{formatDistanceToNow(new Date(config.updated_at), { addSuffix: true, locale: dateFnsLocale(i18n.language) })}
 													</TableCell>
 													{hasDeleteAccess ? (
 														<TableCell>

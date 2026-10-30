@@ -124,7 +124,12 @@
 			"barChart": "Столбчатая диаграмма",
 			"lineChart": "Линейный график",
 			"directValue": "Прямое: {{value}}",
-			"semanticValue": "Семантическое: {{value}}"
+			"semanticValue": "Семантическое: {{value}}",
+			"tokensPerSecValue": "{{value}} токенов/с",
+			"moreCount_one": "ещё {{count}}",
+			"moreCount_other": "ещё {{count}}",
+			"moreCount_few": "ещё {{count}}",
+			"moreCount_many": "ещё {{count}}"
 		},
 		"rankings": {
 			"topDimension": "Топ {{dimension}}",
@@ -136,7 +141,12 @@
 			"avgLatency": "Сред. задержка",
 			"noData": "Нет данных об использовании {{dimension}} за этот период.",
 			"attributedTooltipShort": "Атрибуция — запрос учитывается для каждого {{dimension}}, к которому он относится, поэтому сумма может превышать фактическое число запросов.",
-			"attributedTooltipLong": "Запрос учитывается для каждого {{dimension}}, к которому он относится, поэтому сумма может превышать общее число запросов."
+			"attributedTooltipLong": "Запрос учитывается для каждого {{dimension}}, к которому он относится, поэтому сумма может превышать общее число запросов.",
+			"newBadge": "новое",
+			"requestsCount_one": "{{formattedCount}} запрос",
+			"requestsCount_other": "{{formattedCount}} запроса",
+			"requestsCount_few": "{{formattedCount}} запроса",
+			"requestsCount_many": "{{formattedCount}} запросов"
 		},
 		"noModelUsage": "Нет данных об использовании моделей за этот период."
 	},
@@ -144,7 +154,30 @@
 		"fallbackChain": {
 			"openFinalAttempt": "Открыть последнюю попытку",
 			"title": "Цепочка fallback",
-			"viewing": "Просматривается"
+			"viewing": "Просматривается",
+			"outcome": {
+				"succeeded": "Запрос выполнен",
+				"failed": "Все попытки не удались",
+				"inProgress": "Еще выполняется"
+			},
+			"summary": {
+				"attempt": "Попытка {{position}} из {{total}}",
+				"fellBack": "Попытка {{position}} из {{total}}. Эта попытка не удалась, и запрос переключился на {{label}}.",
+				"later": "Попытка {{position}} из {{total}}. После нее выполнялись другие попытки."
+			},
+			"attempts_other": "{{count}} попытки",
+			"attempts_one": "{{count}} попытка",
+			"attempts_few": "{{count}} попытки",
+			"attempts_many": "{{count}} попыток",
+			"attemptsWithTotal_other": "{{count}} попытки · всего {{latency}}",
+			"attemptsWithTotal_one": "{{count}} попытка · всего {{latency}}",
+			"attemptsWithTotal_few": "{{count}} попытки · всего {{latency}}",
+			"attemptsWithTotal_many": "{{count}} попыток · всего {{latency}}",
+			"keyName": "ключ {{name}}",
+			"retries_other": "{{count}} повтора",
+			"retries_one": "{{count}} повтор",
+			"retries_few": "{{count}} повтора",
+			"retries_many": "{{count}} повторов"
 		},
 		"searchPlaceholder": "Поиск журналов или вставьте ID запроса",
 		"loggingSettings": "Настройки журналирования",
@@ -243,7 +276,13 @@
 			"toastCancelled": "Пересчёт стоимости отменён",
 			"toastComplete": "Пересчёт стоимости завершён",
 			"toastProgress": "Пересчёт стоимости журналов...",
-			"errorGeneric": "Не удалось пересчитать стоимость"
+			"errorGeneric": "Не удалось пересчитать стоимость",
+			"noLogsMatch": "Нет логов, соответствующих текущим фильтрам.",
+			"toastStopped": "Остановлено: обновлено {{updated}}, пропущено {{skipped}}",
+			"toastUpdatedSkipped": "Обновлено: {{updated}}, пропущено: {{skipped}}",
+			"toastCheckedOfTotal": "Проверено {{processed}}/{{total}}, обновлено {{updated}}, пропущено {{skipped}}",
+			"toastChecked": "Проверено {{processed}}, обновлено {{updated}}, пропущено {{skipped}}",
+			"errorGenericStatus": "Не удалось пересчитать стоимость ({{status}})"
 		},
 		"session": {
 			"logs": "Журналы",
@@ -566,7 +605,12 @@
 			"approxTokens_few": "~{{count}} токена",
 			"approxTokens_many": "~{{count}} токенов",
 			"toolTypeCount_few": "{{type}} · {{count}} инструмента",
-			"toolTypeCount_many": "{{type}} · {{count}} инструментов"
+			"toolTypeCount_many": "{{type}} · {{count}} инструментов",
+			"unknown": "Неизвестно",
+			"sourceEventInitiated": "Инициировано событием",
+			"sourceLanguageModel": "Языковая модель",
+			"batchItemResult": "Элемент пакета: {{type}}",
+			"providerReturnedHttp": "Провайдер вернул HTTP {{status}}"
 		},
 		"media": {
 			"pause": "Пауза",
@@ -798,13 +842,25 @@
 				"virtualKeys": "виртуальные ключи ({{total}})",
 				"teams": "команды ({{total}})",
 				"customers": "клиенты ({{total}})",
-				"period": "период {{value}}"
+				"period": "период {{value}}",
+				"relays": "релеи ({{total}})",
+				"methods": "методы ({{total}})",
+				"kinds": "виды ({{total}})",
+				"users": "пользователи ({{total}})",
+				"businessUnits": "бизнес-подразделения ({{total}})",
+				"projects": "проекты ({{total}})",
+				"apps": "приложения ({{total}})",
+				"billableOnly": "только тарифицируемые",
+				"nonBillableOnly": "только нетарифицируемые",
+				"minCost": "мин. стоимость {{value}}",
+				"maxCost": "макс. стоимость {{value}}"
 			},
 			"entriesCount_few": "{{count}} записи",
 			"entriesCount_many": "{{count}} записей",
 			"toastExported_few": "Экспортировано {{count}} журнала",
 			"toastExported_many": "Экспортировано {{count}} журналов"
-		}
+		},
+		"batchMixedModel": "смешанные"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1116,7 +1172,8 @@
 			"overheadLatencySpans": "Spans задержки накладных расходов",
 			"overheadLatencySpansHelp": "Внутренние тайминговые spans (setup, выбор ключа, фазы конвейера). По умолчанию выключено.",
 			"configJsonPrecedence": "Если в config.json для плагина <plugin>{{pluginName}}</plugin> задан <filter>plugin_span_filter</filter>, после перезапуска Bifrost он имеет приоритет над этими настройками.",
-			"destinationOtel": "the OTEL collector"
+			"destinationOtel": "the OTEL collector",
+			"noChangePermission": "У вас нет прав на изменение настроек наблюдаемости"
 		},
 		"savePrometheus": "Сохранить конфигурацию Prometheus",
 		"saveOtel": "Сохранить конфигурацию OTEL",
@@ -1273,7 +1330,12 @@
 		"passthrough_stream": "Поток сквозной передачи",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "Реальное время",
-		"realtime_turn": "Ход реального времени"
+		"realtime_turn": "Ход реального времени",
+		"model_retrieve": "Получение модели",
+		"live": "Прямой эфир",
+		"live_session": "Живая сессия",
+		"live_content": "Запись эфира",
+		"live_sideband": "Живой sideband"
 	},
 	"celBuilder": {
 		"copied": "Скопировано",
@@ -1300,7 +1362,8 @@
 		"value": "Значение",
 		"enterValue": "Введите значение...",
 		"commaSeparated": "Введите значения через запятую или JSON-массив",
-		"celPlaceholder": "например, model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "например, model == \"claude-sonnet-4-6\"",
+		"remove": "Удалить"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Правило маршрутизации",
@@ -1773,6 +1836,12 @@
 			"stepRegister": "Зарегистрируйте и включите вышестоящего агента в Agent Gateway.",
 			"stepReplace": "Замените <code>{{agentName}}</code> зарегистрированным именем.",
 			"stepVirtualKey": "Используйте виртуальный ключ с доступом к агенту или удалите заголовок <code>x-bf-vk</code>, если аутентификация отключена."
+		},
+		"interactive": {
+			"copied": "Скопировано",
+			"filterBy": "Фильтр по: {{label}}",
+			"clickToFilter": "Щелчок — фильтр · Правый щелчок — копировать",
+			"rightClickToCopy": "Правый щелчок — копировать"
 		}
 	},
 	"overhead": {

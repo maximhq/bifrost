@@ -9,6 +9,8 @@
 		"llmLogs": "LLM 日志",
 		"mcpLogs": "MCP 日志",
 		"connectors": "连接器",
+		"relayLogs": "中继日志",
+		"relays": "中继",
 		"logsSettings": "日志设置",
 		"models": "模型",
 		"modelCatalog": "模型目录",
@@ -83,6 +85,8 @@
 		"skillsSettings": "技能设置"
 	},
 	"navDesc": {
+		"relayLogs": "中继调用及其费用",
+		"relays": "通过按路由定价来中继非 LLM API",
 		"home": "你的用量、密钥、预算和访问权限",
 		"observability": "请求日志与监控",
 		"dashboard": "仪表盘",
@@ -169,6 +173,74 @@
 		"unlockTitle": "解锁你的个人主页",
 		"unlockDescription": "此功能属于 Bifrost 企业版许可证。主页会向每位用户展示自己的用量、密钥、预算和访问权限。"
 	},
+	"commandPalette": {
+		"title": "命令菜单",
+		"placeholder": "搜索页面或跳转到…",
+		"empty": "没有与“{{query}}”匹配的结果",
+		"groups": {
+			"general": "通用",
+			"results": "结果",
+			"actions": "操作",
+			"thisPage": "本页"
+		},
+		"current": "当前",
+		"footer": {
+			"navigate": "导航",
+			"open": "打开",
+			"newTab": "新标签页",
+			"back": "返回"
+		},
+		"openHint": "打开命令菜单",
+		"actions": {
+			"create": "创建…",
+			"copyLink": "复制本页链接",
+			"changeTheme": "更改主题…",
+			"changeLanguage": "更改语言…"
+		},
+		"pages": {
+			"create": {
+				"title": "创建",
+				"placeholder": "搜索要创建的内容…"
+			},
+			"theme": {
+				"title": "主题",
+				"placeholder": "搜索主题…"
+			},
+			"language": {
+				"title": "语言",
+				"placeholder": "搜索语言…"
+			}
+		},
+		"create": {
+			"virtualKey": "创建虚拟密钥",
+			"team": "创建团队",
+			"customer": "创建客户",
+			"user": "创建用户",
+			"routingRule": "创建路由规则",
+			"mcpServer": "添加 MCP 服务器",
+			"modelLimit": "创建模型限制",
+			"webhook": "创建 Webhook",
+			"mcpLibraryServer": "向 MCP 库添加服务器",
+			"virtualMcp": "创建虚拟 MCP",
+			"agent": "创建智能体",
+			"relay": "添加中继端点",
+			"plugin": "添加插件",
+			"alertChannel": "添加告警渠道",
+			"alertRule": "创建告警规则",
+			"businessUnit": "创建业务单元",
+			"role": "创建角色",
+			"accessProfile": "创建访问配置文件",
+			"project": "创建项目",
+			"prompt": "创建提示词",
+			"promptFolder": "创建提示词文件夹",
+			"skill": "创建技能",
+			"apiKey": "创建 API 密钥"
+		},
+		"toast": {
+			"linkCopied": "链接已复制",
+			"linkCopyFailed": "无法复制链接"
+		}
+	},
 	"search": {
 		"placeholder": "搜索…",
 		"ariaLabel": "搜索侧栏导航"
@@ -212,6 +284,8 @@
 		"accountMenu": "账户菜单",
 		"openMenu": "打开菜单",
 		"signOut": "退出登录",
+		"viewAsUser": "以用户身份查看",
+		"closeView": "关闭视图",
 		"version": "版本",
 		"userFallback": "用户",
 		"discord": "Discord 服务器",
@@ -305,7 +379,8 @@
 			"Security": "安全",
 			"Provider Setup": "供应商设置",
 			"Everything Else": "其他设置"
-		}
+		},
+		"completedSr": "已完成："
 	},
 	"warp": {
 		"ask": "询问 Warp",
@@ -369,7 +444,8 @@
 		"question": {
 			"label": "问题",
 			"skip": "跳过",
-			"orType": "或在下方输入你自己的回答。"
+			"orType": "或在下方输入你自己的回答。",
+			"skipAnswer": "请自行判断，并说明你的假设。"
 		},
 		"message": {
 			"whatThisCovers": "涵盖内容",
@@ -530,7 +606,11 @@
 				"summary": "你的账户不允许使用 Warp 的模型。",
 				"cause": "此部署的治理规则禁止你的账户使用 Warp 设定的模型或提供商，因此请求在到达提供商之前就被拒绝了。",
 				"suggestions": ["请管理员允许你的账户使用 Warp 的模型。", "或者在 Warp 设置中选择你的账户有权使用的模型。"]
-			}
+			},
+			"requestFailedStatus": "Warp 请求失败（{{status}}）",
+			"noResponseBody": "Warp 未返回响应内容",
+			"connectionClosed": "连接在 Warp 完成回答前已关闭。",
+			"requestFailed": "Warp 请求失败"
 		},
 		"dock": {
 			"resize": "调整 Warp 面板大小",
@@ -538,7 +618,11 @@
 		},
 		"chart": {
 			"openInLogs": "在日志中打开",
-			"empty": "此时间窗口内没有数据。"
+			"empty": "此时间窗口内没有数据。",
+			"weekOf": "{{date}} 当周"
+		},
+		"usage": {
+			"tokens_other": "{{formattedCount}} 个令牌"
 		}
 	},
 	"rssSources": {
@@ -580,5 +664,11 @@
 		"upload": "上传",
 		"logoHelp": "图片 URL，或不超过 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。默认使用网站的 favicon。",
 		"addFeed": "添加订阅源"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent 登录完成",
+		"title": "Bifrost Agent 登录",
+		"completeBody": "你可以关闭此窗口并返回 Bifrost Agent。",
+		"status": "登录状态：{{status}}"
 	}
 }
