@@ -556,6 +556,8 @@ func TestGeminiBatchCreateEmbeddingsInlineRequests(t *testing.T) {
 	assert.Equal(t, "titles", sent.Batch.DisplayName)
 	items := sent.Batch.InputConfig.Requests.Requests
 	require.Len(t, items, 2)
+	assert.Equal(t, "models/gemini-embedding-2", items[0].Request.Model)
+	assert.Equal(t, "models/gemini-embedding-2", items[1].Request.Model)
 	assert.Equal(t, "p0", items[0].Metadata.Key)
 	assert.Equal(t, "red shoes", items[0].Request.Content.Parts[0].Text)
 	require.NotNil(t, items[0].Request.OutputDimensionality)
@@ -672,4 +674,35 @@ func BenchmarkGeminiInlinedResponseUnmarshal(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestGeminiBatchCreateEmbeddingsRejectsConflictingItemModel(t *testing.T) {
+	t.Parallel()
+	provider, gotPath, _ := newEmbedBatchTestProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, err := provider.BatchCreate(ctx, schemas.Key{Value: *schemas.NewSecretVar("dummy-key")}, &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.Gemini,
+		Model:    schemas.Ptr("gemini-embedding-2"),
+		Endpoint: schemas.BatchEndpointEmbeddings,
+		Requests: []schemas.BatchRequestItem{{CustomID: "p0", Body: map[string]interface{}{
+			"model":   "models/gemini-embedding-001",
+			"content": map[string]interface{}{"parts": []interface{}{map[string]interface{}{"text": "hi"}}},
+		}}},
+	})
+	require.NotNil(t, err)
+	assert.Contains(t, err.Error.Message, "does not match the batch model")
+	assert.Empty(t, *gotPath, "no request should reach Gemini")
+}
+
+func TestGeminiEmbeddingBatchUsageFallsBackToPromptTokens(t *testing.T) {
+	t.Parallel()
+	body := geminiEmbeddingToBatchResultBody(&GeminiEmbeddingResponse{
+		Embedding:     &GeminiEmbedding{Values: []float64{1}},
+		UsageMetadata: &GenerateContentResponseUsageMetadata{PromptTokenCount: 12},
+	})
+	usage, ok := body["usage"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, 12, usage["prompt_tokens"])
+	assert.Equal(t, 12, usage["total_tokens"])
 }

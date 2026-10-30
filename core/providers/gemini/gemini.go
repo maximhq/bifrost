@@ -2661,7 +2661,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	}
 	if len(jsonData) == 0 && isEmbeddings {
 		var bodyErr *schemas.BifrostError
-		if jsonData, bodyErr = buildGeminiEmbeddingBatchBody(request); bodyErr != nil {
+		if jsonData, bodyErr = buildGeminiEmbeddingBatchBody(request, model); bodyErr != nil {
 			return nil, bodyErr
 		}
 	}

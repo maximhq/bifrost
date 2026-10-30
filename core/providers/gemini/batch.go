@@ -521,9 +521,15 @@ func geminiEmbeddingToBatchResultBody(resp *GeminiEmbeddingResponse) map[string]
 		"data":   data,
 	}
 	if resp.UsageMetadata != nil {
+		// Embedding usage may carry only the prompt count, and input is all it bills.
+		promptTokens := int(resp.UsageMetadata.PromptTokenCount)
+		totalTokens := int(resp.UsageMetadata.TotalTokenCount)
+		if totalTokens == 0 {
+			totalTokens = promptTokens
+		}
 		body["usage"] = map[string]interface{}{
-			"prompt_tokens": int(resp.UsageMetadata.PromptTokenCount),
-			"total_tokens":  int(resp.UsageMetadata.TotalTokenCount),
+			"prompt_tokens": promptTokens,
+			"total_tokens":  totalTokens,
 		}
 	}
 	return body
@@ -634,7 +640,7 @@ func isGeminiEmbeddingBatch(request *schemas.BifrostBatchCreateRequest, model st
 
 // buildGeminiEmbeddingBatchBody builds the asyncBatchEmbedContent body from either an
 // uploaded input file or inline requests.
-func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest) ([]byte, *schemas.BifrostError) {
+func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest, model string) ([]byte, *schemas.BifrostError) {
 	hasFileInput := request.InputFileID != ""
 	if !hasFileInput && len(request.Requests) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("either input_file_id or requests must be provided", nil)
@@ -661,6 +667,13 @@ func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest) (
 			embedReq, err := ToGeminiBatchEmbeddingRequest(bifrostItem.Body)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini embedding format", err)
+			}
+			// Every request in an embeddings batch uses the batch's model.
+			modelName := "models/" + model
+			if embedReq.Model == "" {
+				embedReq.Model = modelName
+			} else if embedReq.Model != modelName {
+				return nil, providerUtils.NewBifrostOperationError("embedding request model does not match the batch model", nil)
 			}
 			items[i] = GeminiBatchEmbedRequestItem{Request: embedReq}
 			if bifrostItem.CustomID != "" {
