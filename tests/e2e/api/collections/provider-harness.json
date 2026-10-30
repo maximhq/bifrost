@@ -298482,6 +298482,377 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Chat message role validation (#9298) (chat-message-role-validation)",
+      "description": "Chat requests with missing, null or empty roles used to reach providers and could succeed on permissive backends. The native handler and shared OpenAI routes now refuse them with JSON 400 invalid_request_error before inference or SSE starts. Cases cover the native endpoint, OpenAI SDK aliases, LangChain, LiteLLM, PydanticAI and Azure deployment routes. The exact message and message index distinguish gateway validation from an unrelated provider/auth error. Large-payload passthrough is not parsed and remains outside this validation.",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('missing message role is rejected before inference or SSE', function () {",
+              "  var detail = 'response: ' + pm.response.text();",
+              "  pm.expect(pm.response.code, detail).to.equal(400);",
+              "  pm.expect(pm.response.headers.get('Content-Type'), detail).to.include('application/json');",
+              "  var body = pm.response.json();",
+              "  pm.expect(body.error, detail).to.be.an('object');",
+              "  pm.expect(body.error.type, detail).to.equal('invalid_request_error');",
+              "  var field = pm.info.requestName.match(/messages\\[\\d+\\]\\.role/)[0];",
+              "  pm.expect(body.error.message, detail).to.equal(field + ' is required');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "297.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": null,\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    },\n    {\n      \"content\": \"world\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    },\n    {\n      \"content\": \"world\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": null,\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/langchain/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/langchain/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/litellm/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/litellm/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/pydanticai/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/pydanticai/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "297.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/openai/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-10-21"
+          },
+          "response": []
+        },
+        {
+          "name": "297.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": null,\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/azure/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-10-21"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

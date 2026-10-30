@@ -16,6 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -348,6 +349,34 @@ func openAIChatStreamWireConverter(_ *schemas.BifrostContext, resp *schemas.Bifr
 	return "", openAIWireCostResponse(resp), nil
 }
 
+// openAIChatMessagesShortCircuit rejects missing roles before provider conversion or streaming.
+func openAIChatMessagesShortCircuit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+	chatReq, ok := req.(*openai.OpenAIChatRequest)
+	if !ok {
+		return false, nil
+	}
+	// Large-payload passthrough has routing metadata but no parsed message body.
+	if isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); isLargePayload {
+		return false, nil
+	}
+	for i := range chatReq.Messages {
+		if chatReq.Messages[i].Role != "" {
+			continue
+		}
+		bifrostErr := newBifrostErrorWithCode(nil, fmt.Sprintf("messages[%d].role is required", i), fasthttp.StatusBadRequest)
+		bifrostErr.Error.Type = schemas.Ptr("invalid_request_error")
+		payload, err := providerUtils.MarshalSorted(bifrostErr)
+		if err != nil {
+			return true, err
+		}
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetContentType("application/json")
+		ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, payload))
+		return true, nil
+	}
+	return false, nil
+}
+
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
 func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -582,7 +611,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
 		},
-		PreCallback: AzureEndpointPreHook(handlerStore),
+		PreCallback:  AzureEndpointPreHook(handlerStore),
+		ShortCircuit: openAIChatMessagesShortCircuit,
 	})
 
 	// Chat completions endpoint
@@ -591,10 +621,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/chat/completions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:        RouteConfigTypeOpenAI,
-			Path:        pathPrefix + path,
-			Method:      "POST",
-			PreCallback: openAILargePayloadPreHook,
+			Type:         RouteConfigTypeOpenAI,
+			Path:         pathPrefix + path,
+			Method:       "POST",
+			PreCallback:  openAILargePayloadPreHook,
+			ShortCircuit: openAIChatMessagesShortCircuit,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
