@@ -383,6 +383,15 @@ func geminiFileResultToBatchResultItem(resultLine GeminiBatchFileResultLine, fal
 		return item, nil
 	}
 
+	var embedding GeminiEmbeddingResponse
+	if err := sonic.Unmarshal(resultLine.Response, &embedding); err == nil && len(geminiResponseEmbeddings(&embedding)) > 0 {
+		item.Response = &schemas.BatchResultResponse{
+			StatusCode: http.StatusOK,
+			Body:       geminiEmbeddingToBatchResultBody(&embedding),
+		}
+		return item, nil
+	}
+
 	var native GenerateContentResponse
 	if err := sonic.Unmarshal(resultLine.Response, &native); err != nil {
 		return item, err
@@ -481,6 +490,11 @@ func geminiInlineResponseToBatchResultItem(inlineResp GeminiInlinedResponse, cus
 			Code:    fmt.Sprintf("%d", inlineResp.Error.Code),
 			Message: inlineResp.Error.Message,
 		}
+	} else if inlineResp.Embedding != nil {
+		resultItem.Response = &schemas.BatchResultResponse{
+			StatusCode: 200,
+			Body:       geminiEmbeddingToBatchResultBody(inlineResp.Embedding),
+		}
 	} else if inlineResp.Response != nil {
 		resultItem.Response = &schemas.BatchResultResponse{
 			StatusCode: 200,
@@ -488,6 +502,72 @@ func geminiInlineResponseToBatchResultItem(inlineResp GeminiInlinedResponse, cus
 		}
 	}
 	return resultItem
+}
+
+// geminiEmbeddingToBatchResultBody shapes an embeddings batch response like an OpenAI
+// /v1/embeddings body so batch consumers read vectors the same way as a direct call.
+func geminiEmbeddingToBatchResultBody(resp *GeminiEmbeddingResponse) map[string]interface{} {
+	embeddings := geminiResponseEmbeddings(resp)
+	data := make([]map[string]interface{}, len(embeddings))
+	for i, embedding := range embeddings {
+		data[i] = map[string]interface{}{
+			"object":    "embedding",
+			"index":     i,
+			"embedding": embedding.Values,
+		}
+	}
+	body := map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	}
+	if resp.UsageMetadata != nil {
+		body["usage"] = map[string]interface{}{
+			"prompt_tokens": int(resp.UsageMetadata.PromptTokenCount),
+			"total_tokens":  int(resp.UsageMetadata.TotalTokenCount),
+		}
+	}
+	return body
+}
+
+// ToGeminiBatchEmbeddingRequest converts one Bifrost batch request body into a Gemini
+// embedding request. OpenAI-style bodies ("input", "dimensions") are converted; bodies
+// already in Gemini form ("content") are unmarshaled directly. A batch line embeds
+// exactly one text, matching how results are keyed per line.
+func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbeddingRequest, error) {
+	var req GeminiEmbeddingRequest
+	if _, native := body["content"]; native {
+		raw, err := providerUtils.MarshalSorted(body)
+		if err != nil {
+			return req, fmt.Errorf("failed to marshal gemini embedding request: %w", err)
+		}
+		if err := sonic.Unmarshal(raw, &req); err != nil {
+			return req, fmt.Errorf("failed to unmarshal gemini embedding request: %w", err)
+		}
+		return req, nil
+	}
+
+	var text string
+	switch input := body["input"].(type) {
+	case string:
+		text = input
+	case []interface{}:
+		if len(input) != 1 {
+			return req, fmt.Errorf("embedding batch requests take exactly one input per line, got %d", len(input))
+		}
+		first, ok := input[0].(string)
+		if !ok {
+			return req, fmt.Errorf("embedding batch input must be a string")
+		}
+		text = first
+	default:
+		return req, fmt.Errorf("embedding batch request is missing a string input")
+	}
+	req.Content = &Content{Parts: []*Part{{Text: text}}}
+	if dimensions, ok := body["dimensions"].(float64); ok && dimensions > 0 {
+		value := int(dimensions)
+		req.OutputDimensionality = &value
+	}
+	return req, nil
 }
 
 // normalizeBatchBody converts camelCase usage keys (promptTokens, completionTokens,
@@ -531,4 +611,56 @@ func extractGeminiUsageMetadata(geminiResponse *GenerateContentResponse) (int, i
 		totalTokens = int(usageMetadata.TotalTokenCount)
 	}
 	return inputTokens, outputTokens, totalTokens
+}
+
+// isGeminiEmbeddingBatch reports whether a batch create request targets embeddings, by
+// its OpenAI endpoint or by an embedding model name. Gemini serves these through a
+// different batch method than generate-content jobs.
+func isGeminiEmbeddingBatch(request *schemas.BifrostBatchCreateRequest, model string) bool {
+	return request.Endpoint == schemas.BatchEndpointEmbeddings || strings.Contains(strings.ToLower(model), "embedding")
+}
+
+// buildGeminiEmbeddingBatchBody builds the asyncBatchEmbedContent body from either an
+// uploaded input file or inline requests.
+func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest) ([]byte, *schemas.BifrostError) {
+	hasFileInput := request.InputFileID != ""
+	if !hasFileInput && len(request.Requests) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("either input_file_id or requests must be provided", nil)
+	}
+	if hasFileInput && len(request.Requests) > 0 {
+		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
+	}
+
+	displayName := fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano())
+	if request.DisplayName != nil && *request.DisplayName != "" {
+		displayName = *request.DisplayName
+	}
+	batchReq := &GeminiBatchEmbedCreateRequest{Batch: GeminiBatchEmbedConfig{DisplayName: displayName}}
+
+	if hasFileInput {
+		fileID := request.InputFileID
+		if !strings.HasPrefix(fileID, "files/") {
+			fileID = "files/" + fileID
+		}
+		batchReq.Batch.InputConfig.FileName = fileID
+	} else {
+		items := make([]GeminiBatchEmbedRequestItem, len(request.Requests))
+		for i, bifrostItem := range request.Requests {
+			embedReq, err := ToGeminiBatchEmbeddingRequest(bifrostItem.Body)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini embedding format", err)
+			}
+			items[i] = GeminiBatchEmbedRequestItem{Request: embedReq}
+			if bifrostItem.CustomID != "" {
+				items[i].Metadata = &GeminiBatchMetadata{Key: bifrostItem.CustomID}
+			}
+		}
+		batchReq.Batch.InputConfig.Requests = &GeminiBatchEmbedRequestsWrapper{Requests: items}
+	}
+
+	jsonData, err := providerUtils.MarshalSorted(batchReq)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	return jsonData, nil
 }

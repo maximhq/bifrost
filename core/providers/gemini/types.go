@@ -2913,6 +2913,34 @@ type GeminiBatchGenerateContentRequest struct {
 	Labels            map[string]string `json:"labels,omitempty"`
 }
 
+// GeminiBatchEmbedCreateRequest is the body of an asyncBatchEmbedContent call.
+type GeminiBatchEmbedCreateRequest struct {
+	Batch GeminiBatchEmbedConfig `json:"batch"`
+}
+
+// GeminiBatchEmbedConfig is the batch configuration for an embeddings batch.
+type GeminiBatchEmbedConfig struct {
+	DisplayName string                      `json:"displayName,omitempty"`
+	InputConfig GeminiBatchEmbedInputConfig `json:"inputConfig"`
+}
+
+// GeminiBatchEmbedInputConfig carries either inline embedding requests or an uploaded file.
+type GeminiBatchEmbedInputConfig struct {
+	Requests *GeminiBatchEmbedRequestsWrapper `json:"requests,omitempty"`
+	FileName string                           `json:"fileName,omitempty"`
+}
+
+// GeminiBatchEmbedRequestsWrapper wraps the array of embedding batch request items.
+type GeminiBatchEmbedRequestsWrapper struct {
+	Requests []GeminiBatchEmbedRequestItem `json:"requests"`
+}
+
+// GeminiBatchEmbedRequestItem is one embedding request in a batch with its caller key.
+type GeminiBatchEmbedRequestItem struct {
+	Request  GeminiEmbeddingRequest `json:"request"`
+	Metadata *GeminiBatchMetadata   `json:"metadata,omitempty"`
+}
+
 // GeminiBatchStats represents the stats of a batch job.
 type GeminiBatchStats struct {
 	RequestCount           int `json:"requestCount"`
@@ -3033,6 +3061,27 @@ type GeminiInlinedResponse struct {
 	Response *GenerateContentResponse `json:"response,omitempty"`
 	Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
 	Metadata *GeminiBatchMetadata     `json:"metadata,omitempty"`
+	// Embedding is set instead of a generate-content payload when the response
+	// came from an embeddings batch. It is derived while decoding, never sent.
+	Embedding *GeminiEmbeddingResponse `json:"-"`
+}
+
+// UnmarshalJSON decodes a batch response and, when the response holds embeddings
+// rather than candidates, keeps them in Embedding.
+func (r *GeminiInlinedResponse) UnmarshalJSON(data []byte) error {
+	type plain GeminiInlinedResponse
+	var decoded plain
+	if err := sonic.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var probe struct {
+		Response *GeminiEmbeddingResponse `json:"response"`
+	}
+	if err := sonic.Unmarshal(data, &probe); err == nil && len(geminiResponseEmbeddings(probe.Response)) > 0 {
+		decoded.Embedding = probe.Response
+	}
+	*r = GeminiInlinedResponse(decoded)
+	return nil
 }
 
 // GeminiBatchErrorInfo represents error information.

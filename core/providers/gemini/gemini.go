@@ -2655,6 +2655,17 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
 	}
 
+	isEmbeddings := isGeminiEmbeddingBatch(request, model)
+	if isEmbeddings && model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for embedding batches (e.g. gemini-embedding-2)", nil)
+	}
+	if len(jsonData) == 0 && isEmbeddings {
+		var bodyErr *schemas.BifrostError
+		if jsonData, bodyErr = buildGeminiEmbeddingBatchBody(request); bodyErr != nil {
+			return nil, bodyErr
+		}
+	}
+
 	if len(jsonData) == 0 {
 		// Build the batch request with proper nested structure. Honor a caller-supplied
 		// display name (e.g. genai config.display_name), falling back to a generated one.
@@ -2721,12 +2732,16 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL - use batchGenerateContent endpoint
-	// We default gemini 2.5 flash
+	// Build URL - embeddings have their own batch method; everything else uses
+	// batchGenerateContent. We default gemini 2.5 flash
 	if model == "" {
 		model = "gemini-2.5-flash"
 	}
-	url := fmt.Sprintf("%s/models/%s:batchGenerateContent", provider.networkConfig.BaseURL, model)
+	method := "batchGenerateContent"
+	if isEmbeddings {
+		method = "asyncBatchEmbedContent"
+	}
+	url := fmt.Sprintf("%s/models/%s:%s", provider.networkConfig.BaseURL, model, method)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
