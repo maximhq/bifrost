@@ -490,10 +490,10 @@ func geminiInlineResponseToBatchResultItem(inlineResp GeminiInlinedResponse, cus
 			Code:    fmt.Sprintf("%d", inlineResp.Error.Code),
 			Message: inlineResp.Error.Message,
 		}
-	} else if inlineResp.Embedding != nil {
+	} else if inlineResp.Response != nil && inlineResp.Response.Embedding != nil {
 		resultItem.Response = &schemas.BatchResultResponse{
 			StatusCode: 200,
-			Body:       geminiEmbeddingToBatchResultBody(inlineResp.Embedding),
+			Body:       geminiEmbeddingToBatchResultBody(&GeminiEmbeddingResponse{Embedding: inlineResp.Response.Embedding}),
 		}
 	} else if inlineResp.Response != nil {
 		resultItem.Response = &schemas.BatchResultResponse{
@@ -546,8 +546,21 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 		return req, nil
 	}
 
+	// Round-trip through JSON so Go-typed bodies ([]string, int) read the same as decoded ones.
+	raw, err := providerUtils.MarshalSorted(body)
+	if err != nil {
+		return req, fmt.Errorf("failed to marshal embedding batch request: %w", err)
+	}
+	var openAI struct {
+		Input      interface{} `json:"input"`
+		Dimensions *int        `json:"dimensions"`
+	}
+	if err := sonic.Unmarshal(raw, &openAI); err != nil {
+		return req, fmt.Errorf("failed to unmarshal embedding batch request: %w", err)
+	}
+
 	var text string
-	switch input := body["input"].(type) {
+	switch input := openAI.Input.(type) {
 	case string:
 		text = input
 	case []interface{}:
@@ -563,9 +576,8 @@ func ToGeminiBatchEmbeddingRequest(body map[string]interface{}) (GeminiEmbedding
 		return req, fmt.Errorf("embedding batch request is missing a string input")
 	}
 	req.Content = &Content{Parts: []*Part{{Text: text}}}
-	if dimensions, ok := body["dimensions"].(float64); ok && dimensions > 0 {
-		value := int(dimensions)
-		req.OutputDimensionality = &value
+	if openAI.Dimensions != nil && *openAI.Dimensions > 0 {
+		req.OutputDimensionality = openAI.Dimensions
 	}
 	return req, nil
 }
@@ -663,4 +675,19 @@ func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest) (
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 	return jsonData, nil
+}
+
+// geminiBatchResultsEndpoint tells accounting which endpoint a finished job served.
+// Results carry no endpoint of their own, so embeddings are recognized by their
+// OpenAI-style body; anything else is priced as chat, as before.
+func geminiBatchResultsEndpoint(results []schemas.BatchResultItem) schemas.BatchEndpoint {
+	for _, item := range results {
+		if item.Response == nil {
+			continue
+		}
+		if _, ok := item.Response.Body["data"].([]map[string]interface{}); ok && item.Response.Body["object"] == "list" {
+			return schemas.BatchEndpointEmbeddings
+		}
+	}
+	return schemas.BatchEndpointChatCompletions
 }

@@ -2774,6 +2774,8 @@ type GenerateContentResponseUsageMetadata struct {
 type GenerateContentResponse struct {
 	// Response variations returned by the model.
 	Candidates []*Candidate `json:"candidates,omitempty"`
+	// Embedding is set on embeddings batch results, which share this envelope.
+	Embedding *GeminiEmbedding `json:"embedding,omitempty"`
 	// Timestamp when the request is made to the server.
 	CreateTime time.Time `json:"createTime,omitempty"`
 	// Output only. The model version used to generate the response.
@@ -3061,27 +3063,6 @@ type GeminiInlinedResponse struct {
 	Response *GenerateContentResponse `json:"response,omitempty"`
 	Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
 	Metadata *GeminiBatchMetadata     `json:"metadata,omitempty"`
-	// Embedding is set instead of a generate-content payload when the response
-	// came from an embeddings batch. It is derived while decoding, never sent.
-	Embedding *GeminiEmbeddingResponse `json:"-"`
-}
-
-// UnmarshalJSON decodes a batch response and, when the response holds embeddings
-// rather than candidates, keeps them in Embedding.
-func (r *GeminiInlinedResponse) UnmarshalJSON(data []byte) error {
-	type plain GeminiInlinedResponse
-	var decoded plain
-	if err := sonic.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	var probe struct {
-		Response *GeminiEmbeddingResponse `json:"response"`
-	}
-	if err := sonic.Unmarshal(data, &probe); err == nil && len(geminiResponseEmbeddings(probe.Response)) > 0 {
-		decoded.Embedding = probe.Response
-	}
-	*r = GeminiInlinedResponse(decoded)
-	return nil
 }
 
 // GeminiBatchErrorInfo represents error information.

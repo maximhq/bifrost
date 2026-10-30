@@ -3518,7 +3518,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID:  request.BatchID,
-		Endpoint: schemas.BatchEndpointChatCompletions,
+		Endpoint: geminiBatchResultsEndpoint(results),
 		Results:  results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),

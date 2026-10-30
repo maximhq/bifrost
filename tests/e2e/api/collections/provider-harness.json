@@ -298482,6 +298482,190 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Gemini embeddings batches use asyncBatchEmbedContent (gemini embeddings batch) (PR #9320)",
+      "description": "Batch jobs for Gemini embedding models used to be sent to batchGenerateContent, which Gemini rejects for them (\"not supported for batchGenerateContent\"). Batches created with endpoint /v1/embeddings (or an embedding model) now go to asyncBatchEmbedContent. The first case creates a two-line embeddings batch with inline requests and must be accepted, the next two retrieve and cancel it so the run costs nothing, and the last pins the early 400 when an embeddings batch names no model. Result parsing and the accounting endpoint are pinned by the Go tests in core/providers/gemini; settled results are not asserted here because a batch only completes asynchronously.",
+      "item": [
+        {
+          "name": "gemini/gemini-embedding-2 embeddings batch create (inline requests)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'gemini embeddings batch create';",
+                  "pm.test(LABEL + ': accepted', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test(LABEL + ': returns a batch id', function () { pm.expect(j.id, pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });",
+                  "pm.test(LABEL + ': keeps the embeddings endpoint', function () { pm.expect(j.endpoint).to.eql('/v1/embeddings'); });",
+                  "pm.test(LABEL + ': not rejected as a generate-content batch', function () { pm.expect(pm.response.text()).to.not.include('batchGenerateContent'); });",
+                  "if (j.id) { pm.collectionVariables.set('geminiEmbedBatchId', encodeURIComponent(j.id)); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-2\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"p0\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini/gemini-embedding-2\",\n        \"input\": \"red running shoes\",\n        \"dimensions\": 768\n      }\n    },\n    {\n      \"custom_id\": \"p1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini/gemini-embedding-2\",\n        \"input\": \"stainless water bottle\",\n        \"dimensions\": 768\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-embedding-2 embeddings batch retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini embeddings batch retrieve: found', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('gemini embeddings batch retrieve: same batch', function () { pm.expect(pm.response.json().id).to.eql(decodeURIComponent(pm.collectionVariables.get('geminiEmbedBatchId'))); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{geminiEmbedBatchId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{geminiEmbedBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-embedding-2 embeddings batch cancel",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini embeddings batch cancel: accepted', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{geminiEmbedBatchId}}/cancel?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{geminiEmbedBatchId}}",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini embeddings batch without a model is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini embeddings batch without model: 400 naming the model', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + t.slice(0, 300)).to.eql(400);",
+                  "  pm.expect(t, 'expected the missing-model message: ' + t.slice(0, 300)).to.match(/model is required/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpoint\": \"/v1/embeddings\",\n  \"completion_window\": \"24h\",\n  \"input_file_id\": \"files/none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
