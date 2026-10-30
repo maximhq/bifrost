@@ -1558,6 +1558,21 @@ const ADM03 = folder("ADM-03 Wrong password and VKs are not admin credentials", 
 // toolPrice sets tool_pricing with PUT, the only endpoint that takes it. Priced folders clear it again before
 // deleting the client, or the next client with the same name inherits the price.
 const toolPrice = (id, clientId, title, pricing) => request(id, title, "PUT", `/api/mcp/client/${clientId}`, { body: { tool_pricing: pricing }, asserts: [A.status(200)] });
+const ADM14 = folder("ADM-14 Stored fields come back in read encodings", "Setup: admin credentials; alpha (echo_tool, add_tool) as the client's target; the client's pricing is set with PUT.", [
+  ...freshServer("ADM-14", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-14", httpClient("adm14-c", "adm14_c", "alpha", { headers: { "X-Key": "abcdefghijkl" }, tool_sync_interval: 5, tool_execution_timeout: 30, allow_by_default: true }), "create with headers, tool_sync_interval 5, tool_execution_timeout 30 and allow_by_default true"),
+  toolPrice("ADM-14", "adm14-c", "PUT tool_pricing echo_tool 0.25", { echo_tool: 0.25 }),
+  getClient("ADM-14", "adm14-c", "read the client back", [A.custom("headers redacted, tool_sync_interval 300000000000, tool_execution_timeout \"30s\", allow_on_all_virtual_keys true, pricing echoed", [
+    "var c = pm.response.json().clients[0].config;",
+    "pm.expect(c.headers['X-Key'].value, 'body: ' + pm.response.text()).to.equal('abcd' + new Array(25).join('*') + 'ijkl');",
+    "pm.expect(c.tool_sync_interval).to.equal(300000000000);",
+    "pm.expect(c.tool_execution_timeout).to.equal('30s');",
+    "pm.expect(c.allow_on_all_virtual_keys).to.equal(true);",
+    "pm.expect(c.tool_pricing).to.eql({ echo_tool: 0.25 });",
+  ])]),
+  toolPrice("ADM-14", "adm14-c", "teardown: clear tool_pricing", {}),
+  deleteClient("ADM-14", "adm14-c"),
+]);
 
 const PRIVATE_MSG = "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses";
 const adm18Body = (url) => ({ name: "adm18_x", connection_type: "http", auth_type: "none", connection_string: url });
@@ -1615,6 +1630,25 @@ const ADM22 = folder("ADM-22 OAuth create input checks", "Setup: admin credentia
   createExpect("ADM-22", "auth_type oauth without oauth_config", { name: "adm22_oauth", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'oauth'")]),
   createExpect("ADM-22", "auth_type per_user_oauth without oauth_config", { name: "adm22_puo", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "per_user_oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'per_user_oauth'")]),
   createExpect("ADM-22", "oauth_config {} without connection_string", { name: "adm22_noserver", connection_type: "http", auth_type: "oauth", oauth_config: {} }, [A.status(400), A.msgContains("Either client_id must be provided, or server URL must be set")]),
+]);
+
+const ADM47 = folder("ADM-47 PUT is a patch and ignores immutable fields", "Setup: alpha (echo_tool, add_tool); a client on alpha with headers and tool lists, then pricing set with PUT.", [
+  ...freshServer("ADM-47", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-47", httpClient("adm47-c", "adm47_c", "alpha", { headers: { "X-Key": "abcdefghijkl" }, tools_to_execute: ["*"], tools_to_auto_execute: ["echo_tool"] }), "setup: create the client with headers and tool lists"),
+  toolPrice("ADM-47", "adm47-c", "setup: PUT tool_pricing echo_tool 0.5", { echo_tool: 0.5 }),
+  request("ADM-47", "setup: read the client", "GET", "/api/mcp/clients?server=adm47-c", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm47_before', JSON.stringify(pm.response.json().clients[0].config));"] }),
+  request("ADM-47", "PUT name, connection_string, auth_type and endpoint_slug", "PUT", "/api/mcp/client/adm47-c", {
+    body: { name: "adm47_renamed", connection_string: "http://127.0.0.1:9/mcp", auth_type: "headers", endpoint_slug: "adm47-other" },
+    asserts: [A.status(200), A.jsonMessage("MCP client edited successfully")],
+  }),
+  getClient("ADM-47", "adm47-c", "only the name changed and the tools are still listed", [A.custom("config equals the earlier read apart from name", [
+    "var c = pm.response.json().clients[0].config, before = JSON.parse(pm.collectionVariables.get('adm47_before'));",
+    "pm.expect(c.name, 'body: ' + pm.response.text()).to.equal('adm47_renamed');",
+    "delete c.name; delete before.name;",
+    "pm.expect(c).to.eql(before);",
+  ]), toolNamesAre(["add_tool", "echo_tool"])]),
+  toolPrice("ADM-47", "adm47-c", "teardown: clear tool_pricing", {}),
+  deleteClient("ADM-47", "adm47-c"),
 ]);
 
 const ADM52 = folder("ADM-52 Enabling a sticky client with a dead upstream", "Setup: alpha (echo_tool, add_tool); a client on alpha with needs_session_stickiness true, disabled; then alpha refuses connections. The client being reported disabled after the enable is a known issue, so that check is skipped.", [
@@ -3397,7 +3431,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN17, CONN18, CONN22]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
