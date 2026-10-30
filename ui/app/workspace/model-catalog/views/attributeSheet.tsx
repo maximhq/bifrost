@@ -268,6 +268,15 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 						<div className="space-y-3">
 							<div className="flex items-center justify-between gap-3">
 								<Label className="text-sm font-medium">{t("modelCatalog.pricing")}</Label>
+								<Link
+									to="/workspace/datasheet-editor"
+									search={{ search: model.name, provider: model.provider }}
+									className="text-muted-foreground hover:text-foreground ml-auto inline-flex items-center gap-1 text-xs"
+									data-testid="model-catalog-edit-datasheet-link"
+								>
+									{t("modelCatalog.editInDatasheet")}
+									<ExternalLink className="h-3 w-3" />
+								</Link>
 								{canOpenPricingSource ? (
 									<a
 										href={pricingSourceUrl}

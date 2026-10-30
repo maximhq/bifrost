@@ -2466,3 +2466,45 @@ export const relayPreviewSampleSchema = z.object({
 		),
 	status_code: z.number().int().min(100, msg("validation.relays.statusRange")).max(599, msg("validation.relays.statusRange")),
 });
+// Datasheet editor (app/workspace/datasheet-editor). An empty input or an "upstream"
+// choice leaves the key out of the override, so it keeps following the synced
+// datasheet. Pricing values are checked per field with pricingFieldError.
+const datasheetTriState = z.enum(["upstream", "on", "off"]);
+const datasheetLimit = z
+	.string()
+	.refine((v) => v.trim() === "" || (/^\d+$/.test(v.trim()) && Number(v) > 0), msg("validation.valueMustBeAPositiveWholeNumber"));
+
+export const datasheetOverrideFormSchema = z
+	.object({
+		provider: z.string(),
+		model: z.string(),
+		mode: z.string(),
+		isCustom: z.boolean(),
+		limits: z.object({ context_length: datasheetLimit, max_input_tokens: datasheetLimit, max_output_tokens: datasheetLimit }),
+		deprecated: datasheetTriState,
+		pricingValues: z.record(z.string(), z.string()),
+		flags: z.record(z.string(), datasheetTriState),
+		otherParamsJSON: z.string(),
+		preservedPricing: z.record(z.string(), z.unknown()),
+	})
+	.superRefine((data, ctx) => {
+		if (data.isCustom) {
+			if (!data.provider.trim()) ctx.addIssue({ code: "custom", path: ["provider"], message: i18n.t("validation.providerIsRequired") });
+			if (!data.model.trim()) ctx.addIssue({ code: "custom", path: ["model"], message: i18n.t("validation.modelNameIsRequired") });
+			if (!data.mode.trim()) ctx.addIssue({ code: "custom", path: ["mode"], message: i18n.t("validation.modeIsRequired") });
+		}
+		if (data.otherParamsJSON.trim() === "") return;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(data.otherParamsJSON);
+		} catch {
+			parsed = undefined;
+		}
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			ctx.addIssue({ code: "custom", path: ["otherParamsJSON"], message: i18n.t("validation.mustBeAJsonObject") });
+		} else if ("provider" in parsed) {
+			ctx.addIssue({ code: "custom", path: ["otherParamsJSON"], message: i18n.t("validation.providerCannotBePatched") });
+		}
+	});
+
+export type DatasheetOverrideFormSchema = z.infer<typeof datasheetOverrideFormSchema>;

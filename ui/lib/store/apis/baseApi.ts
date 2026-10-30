@@ -147,6 +147,7 @@ export const baseApi = createApi({
 	reducerPath: "api",
 	baseQuery: baseQueryWithErrorHandling,
 	tagTypes: [
+		"Datasheet",
 		"Logs",
 		"MCPLogs",
 		"Providers",

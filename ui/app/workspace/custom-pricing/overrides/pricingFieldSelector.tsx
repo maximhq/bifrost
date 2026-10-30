@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ChevronDown, Plus, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { FieldErrors, PricingFieldKey } from "./pricingFields";
@@ -45,9 +45,18 @@ interface PricingFieldSelectorProps {
 	selectedRequestTypes?: string[];
 	onChange: (key: PricingFieldKey, value: string) => void;
 	onFieldInteraction?: () => void;
+	/** Extra line under an active field, e.g. the datasheet value it replaces. */
+	renderFieldHint?: (key: PricingFieldKey) => ReactNode;
 }
 
-export function PricingFieldSelector({ values, errors, selectedRequestTypes, onChange, onFieldInteraction }: PricingFieldSelectorProps) {
+export function PricingFieldSelector({
+	values,
+	errors,
+	selectedRequestTypes,
+	onChange,
+	onFieldInteraction,
+	renderFieldHint,
+}: PricingFieldSelectorProps) {
 	const { t } = useTranslation("models");
 	const [search, setSearch] = useState("");
 	const [openGroups, setOpenGroups] = useState<Set<GroupKey>>(new Set(["chat"]));
@@ -166,6 +175,7 @@ export function PricingFieldSelector({ values, errors, selectedRequestTypes, onC
 					onChange={(e) => handleInputChange(field.key, e.target.value)}
 					placeholder="0.0"
 				/>
+				{renderFieldHint?.(field.key)}
 				{error && <p className="text-destructive mt-1 text-xs">{error}</p>}
 			</div>
 		);

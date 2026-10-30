@@ -140,6 +140,10 @@
 	},
 	"failedToLoadMoreEntities": "無法載入更多 {{entity}}",
 	"validation": {
+		"modeIsRequired": "模式為必填",
+		"valueMustBeAPositiveWholeNumber": "必須是正整數",
+		"mustBeAJsonObject": "必須是 JSON 物件",
+		"providerCannotBePatched": "provider 用於識別項目，無法修改",
 		"customProviderNameIsRequired": "自訂供應商名稱為必填項",
 		"endpointIsRequired": "端點為必填項",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 驗證需要填寫 Client ID、Client Secret 和 Tenant ID",
