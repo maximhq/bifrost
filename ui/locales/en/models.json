@@ -257,8 +257,6 @@
 		"saveChanges": "Save Changes",
 		"saving": "Saving...",
 		"noChanges": "No changes made",
-		"configUpdated": "Provider configuration updated successfully",
-		"failedUpdateConfig": "Failed to update provider configuration",
 		"pleaseFixValidation": "Please fix validation errors",
 		"addKey": "Add Key",
 		"rotateKey": "Rotate Key",
