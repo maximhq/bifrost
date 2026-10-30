@@ -9,6 +9,8 @@
 		"llmLogs": "Registros LLM",
 		"mcpLogs": "Registros MCP",
 		"connectors": "Conectores",
+		"relayLogs": "Logs de relay",
+		"relays": "Relays",
 		"logsSettings": "Ajustes de registros",
 		"models": "Modelos",
 		"modelCatalog": "Catálogo de modelos",
@@ -83,6 +85,8 @@
 		"skillsSettings": "Ajustes de skills"
 	},
 	"navDesc": {
+		"relayLogs": "Llamadas de relay y su costo",
+		"relays": "Retransmite API que no son de LLM con precios por ruta",
 		"home": "Tu uso, claves, presupuestos y acceso",
 		"observability": "Registros de solicitudes y monitorización",
 		"dashboard": "Panel",
@@ -169,6 +173,74 @@
 		"unlockTitle": "Desbloquea tu página de inicio personal",
 		"unlockDescription": "Esta función forma parte de la licencia empresarial de Bifrost. Inicio muestra a cada usuario su propio uso, claves, presupuestos y acceso."
 	},
+	"commandPalette": {
+		"title": "Menú de comandos",
+		"placeholder": "Busca páginas o salta a…",
+		"empty": "Sin resultados para “{{query}}”",
+		"groups": {
+			"general": "General",
+			"results": "Resultados",
+			"actions": "Acciones",
+			"thisPage": "En esta página"
+		},
+		"current": "Actual",
+		"footer": {
+			"navigate": "Navegar",
+			"open": "Abrir",
+			"newTab": "Nueva pestaña",
+			"back": "Atrás"
+		},
+		"openHint": "Abrir menú de comandos",
+		"actions": {
+			"create": "Crear…",
+			"copyLink": "Copiar enlace a esta página",
+			"changeTheme": "Cambiar tema…",
+			"changeLanguage": "Cambiar idioma…"
+		},
+		"pages": {
+			"create": {
+				"title": "Crear",
+				"placeholder": "Buscar qué crear…"
+			},
+			"theme": {
+				"title": "Tema",
+				"placeholder": "Buscar temas…"
+			},
+			"language": {
+				"title": "Idioma",
+				"placeholder": "Buscar idiomas…"
+			}
+		},
+		"create": {
+			"virtualKey": "Crear clave virtual",
+			"team": "Crear equipo",
+			"customer": "Crear cliente",
+			"user": "Crear usuario",
+			"routingRule": "Crear regla de enrutamiento",
+			"mcpServer": "Añadir servidor MCP",
+			"modelLimit": "Crear límite de modelo",
+			"webhook": "Crear webhook",
+			"mcpLibraryServer": "Añadir servidor a la biblioteca MCP",
+			"virtualMcp": "Crear MCP virtual",
+			"agent": "Crear agente",
+			"relay": "Añadir endpoint de relay",
+			"plugin": "Añadir plugin",
+			"alertChannel": "Añadir canal de alertas",
+			"alertRule": "Crear regla de alerta",
+			"businessUnit": "Crear unidad de negocio",
+			"role": "Crear rol",
+			"accessProfile": "Crear perfil de acceso",
+			"project": "Crear proyecto",
+			"prompt": "Crear prompt",
+			"promptFolder": "Crear carpeta de prompts",
+			"skill": "Crear skill",
+			"apiKey": "Crear clave de API"
+		},
+		"toast": {
+			"linkCopied": "Enlace copiado",
+			"linkCopyFailed": "No se pudo copiar el enlace"
+		}
+	},
 	"search": {
 		"placeholder": "Buscar...",
 		"ariaLabel": "Buscar en la navegación lateral"
@@ -212,6 +284,8 @@
 		"accountMenu": "Menú de la cuenta",
 		"openMenu": "Abrir menú",
 		"signOut": "Cerrar sesión",
+		"viewAsUser": "Ver como usuario",
+		"closeView": "Cerrar vista",
 		"version": "Versión",
 		"userFallback": "Usuario",
 		"discord": "Servidor de Discord",

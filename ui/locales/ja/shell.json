@@ -9,6 +9,8 @@
 		"llmLogs": "LLM ログ",
 		"mcpLogs": "MCP ログ",
 		"connectors": "コネクタ",
+		"relayLogs": "リレーログ",
+		"relays": "リレー",
 		"logsSettings": "ログ設定",
 		"models": "モデル",
 		"modelCatalog": "モデルカタログ",
@@ -83,6 +85,8 @@
 		"skillsSettings": "スキル設定"
 	},
 	"navDesc": {
+		"relayLogs": "リレー呼び出しとそのコスト",
+		"relays": "ルートごとの料金で LLM 以外の API をリレー",
 		"home": "自分の利用量、キー、予算、アクセス",
 		"observability": "リクエストログと監視",
 		"dashboard": "ダッシュボード",
@@ -169,6 +173,74 @@
 		"unlockTitle": "個人用ホームを解除",
 		"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。ホームでは、各ユーザー自身の利用量、キー、予算、アクセスが表示されます。"
 	},
+	"commandPalette": {
+		"title": "コマンドメニュー",
+		"placeholder": "ページを検索、または移動…",
+		"empty": "「{{query}}」に一致する結果はありません",
+		"groups": {
+			"general": "一般",
+			"results": "結果",
+			"actions": "アクション",
+			"thisPage": "このページ"
+		},
+		"current": "現在",
+		"footer": {
+			"navigate": "移動",
+			"open": "開く",
+			"newTab": "新しいタブ",
+			"back": "戻る"
+		},
+		"openHint": "コマンドメニューを開く",
+		"actions": {
+			"create": "作成…",
+			"copyLink": "このページのリンクをコピー",
+			"changeTheme": "テーマを変更…",
+			"changeLanguage": "言語を変更…"
+		},
+		"pages": {
+			"create": {
+				"title": "作成",
+				"placeholder": "作成するものを検索…"
+			},
+			"theme": {
+				"title": "テーマ",
+				"placeholder": "テーマを検索…"
+			},
+			"language": {
+				"title": "言語",
+				"placeholder": "言語を検索…"
+			}
+		},
+		"create": {
+			"virtualKey": "仮想キーを作成",
+			"team": "チームを作成",
+			"customer": "顧客を作成",
+			"user": "ユーザーを作成",
+			"routingRule": "ルーティングルールを作成",
+			"mcpServer": "MCP サーバーを追加",
+			"modelLimit": "モデル制限を作成",
+			"webhook": "Webhook を作成",
+			"mcpLibraryServer": "MCP ライブラリにサーバーを追加",
+			"virtualMcp": "仮想 MCP を作成",
+			"agent": "エージェントを作成",
+			"relay": "リレーエンドポイントを追加",
+			"plugin": "プラグインを追加",
+			"alertChannel": "アラートチャネルを追加",
+			"alertRule": "アラートルールを作成",
+			"businessUnit": "ビジネスユニットを作成",
+			"role": "ロールを作成",
+			"accessProfile": "アクセスプロファイルを作成",
+			"project": "プロジェクトを作成",
+			"prompt": "プロンプトを作成",
+			"promptFolder": "プロンプトフォルダを作成",
+			"skill": "スキルを作成",
+			"apiKey": "API キーを作成"
+		},
+		"toast": {
+			"linkCopied": "リンクをコピーしました",
+			"linkCopyFailed": "リンクをコピーできませんでした"
+		}
+	},
 	"search": {
 		"placeholder": "検索…",
 		"ariaLabel": "サイドバーナビゲーションを検索"
@@ -212,6 +284,8 @@
 		"accountMenu": "アカウントメニュー",
 		"openMenu": "メニューを開く",
 		"signOut": "サインアウト",
+		"viewAsUser": "ユーザーとして表示",
+		"closeView": "表示を閉じる",
 		"version": "バージョン",
 		"userFallback": "ユーザー",
 		"discord": "Discord サーバー",
@@ -499,7 +573,10 @@
 			"tool_error": {
 				"summary": "クエリが失敗しました。",
 				"cause": "Warp のデータクエリの一つがエラーを返し、残りのステップ内で回復できませんでした。",
-				"suggestions": ["より狭い時間範囲を試してください。", "指定したモデル、キー、チームが実際に存在するか確認してください。"]
+				"suggestions": [
+					"より狭い時間範囲を試してください。",
+					"指定したモデル、キー、チームが実際に存在するか確認してください。"
+				]
 			},
 			"cancelled": {
 				"summary": "停止しました。",
@@ -509,7 +586,10 @@
 			"unknown": {
 				"summary": "問題が発生しました。",
 				"cause": "Warp が認識されないコードでエラーを返しました。",
-				"suggestions": ["質問を再度試してください。", "繰り返す場合は、下記の詳細とともに報告してください。"]
+				"suggestions": [
+					"質問を再度試してください。",
+					"繰り返す場合は、下記の詳細とともに報告してください。"
+				]
 			},
 			"access_denied": {
 				"summary": "アカウントには Warp のモデルへのアクセス権がありません。",
