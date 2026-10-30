@@ -2340,6 +2340,13 @@
         "$ref": "#/$defs/relay"
       }
     },
+    "datasheet_overrides": {
+      "type": "array",
+      "description": "Edits to the synced model datasheet (pricing and model parameters) that survive every datasheet sync. Matched by (provider, model, mode) with hash-based change detection: a file entry is applied when it changes, so edits made in the UI stand until the file entry itself changes. In config.json source-of-truth mode stored overrides absent from this list are removed.",
+      "items": {
+        "$ref": "#/$defs/datasheet_override"
+      }
+    },
     "mcp": {
       "type": "object",
       "description": "Model Context Protocol configuration",
@@ -5433,6 +5440,48 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "datasheet_override": {
+      "type": "object",
+      "description": "One datasheet entry edit. Both patches are RFC 7386 JSON merge patches: a key sets the value, null clears it, and an omitted key keeps the upstream value.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider of the datasheet entry, e.g. openai"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model name as it appears in the datasheet"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Datasheet mode (chat, responses, embedding, ...). Omit to apply the pricing patch to every mode of the model. Required when is_custom is true."
+        },
+        "is_custom": {
+          "type": "boolean",
+          "default": false,
+          "description": "Adds an entry the upstream datasheet does not list, e.g. a fine-tuned or self-hosted model"
+        },
+        "pricing_patch": {
+          "type": "object",
+          "description": "Merge patch over the pricing entry: context_length, max_input_tokens, max_output_tokens, is_deprecated, base_model, architecture and any cost field such as input_cost_per_token",
+          "additionalProperties": true
+        },
+        "params_patch": {
+          "type": "object",
+          "description": "Merge patch over the model-parameters entry: supports_* capability flags, reasoning_effort_levels, max_output_tokens, supported_endpoints and other model parameters. provider cannot be patched.",
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model"],
+      "if": {
+        "properties": { "is_custom": { "const": true } },
+        "required": ["is_custom"]
+      },
+      "then": { "required": ["mode"] },
+      "additionalProperties": false
+    },
     "relay_secret": {
       "description": "A literal value, an env.VAR_NAME reference, or a structured secret reference (vault-backed secrets are stored as references).",
       "anyOf": [

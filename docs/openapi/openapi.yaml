@@ -813,6 +813,14 @@ paths:
     $ref: "./paths/management/providers.yaml#/models-details"
   /api/models/parameters:
     $ref: "./paths/management/providers.yaml#/models-parameters"
+  /api/models/datasheet:
+    $ref: "./paths/management/providers.yaml#/models-datasheet"
+  /api/models/datasheet/entry:
+    $ref: "./paths/management/providers.yaml#/models-datasheet-entry"
+  /api/models/datasheet/overrides:
+    $ref: "./paths/management/providers.yaml#/models-datasheet-overrides"
+  /api/models/datasheet/overrides/{id}:
+    $ref: "./paths/management/providers.yaml#/models-datasheet-override-by-id"
   /api/models/base:
     $ref: "./paths/management/providers.yaml#/models-base"
   /api/models/newest:

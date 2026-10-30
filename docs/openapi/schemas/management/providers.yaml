@@ -781,3 +781,157 @@ ListModelDetailsResponse:
         $ref: '#/ModelDetailsResponse'
     total:
       type: integer
+
+DatasheetOverride:
+  type: object
+  description: >-
+    A user edit of one datasheet entry, re-applied on top of the synced
+    datasheet after every sync.
+  properties:
+    id:
+      type: string
+    provider:
+      type: string
+    model:
+      type: string
+    mode:
+      type: string
+      description: Datasheet mode; empty applies the pricing patch to every mode of the model
+    is_custom:
+      type: boolean
+      description: The entry is absent from the upstream datasheet
+    pricing_patch:
+      type: object
+      additionalProperties: true
+      description: RFC 7386 merge patch over the pricing entry (context_length, max_output_tokens, is_deprecated, cost fields, ...)
+    params_patch:
+      type: object
+      additionalProperties: true
+      description: RFC 7386 merge patch over the model-parameters entry (supports_* flags, reasoning_effort_levels, ...)
+    baseline:
+      type: object
+      description: Upstream value of every patched key when the override was last saved
+      properties:
+        pricing:
+          type: object
+          additionalProperties: true
+        params:
+          type: object
+          additionalProperties: true
+    config_hash:
+      type: string
+      description: Set when the override came from config.json
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+SaveDatasheetOverrideRequest:
+  type: object
+  required:
+    - provider
+    - model
+  properties:
+    provider:
+      type: string
+    model:
+      type: string
+    mode:
+      type: string
+      description: Required when is_custom is true
+    is_custom:
+      type: boolean
+      default: false
+    pricing_patch:
+      type: object
+      additionalProperties: true
+      description: Keys are datasheet pricing fields; null clears a value, an omitted key keeps upstream
+    params_patch:
+      type: object
+      additionalProperties: true
+      description: Keys are model-parameters fields; provider cannot be patched
+
+DatasheetPricingRow:
+  type: object
+  description: A datasheet pricing entry (the governance_model_pricing row shape)
+  additionalProperties: true
+  properties:
+    model:
+      type: string
+    provider:
+      type: string
+    mode:
+      type: string
+    context_length:
+      type: integer
+    max_input_tokens:
+      type: integer
+    max_output_tokens:
+      type: integer
+    is_deprecated:
+      type: boolean
+    input_cost_per_token:
+      type: number
+    output_cost_per_token:
+      type: number
+
+DatasheetEntry:
+  type: object
+  properties:
+    provider:
+      type: string
+    model:
+      type: string
+    mode:
+      type: string
+    is_custom:
+      type: boolean
+    upstream:
+      description: Upstream values; null for a custom entry or an override whose model left the datasheet
+      oneOf:
+        - $ref: '#/DatasheetPricingRow'
+        - type: 'null'
+    effective:
+      description: Values after datasheet overrides; null when no row exists
+      oneOf:
+        - $ref: '#/DatasheetPricingRow'
+        - type: 'null'
+    overrides:
+      type: array
+      items:
+        $ref: '#/DatasheetOverride'
+    drifted_fields:
+      type: array
+      description: Patched fields whose upstream value changed since the override was saved, prefixed pricing. or params.
+      items:
+        type: string
+
+DatasheetEntryDetail:
+  allOf:
+    - $ref: '#/DatasheetEntry'
+    - type: object
+      properties:
+        upstream_params:
+          type: object
+          additionalProperties: true
+        effective_params:
+          type: object
+          additionalProperties: true
+
+ListDatasheetEntriesResponse:
+  type: object
+  properties:
+    entries:
+      type: array
+      items:
+        $ref: '#/DatasheetEntry'
+    count:
+      type: integer
+    total_count:
+      type: integer
+    limit:
+      type: integer
+    offset:
+      type: integer

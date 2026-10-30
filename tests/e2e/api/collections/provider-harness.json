@@ -298482,6 +298482,398 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Datasheet override survives a datasheet sync (datasheet override) [SERIAL]",
+      "description": "Pins the datasheet editor contract: an edit to a synced datasheet entry is stored as an override that is re-applied after every datasheet sync, so the user value survives upstream updates while the upstream value stays visible. The setup saves a mode-specific override for openai/gpt-4o-mini (context_length 4321 and input/output rates far above the real ones). The entry endpoint must show the override as effective and the synced value as upstream; a forced datasheet sync must leave the effective value untouched; a chat completion must be logged at the overridden rates, which proves the cost engine reads the merged row; an unknown datasheet field is rejected with 400; and saving the target with an empty patch removes the override and restores the upstream entry. [SERIAL] because the override reprices gpt-4o-mini for every request while it exists. Go coverage: TestEntryOverride_* (framework/modelcatalog/datasheet), TestSaveDatasheetOverride_* (framework/modelcatalog), TestDatasheetOverrideHandlers_* (handlers).",
+      "item": [
+        {
+          "name": "Setup - datasheet override for openai/gpt-4o-mini chat (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('datasheetOverrideId');",
+                  "pm.collectionVariables.unset('datasheetUpstreamContext');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Datasheet override is saved', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var ov = (pm.response.json() || {}).override;",
+                  "pm.test('Saved override has an id and the patch', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "  pm.expect(ov.pricing_patch.context_length, 'body: ' + pm.response.text()).to.equal(4321);",
+                  "});",
+                  "pm.test('Baseline records the synced upstream context_length', function () {",
+                  "  var base = ov && ov.baseline && ov.baseline.pricing;",
+                  "  pm.expect(base, 'baseline: ' + JSON.stringify(ov && ov.baseline)).to.be.an('object');",
+                  "  pm.expect(base.context_length, 'baseline: ' + JSON.stringify(base)).to.be.a('number').and.not.equal(4321);",
+                  "  pm.collectionVariables.set('datasheetUpstreamContext', String(base.context_length));",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('datasheetOverrideId', ov.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_patch\": {\n    \"context_length\": 4321,\n    \"input_cost_per_token\": 0.001,\n    \"output_cost_per_token\": 0.002\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Datasheet entry shows the override over the upstream value - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Entry is returned', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "var entry = pm.response.json();",
+                  "pm.test('Effective context_length is the override, upstream is the synced value', function () {",
+                  "  pm.expect(entry.effective.context_length, 'entry: ' + pm.response.text().slice(0, 800)).to.equal(4321);",
+                  "  pm.expect(String(entry.upstream.context_length), 'entry: ' + pm.response.text().slice(0, 800)).to.equal(pm.collectionVariables.get('datasheetUpstreamContext'));",
+                  "});",
+                  "pm.test('The override is listed on the entry', function () {",
+                  "  var ids = (entry.overrides || []).map(function (o) { return o.id; });",
+                  "  pm.expect(ids, 'overrides: ' + JSON.stringify(ids)).to.include(pm.collectionVariables.get('datasheetOverrideId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "entry"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "model",
+                  "value": "gpt-4o-mini"
+                },
+                {
+                  "key": "mode",
+                  "value": "chat"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Forced datasheet sync keeps the override - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "function readEntry(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, cb);",
+                  "}",
+                  "pm.test('Datasheet sync ran', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "readEntry(function (err, res) {",
+                  "  pm.test('After the sync the effective context_length is still the override', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, 'entry: ' + res.text().slice(0, 500)).to.equal(200);",
+                  "    var entry = res.json();",
+                  "    pm.expect(entry.effective.context_length, 'entry: ' + res.text().slice(0, 800)).to.equal(4321);",
+                  "    pm.expect(entry.effective.input_cost_per_token, 'entry: ' + res.text().slice(0, 800)).to.equal(0.001);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/pricing/force-sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "pricing",
+                "force-sync"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Chat completion is priced from the overridden datasheet rates - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "function readEntry(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, cb);",
+                  "}",
+                  "var LABEL = 'datasheet override pricing';",
+                  "var RATES = { input: 0.001, output: 0.002 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var usage = pm.response.json().usage || {};",
+                  "pm.test(LABEL + ': usage is reported', function () { pm.expect(usage.prompt_tokens, 'usage: ' + JSON.stringify(usage)).to.be.above(0); });",
+                  "var expected = (usage.prompt_tokens || 0) * RATES.input + (usage.completion_tokens || 0) * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: apiHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var cb = res.json().cost_breakdown;",
+                  "      pm.test(LABEL + ': logged cost uses the overridden input and output rates', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usage ' + JSON.stringify(usage) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 5\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Unknown datasheet field is rejected [EXPECT-400] - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Unknown field is a 400 naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('not_a_datasheet_field');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_patch\": {\n    \"not_a_datasheet_field\": 1\n  }\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Cleanup - empty patch removes the override and restores upstream - openai/gpt-4o-mini (datasheet override)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['datasheetOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var apiHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "function readEntry(cb) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/models/datasheet/entry?provider=openai&model=gpt-4o-mini&mode=chat', method: 'GET', header: apiHeaders }, cb);",
+                  "}",
+                  "pm.test('Override is removed', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect((pm.response.json() || {}).override, 'body: ' + pm.response.text()).to.equal(null);",
+                  "});",
+                  "readEntry(function (err, res) {",
+                  "  pm.test('The entry is back to the upstream values', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, 'entry: ' + res.text().slice(0, 500)).to.equal(200);",
+                  "    var entry = res.json();",
+                  "    pm.expect(entry.overrides || [], 'entry: ' + res.text().slice(0, 800)).to.have.lengthOf(0);",
+                  "    pm.expect(String(entry.effective.context_length), 'entry: ' + res.text().slice(0, 800)).to.equal(pm.collectionVariables.get('datasheetUpstreamContext'));",
+                  "  });",
+                  "  pm.collectionVariables.unset('datasheetOverrideId');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/datasheet/overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "datasheet",
+                "overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model\": \"gpt-4o-mini\",\n  \"mode\": \"chat\",\n  \"pricing_patch\": {}\n}"
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

@@ -220,20 +220,21 @@ type ConfigData struct {
 	// the BIFROST_SETUP_TOKEN env var) — so every node in a multi-node deployment reads
 	// the same value from its own identical config/env rather than relying on a
 	// per-process generated value.
-	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
-	Providers         map[string]configstore.ProviderConfig `json:"providers"`
-	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
-	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
-	Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-	Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-	Relays            []*schemas.RelayConfig                `json:"relays,omitempty"`
-	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
-	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
-	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
-	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
-	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-	FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+	SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
+	Providers          map[string]configstore.ProviderConfig `json:"providers"`
+	FrameworkConfig    *framework.FrameworkConfig            `json:"framework,omitempty"`
+	MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
+	Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+	Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
+	Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
+	DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+	Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
+	VectorStoreConfig  *vectorstore.Config                   `json:"vector_store,omitempty"`
+	ConfigStoreConfig  *configstore.Config                   `json:"config_store,omitempty"`
+	LogsStoreConfig    *logstore.Config                      `json:"logs_store,omitempty"`
+	Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
+	WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+	FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 	// ProxyConfig is the global outbound proxy (the dashboard's proxy settings page), not a
 	// provider's own proxy_config.
 	ProxyConfig *GlobalProxyFileConfig `json:"proxy_config,omitempty"`
@@ -486,6 +487,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.Agents != nil
 	case "relays":
 		return cd.Relays != nil
+	case "datasheet_overrides":
+		return cd.DatasheetOverrides != nil
 	case "governance":
 		return cd.Governance != nil
 	case "plugins":
@@ -557,31 +560,32 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
-		Version           int                                   `json:"version,omitempty"`
-		EnvLabel          string                                `json:"env_label,omitempty"`
-		DisableOnboarding *bool                                 `json:"disable_onboarding,omitempty"`
-		SourceOfTruth     string                                `json:"source_of_truth,omitempty"`
-		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
-		Server            *ServerConfig                         `json:"server,omitempty"`
-		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
-		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
-		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
-		Providers         map[string]configstore.ProviderConfig `json:"providers"`
-		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
-		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-		Agents            []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-		Relays            []*schemas.RelayConfig                `json:"relays,omitempty"`
-		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
-		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
-		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
-		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
-		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
-		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
-		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
-		Warp              *WarpFileConfig                       `json:"warp,omitempty"`
-		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+		Version            int                                   `json:"version,omitempty"`
+		EnvLabel           string                                `json:"env_label,omitempty"`
+		DisableOnboarding  *bool                                 `json:"disable_onboarding,omitempty"`
+		SourceOfTruth      string                                `json:"source_of_truth,omitempty"`
+		FrameworkConfig    json.RawMessage                       `json:"framework,omitempty"`
+		Server             *ServerConfig                         `json:"server,omitempty"`
+		Client             *configstore.ClientConfig             `json:"client"`
+		EncryptionKey      *schemas.SecretVar                    `json:"encryption_key"`
+		AuthConfig         *configstore.AuthConfig               `json:"auth_config,omitempty"`
+		SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
+		Providers          map[string]configstore.ProviderConfig `json:"providers"`
+		MCP                *schemas.MCPConfig                    `json:"mcp,omitempty"`
+		Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
+		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
+		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
+		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
+		Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
+		VectorStoreConfig  json.RawMessage                       `json:"vector_store,omitempty"`
+		ConfigStoreConfig  json.RawMessage                       `json:"config_store,omitempty"`
+		LogsStoreConfig    json.RawMessage                       `json:"logs_store,omitempty"`
+		Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
+		WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
+		FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
+		ProxyConfig        *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
+		Warp               *WarpFileConfig                       `json:"warp,omitempty"`
+		SkillsRegistry     *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -604,6 +608,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Webhooks = temp.Webhooks
 	cd.Agents = temp.Agents
 	cd.Relays = temp.Relays
+	cd.DatasheetOverrides = temp.DatasheetOverrides
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
 	cd.WebSocket = temp.WebSocket
@@ -6932,6 +6937,8 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 			logger.Warn("failed to set pricing overrides from config file: %v", err)
 		}
 	}
+
+	loadDatasheetOverridesFromFile(ctx, config, configData)
 }
 
 // initEncryption initializes encryption from config data or environment variables.
