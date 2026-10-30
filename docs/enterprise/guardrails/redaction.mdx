@@ -16,8 +16,9 @@ Bifrost applies span-based runtime redaction for:
 - [Azure AI Language PII](/integrations/guardrails/azure-language-pii)
 - [Check Point's AI Agent Security](/integrations/guardrails/checkpoint)
 - [Singulr AI](/integrations/guardrails/singulr-ai)
+- [Noma Security](/integrations/guardrails/noma-security)
 
-Providers return findings with ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. For providers with Bifrost redaction controls, Bifrost applies the configured action, strategy, and mode. Singulr chooses the action in its own policy configuration; Bifrost applies its valid redaction spans with fixed runtime replacement.
+Providers return findings with ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. For providers with Bifrost redaction controls, Bifrost applies the configured action, strategy, and mode. Singulr chooses the action in its own policy configuration; Bifrost applies its valid redaction spans with fixed runtime replacement. Noma chooses when to mask in its Runtime Protection profile; Bifrost applies the configured strategy and mode to the values Noma flags.
 
 <Note>
 Redaction only applies to text that a guardrail provider detects. If a provider does not detect a value, Bifrost cannot redact that value in runtime payloads, logs, or connector exports.
@@ -37,6 +38,8 @@ Detection-only and blocking guardrails can still run alongside Bifrost-managed r
 Check Point's AI Agent Security uses Bifrost-managed redaction, but its response shape is different from a local detector. Check Point returns optional message-content spans for supported findings, and Bifrost maps those spans back to the original text before applying the configured strategy and mode. Check Point documents maskable payload spans for PII, profanity, and custom regular-expression detectors. A flagged Check Point result without safely mappable spans fails closed instead of forwarding the original content.
 
 Singulr AI uses **Singulr-controlled, Bifrost-applied redaction**. It selects `allow`, `block`, or `redact` in its own policy configuration. For a `redact` decision, it returns spans and Bifrost validates then applies fixed runtime replacement to the matching request or response text. Singulr profiles do not expose Bifrost `action`, strategy, or mode settings. A missing or unsafe span fails closed instead of forwarding the original content.
+
+Noma Security uses **Noma-controlled, Bifrost-applied redaction**. The Runtime Protection profile assigned to the Noma application decides when content is masked. For a mask decision, Noma reports the sensitive values it found, and Bifrost replaces every occurrence of them in the masked message, tool-call argument, or tool result using the profile's `redaction_strategy` and `redaction_mode`. A masked value Bifrost cannot locate in the content fails closed instead of forwarding the original content.
 
 ## Actions
 
@@ -184,8 +187,9 @@ This section describes Bifrost's completed-trace export path. Integrations that 
 | Azure AI Language PII | `detect_only` | `replace` | `runtime` |
 | Check Point's AI Agent Security | `block` | `replace` | `runtime` |
 | Singulr AI | Singulr policy decision | `replace` | `runtime` |
+| Noma Security | Noma profile decision | `replace` | `runtime` |
 
-For providers with Bifrost action controls, set `action: "redact"` explicitly. Relying on defaults is usually the wrong move here, especially for Presidio and Azure AI Language PII. Configure the `redact` decision in Singulr for Singulr AI profiles.
+For providers with Bifrost action controls, set `action: "redact"` explicitly. Relying on defaults is usually the wrong move here, especially for Presidio and Azure AI Language PII. Configure the `redact` decision in Singulr for Singulr AI profiles, and the mask action in the Noma profile for Noma Security profiles.
 
 ## LLM Tool-Call Arguments
 
@@ -205,5 +209,6 @@ MCP-targeted rules continue to evaluate actual MCP execution arguments and resul
 - Bifrost-managed redaction cannot be combined with provider-managed transformed output for the same request or response phase.
 - Check Point tool-call arguments are screened but are not rewritten from Check Point message-content spans. A flagged argument that cannot be mapped safely fails closed in `redact` mode.
 - Singulr tool-call arguments and tool-result content can be blocked but are never redacted.
+- Noma tool-call arguments are masked by locating each flagged value in the raw arguments; a value that does not appear verbatim, for example because it is JSON-escaped, fails closed.
 - Input redaction cannot safely run together with raw-body passthrough transformations; Bifrost fails closed rather than forwarding an inconsistent payload.
 - If a request uses both input and output redaction, Bifrost carries replacements forward so raw log fields and exported trace content are redacted consistently.

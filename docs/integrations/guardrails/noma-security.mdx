@@ -1,0 +1,214 @@
+---
+title: "Noma Security"
+description: "Use Noma Security AI-DR runtime protection profiles with Bifrost Enterprise to block, mask, or alert on LLM prompts, responses, and tool activity."
+icon: "/media/noma-logo-nav.svg"
+---
+
+## Overview
+
+Bifrost Enterprise supports **Noma Security AI-DR** (AI Detection & Response) as a third-party guardrail provider for LLM requests, responses, tool calls, and tool results.
+
+Noma owns the detection policy. Detectors, sensitivity, and the action for each detector are configured in the **Runtime Protection profile** assigned to a Noma application. Attach the Noma profile to a Bifrost rule to choose which traffic is evaluated; Bifrost enforces Noma's decision inline.
+
+| Noma decision | Bifrost behavior |
+|---------------|------------------|
+| **Allow** | The request or response continues unchanged. |
+| **Alert** | The content continues unchanged; the detection is recorded in Bifrost guardrail logs and in Noma. |
+| **Mask** | Bifrost replaces each value Noma flagged using the profile's redaction strategy and mode, for example `[CREDIT_CARD]`. |
+| **Block** or **Ask** | Bifrost returns a guardrail intervention. `ask` is treated as a block because a gateway cannot prompt the end user. |
+
+<Note>
+  If Bifrost cannot interpret or safely apply a Noma decision, for example an unrecognized decision or a masked value it cannot locate in the content, it fails closed with a guardrail intervention instead of forwarding the original content.
+</Note>
+
+## Prerequisites
+
+- Bifrost Enterprise with guardrails enabled
+- A Noma client credential (Client ID and Client Secret), created in Noma under **Settings** > **API Keys**
+- A Noma application with a Runtime Protection profile assigned to it
+- Network egress from Bifrost to your Noma environment over HTTPS
+
+## Set Up Noma
+
+1. In Noma, open **Runtime Protection** > **Applications** and create an application, or reuse one, for the workload you want to protect.
+2. Assign a Runtime Protection profile to the application and choose each detector's action: off, alert, mask, or block.
+3. Create a client credential under **Settings** > **API Keys**.
+4. Copy the Client ID, Client Secret, and Application ID into Bifrost.
+
+<Tip>
+  Use the same Application ID consistently. It selects the profile Noma applies, and it groups traffic in Noma's **Runtime Protection** > **Sessions** view.
+</Tip>
+
+## How It Works
+
+1. Create a Bifrost provider configuration with `provider_name: "noma-security"`.
+2. Attach it to a guardrail rule that applies to `input`, `output`, or `both`.
+3. Bifrost sends the conversation to Noma before the LLM call, and the completed assistant response after it. Noma evaluates the latest turn: the newest user message and the tool calls, tool results, and response that follow it.
+4. Noma returns a decision for each item, and Bifrost applies it to the matching request, response, tool-call argument, or tool result.
+
+Bifrost attributes each scan to the configured application, the Bifrost request ID, and the authenticated user or virtual key. When the client sends a session header (for example, Claude Code's `x-claude-code-session-id`), Bifrost uses it as the Noma session so related requests are grouped in Noma; otherwise each request is its own session.
+
+### Streaming Responses
+
+When Noma is the only provider enforcing a rule's output, Bifrost streams Chat Completions and Text Completions responses progressively. It sends Noma the response generated so far at sentence boundaries and releases text as soon as Noma clears it.
+
+- A **block** ends the stream after the text already delivered.
+- A **mask** is applied to text that has not been delivered yet. If a mask would change text the client already received, the stream ends instead.
+- If Noma cannot be reached mid-stream, the stream ends rather than releasing unchecked text.
+
+Bifrost holds the complete response and evaluates it once when another provider also enforces the output, for Responses API streams, for requests that declare tools, and for requests that ask for more than one choice.
+
+## Configuration Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `client_id` | string | Yes | - | Noma client credential ID. Supports `env.NOMA_CLIENT_ID`. |
+| `client_secret` | string | Yes | - | Noma client credential secret. Supports `env.NOMA_CLIENT_SECRET`. |
+| `application_id` | string | Yes | - | Noma application whose Runtime Protection profile decides each action. |
+| `base_url` | string | No | `https://api.noma.security` | Noma API root: `https://api.us2.noma.security` (Azure), `https://api.eu.noma.security`, `https://api.ap.noma.security`, `https://api.ap5.noma.security`, or your Noma broker URL. Changing it on a saved profile requires re-entering `client_secret`. |
+| `redaction_strategy` | string | No | `replace` | How masked values are rendered: `replace`, `mask`, or `hash`. |
+| `redaction_mode` | string | No | `runtime` | Where masking applies: `runtime`, `logs_only`, or `runtime_reversible`. See [Guardrail Redaction](/enterprise/guardrails/redaction). |
+| `timeout` | integer | No | `30` | Provider execution timeout in seconds. |
+
+## Configure Bifrost
+
+<Tabs group="noma-security-config">
+<Tab title="Web UI">
+
+1. Go to **Guardrails** > **Providers**.
+2. Select **Noma Security** and click **Add Configuration**.
+3. Enter a descriptive **Name**, the **Client ID**, **Client Secret**, and **Application ID**.
+4. Choose the **Region** that matches your Noma environment, or **Broker or custom URL** for a broker deployment.
+5. Choose the redaction mode and strategy used when Noma masks content.
+6. Set the timeout, enable the configuration, click **Verify**, then save it. Verification runs a dry-run scan, so nothing is stored in Noma.
+7. Under **Guardrails** > **Rules**, attach the saved Noma profile to an input, output, or both-phase rule.
+
+</Tab>
+<Tab title="API">
+
+Create the Noma provider configuration with the management API:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/noma-security \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "noma-production",
+    "enabled": true,
+    "config": {
+      "client_id": "env.NOMA_CLIENT_ID",
+      "client_secret": "env.NOMA_CLIENT_SECRET",
+      "application_id": "bifrost-production",
+      "base_url": "https://api.noma.security",
+      "redaction_strategy": "replace",
+      "redaction_mode": "runtime",
+      "timeout": 30
+    }
+  }'
+```
+
+Fetch the generated configuration ID:
+
+```bash
+curl -X GET http://localhost:8080/api/guardrails/noma-security
+```
+
+Attach it to a rule by referencing `noma-security:<id>` in `selectedGuardrailProfiles`:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "noma-all-traffic",
+    "description": "Apply Noma AI-DR to prompts and completions",
+    "enabled": true,
+    "celExpression": "provider == \"openai\"",
+    "applyTo": "both",
+    "samplingRate": 100,
+    "timeout": 60,
+    "selectedGuardrailProfiles": ["noma-security:26"]
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 26,
+        "provider_name": "noma-security",
+        "policy_name": "noma-production",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "client_id": "env.NOMA_CLIENT_ID",
+          "client_secret": "env.NOMA_CLIENT_SECRET",
+          "application_id": "bifrost-production",
+          "base_url": "https://api.noma.security",
+          "redaction_strategy": "replace",
+          "redaction_mode": "runtime"
+        }
+      }
+    ],
+    "guardrail_rules": [
+      {
+        "id": 261,
+        "name": "noma-all-traffic",
+        "description": "Apply Noma AI-DR to prompts and completions",
+        "enabled": true,
+        "cel_expression": "provider == 'openai'",
+        "apply_to": "both",
+        "sampling_rate": 100,
+        "timeout": 60,
+        "provider_config_ids": [26]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 26
+        provider_name: "noma-security"
+        policy_name: "noma-production"
+        enabled: true
+        timeout: 30
+        config:
+          client_id: "env.NOMA_CLIENT_ID"
+          client_secret: "env.NOMA_CLIENT_SECRET"
+          application_id: "bifrost-production"
+          base_url: "https://api.noma.security"
+          redaction_strategy: "replace"
+          redaction_mode: "runtime"
+
+    rules:
+      - id: 261
+        name: "noma-all-traffic"
+        description: "Apply Noma AI-DR to prompts and completions"
+        enabled: true
+        cel_expression: "provider == 'openai'"
+        apply_to: "both"
+        sampling_rate: 100
+        timeout: 60
+        provider_config_ids: [26]
+```
+
+</Tab>
+</Tabs>
+
+## Supported Content and Limitations
+
+- **Latest turn only:** Noma evaluates the newest user message and everything after it. Earlier turns are context and are not re-evaluated, and Noma does not re-report items it already scanned in the same session. A value masked on one turn is therefore not masked again when the client replays it in later turns. To have every turn evaluated on each request, set the rule's evaluation mode to per-turn.
+- **Tool calls and tool results:** Noma evaluates tool-call arguments and tool results, and Bifrost can block or mask them. MCP tool executions are evaluated together with the call that produced them.
+- **System prompts and images:** Noma does not evaluate system prompts or image content.
+- **Fallbacks:** When a request falls back to another provider, Bifrost reapplies the first attempt's Noma decision instead of scanning the same content again.
+
+For shared rule behavior, CEL scoping, and audit logging, see [Guardrails](/enterprise/guardrails). For the general redaction model, see [Guardrail Redaction](/enterprise/guardrails/redaction).
