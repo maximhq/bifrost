@@ -892,7 +892,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		logger,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
+		return nil, fmt.Errorf("failed to list tools: %v", err)
 	}
 
 	if toolsResponse == nil {
