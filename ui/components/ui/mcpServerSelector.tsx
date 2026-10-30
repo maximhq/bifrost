@@ -1,5 +1,6 @@
 import { ExternalLink, X } from "lucide-react";
 import { useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { AsyncMultiSelect } from "./asyncMultiselect";
 import { Badge } from "./badge";
 import { Button } from "./button";
@@ -40,11 +41,13 @@ export function MCPServerSelector({
 	value,
 	onChange,
 	mcpClients,
-	placeholder = "Search and select MCP servers...",
+	placeholder: placeholderProp,
 	disabled = false,
 	className,
 	registryPath = "/workspace/mcp-registry",
 }: MCPServerSelectorProps) {
+	const { t } = useTranslation("mcp");
+	const placeholder = placeholderProp ?? t("selectors.searchServers");
 	// Create options from MCP clients using meta for complex data
 	const allServerOptions = useMemo((): Option<ServerOptionMeta>[] => {
 		return mcpClients.map((client) => ({
@@ -150,7 +153,7 @@ export function MCPServerSelector({
 				closeMenuOnSelect={true}
 				hideSelectedOptions={true}
 				controlShouldRenderValue={false}
-				noOptionsMessage={() => "No MCP servers found"}
+				noOptionsMessage={() => t("selectors.noServersFound")}
 				views={{
 					option: (props) => {
 						// Access data as Option<ServerOptionMeta> since that's the actual runtime type
@@ -174,7 +177,9 @@ export function MCPServerSelector({
 										</Badge>
 									)}
 								</div>
-								<span className="text-content-tertiary text-xs">{data.meta?.toolCount} tools</span>
+								<span className="text-content-tertiary text-xs">
+									{t("virtualMcps.wizard.toolsCount", { count: data.meta?.toolCount ?? 0 })}
+								</span>
 							</div>
 						);
 					},
@@ -198,7 +203,7 @@ export function MCPServerSelector({
 										{server.state}
 									</Badge>
 								)}
-								<span className="text-muted-foreground text-xs">{server.toolCount} tools</span>
+								<span className="text-muted-foreground text-xs">{t("virtualMcps.wizard.toolsCount", { count: server.toolCount })}</span>
 							</div>
 							<div className="flex items-center gap-1">
 								<Button type="button" variant="ghost" size="sm" className="h-8 w-8 p-0" asChild>
@@ -206,7 +211,7 @@ export function MCPServerSelector({
 										href={`${registryPath}?server=${server.clientId}`}
 										target="_blank"
 										rel="noopener noreferrer"
-										title="Open server details in new tab"
+										title={t("selectors.openServerDetails")}
 									>
 										<ExternalLink className="h-4 w-4" />
 									</a>
@@ -230,7 +235,7 @@ export function MCPServerSelector({
 			{/* Empty state */}
 			{selectedServersWithInfo.length === 0 && (
 				<div className="text-muted-foreground rounded-md border border-dashed p-4 text-center text-sm">
-					No servers selected. Use the search above to add MCP servers.
+					{t("selectors.noServersSelected")}
 				</div>
 			)}
 		</div>

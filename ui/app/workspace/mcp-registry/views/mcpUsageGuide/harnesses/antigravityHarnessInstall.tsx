@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { Orbit } from "lucide-react";
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { buildAntigravityConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { HarnessInstallProps } from "../types";
@@ -19,6 +20,7 @@ export function AntigravityHarnessInstall({
 	selectedServers,
 	serverScope,
 }: HarnessInstallProps) {
+	const { t } = useTranslation("mcp");
 	const configPath = `${getUserHomePrefix(platform)}/.gemini/antigravity/mcp_config.json`;
 
 	const config = useMemo(
@@ -36,10 +38,10 @@ export function AntigravityHarnessInstall({
 			canCopyCommand={canGenerateCommand}
 			command={config}
 			controls={null}
-			copySuccessMessage="Config copied"
+			copySuccessMessage={t("common.configCopied")}
 			emptyMessage={emptyMessage}
 			harnessName="Antigravity"
-			label="Config"
+			label={t("common.config")}
 			logoSrc="/images/harness/antigravity.svg"
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>

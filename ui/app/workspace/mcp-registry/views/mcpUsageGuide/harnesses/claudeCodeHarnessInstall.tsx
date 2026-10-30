@@ -1,5 +1,6 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { buildClaudeCodeCommand } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { ClaudeScope, HarnessInstallProps } from "../types";
@@ -13,6 +14,7 @@ export function ClaudeCodeHarnessInstall({
 	selectedServers,
 	serverScope,
 }: HarnessInstallProps) {
+	const { t } = useTranslation("mcp");
 	const [scope, setScope] = useState<ClaudeScope>("local");
 
 	const command = useMemo(
@@ -36,9 +38,9 @@ export function ClaudeCodeHarnessInstall({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="local">Local</SelectItem>
-						<SelectItem value="project">Project</SelectItem>
-						<SelectItem value="user">User</SelectItem>
+						<SelectItem value="local">{t("usageGuide.scopeLocal")}</SelectItem>
+						<SelectItem value="project">{t("usageGuide.scopeProject")}</SelectItem>
+						<SelectItem value="user">{t("usageGuide.scopeUser")}</SelectItem>
 					</SelectContent>
 				</Select>
 			}

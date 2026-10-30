@@ -20,7 +20,7 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     outputs:
@@ -48,7 +48,7 @@ jobs:
   publish-bifrost:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
       id-token: write # Required for npm provenance
@@ -177,7 +177,7 @@ jobs:
   publish-bifrost-cli:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
       id-token: write # Required for npm provenance

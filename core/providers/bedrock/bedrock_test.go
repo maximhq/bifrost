@@ -200,8 +200,8 @@ func TestBedrock(t *testing.T) {
 		RealtimeModel:            novaSonicModel,
 		ReasoningModel:           "claude-4.5-sonnet",
 		PromptCachingModel:       "claude-4.5-sonnet",
-		ImageEditModel:           "amazon.nova-canvas-v1:0",
-		ImageVariationModel:      "amazon.nova-canvas-v1:0",
+		ImageEditModel:           "us.stability.stable-image-inpaint-v1:0", // nova-canvas reached end of life
+		ImageVariationModel:      "",                                       // nova-canvas reached end of life and no other Bedrock model supports image variations
 		InterleavedThinkingModel: "claude-opus-4-5",
 		CompactionModel:          "claude-4.6-sonnet", // compact_20260112 routes to InvokeModel (#6825); Sonnet 4.6 is on the AWS compaction model list
 		ToolSearchModel:          "claude-4.6-sonnet", // tool_search routes to InvokeModel (#6825)
@@ -242,7 +242,7 @@ func TestBedrock(t *testing.T) {
 			FileBatchInput:             true,
 			CountTokens:                true,
 			ImageEdit:                  true,
-			ImageVariation:             true,
+			ImageVariation:             false, // no Bedrock model supports image variations since nova-canvas EOL
 			StructuredOutputs:          true,
 			InterleavedThinking:        true,
 			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)

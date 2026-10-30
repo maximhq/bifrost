@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 // The pieces of the summary row that sits above the logs table and the adaptive routing
 // timeline: one surface split by hairline dividers, each segment a title, a figure and a
@@ -67,6 +68,7 @@ export function MetricSegment({
 	onMouseLeave?: (event: MouseEvent<HTMLDivElement>) => void;
 	testId?: string;
 }) {
+	const { t } = useTranslation("observability");
 	// The footer is derived from the same figures as the value, so it goes with them
 	// rather than rendering a flat line beside an "N/A".
 	const ready = state === "ready";
@@ -110,7 +112,7 @@ export function MetricSegment({
 					"[--number-flow-mask-height:0.15em]",
 					ready ? "text-foreground" : "text-muted-foreground",
 				)}
-				title={state === "unavailable" ? "These statistics could not be loaded" : undefined}
+				title={state === "unavailable" ? t("logs.stats.unavailable") : undefined}
 			>
 				{ready ? children : placeholder[state]}
 			</div>

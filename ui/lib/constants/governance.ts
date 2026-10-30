@@ -1,22 +1,26 @@
 // Governance-related constants
+import i18n, { getLocale } from "@/lib/i18n";
 
-export const resetDurationOptions = [
-	{ label: "Every Minute", value: "1m" },
-	{ label: "Every 5 Minutes", value: "5m" },
-	{ label: "Every 15 Minutes", value: "15m" },
-	{ label: "Every 30 Minutes", value: "30m" },
-	{ label: "Hourly", value: "1h" },
-	{ label: "Every 6 Hours", value: "6h" },
-	{ label: "Daily", value: "1d" },
-	{ label: "Weekly", value: "1w" },
-	{ label: "Monthly", value: "1M" },
-];
+const RESET_DURATION_VALUES = ["1m", "5m", "15m", "30m", "1h", "6h", "1d", "1w", "1M"] as const;
+type ResetDurationValue = (typeof RESET_DURATION_VALUES)[number] | "1Q";
+
+// Labels resolve through i18n at read time (getters) so these shared constants stay
+// drop-in for every existing caller while following the active locale.
+const resetDurationLabel = (value: ResetDurationValue): string => i18n.t(`virtualKeys.resetDurations.${value}`, { ns: "models" });
+const resetDurationOption = (value: ResetDurationValue) => ({
+	get label(): string {
+		return resetDurationLabel(value);
+	},
+	value: value as string,
+});
+
+export const resetDurationOptions = RESET_DURATION_VALUES.map(resetDurationOption);
 
 // Reset periods offered on budgets. Quarterly is budget-only: resetDurationOptions
 // above is shared with the rate-limit selects, and the backend has no notion of a
 // quarterly token or request limit, so adding "1Q" there would offer a window it
 // cannot enforce.
-export const budgetResetDurationOptions = [...resetDurationOptions, { label: "Quarterly", value: "1Q" }];
+export const budgetResetDurationOptions = [...resetDurationOptions, resetDurationOption("1Q")];
 
 // Durations that support calendar-aligned resets (snap to day/week/month/quarter/year boundaries).
 // Must stay in sync with IsCalendarAlignableDuration in framework/configstore/tables/utils.go.
@@ -24,20 +28,16 @@ export const budgetResetDurationOptions = [...resetDurationOptions, { label: "Qu
 export const supportsCalendarAlignment = (duration: string): boolean => /^(1d|1w|1M|1Q|1Y)$/.test(duration);
 
 // Map of duration values to short labels for display
-export const resetDurationLabels: Record<string, string> = {
-	"1m": "Every Minute",
-	"5m": "Every 5 Minutes",
-	"15m": "Every 15 Minutes",
-	"30m": "Every 30 Minutes",
-	"1h": "Hourly",
-	"6h": "Every 6 Hours",
-	"1d": "Daily",
-	"1w": "Weekly",
-	"1M": "Monthly",
-	"1Q": "Quarterly",
-};
+export const resetDurationLabels: Record<string, string> = Object.defineProperties(
+	{},
+	Object.fromEntries(
+		[...RESET_DURATION_VALUES, "1Q" as const].map((value) => [value, { get: () => resetDurationLabel(value), enumerable: true }]),
+	),
+);
 
-const MONTH_ABBREVIATIONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Month name in the active locale; "short" gives "Apr" in English.
+const monthName = (index: number, month: "short" | "long"): string =>
+	new Date(Date.UTC(2026, index, 1)).toLocaleString(getLocale(), { month, timeZone: "UTC" });
 
 // Fall back to January for a missing, fractional, or out-of-range month, matching
 // BudgetResetConfig.QuarterStart on the Go side. Number.isInteger also rejects a
@@ -72,7 +72,7 @@ function quarterMonthIndices(startMonth?: number): { first: number; last: number
  */
 export function formatQuarterPreview(startMonth?: number): string {
 	return quarterMonthIndices(startMonth)
-		.map((month, quarter) => `Q${quarter + 1} ${MONTH_ABBREVIATIONS[month.first]}-${MONTH_ABBREVIATIONS[month.last]}`)
+		.map((month, quarter) => `Q${quarter + 1} ${monthName(month.first, "short")}-${monthName(month.last, "short")}`)
 		.join(" · ");
 }
 
@@ -86,9 +86,9 @@ export function fiscalQuarterNote(resetDuration?: string, resetConfig?: { quarte
 	if (!resetDuration || !resetDuration.endsWith("Q")) return "";
 	const start = resetConfig?.quarter_start_month;
 	// Number.isInteger also rejects undefined/NaN; a fractional month like 2.5 would
-	// otherwise pass the range check and index MONTH_ABBREVIATIONS between slots.
+	// otherwise pass the range check and index the month names between slots.
 	if (start === undefined || !Number.isInteger(start) || start === 1 || start < 1 || start > 12) return "";
-	return ` · FY starts ${MONTH_ABBREVIATIONS[start - 1]}`;
+	return ` · ${i18n.t("virtualKeys.fiscalYearStarts", { ns: "models", month: monthName(start - 1, "short") })}`;
 }
 
 /**
@@ -98,7 +98,7 @@ export function fiscalQuarterNote(resetDuration?: string, resetConfig?: { quarte
 export function quarterRanges(startMonth?: number): { label: string; range: string }[] {
 	return quarterMonthIndices(startMonth).map((month, quarter) => ({
 		label: `Q${quarter + 1}`,
-		range: `${MONTH_ABBREVIATIONS[month.first]}–${MONTH_ABBREVIATIONS[month.last]}`,
+		range: `${monthName(month.first, "short")}–${monthName(month.last, "short")}`,
 	}));
 }
 
@@ -127,8 +127,10 @@ export function nextQuarterReset(startMonth?: number, now: Date = new Date()): D
 }
 
 // Month choices for the fiscal quarter start select.
-export const quarterStartMonthOptions = MONTH_ABBREVIATIONS.map((_, index) => ({
-	label: new Date(Date.UTC(2026, index, 1)).toLocaleString("en-US", { month: "long", timeZone: "UTC" }),
+export const quarterStartMonthOptions = Array.from({ length: 12 }, (_, index) => ({
+	get label(): string {
+		return monthName(index, "long");
+	},
 	value: String(index + 1),
 }));
 // Multi-unit windows remain rolling even when their owner enables alignment.

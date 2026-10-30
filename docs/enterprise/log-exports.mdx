@@ -218,7 +218,7 @@ Format and compression are separate settings:
 
 For `json`, the legacy `compress: true` is the same as `compression: gzip`.
 
-MCP tool logs and A2A agent logs follow the same layout under `mcp-logs/` and `agent-logs/`.
+MCP tool logs, A2A agent logs and Relay Logs follow the same layout under `mcp-logs/`, `agent-logs/` and `relay-logs/`.
 
 Each Parquet file holds one row. Every payload field becomes a nullable UTF8 column named after its database column (`input_history`, `output_message`, `raw_request`, `token_usage`, ...). String values are stored as is; nested values (for example MCP tool arguments) are stored as JSON text, and their column names are listed in the file's `bifrost.json_columns` key-value metadata. Objects are uploaded with `Content-Type: application/vnd.apache.parquet`.
 
@@ -372,7 +372,7 @@ The cleaner deletes **database rows** older than `now - retention_days` (UTC). I
 
 ### What does NOT get deleted automatically
 
-The retention cleaner deletes database rows, **not stored payloads**. Configure lifecycle rules for `logs/`, `mcp-logs/`, and `agent-logs/` under your configured `prefix`, with retention longer than `log_retention_days` to cover the cleaner's 24-hour interval, 15-30 minute jitter, and pass duration. For example, use 32 days for a 30-day `log_retention_days` setting. Allow more time for cleanup backlogs, failures, or downtime: missing payloads leave database rows readable without their offloaded content. Do not expire `skills/` or the whole container.
+The retention cleaner deletes database rows, **not stored payloads**. Configure lifecycle rules for `logs/`, `mcp-logs/`, `agent-logs/`, and `relay-logs/` under your configured `prefix`, with retention longer than `log_retention_days` to cover the cleaner's 24-hour interval, 15-30 minute jitter, and pass duration. For example, use 32 days for a 30-day `log_retention_days` setting. Allow more time for cleanup backlogs, failures, or downtime: missing payloads leave database rows readable without their offloaded content. Do not expire `skills/` or the whole container.
 
 **Amazon S3 lifecycle rule (example)**
 
@@ -418,6 +418,7 @@ Configure [Azure Blob lifecycle management](https://learn.microsoft.com/azure/st
 - `bifrost-logs/bifrost/logs/`
 - `bifrost-logs/bifrost/mcp-logs/`
 - `bifrost-logs/bifrost/agent-logs/`
+- `bifrost-logs/bifrost/relay-logs/`
 
 Do not expire `skills/` or the whole container. Early expiry makes historical payloads unreadable; soft delete and version retention can delay permanent removal.
 

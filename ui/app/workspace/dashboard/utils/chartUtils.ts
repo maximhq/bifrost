@@ -1,5 +1,6 @@
 // Chart utility functions for the dashboard
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import i18n, { getLocale } from "@/lib/i18n";
 
 // Format timestamp based on bucket size
 export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
@@ -7,20 +8,20 @@ export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): s
 
 	if (bucketSizeSeconds >= 86400) {
 		// Daily buckets: "Jan 20"
-		return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+		return date.toLocaleDateString(getLocale(), { month: "short", day: "numeric" });
 	} else if (bucketSizeSeconds >= 3600) {
 		// Hourly buckets: "10:00"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
 	} else {
 		// Sub-hourly: "10:15"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
 	}
 }
 
 // Format full timestamp for tooltip
 export function formatFullTimestamp(timestamp: string): string {
 	const date = new Date(timestamp);
-	return date.toLocaleString("en-US", {
+	return date.toLocaleString(getLocale(), {
 		month: "short",
 		day: "numeric",
 		hour: "2-digit",
@@ -65,17 +66,17 @@ export function getModelColor(index: number): string {
 // "+N more", so the data path follows the palette.
 export const TOP_SERIES_LIMIT = MODEL_COLORS.length;
 export const OTHER_SERIES_KEY = "__other__";
-export const OTHER_SERIES_LABEL = "Other";
+export const getOtherSeriesLabel = (): string => i18n.t("labels.other", { ns: "observability" });
 export const OTHER_SERIES_COLOR = "var(--chart-cat-other)";
 
-export const UNNAMED_MODEL_LABEL = "(unnamed)";
+export const getUnnamedModelLabel = (): string => i18n.t("labels.unnamed", { ns: "observability" });
 
 // Resolves a raw model value to its display label: the canonical model name
 // when one is known (e.g. Bedrock inference-profile IDs mapped via key
 // aliases), the raw value otherwise.
 export function displayModelLabel(model: string, labels?: Record<string, string>): string {
-	if (model === OTHER_SERIES_KEY) return OTHER_SERIES_LABEL;
-	if (model === "") return UNNAMED_MODEL_LABEL;
+	if (model === OTHER_SERIES_KEY) return getOtherSeriesLabel();
+	if (model === "") return getUnnamedModelLabel();
 	return labels?.[model] ?? model;
 }
 

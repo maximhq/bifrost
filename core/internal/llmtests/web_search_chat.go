@@ -37,11 +37,16 @@ func RunWebSearchViaChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, c
 		return
 	}
 
+	model := testConfig.WebSearchChatModel
+	if model == "" {
+		model = testConfig.ChatModel
+	}
+
 	newRequest := func() *schemas.BifrostChatRequest {
 		maxUses := 3
 		return &schemas.BifrostChatRequest{
 			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
+			Model:    model,
 			Input:    []schemas.ChatMessage{CreateBasicChatMessage(webSearchChatPrompt)},
 			Params: &schemas.ChatParameters{
 				MaxCompletionTokens: bifrost.Ptr(1024),

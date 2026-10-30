@@ -437,7 +437,7 @@ test.describe("Relays", () => {
       // A missing document reports the gateway's error.
       await url.fill(`http://127.0.0.1:${port}/missing.json`);
       await page.page.getByTestId("openapi-parse-btn").click();
-      await expect(page.page.getByTestId("openapi-parse-error")).toContainText("could not load spec_url");
+      await expect(page.page.getByTestId("openapi-parse-error")).toContainText(/could not load spec_url/i);
 
       await url.fill(`http://127.0.0.1:${port}/openapi.json`);
       await page.page.getByTestId("openapi-parse-btn").click();

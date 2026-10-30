@@ -1,15 +1,18 @@
 // One list drives both the menu and matching, so a command cannot show without running or vice versa.
 
+import type { ParseKeys } from "i18next";
+
 export type WarpCommandID = "clear";
 
 export interface WarpCommand {
 	id: WarpCommandID;
 	/** What the user types, without the slash. */
 	name: string;
-	description: string;
+	/** Key in the shell catalog for the menu description. */
+	descriptionKey: ParseKeys<"shell">;
 }
 
-export const WARP_COMMANDS: WarpCommand[] = [{ id: "clear", name: "clear", description: "Start a new conversation" }];
+export const WARP_COMMANDS: WarpCommand[] = [{ id: "clear", name: "clear", descriptionKey: "warp.composer.commandClear" }];
 
 /** Only a lone leading slash counts, so a question mentioning "/v1/chat" does not pop the menu. */
 export function isWarpCommandQuery(value: string): boolean {

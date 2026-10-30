@@ -771,7 +771,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -1439,7 +1439,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -1693,7 +1693,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonData)
+			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonData, provider.GetProviderKey(), request.Model)
 		}
 		jsonData = stripVertexGeminiUnsupportedFieldsRaw(jsonData)
 
@@ -4452,7 +4452,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(jsonBody)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
 		}
 
 		// Skip field-stripping when large payload mode is active — jsonBody is nil

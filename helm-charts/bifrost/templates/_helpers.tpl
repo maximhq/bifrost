@@ -1492,6 +1492,18 @@ false
 {{- if and (eq $client.connectionType "sse") $client.connectionString }}
 {{- $_ := set $cc "connection_string" $client.connectionString }}
 {{- end }}
+{{- /* Map openapiConfig -> openapi_config (connection_type "openapi" synthesizes an in-process MCP server from the document) */ -}}
+{{- if and (eq $client.connectionType "openapi") $client.openapiConfig }}
+{{- $oa := dict }}
+{{- with $client.openapiConfig.spec }}{{- $_ := set $oa "spec" . }}{{- end }}
+{{- with $client.openapiConfig.specFile }}{{- $_ := set $oa "spec_file" . }}{{- end }}
+{{- with $client.openapiConfig.specUrl }}{{- $_ := set $oa "spec_url" . }}{{- end }}
+{{- with $client.openapiConfig.baseUrl }}{{- $_ := set $oa "base_url" . }}{{- end }}
+{{- with $client.openapiConfig.securityCredentials }}{{- $_ := set $oa "security_credentials" . }}{{- end }}
+{{- if hasKey $client.openapiConfig "includeDeprecated" }}{{- $_ := set $oa "include_deprecated" $client.openapiConfig.includeDeprecated }}{{- end }}
+{{- if hasKey $client.openapiConfig "maxResponseBytes" }}{{- $_ := set $oa "max_response_bytes" $client.openapiConfig.maxResponseBytes }}{{- end }}
+{{- $_ := set $cc "openapi_config" $oa }}
+{{- end }}
 {{- /* Map stdioConfig -> stdio_config */ -}}
 {{- if $client.stdioConfig }}
 {{- $stdio := dict "command" $client.stdioConfig.command }}
@@ -2872,7 +2884,7 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $client.connectionType }}
-{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http" $idx $client.name) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http, sse, openapi" $idx $client.name) }}
 {{- end }}
 {{- if eq $client.connectionType "stdio" }}
 {{- if not $client.stdioConfig }}
@@ -2897,6 +2909,20 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not $client.httpConfig.url }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig.url is required for client '%s'." $idx $client.name) }}
 {{- end }}
+{{- end }}
+{{- if eq $client.connectionType "openapi" }}
+{{- if not $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig is required when connectionType is 'openapi' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not (or $client.openapiConfig.spec $client.openapiConfig.specFile $client.openapiConfig.specUrl) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig needs one of spec, specFile or specUrl for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- $oaAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- if not (has $oaAuth (list "none" "headers" "per_user_headers")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers or per_user_headers; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
+{{- end }}
+{{- else if $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
 {{- end }}
 {{- end }}
 {{- end }}

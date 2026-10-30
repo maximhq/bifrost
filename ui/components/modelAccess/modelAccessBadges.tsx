@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ModelAccessChipLabel } from "./modelAccessChip";
 import { isRegexEntry, isWildcardList, type ModelAccessMode } from "./utils";
 
@@ -43,17 +44,18 @@ export function ModelAccessBadges({
 	entryClassName,
 	className,
 }: ModelAccessBadgesProps) {
+	const { t } = useTranslation();
 	const entries = (value ?? []).filter((e) => e !== "*");
 	const isAll = allModels || isWildcardList(value);
 
 	if (isAll) {
 		return mode === "allow" ? (
 			<Badge variant="success" className={cn("text-xs", className)}>
-				All Models
+				{t("modelAccess.allModels")}
 			</Badge>
 		) : (
 			<Badge variant="destructive" className={cn("text-xs", className)}>
-				All Models Blocked
+				{t("modelAccess.allModelsBlocked")}
 			</Badge>
 		);
 	}
@@ -62,11 +64,11 @@ export function ModelAccessBadges({
 		if (empty !== undefined) return <>{empty}</>;
 		return mode === "allow" ? (
 			<Badge variant="destructive" className={cn("text-xs", className)}>
-				No models (deny all)
+				{t("modelAccess.noModelsDenyAll")}
 			</Badge>
 		) : (
 			<Badge variant="secondary" className={cn("text-xs", className)}>
-				{allowsAllModels === false ? "All models except those allowed" : "No models blocked"}
+				{allowsAllModels === false ? t("modelAccess.allExceptAllowed") : t("modelAccess.noModelsBlocked")}
 			</Badge>
 		);
 	}

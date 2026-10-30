@@ -9,6 +9,7 @@ import type { RelayLogFilterDimension, RelayLogFilterEntity, RelayLogFilters } f
 import { formatCostBound, parseCostBound } from "@/lib/utils/relayLogQuery";
 import { PanelLeftClose, RotateCcw } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const COLLAPSE_STORAGE_KEY = "relay-filter-sidebar-collapsed";
 
@@ -26,6 +27,7 @@ type EntityKey = "user_ids" | "team_ids" | "customer_ids" | "business_unit_ids" 
 
 /** The Relay Logs filter sidebar, built on the same primitives as the LLM and MCP log sidebars. */
 export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSidebarProps) {
+	const { t } = useTranslation("observability");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
@@ -75,7 +77,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 			data-testid="relay-filter-sidebar"
 		>
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">{t("filters.filters")}</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -86,10 +88,10 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 							data-testid="relay-filter-reset-btn"
 						>
 							<RotateCcw className="size-3" />
-							Reset
+							{t("relayLogs.filters.reset")}
 						</Button>
 					)}
-					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title="Hide filters" aria-label="Hide filters">
+					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title={t("filters.hideFilters")} aria-label={t("filters.hideFilters")}>
 						<PanelLeftClose className="size-4" />
 					</Button>
 				</div>
@@ -97,12 +99,18 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				<div className="flex grow flex-col gap-1">
 					{/* First two open by default; the rest open only when they carry a value. */}
-					<FilterSection title="Status" defaultOpen testId="relay-status-filter-toggle">
-						{["success", "error", "cancelled"].map((status) => (
+					<FilterSection title={t("filters.status")} defaultOpen testId="relay-status-filter-toggle">
+						{(
+								[
+									["success", t("labels.success")],
+									["error", t("labels.error")],
+									["cancelled", t("labels.cancelled")],
+								] as const
+							).map(([status, statusLabel]) => (
 							<CheckboxFilterItem
 								key={status}
 								labelClassName="capitalize"
-								label={status}
+								label={statusLabel}
 								checked={(filters.statuses ?? []).includes(status)}
 								onCheckedChange={() => toggle("statuses", status)}
 								testId={`relay-status-filter-checkbox-${status}`}
@@ -114,8 +122,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="relay_names"
 						dimension="relay_names"
-						title="Relay"
-						placeholder="Search relays"
+						title={t("relayLogs.fields.relay")}
+						placeholder={t("relayLogs.filters.searchRelays")}
 						testIdPrefix="relay-filter"
 						defaultOpen
 					/>
@@ -124,33 +132,33 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="methods"
 						dimension="methods"
-						title="Method"
-						placeholder="Search methods"
+						title={t("relayLogs.fields.method")}
+						placeholder={t("relayLogs.filters.searchMethods")}
 						testIdPrefix="relay-method-filter"
 					/>
-					<FilterSection title="Billing" defaultOpen={filters.billable !== undefined} testId="relay-billing-filter-toggle">
+					<FilterSection title={t("relayLogs.filters.billing")} defaultOpen={filters.billable !== undefined} testId="relay-billing-filter-toggle">
 						<CheckboxFilterItem
-							label="Billable"
+							label={t("relayLogs.fields.billable")}
 							checked={filters.billable === true}
 							onCheckedChange={() => onFiltersChange({ ...filters, billable: filters.billable === true ? undefined : true })}
 							testId="relay-billing-filter-checkbox-billable"
 						/>
 						<CheckboxFilterItem
-							label="Not billable"
+							label={t("relayLogs.fields.notBillable")}
 							checked={filters.billable === false}
 							onCheckedChange={() => onFiltersChange({ ...filters, billable: filters.billable === false ? undefined : false })}
 							testId="relay-billing-filter-checkbox-not-billable"
 						/>
 					</FilterSection>
-					<FilterSection title="Kind" defaultOpen={(filters.kinds ?? []).length > 0} testId="relay-kind-filter-toggle">
+					<FilterSection title={t("relayLogs.fields.kind")} defaultOpen={(filters.kinds ?? []).length > 0} testId="relay-kind-filter-toggle">
 						<CheckboxFilterItem
-							label="Calls"
+							label={t("relayLogs.filters.calls")}
 							checked={(filters.kinds ?? []).includes("call")}
 							onCheckedChange={() => toggle("kinds", "call")}
 							testId="relay-kind-filter-checkbox-call"
 						/>
 						<CheckboxFilterItem
-							label="Job settlements"
+							label={t("relayLogs.filters.jobSettlements")}
 							checked={(filters.kinds ?? []).includes("job")}
 							onCheckedChange={() => toggle("kinds", "job")}
 							testId="relay-kind-filter-checkbox-job"
@@ -162,8 +170,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="apps"
 						dimension="apps"
-						title="App"
-						placeholder="Search apps"
+						title={t("labels.app")}
+						placeholder={t("filters.searchApps")}
 						testIdPrefix="relay-app-filter"
 						searchable={false}
 					/>
@@ -172,8 +180,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="virtual_key_ids"
 						dimension="virtual_keys"
-						title="Virtual key"
-						placeholder="Search virtual keys"
+						title={t("relayLogs.fields.virtualKey")}
+						placeholder={t("filters.searchVirtualKeys")}
 						testIdPrefix="relay-vk-filter"
 					/>
 					<EntityFilter
@@ -181,8 +189,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="user_ids"
 						dimension="users"
-						title="User"
-						placeholder="Search or add a user"
+						title={t("labels.user")}
+						placeholder={t("filters.searchOrAddAUser")}
 						testIdPrefix="relay-user-filter"
 						allowCustom
 					/>
@@ -191,8 +199,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="team_ids"
 						dimension="teams"
-						title="Teams"
-						placeholder="Search or add a team"
+						title={t("relayLogs.filters.teams")}
+						placeholder={t("filters.searchOrAddATeam")}
 						testIdPrefix="relay-teams-filter"
 						allowCustom
 					/>
@@ -201,8 +209,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="customer_ids"
 						dimension="customers"
-						title="Customers"
-						placeholder="Search or add a customer"
+						title={t("relayLogs.filters.customers")}
+						placeholder={t("filters.searchOrAddACustomer")}
 						testIdPrefix="relay-customers-filter"
 						allowCustom
 					/>
@@ -211,8 +219,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="business_unit_ids"
 						dimension="business_units"
-						title="Business units"
-						placeholder="Search or add a business unit"
+						title={t("relayLogs.filters.businessUnits")}
+						placeholder={t("filters.searchOrAddABusinessUnit")}
 						testIdPrefix="relay-business-units-filter"
 						allowCustom
 					/>
@@ -221,8 +229,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="project_ids"
 						dimension="projects"
-						title="Projects"
-						placeholder="Search or add a project"
+						title={t("relayLogs.filters.projects")}
+						placeholder={t("filters.searchOrAddAProject")}
 						testIdPrefix="relay-projects-filter"
 						allowCustom
 					/>
@@ -401,6 +409,7 @@ function EntityFilter({
 // ---------------------------------------------------------------------------
 
 function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("observability");
 	const hasActive = filters.min_cost !== undefined || filters.max_cost !== undefined;
 	const [minText, setMinText] = useState(formatCostBound(filters.min_cost));
 	const [maxText, setMaxText] = useState(formatCostBound(filters.max_cost));
@@ -422,7 +431,7 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 	};
 
 	return (
-		<FilterSection title="Cost" defaultOpen={defaultOpen || hasActive} testId="relay-cost-filter-toggle">
+		<FilterSection title={t("labels.cost")} defaultOpen={defaultOpen || hasActive} testId="relay-cost-filter-toggle">
 			<div className="grid grid-cols-2 gap-2 px-3 py-2">
 				<Input
 					type="number"
@@ -433,8 +442,8 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 					onChange={(event) => setMinText(event.target.value)}
 					onBlur={(event) => commit("min_cost", event.target.value)}
 					onKeyDown={onKeyDown("min_cost")}
-					placeholder="Min $"
-					aria-label="Minimum cost"
+					placeholder={t("relayLogs.filters.minCost")}
+					aria-label={t("relayLogs.filters.minimumCost")}
 					className="h-8 text-xs"
 					data-testid="relay-cost-filter-min"
 				/>
@@ -447,8 +456,8 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 					onChange={(event) => setMaxText(event.target.value)}
 					onBlur={(event) => commit("max_cost", event.target.value)}
 					onKeyDown={onKeyDown("max_cost")}
-					placeholder="Max $"
-					aria-label="Maximum cost"
+					placeholder={t("relayLogs.filters.maxCost")}
+					aria-label={t("relayLogs.filters.maximumCost")}
 					className="h-8 text-xs"
 					data-testid="relay-cost-filter-max"
 				/>

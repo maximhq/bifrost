@@ -1328,7 +1328,6 @@ type LoggerPlugin struct {
 	pendingEndpointLogs          sync.Map                       // Maps request id -> *logstore.RelayLog awaiting PostRelayHook
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
 	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
-	relayRetainWarnOnce          sync.Once                      // retain_content_in_object_storage is not honoured on relay rows; said once
 	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry          // Buffered channel for batch write queue
 	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue

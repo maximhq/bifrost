@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -183,6 +184,9 @@ func (h *RelaysHandler) create(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	cfg.Name = strings.TrimSpace(cfg.Name)
+	if requireGenuineAuthForRelayChange(ctx, nil, &cfg) {
+		return
+	}
 	stored, err := h.relayManager.CreateRelay(workCtx, &cfg)
 	if err != nil {
 		h.storeError(ctx, err)
@@ -204,6 +208,12 @@ func (h *RelaysHandler) update(ctx *fasthttp.RequestCtx) {
 	var cfg schemas.RelayConfig
 	if err := json.Unmarshal(ctx.PostBody(), &cfg); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid relay: "+err.Error())
+		return
+	}
+	// Compared after the merge the manager applies, so a redacted secret sent back unchanged
+	// stands for the stored value it keeps and is not mistaken for a new one.
+	cfg.MergeRedacted(previous)
+	if requireGenuineAuthForRelayChange(ctx, previous, &cfg) {
 		return
 	}
 	updated, err := h.relayManager.UpdateRelay(workCtx, name, &cfg)
@@ -266,6 +276,110 @@ func (h *RelaysHandler) storeError(ctx *fasthttp.RequestCtx, err error) {
 		logger.Error("relay store error: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to save relay")
 	}
+}
+
+// relayDialChanges returns the sorted JSON paths of the settings next adds or changes relative to
+// old (nil on create) that decide where the relay's credential goes or which gateway secret it
+// sends: the base URL, the TLS trust and proxy the upstream is reached through, and every env. or
+// vault. reference among its secrets. A reference resolves from the gateway's own environment or
+// vault and is sent upstream on every call, so naming a new one discloses it as surely as a new
+// base URL does. Narrowing changes (clearing a value, turning insecure_skip_verify off) pass. Equality
+// is SecretVar.Equals, so swapping one reference for another counts even when the values match.
+func relayDialChanges(old, next *schemas.RelayConfig) []string {
+	if old == nil {
+		old = &schemas.RelayConfig{}
+	}
+	var changed []string
+	if next.BaseURL != "" && next.BaseURL != old.BaseURL {
+		changed = append(changed, "base_url")
+	}
+	var oldNetwork, nextNetwork schemas.RelayNetworkConfig
+	if old.Network != nil {
+		oldNetwork = *old.Network
+	}
+	if next.Network != nil {
+		nextNetwork = *next.Network
+	}
+	if nextNetwork.InsecureSkipVerify && !oldNetwork.InsecureSkipVerify {
+		changed = append(changed, "network.insecure_skip_verify")
+	}
+	if nextNetwork.CACertPEM != "" && nextNetwork.CACertPEM != oldNetwork.CACertPEM {
+		changed = append(changed, "network.ca_cert_pem")
+	}
+	var oldProxy, nextProxy schemas.ProxyConfig
+	if old.ProxyConfig != nil {
+		oldProxy = *old.ProxyConfig
+	}
+	if next.ProxyConfig != nil {
+		nextProxy = *next.ProxyConfig
+	}
+	widened := func(oldV, nextV *schemas.SecretVar) bool {
+		return nextV.IsSet() && !nextV.Equals(oldV)
+	}
+	if widened(oldProxy.URL, nextProxy.URL) {
+		changed = append(changed, "proxy_config.url")
+	}
+	if widened(oldProxy.CACertPEM, nextProxy.CACertPEM) {
+		changed = append(changed, "proxy_config.ca_cert_pem")
+	}
+	reference := func(path string, oldV, nextV *schemas.SecretVar) {
+		if nextV.IsFromSecret() && !nextV.Equals(oldV) {
+			changed = append(changed, path)
+		}
+	}
+	reference("proxy_config.username", oldProxy.Username, nextProxy.Username)
+	reference("proxy_config.password", oldProxy.Password, nextProxy.Password)
+	var oldCred, nextCred schemas.RelayCredential
+	if old.Credential != nil {
+		oldCred = *old.Credential
+	}
+	if next.Credential != nil {
+		nextCred = *next.Credential
+	}
+	reference("credential.value", oldCred.Value, nextCred.Value)
+	var oldAWS, nextAWS schemas.RelayAWSCredential
+	if oldCred.AWS != nil {
+		oldAWS = *oldCred.AWS
+	}
+	if nextCred.AWS != nil {
+		nextAWS = *nextCred.AWS
+	}
+	reference("credential.aws.access_key", oldAWS.AccessKey, nextAWS.AccessKey)
+	reference("credential.aws.secret_key", oldAWS.SecretKey, nextAWS.SecretKey)
+	reference("credential.aws.session_token", oldAWS.SessionToken, nextAWS.SessionToken)
+	reference("credential.aws.region", oldAWS.Region, nextAWS.Region)
+	reference("credential.aws.role_arn", oldAWS.RoleARN, nextAWS.RoleARN)
+	reference("credential.aws.external_id", oldAWS.ExternalID, nextAWS.ExternalID)
+	reference("credential.aws.session_name", oldAWS.SessionName, nextAWS.SessionName)
+	for name, value := range next.ExtraHeaders {
+		var oldValue *schemas.SecretVar
+		if stored, ok := old.ExtraHeaders[name]; ok {
+			oldValue = &stored
+		}
+		reference("extra_headers."+name, oldValue, &value)
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// requireGenuineAuthForRelayChange rejects a relay create/update under the fail-open bypass
+// (dashboard auth disabled or unconfigured) that would let the caller choose where the relay's
+// credential is sent or which gateway secret it sends (see relayDialChanges): repointing base_url
+// while sending back the redacted credential would hand the stored secret to the new host. It is
+// the relay counterpart of the provider, provider-key, plugin and webhook gates. old is the stored
+// relay on update, merged with the incoming config's redacted secrets, and nil on create; an update
+// that keeps every such setting passes, so bypassed callers can still edit routes and pricing. On
+// rejection this sends the response and returns true; callers should return immediately.
+func requireGenuineAuthForRelayChange(ctx *fasthttp.RequestCtx, old, next *schemas.RelayConfig) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	changed := relayDialChanges(old, next)
+	if len(changed) == 0 {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing where a relay sends its credential or which secrets it references (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
 }
 
 // usagePreviewRequest checks a mapping against a sample call. Config is an unsaved endpoint; Name

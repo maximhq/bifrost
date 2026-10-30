@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   authorize:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -35,7 +35,7 @@ jobs:
 
   run-core-tests:
     needs: authorize
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     timeout-minutes: 360
     env:
       MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
@@ -122,7 +122,7 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
-            azure.archive.ubuntu.com:80
+            archive.ubuntu.com:443
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -208,6 +208,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
+          ./.github/workflows/scripts/apt-sources-https.sh
           sudo apt-get update
           sudo apt-get install -y jq
 

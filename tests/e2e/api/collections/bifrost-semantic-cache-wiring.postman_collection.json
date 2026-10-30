@@ -10775,7 +10775,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -10835,7 +10835,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -23289,7 +23289,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -23343,7 +23343,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -23406,7 +23406,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A vivid red apple resting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A vivid red apple resting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },

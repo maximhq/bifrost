@@ -147,7 +147,7 @@ const chatStream = (prompt, extra = {}) => chat(prompt, { max_tokens: 12, stream
 const responses = (input, extra = {}) => ({ model: MODEL, input, max_output_tokens: 16, temperature: 0, ...extra });
 const text = (prompt, extra = {}) => ({ model: TEXT_MODEL, prompt, max_tokens: 8, temperature: 0, ...extra });
 const embedding = (input, extra = {}) => ({ model: `openai/${EMBED_MODEL}`, input, ...extra });
-const image = (prompt) => ({ model: "openai/gpt-image-1", prompt, size: "1024x1024", quality: "low", n: 1 });
+const image = (prompt) => ({ model: "openai/gpt-image-1.5", prompt, size: "1024x1024", quality: "low", n: 1 });
 
 // Two tiny solid-color PNGs as data URLs, so the image-attachment rows never depend on a remote
 // fetch by the provider.

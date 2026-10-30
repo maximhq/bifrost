@@ -1,11 +1,15 @@
+import type { ParseKeys } from "i18next";
+
 // ─── Scope config ──────────────────────────────────────────────────────────
 
+// labelKey is a "models" catalog key; callers translate it at render time.
+
 export const SCOPE_CONFIG = {
-	virtual_key: { label: "Virtual Key", color: "#7c3aed", headerClass: "bg-purple-100 dark:bg-purple-900/30" },
-	team: { label: "Team", color: "#2563eb", headerClass: "bg-blue-100 dark:bg-blue-900/30" },
-	customer: { label: "Customer", color: "#16a34a", headerClass: "bg-green-100 dark:bg-green-900/30" },
-	global: { label: "Global", color: "#6b7280", headerClass: "bg-gray-100 dark:bg-gray-800/30" },
-} as const;
+	virtual_key: { labelKey: "routing.scopeVirtualKey", color: "#7c3aed", headerClass: "bg-purple-100 dark:bg-purple-900/30" },
+	team: { labelKey: "routing.scopeTeam", color: "#2563eb", headerClass: "bg-blue-100 dark:bg-blue-900/30" },
+	customer: { labelKey: "routing.scopeCustomer", color: "#16a34a", headerClass: "bg-green-100 dark:bg-green-900/30" },
+	global: { labelKey: "routing.scopeGlobal", color: "#6b7280", headerClass: "bg-gray-100 dark:bg-gray-800/30" },
+} as const satisfies Record<string, { labelKey: ParseKeys<"models">; color: string; headerClass: string }>;
 
 export type ScopeKey = keyof typeof SCOPE_CONFIG;
 

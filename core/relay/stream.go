@@ -12,11 +12,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// maxStreamBodyCaptureLen bounds the response bytes a streamed relay call buffers for
-// its log row. Matches plugins/logging/relays.go's maxEndpointLogBodyLen so a streamed
-// reply never keeps more than a buffered one would.
-const maxStreamBodyCaptureLen = 64 * 1024
-
 // Stream is an upstream reply being relayed to the caller as it arrives. The caller (the HTTP
 // transport) copies it with Read and must call Close when done. Bytes are forwarded unchanged;
 // an SSE reply is framed on the side so usage can be read per event, and a reply priced by its
@@ -49,7 +44,7 @@ type Stream struct {
 }
 
 // newStream wraps an open upstream reply. mapping and requestUnits decide what is read; finish runs
-// the post-hooks. The returned stream buffers up to maxStreamBodyCaptureLen response bytes in
+// the post-hooks. The returned stream buffers up to maxBufferedResponseBytes response bytes in
 // capture for the log row, but only when the content-logging policy would keep the body, so a
 // stream nobody logs the body of never allocates the buffer.
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
@@ -67,7 +62,7 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 		finish:     finish,
 	}
 	if relayContentCaptureEnabled(ctx) {
-		s.capture = make([]byte, 0, min(maxStreamBodyCaptureLen, 4096))
+		s.capture = make([]byte, 0, 4096)
 	}
 	if !s.counted {
 		return s
@@ -101,7 +96,7 @@ func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
 		// No logging plugin stamped a default at all — either it is not registered, or its
 		// PreRelayHook did not run. Governance's or the per-request key being present on ctx for
 		// unrelated reasons must not turn capture on by itself; without a plugin to ever read the
-		// buffer, that would just retain up to maxStreamBodyCaptureLen per stream for nothing.
+		// buffer, that would just retain up to maxBufferedResponseBytes per stream for nothing.
 		return false
 	}
 	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
@@ -111,6 +106,12 @@ func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
 		if disabled, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
 			enabled = !disabled
 		}
+	}
+	if !enabled {
+		// Content logging is off for this call, but the logging plugin may still retain it hidden
+		// in object storage; the reply is then captured for that offload, as a buffered one is.
+		retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
+		return retained
 	}
 	return enabled
 }
@@ -129,8 +130,10 @@ func (s *Stream) Read(p []byte) (int, error) {
 				s.observeEvent(event)
 			}
 		}
-		if s.capture != nil && len(s.capture) < maxStreamBodyCaptureLen {
-			remaining := maxStreamBodyCaptureLen - len(s.capture)
+		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does, and
+		// stops at the same bound the buffered relay holds (maxBufferedResponseBytes).
+		if s.capture != nil && int64(len(s.capture)) < maxBufferedResponseBytes {
+			remaining := int(maxBufferedResponseBytes) - len(s.capture)
 			chunk := p[:n]
 			if len(chunk) > remaining {
 				chunk = chunk[:remaining]

@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { createInstance } from "i18next";
+import { resources } from "@/lib/i18n/resources";
 
 import { ModelProvider, ModelProviderKey } from "@/lib/types/config";
+import { formatMigrationMessage, MigrationMessage } from "./databricksMigration";
 import {
 	buildCloudflareMigrationPlan,
 	CloudflareMigrationApi,
@@ -12,6 +15,13 @@ import {
 	runCloudflareMigration,
 	toCloudflareKeyUpdate,
 } from "./cloudflareMigration";
+
+const locale = createInstance();
+beforeAll(async () => {
+	await locale.init({ lng: "en", fallbackLng: false, resources, interpolation: { escapeValue: false } });
+});
+const render = (value: MigrationMessage) => formatMigrationMessage(value, locale.getFixedT("en", "models"));
+const renderAll = (values: MigrationMessage[]) => values.map(render).join(" ");
 
 const ACCOUNT = "023e105f4ecef8ad9ca31a8372d0c353";
 const WORKERS_AI_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/ai`;
@@ -111,7 +121,7 @@ describe("buildCloudflareMigrationPlan", () => {
 			custom("cloudflare", { network_config: { ...custom("x").network_config!, extra_headers: {} } }),
 			[],
 		);
-		expect(noHeader.warnings.join(" ")).toContain("No Authorization header");
+		expect(renderAll(noHeader.warnings)).toContain("No Authorization header");
 		expect(planNeedsInput(noHeader)).toBe(true);
 		expect(noHeader.headerToken?.needsValue).toBe(true);
 
@@ -119,7 +129,7 @@ describe("buildCloudflareMigrationPlan", () => {
 			custom("cloudflare", { network_config: { ...custom("x").network_config!, extra_headers: { Authorization: "<REDACTED>" } } }),
 			[],
 		);
-		expect(masked.warnings.join(" ")).toContain("stored as a literal value");
+		expect(renderAll(masked.warnings)).toContain("stored as a literal value");
 		expect(masked.headerToken?.needsValue).toBe(true);
 
 		// Typing a token completes the plan, but the token still needs entering, so its input stays visible.
@@ -147,7 +157,7 @@ describe("buildCloudflareMigrationPlan", () => {
 		const plan = buildCloudflareMigrationPlan(keyed({ network_config: { ...custom("x").network_config!, base_url: "" } }), [
 			key("k1", "prod"),
 		]);
-		expect(plan.warnings.join(" ")).toContain("account ID could not be read");
+		expect(renderAll(plan.warnings)).toContain("account ID could not be read");
 		expect(planNeedsInput(plan)).toBe(true);
 		expect(planNeedsInput({ ...plan, accountId: ACCOUNT })).toBe(false);
 	});
@@ -232,7 +242,7 @@ describe("runCloudflareMigration", () => {
 		const steps: string[] = [];
 		const result = await runCloudflareMigration(keyedPlan(), api, (s) => steps.push(s.map((x) => x.status).join(",")));
 		expect(result).toMatchObject({ ok: false, partial: false });
-		expect(result.message).toContain("still works as a custom provider");
+		expect(render(result.message)).toContain("still works as a custom provider");
 		expect(names()).not.toContain("updateProvider");
 		expect(steps.at(-1)).toContain("failed");
 	});
@@ -241,7 +251,7 @@ describe("runCloudflareMigration", () => {
 		const { api } = fakeApi({ converted: false });
 		const result = await runCloudflareMigration(keyedPlan(), api, () => {});
 		expect(result).toMatchObject({ ok: false, partial: true });
-		expect(result.message).toContain("Nothing was deleted");
+		expect(render(result.message)).toContain("Nothing was deleted");
 	});
 
 	it("ignores refresh-models failures", async () => {

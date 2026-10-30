@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -42,6 +44,25 @@ func isGemini3Plus(model string) bool {
 	return firstChar >= '3'
 }
 
+// isGemini4Plus reports whether model is Gemini 4.0 or newer.
+func isGemini4Plus(model string) bool {
+	model = strings.ToLower(model)
+	idx := strings.Index(model, "gemini-")
+	if idx == -1 {
+		return false
+	}
+	afterPrefix := model[idx+7:] // len("gemini-") = 7
+	end := 0
+	for end < len(afterPrefix) && afterPrefix[end] >= '0' && afterPrefix[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return false
+	}
+	major, err := strconv.Atoi(afterPrefix[:end])
+	return err == nil && major >= 4
+}
+
 // ---- Name-based capability defaults ----
 //
 // Used when the datasheet publishes no row for a (provider, model) pair. Every
@@ -64,6 +85,13 @@ func defaultCanDisableReasoning(model string) bool {
 	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
 }
 
+// defaultSupportsReasoningBudget: Gemini 4 removed thinkingBudget and answers it
+// with a 400, so only thinkingLevel reaches those models.
+// Source: https://ai.google.dev/gemini-api/docs/thinking
+func defaultSupportsReasoningBudget(model string) bool {
+	return !isGemini4Plus(model)
+}
+
 // defaultEffortControl is the thinkingLevel surface for Gemini 3+, taken from
 // the per-model rung table below. nil for models that take a budget instead,
 // which is what tells callers to convert an effort into thinkingBudget.
@@ -79,8 +107,9 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
 // provider-compatibility cleanup expected by the typed conversion path, while
-// preserving JSON key order with gjson/sjson-style byte edits.
-func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte {
+// preserving JSON key order with gjson/sjson-style byte edits. model is the target
+// model, used to translate a thinking budget the model would reject; "" skips that.
+func NormalizeRawGenerateContentRequestForCompatibility(ctx *schemas.BifrostContext, jsonBody []byte, providerName schemas.ModelProvider, model string) []byte {
 	if len(jsonBody) == 0 {
 		return jsonBody
 	}
@@ -101,6 +130,7 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 			}
 		}
 	}
+	out = rewriteRawThinkingBudgetToLevel(ctx, out, providerName, model)
 
 	contents := gjson.GetBytes(out, "contents")
 	if !contents.IsArray() {
@@ -173,6 +203,187 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 	return out
 }
 
+// rawThinkingBudgetKeys pairs each budget key spelling with the level key of the same
+// spelling, so a rewrite keeps the caller's casing. The native decoder accepts either
+// spelling of each field independently, so every pair is checked under both config keys.
+var rawThinkingBudgetKeys = [...]struct{ budget, level string }{
+	{"thinkingBudget", "thinkingLevel"},
+	{"thinking_budget", "thinking_level"},
+}
+
+// rawThinkingTarget resolves the target model's capabilities at most once per body, and
+// only after a budget is found, so bodies without one never pay for the lookup. The
+// lookup uses the canonical model so an alias with an opaque wire id still resolves.
+type rawThinkingTarget struct {
+	ctx      *schemas.BifrostContext
+	provider schemas.ModelProvider
+	model    string
+	caps     schemas.ModelCaps
+	resolved bool
+}
+
+func (t *rawThinkingTarget) resolve() schemas.ModelCaps {
+	if !t.resolved {
+		t.caps = schemas.ResolveModelCaps(t.provider, schemas.ResolveCanonicalModel(t.ctx, t.model))
+		t.resolved = true
+	}
+	return t.caps
+}
+
+// rewriteRawThinkingBudgetToLevel is the raw-body twin of applyThinkingBudget. Raw
+// passthrough forwards the client's thinkingConfig as sent, so a budget aimed at a
+// model that rejects budgets (Gemini 4) is swapped here for the nearest level. Inline
+// batch items carry their own generationConfig and are rewritten the same way.
+func rewriteRawThinkingBudgetToLevel(ctx *schemas.BifrostContext, body []byte, providerName schemas.ModelProvider, model string) []byte {
+	if model == "" {
+		return body
+	}
+	view := rawJSONView(body)
+	for _, genKey := range [...]string{"generationConfig", "generation_config"} {
+		genConfig := gjson.Get(view, genKey)
+		if !genConfig.IsObject() {
+			continue
+		}
+		target := rawThinkingTarget{ctx: ctx, provider: providerName, model: model}
+		if updated, changed := rewriteGenerationConfigThinkingBudget(genConfig.Raw, &target); changed {
+			if rewritten, err := providerUtils.SetRawJSONField(body, genKey, updated); err == nil {
+				body = rewritten
+			}
+		}
+		return body
+	}
+	return rewriteRawBatchThinkingBudgets(ctx, body, view, providerName, model)
+}
+
+// rawJSONView reads body as a string without copying it, so probing a body that has no
+// thinking budget allocates nothing (gjson.GetBytes copies every match). Results taken
+// from the view alias body: callers only read them before any edit, and every edit
+// goes through sjson, which writes a new buffer.
+func rawJSONView(body []byte) string {
+	return unsafe.String(unsafe.SliceData(body), len(body))
+}
+
+// rewriteRawBatchThinkingBudgets applies the rewrite to every inline request of a
+// batchGenerateContent body. Nothing is copied until the first item that needs a
+// rewrite: the untouched items before it are copied as one slice of the body, each
+// later item is edited on its own bytes, and the array is set once. An unchanged batch
+// allocates nothing.
+func rewriteRawBatchThinkingBudgets(ctx *schemas.BifrostContext, body []byte, view string, providerName schemas.ModelProvider, model string) []byte {
+	const itemsPath = "batch.inputConfig.requests.requests"
+	items := gjson.Get(view, itemsPath)
+	if !items.IsArray() || items.Index <= 0 || view[items.Index] != '[' {
+		return body
+	}
+	target := rawThinkingTarget{ctx: ctx, provider: providerName, model: model}
+	var rebuilt *bytes.Buffer
+	items.ForEach(func(_, item gjson.Result) bool {
+		var updatedItem []byte
+		for _, genKey := range [...]string{"request.generationConfig", "request.generation_config"} {
+			genConfig := item.Get(genKey)
+			if !genConfig.IsObject() {
+				continue
+			}
+			if updated, changed := rewriteGenerationConfigThinkingBudget(genConfig.Raw, &target); changed {
+				if rewritten, err := providerUtils.SetRawJSONField([]byte(item.Raw), genKey, updated); err == nil {
+					updatedItem = rewritten
+				}
+			}
+			break
+		}
+		if rebuilt == nil {
+			if updatedItem == nil {
+				return true
+			}
+			// First rewritten item: carry over everything before it verbatim, commas included.
+			rebuilt = bytes.NewBuffer(make([]byte, 0, len(items.Raw)+64))
+			rebuilt.WriteString(view[items.Index:item.Index])
+		} else {
+			rebuilt.WriteByte(',')
+		}
+		if updatedItem != nil {
+			rebuilt.Write(updatedItem)
+		} else {
+			rebuilt.WriteString(item.Raw)
+		}
+		return true
+	})
+	if rebuilt == nil {
+		return body
+	}
+	rebuilt.WriteByte(']')
+	if rewritten, err := providerUtils.SetRawJSONField(body, itemsPath, rebuilt.Bytes()); err == nil {
+		return rewritten
+	}
+	return body
+}
+
+// rawThinkingBudgetValue reads a budget the way Google's JSON parser does: an int32 as a
+// JSON number or as a quoted string. null means unset, and anything else (booleans,
+// objects, fractions, non-numeric strings) is invalid, so neither is rewritten into a
+// level that would silently change the request.
+func rawThinkingBudgetValue(budget gjson.Result) (int, bool) {
+	var text string
+	switch budget.Type {
+	case gjson.Number:
+		text = budget.Raw
+	case gjson.String:
+		text = budget.Str
+	default:
+		return 0, false
+	}
+	value, err := strconv.ParseInt(text, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return int(value), true
+}
+
+// rewriteGenerationConfigThinkingBudget swaps a thinking budget inside one
+// generationConfig object for the nearest level when the target model rejects budgets.
+// An explicit level in either spelling wins, since Google rejects a budget and a level
+// together. 0 lands on the model's floor and -1 leaves the level to the model default.
+// Any other negative budget is invalid, so it is left for Google to reject rather than
+// turned into a valid level. genConfig is probed as a string and only copied once a
+// budget is found, so a config without one costs no allocation.
+func rewriteGenerationConfigThinkingBudget(genConfig string, target *rawThinkingTarget) ([]byte, bool) {
+	for _, configKey := range [...]string{"thinkingConfig", "thinking_config"} {
+		thinking := gjson.Get(genConfig, configKey)
+		if !thinking.IsObject() {
+			continue
+		}
+		for _, keys := range rawThinkingBudgetKeys {
+			budget := thinking.Get(keys.budget)
+			if !budget.Exists() {
+				continue
+			}
+			value, ok := rawThinkingBudgetValue(budget)
+			if !ok || value < DynamicReasoningBudget {
+				return nil, false
+			}
+			caps := target.resolve()
+			if caps.SupportsReasoningBudget(defaultSupportsReasoningBudget(caps.Model())) {
+				return nil, false
+			}
+			updated, err := providerUtils.DeleteJSONField([]byte(genConfig), configKey+"."+keys.budget)
+			if err != nil {
+				return nil, false
+			}
+			hasLevel := thinking.Get("thinkingLevel").Exists() || thinking.Get("thinking_level").Exists()
+			if !hasLevel && value != DynamicReasoningBudget {
+				level := lowestThinkingLevel(caps.Model())
+				if value != 0 {
+					level = effortToThinkingLevel(caps, thinkingLevelFromBudget(value))
+				}
+				if updated, err = providerUtils.SetJSONField(updated, configKey+"."+keys.level, level); err != nil {
+					return nil, false
+				}
+			}
+			return updated, true
+		}
+	}
+	return nil, false
+}
+
 func isValidAudioBase64Payload(data string) bool {
 	decoded, err := decodeBase64StringToBytes(data)
 	return err == nil && len(decoded) > 0
@@ -194,6 +405,7 @@ var geminiThinkingLevelSupport = []struct {
 	prefix string
 	levels []string
 }{
+	{"gemini-4-argon", []string{"low", "medium", "high"}},
 	{"gemini-3.1-flash-lite-image", []string{"minimal", "high"}},
 	{"gemini-3.1-flash-lite", []string{"minimal", "low", "medium", "high"}},
 	{"gemini-3.7-flash", []string{"low", "medium", "high"}},
@@ -315,6 +527,50 @@ func effortToThinkingLevel(caps schemas.ModelCaps, effort string) string {
 		return "" // Empty string for no thinking
 	}
 	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model()))
+}
+
+// thinkingLevelFromBudget picks the thinkingLevel a token budget stands for on a
+// model that only takes a level. The cut-offs are fixed rather than scaled to a
+// budget range because these models publish no range to scale against.
+func thinkingLevelFromBudget(budget int) string {
+	switch {
+	case budget <= 1024:
+		return schemas.ReasoningEffortLow
+	case budget <= 8192:
+		return schemas.ReasoningEffortMedium
+	default:
+		return schemas.ReasoningEffortHigh
+	}
+}
+
+// applyThinkingBudget writes an explicit thinking budget onto config. A model that
+// rejects budgets gets the nearest thinkingLevel instead: 0 lands on its floor
+// (thinking cannot be turned off there) and -1 leaves the level to the model default.
+func applyThinkingBudget(config *GenerationConfig, caps schemas.ModelCaps, budget int) error {
+	if budget == 0 {
+		setThinkingBudgetZeroIfSupported(config, caps)
+		return nil
+	}
+	if budget < DynamicReasoningBudget {
+		return validateThinkingBudget(caps, budget)
+	}
+	if !caps.SupportsReasoningBudget(defaultSupportsReasoningBudget(caps.Model())) {
+		if budget != DynamicReasoningBudget {
+			if level := effortToThinkingLevel(caps, thinkingLevelFromBudget(budget)); level != "" {
+				config.ThinkingConfig.ThinkingLevel = schemas.Ptr(level)
+			}
+		}
+		return nil
+	}
+	if budget == DynamicReasoningBudget {
+		config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
+		return nil
+	}
+	if err := validateThinkingBudget(caps, budget); err != nil {
+		return err
+	}
+	config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
+	return nil
 }
 
 func getThinkingBudgetRange(caps schemas.ModelCaps, defaultMaxTokens int) thinkingBudgetRange {
@@ -1121,6 +1377,15 @@ func convertGeminiUsageMetadataToImageUsage(metadata *GenerateContentResponseUsa
 		usage.OutputTokensDetails = outputDetails
 	}
 
+	// thoughtsTokenCount sits outside candidatesTokenCount; fold it into output like the chat and responses converters
+	if metadata.ThoughtsTokenCount > 0 {
+		if usage.OutputTokensDetails == nil {
+			usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
+		}
+		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+		usage.OutputTokens += int(metadata.ThoughtsTokenCount)
+	}
+
 	return usage
 }
 
@@ -1134,6 +1399,10 @@ func convertBifrostImageUsageToGeminiUsageMetadata(usage *schemas.ImageUsage) *G
 		PromptTokenCount:     int32(usage.InputTokens),
 		CandidatesTokenCount: int32(usage.OutputTokens),
 		TotalTokenCount:      int32(usage.TotalTokens),
+	}
+	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ReasoningTokens > 0 {
+		metadata.ThoughtsTokenCount = int32(usage.OutputTokensDetails.ReasoningTokens)
+		metadata.CandidatesTokenCount -= metadata.ThoughtsTokenCount
 	}
 
 	// Process input token details to PromptTokensDetails
@@ -1348,19 +1617,10 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
 			setThinkingBudgetZeroIfSupported(&config, caps)
 		} else if hasMaxTokens {
-			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
+			// User provided max_tokens - use thinkingBudget, or the nearest level on models without one
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
-			budget := *params.Reasoning.MaxTokens
-			switch budget {
-			case 0:
-				setThinkingBudgetZeroIfSupported(&config, caps)
-			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
-			default:
-				if err := validateThinkingBudget(caps, budget); err != nil {
-					return config, err
-				}
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
+			if err := applyThinkingBudget(&config, caps, *params.Reasoning.MaxTokens); err != nil {
+				return config, err
 			}
 		} else if hasEffort {
 			// User provided effort only (no max_tokens)
