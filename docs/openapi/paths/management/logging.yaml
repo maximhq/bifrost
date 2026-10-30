@@ -499,6 +499,16 @@ logs-by-id:
         description: Log entry ID
         schema:
           type: string
+      - name: timestamp
+        in: query
+        required: false
+        description: |
+          The log entry's `timestamp` as returned by `GET /api/logs`, in RFC 3339 format. Optional:
+          the ClickHouse log store uses it to look the entry up without scanning every partition,
+          and still finds the entry by ID alone when the timestamp does not match. Other log stores ignore it.
+        schema:
+          type: string
+          format: date-time
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -509,6 +519,8 @@ logs-by-id:
           application/json:
             schema:
               $ref: "../../schemas/management/logging.yaml#/LogEntry"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "404":
         description: Log not found
         content:
