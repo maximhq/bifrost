@@ -2913,6 +2913,145 @@ const GOV32 = folder("GOV-32 Attach and detach VKs", `Setup: ${ALPHA_GREET_TEXT}
   alphaGreetTeardown("GOV-32"),
 ]);
 
+// ================================================================ LIB installed flags and URL checks, FAIL log entries
+
+// libPublish publishes a custom entry and keeps its id in varName.
+const libPublish = (id, title, body, varName) => request(id, title, "POST", "/api/mcp/library", {
+  body, asserts: [A.status(200)], extraTests: [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().entry.id);`],
+});
+// libInstalled searches the library and checks the saved entry's installed flag.
+const libInstalled = (id, title, search, varName, installed) => request(id, title, "GET", `/api/mcp/library?search=${encodeURIComponent(search)}`, {
+  asserts: [A.status(200), A.custom(`the entry has installed ${installed}`, [
+    `var id = Number(pm.collectionVariables.get(${lit(varName)}));`,
+    "var found = (pm.response.json().servers || []).filter(function (s) { return s.id === id; });",
+    "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    `pm.expect(found[0].installed).to.equal(${installed});`,
+  ])],
+});
+const LIB_DUP_MSG = "an MCP library server with this name already exists";
+const LIB11_URL = "http://127.0.0.1:9/lib11/mcp";
+const LIB11 = folder("LIB-11 Duplicate names and slugs", "Setup: a custom entry \"My Server\"; the boot catalog's remote entry \"Harness Catalog Server\".", [
+  libPublish("LIB-11", "setup: publish \"My Server\"", { name: "My Server", connection_type: "http", connection_url: LIB11_URL }, "lib11_id"),
+  request("LIB-11", "control: the remote entry is live", "GET", "/api/mcp/library?search=Harness%20Catalog%20Server", { asserts: [A.status(200), A.custom("one remote entry named \"Harness Catalog Server\"", [
+    "var found = (pm.response.json().servers || []).filter(function (s) { return s.name === 'Harness Catalog Server'; });",
+    "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(found[0].source).to.equal('remote');",
+  ])] }),
+  ...["My Server", "my-server", "Harness Catalog Server"].map((name) => request("LIB-11", `publish ${lit(name)}`, "POST", "/api/mcp/library", {
+    body: { name, connection_type: "http", connection_url: LIB11_URL }, asserts: [A.status(409), A.msgEquals(LIB_DUP_MSG)],
+  })),
+  libDelete("LIB-11", "lib11_id"),
+]);
+
+const LIB18_URL = "http://127.0.0.1:9/lib18/mcp";
+const LIB18 = folder("LIB-18 Installed flag by URL", `Setup: a custom entry with URL ${LIB18_URL}; then a client at that URL plus a trailing "/" under another name.`, [
+  libPublish("LIB-18", "setup: publish the entry", { name: "LIB-18 entry", connection_type: "http", connection_url: LIB18_URL }, "lib18_id"),
+  libInstalled("LIB-18", "before the client: installed false", "LIB-18 entry", "lib18_id", false),
+  createClient("LIB-18", { client_id: "lib18-c", name: "lib18_other", connection_type: "http", connection_string: `${LIB18_URL}/`, auth_type: "none" }, "setup: create a client at the entry's URL plus \"/\" named lib18_other"),
+  libInstalled("LIB-18", "after the client: installed true", "LIB-18 entry", "lib18_id", true),
+  deleteClient("LIB-18", "lib18-c"),
+  libDelete("LIB-18", "lib18_id"),
+]);
+
+const LIB19 = folder("LIB-19 Installed flag by name, rename, delete", "Setup: alpha (echo_tool, add_tool); a custom entry \"Chaos Alpha\" at another URL; a client chaos_alpha on alpha.", [
+  ...freshServer("LIB-19", "alpha", ["echo_tool", "add_tool"]),
+  libPublish("LIB-19", "setup: publish \"Chaos Alpha\"", { name: "Chaos Alpha", connection_type: "http", connection_url: "http://127.0.0.1:9/lib19/mcp" }, "lib19_id"),
+  libInstalled("LIB-19", "control: installed false before the client", "Chaos Alpha", "lib19_id", false),
+  createClient("LIB-19", httpClient("lib19-c", "chaos_alpha", "alpha"), "create client chaos_alpha"),
+  libInstalled("LIB-19", "after create: installed true", "Chaos Alpha", "lib19_id", true),
+  getClient("LIB-19", "lib19-c", "the client's slug is \"chaos-alpha\"", [clientField("config.endpoint_slug", "chaos-alpha")]),
+  request("LIB-19", "rename the client to lib19_renamed", "PUT", "/api/mcp/client/lib19-c", { body: { name: "lib19_renamed" }, asserts: [A.status(200)] }),
+  getClient("LIB-19", "lib19-c", "renamed, slug unchanged", [clientField("config.name", "lib19_renamed"), clientField("config.endpoint_slug", "chaos-alpha")]),
+  libInstalled("LIB-19", "after the rename: installed true", "Chaos Alpha", "lib19_id", true),
+  deleteClient("LIB-19", "lib19-c"),
+  libInstalled("LIB-19", "after the delete: installed false", "Chaos Alpha", "lib19_id", false),
+  libDelete("LIB-19", "lib19_id"),
+]);
+
+const LIB20 = folder("LIB-20 Installed flag for STDIO", "Setup: alpha and beta (echo_tool); a STDIO entry bridging to alpha; STDIO clients, one at a time, with the same args and with different args.", [
+  ...freshServer("LIB-20", "alpha", ["echo_tool"]),
+  ...freshServer("LIB-20", "beta", ["echo_tool"]),
+  libPublish("LIB-20", "setup: publish the STDIO entry", { name: "LIB-20 stdio entry", connection_type: "stdio", stdio_config: stdioClient("x", "x", "alpha").stdio_config }, "lib20_id"),
+  libInstalled("LIB-20", "control: installed false before any client", "LIB-20 stdio entry", "lib20_id", false),
+  createClient("LIB-20", stdioClient("lib20-same", "lib20_same", "alpha"), "create a STDIO client with the same args"),
+  libInstalled("LIB-20", "same args: installed true", "LIB-20 stdio entry", "lib20_id", true),
+  deleteClient("LIB-20", "lib20-same"),
+  createClient("LIB-20", stdioClient("lib20-diff", "lib20_diff", "beta"), "create a STDIO client with different args"),
+  libInstalled("LIB-20", "different args: installed false", "LIB-20 stdio entry", "lib20_id", false),
+  deleteClient("LIB-20", "lib20-diff"),
+  libDelete("LIB-20", "lib20_id"),
+]);
+
+// frameworkPut sends the saved client_config back with one framework_config field.
+const frameworkPut = (id, title, field, valueSrc, asserts) => request(id, title, "PUT", "/api/config", {
+  raw: "{{config_body}}", asserts,
+  pre: ["var cc = JSON.parse(pm.collectionVariables.get('client_config'));", `pm.variables.set('config_body', JSON.stringify({ client_config: cc, framework_config: { ${field}: ${valueSrc} } }));`],
+});
+const LIB32 = folder("LIB-32 file:// URL over the API", "Setup: PUT /api/config with framework_config.mcp_library_url set to a file:// URL.", [
+  readConfig("LIB-32"),
+  request("LIB-32", "setup: read the stored mcp_library_url", "GET", "/api/config?from_db=true", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('lib32_url', pm.response.json().framework_config.mcp_library_url);"] }),
+  frameworkPut("LIB-32", "PUT a file:// mcp_library_url", "mcp_library_url", lit("file:///tmp/lib32-other-catalog.json"), [A.status(400), A.msgContains("config.json")]),
+  request("LIB-32", "nothing was stored", "GET", "/api/config?from_db=true", { asserts: [A.status(200), A.custom("mcp_library_url is unchanged", [
+    "pm.expect(pm.response.json().framework_config.mcp_library_url, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('lib32_url'));",
+  ])] }),
+]);
+
+const LIB33 = folder("LIB-33 ftp:// URL over the API", "Setup: PUT /api/config with framework_config.mcp_library_url set to an ftp:// URL.", [
+  readConfig("LIB-33"),
+  frameworkPut("LIB-33", "PUT an ftp:// mcp_library_url", "mcp_library_url", lit("ftp://example.com/catalog.json"), [A.status(400), A.msgContains("only https and http schemes are allowed, got: ftp")]),
+]);
+
+const LIB37 = folder("LIB-37 Valid interval", "Setup: PUT /api/config with framework_config.mcp_library_sync_interval 7200.", [
+  readConfig("LIB-37"),
+  request("LIB-37", "setup: read the current mcp_library_sync_interval", "GET", "/api/config", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('lib37_interval', JSON.stringify(pm.response.json().framework_config.mcp_library_sync_interval));"] }),
+  frameworkPut("LIB-37", "PUT mcp_library_sync_interval 7200", "mcp_library_sync_interval", "7200", [A.status(200)]),
+  request("LIB-37", "it reads 7200", "GET", "/api/config", { asserts: [A.status(200), A.custom("framework_config.mcp_library_sync_interval is 7200", [
+    "pm.expect(pm.response.json().framework_config.mcp_library_sync_interval, 'body: ' + pm.response.text()).to.equal(7200);",
+  ])] }),
+  frameworkPut("LIB-37", "teardown: restore mcp_library_sync_interval", "mcp_library_sync_interval", "JSON.parse(pm.collectionVariables.get('lib37_interval'))", [A.status(200)]),
+]);
+
+const responseTime = (min, max) => A.custom(`the response took ${min !== null ? `at least ${min / 1000}s and ` : ""}under ${max / 1000}s`, [
+  ...(min !== null ? [`pm.expect(pm.response.responseTime, 'ms').to.be.at.least(${min});`] : []),
+  `pm.expect(pm.response.responseTime, 'ms').to.be.below(${max});`,
+]);
+const FAIL02 = folder("FAIL-02 SSE create against a closed port", "Setup: an SSE client named alpha at 127.0.0.1:9, where nothing listens.", [
+  createExpect("FAIL-02", "create the SSE client", { client_id: "fail02-a", name: "alpha", connection_type: "sse", connection_string: "http://127.0.0.1:9/s/alpha/sse", auth_type: "none", tools_to_execute: ["*"] },
+    [A.status(500), A.msgContains("failed to start MCP client transport after 5 retries"), responseTime(30000, 40000)]),
+]);
+
+const FAIL14 = folder("FAIL-14 refresh-tools during a list failure", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha fails tools/list.", [
+  ...setClient("FAIL-14", { needs_session_stickiness: true }),
+  mockPost("FAIL-14", "alpha", "faults", "setup: alpha fails tools/list", { faults: { list_fail: true } }),
+  request("FAIL-14", "refresh-tools", "POST", "/api/mcp/client/fail-14-a/refresh-tools", { asserts: [A.status(500), A.msgStartsWith("Failed to refresh MCP client tools: failed to list tools for MCP client alpha"), responseTime(null, 7000)] }),
+  getClient("FAIL-14", "fail-14-a", "the state stays healthy", [clientState("healthy")]),
+  mockPost("FAIL-14", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-14", "fail-14-a"),
+]);
+
+const FAIL16 = folder("FAIL-16 Per-call clients ignore session kills", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; then POST /control/alpha/sessions/kill.", [
+  ...setClient("FAIL-16", {}),
+  mockPost("FAIL-16", "alpha", "sessions/kill", "setup: kill alpha's sessions"),
+  saveSessions("FAIL-16", "alpha", "fail16_sessions"),
+  setExec("FAIL-16", "execute echo_tool", "echo_tool", [A.status(200)]),
+  mockGet("FAIL-16", "alpha", "the call opened one session", [sessionsPlus("fail16_sessions", 1)]),
+  deleteClient("FAIL-16", "fail-16-a"),
+]);
+
+// FAIL-18 puts the malformed reply on echo_tool alone; add_tool still answers, which the control shows.
+const toolsCallMethods = "((pm.response.json().counters.methods || {})['tools/call'] || 0)";
+const FAIL18 = folder("FAIL-18 Malformed tools/call reply", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha answers echo_tool's tools/call with a malformed body.", [
+  ...setClient("FAIL-18", { needs_session_stickiness: true }),
+  mockPost("FAIL-18", "alpha", "tools/set", "setup: echo_tool answers with a malformed body", { tools: [{ name: "echo_tool", fault: { malformed: true } }, { name: "add_tool" }] }),
+  mockGet("FAIL-18", "alpha", "setup: record alpha's tools/call count", [], [`pm.collectionVariables.set('fail18_calls', ${toolsCallMethods});`]),
+  setExec("FAIL-18", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("MCP tool call failed for alpha-echo_tool")]),
+  mockGet("FAIL-18", "alpha", "alpha received one tools/call", [A.custom("tools/call is one more than the recorded count", [
+    `pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail18_calls')) + 1);`,
+  ])]),
+  setExec("FAIL-18", "control: execute add_tool", "add_tool", [A.status(200)]),
+  deleteClient("FAIL-18", "fail-18-a"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -2945,8 +3084,9 @@ const collection = {
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
     section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
+    section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB11, LIB13, LIB16, LIB18, LIB19, LIB20, LIB32, LIB33, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL14, FAIL16, FAIL18]),
   ],
 };
 
