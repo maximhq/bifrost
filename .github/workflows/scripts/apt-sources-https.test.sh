@@ -52,6 +52,27 @@ cmp -s "$WORK/ubuntu.before" "$WORK/apt/sources.list.d/ubuntu.sources" || fail "
 ok "running twice is a no-op"
 
 reset
+cat > "$WORK/apt/sources.list.d/ubuntu.sources" <<'EOF'
+Types: deb
+URIs: mirror+file:/etc/apt/apt-mirrors.txt
+Suites: noble noble-updates noble-backports noble-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+printf 'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n' > "$WORK/apt/apt-mirrors.txt"
+run || fail "mirror list errored"
+! grep -q "azure.archive" "$WORK/apt/apt-mirrors.txt" || fail "azure http mirror still listed"
+grep -q "^https://archive.ubuntu.com/ubuntu/" "$WORK/apt/apt-mirrors.txt" || fail "archive mirror dropped"
+grep -q "^https://security.ubuntu.com/ubuntu/" "$WORK/apt/apt-mirrors.txt" || fail "security mirror dropped"
+ok "mirror+file list drops the Azure http mirror and keeps the https mirrors"
+
+reset
+printf 'http://us.archive.ubuntu.com/ubuntu/\tpriority:1\n' > "$WORK/apt/apt-mirrors.txt"
+if run; then fail "accepted an unmapped http ubuntu mirror in the mirror list"; fi
+grep -q "us.archive.ubuntu.com" "$WORK/out" || fail "error does not name the leftover mirror"
+ok "an unmapped http:// mirror in the mirror list fails loudly"
+
+reset
 printf 'deb http://security.ubuntu.com/ubuntu noble-security main\n' > "$WORK/apt/sources.list"
 run || fail "security sources errored"
 grep -qx "deb https://security.ubuntu.com/ubuntu noble-security main" "$WORK/apt/sources.list" || fail "security not switched"

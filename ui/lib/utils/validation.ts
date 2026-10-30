@@ -193,12 +193,12 @@ export function isRedacted(value: string): boolean {
 }
 
 const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
+	{ key: "minLength", test: (password: string) => password.length >= 12 },
+	{ key: "uppercase", test: (password: string) => /[A-Z]/.test(password) },
+	{ key: "lowercase", test: (password: string) => /[a-z]/.test(password) },
+	{ key: "number", test: (password: string) => /\d/.test(password) },
+	{ key: "special", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
+] as const;
 
 /**
  * Returns the password-policy requirements that are not satisfied.
@@ -207,7 +207,7 @@ const PASSWORD_REQUIREMENTS = [
  */
 export function getPasswordPolicyFailures(password?: string, isUnchanged = false): string[] {
 	if (!password || isUnchanged) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
+	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.key);
 }
 
 /**

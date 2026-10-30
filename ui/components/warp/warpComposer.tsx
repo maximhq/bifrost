@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowUp, ChevronDown, Settings2, Square } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import TextareaAutosize from "react-textarea-autosize";
 import { hasProviderIcon, warpModelKey, warpModelLabel } from "./warpComposer.utils";
 
@@ -48,6 +49,7 @@ export default function WarpComposer({
 	onQueue,
 	onStop,
 }: WarpComposerProps) {
+	const { t } = useTranslation("shell");
 	const [value, setValue] = useState("");
 	const [highlighted, setHighlighted] = useState(0);
 
@@ -136,9 +138,7 @@ export default function WarpComposer({
 							submit();
 						}
 					}}
-					placeholder={
-						isStreaming && onQueue ? "Ask a follow-up, it is sent when this answer finishes..." : "Ask about your Bifrost data..."
-					}
+					placeholder={isStreaming && onQueue ? t("warp.composer.followUp") : t("warp.composer.placeholder")}
 					disabled={disabled}
 					minRows={1}
 					maxRows={8}
@@ -166,7 +166,7 @@ export default function WarpComposer({
 							size="icon"
 							variant="secondary"
 							onClick={onStop}
-							aria-label="Stop"
+							aria-label={t("warp.composer.stop")}
 							data-testid="warp-stop-btn"
 							className="size-7 shrink-0 rounded-full"
 						>
@@ -178,7 +178,7 @@ export default function WarpComposer({
 							size="icon"
 							onClick={submit}
 							disabled={!value.trim() || disabled}
-							aria-label="Send"
+							aria-label={t("warp.composer.send")}
 							data-testid="warp-send-btn"
 							className="size-7 shrink-0 rounded-full"
 						>

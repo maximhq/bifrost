@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -2378,4 +2379,232 @@ func TestHybrid_JSONFormat_DeleteRemovesParquetObject(t *testing.T) {
 	defer hybrid.Close(ctx)
 	require.NoError(t, hybrid.DeleteLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
+}
+
+func relayLogWithBodies(id string, ts time.Time, requestBody, responseBody string) *RelayLog {
+	return &RelayLog{
+		ID: id, RequestID: id, Timestamp: ts, RelayName: "web-search", Method: "POST", Path: "/search",
+		Status: RelayLogStatusSuccess, StatusCode: 200, RequestBody: &requestBody, ResponseBody: &responseBody,
+	}
+}
+
+func waitForRelayOffload(t *testing.T, inner LogStore, id string) {
+	t.Helper()
+	waitForUploads(t, func() bool {
+		row, err := inner.FindRelayLog(context.Background(), id)
+		return err == nil && row.HasObject
+	})
+}
+
+// TestHybrid_RelayLogBodiesOffloadAndHydrate pins the offload Relay Logs share with Agent logs: the
+// row keeps a preview and the object key, the object keeps the full bodies, and the detail read
+// returns them in full while the list keeps the preview.
+func TestHybrid_RelayLogBodiesOffloadAndHydrate(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 29, 9, 30, 0, 0, time.UTC)
+	requestBody := `{"query":"` + strings.Repeat("q", 10_000) + `"}`
+	responseBody := `{"results":"` + strings.Repeat("r", 20_000) + `"}`
+	entry := relayLogWithBodies("relay-1", ts, requestBody, responseBody)
+
+	inserted, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+	require.NoError(t, err)
+	require.Equal(t, []string{"relay-1"}, inserted)
+	waitForRelayOffload(t, inner, entry.ID)
+
+	dbOnly, err := inner.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, dbOnly.RequestBody)
+	require.NotNil(t, dbOnly.ResponseBody)
+	assert.Equal(t, maxRelayBodyPreviewRunes, len(*dbOnly.RequestBody), "the row keeps a preview")
+	assert.Equal(t, requestBody[:maxRelayBodyPreviewRunes], *dbOnly.RequestBody)
+	assert.Equal(t, maxRelayBodyPreviewRunes, len(*dbOnly.ResponseBody))
+	require.NotNil(t, dbOnly.PayloadReference)
+	assert.Equal(t, RelayLogObjectKey("test", ts, entry.ID), *dbOnly.PayloadReference)
+	assert.Equal(t, requestBody, *entry.RequestBody, "the caller's entry is not cut")
+
+	found, err := hybrid.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, requestBody, *found.RequestBody, "the detail read hydrates the full request body")
+	assert.Equal(t, responseBody, *found.ResponseBody, "the detail read hydrates the full response body")
+
+	page, err := hybrid.SearchRelayLogs(ctx, RelayLogFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1)
+	assert.Equal(t, maxRelayBodyPreviewRunes, len(*page.Logs[0].RequestBody), "lists read the preview only")
+}
+
+// TestHybrid_RelayLogWithoutBodiesStaysInDatabaseOnly pins that a row with no body uploads nothing.
+func TestHybrid_RelayLogWithoutBodiesStaysInDatabaseOnly(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	entry := &RelayLog{ID: "relay-empty", RequestID: "relay-empty", Timestamp: time.Now().UTC(), RelayName: "web-search", Method: "GET", Path: "/usage", Status: RelayLogStatusSuccess, StatusCode: 200}
+
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 0, objStore.Len())
+	row, err := inner.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	assert.Nil(t, row.PayloadReference)
+}
+
+// TestHybrid_HiddenRelayLogRetainsObjectWithoutHydration pins retained hidden content: the object
+// keeps the bodies, the row keeps none, and reads never reveal them.
+func TestHybrid_HiddenRelayLogRetainsObjectWithoutHydration(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 29, 10, 0, 0, 0, time.UTC)
+	entry := relayLogWithBodies("relay-hidden", ts, `{"query":"secret"}`, `{"answer":"secret"}`)
+	entry.ContentHidden = true
+
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+	require.NoError(t, err)
+	waitForRelayOffload(t, inner, entry.ID)
+
+	_, err = objStore.Get(ctx, RelayLogObjectKey("test", ts, entry.ID))
+	require.NoError(t, err, "the bodies are retained in object storage")
+	dbOnly, err := inner.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Nil(t, dbOnly.RequestBody)
+	assert.Nil(t, dbOnly.ResponseBody)
+	found, err := hybrid.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Nil(t, found.RequestBody, "hidden content is never hydrated")
+	assert.Nil(t, found.ResponseBody)
+}
+
+// TestHybrid_RelayLogUploadFailureKeepsDatabasePreview pins the fallback when the upload fails: the
+// row stays without an object and reads serve the preview.
+func TestHybrid_RelayLogUploadFailureKeepsDatabasePreview(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	objStore.PutErr = fmt.Errorf("bucket unavailable")
+	requestBody := strings.Repeat("a", 5_000)
+	entry := relayLogWithBodies("relay-failed", time.Now().UTC(), requestBody, `{"ok":true}`)
+
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+	require.NoError(t, err)
+	waitForUploads(t, func() bool { return hybrid.droppedUploads.Load() > 0 })
+
+	row, err := inner.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	found, err := hybrid.FindRelayLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, requestBody[:maxRelayBodyPreviewRunes], *found.RequestBody, "the preview is served")
+	assert.Equal(t, `{"ok":true}`, *found.ResponseBody, "a body under the preview size is whole on the row")
+}
+
+// TestHybrid_RelayLogDuplicateDoesNotOverwritePayload pins that a duplicate insert uploads nothing,
+// so the stored object keeps the first call's bodies.
+func TestHybrid_RelayLogDuplicateDoesNotOverwritePayload(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 29, 11, 0, 0, 0, time.UTC)
+	first := relayLogWithBodies("relay-dup", ts, `{"query":"first"}`, `{"answer":"first"}`)
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{first})
+	require.NoError(t, err)
+	waitForRelayOffload(t, inner, first.ID)
+
+	inserted, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{relayLogWithBodies("relay-dup", ts, `{"query":"second"}`, `{"answer":"second"}`)})
+	require.NoError(t, err)
+	assert.Empty(t, inserted)
+	time.Sleep(100 * time.Millisecond)
+	found, err := hybrid.FindRelayLog(ctx, first.ID)
+	require.NoError(t, err)
+	assert.Equal(t, `{"query":"first"}`, *found.RequestBody)
+}
+
+// TestHybrid_DeleteRelayLogsRemovesObjects pins that deleting a row deletes its object, together with
+// the object of the job row that settles it.
+func TestHybrid_DeleteRelayLogsRemovesObjects(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	parent := relayLogWithBodies("relay-parent", ts, `{"query":"x"}`, `{"job":"j-1"}`)
+	job := relayLogWithBodies("relay-job", ts, `{}`, `{"status":"done"}`)
+	job.Kind, job.ParentLogID = RelayLogKindJob, schemas.Ptr("relay-parent")
+	keep := relayLogWithBodies("relay-keep", ts, `{"query":"y"}`, `{"ok":true}`)
+	_, err := hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{parent, job, keep})
+	require.NoError(t, err)
+	for _, id := range []string{"relay-parent", "relay-job", "relay-keep"} {
+		waitForRelayOffload(t, inner, id)
+	}
+
+	require.NoError(t, hybrid.DeleteRelayLogs(ctx, []string{"relay-parent"}))
+	_, err = objStore.Get(ctx, RelayLogObjectKey("test", ts, "relay-parent"))
+	assert.Error(t, err, "the row's object is deleted")
+	_, err = objStore.Get(ctx, RelayLogObjectKey("test", ts, "relay-job"))
+	assert.Error(t, err, "the settling job row's object is deleted with it")
+	_, err = objStore.Get(ctx, RelayLogObjectKey("test", ts, "relay-keep"))
+	assert.NoError(t, err, "other rows keep their objects")
+	_, err = inner.FindRelayLog(ctx, "relay-job")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// putHookObjectStore runs a hook before each Put, to delete a row while its upload is in flight.
+type putHookObjectStore struct {
+	*objectstore.InMemoryObjectStore
+	beforePut func()
+}
+
+func (s *putHookObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	if s.beforePut != nil {
+		s.beforePut()
+	}
+	return s.InMemoryObjectStore.Put(ctx, key, data, tags)
+}
+
+// TestHybrid_DeletedRelayLogLeavesNoObject pins that deleting a row whose upload has not finished
+// leaves no object behind: an upload for a row already gone writes nothing, and an object written
+// while its row was being deleted is removed once marking the row finds it missing.
+func TestHybrid_DeletedRelayLogLeavesNoObject(t *testing.T) {
+	ctx := context.Background()
+	t.Run("deleted before the upload runs", func(t *testing.T) {
+		hybrid, inner, objStore := newTestHybrid(t)
+		defer hybrid.Close(ctx)
+		ts := time.Date(2026, 10, 29, 13, 0, 0, 0, time.UTC)
+		entry := relayLogWithBodies("relay-gone", ts, `{"query":"x"}`, `{"ok":true}`)
+		_, err := inner.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+		require.NoError(t, err)
+		require.NoError(t, inner.DeleteRelayLogs(ctx, []string{entry.ID}))
+		payload, err := MarshalRelayLogPayload(entry)
+		require.NoError(t, err)
+		key := RelayLogObjectKey("test", ts, entry.ID)
+		hybrid.pendingBytes.Add(int64(len(payload)))
+		hybrid.processUpload(&uploadWork{logID: entry.ID, timestamp: ts, key: key, kind: uploadKindRelay, payload: payload})
+		_, err = objStore.Get(ctx, key)
+		assert.Error(t, err, "no object is written for a row that no longer exists")
+	})
+	t.Run("deleted while the upload is in flight", func(t *testing.T) {
+		dir := t.TempDir()
+		inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(dir, "hybrid.db")}, hybridTestLogger{})
+		require.NoError(t, err)
+		objStore := &putHookObjectStore{InMemoryObjectStore: objectstore.NewInMemoryObjectStore()}
+		hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, nil, nil)
+		defer hybrid.Close(ctx)
+		ts := time.Date(2026, 10, 29, 14, 0, 0, 0, time.UTC)
+		entry := relayLogWithBodies("relay-racing", ts, `{"query":"x"}`, `{"ok":true}`)
+		objStore.beforePut = func() { _ = hybrid.DeleteRelayLogs(ctx, []string{entry.ID}) }
+
+		_, err = hybrid.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{entry})
+		require.NoError(t, err)
+		key := RelayLogObjectKey("test", ts, entry.ID)
+		waitForUploads(t, func() bool {
+			_, findErr := inner.FindRelayLog(ctx, entry.ID)
+			_, getErr := objStore.Get(ctx, key)
+			return errors.Is(findErr, ErrNotFound) && getErr != nil
+		})
+	})
 }
