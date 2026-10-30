@@ -544,7 +544,32 @@
 			"proxyUrlRequired": "プロキシ URL は必須です",
 			"rootedPathSearch": "/v1/search のようなルートパスを入力してください",
 			"statusRange": "ステータスは 100〜599 の範囲で指定してください"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "http/socks5 にはプロキシ URL が必要です",
+		"usernameAndPasswordMustBothBeProvided": "ユーザー名とパスワードは両方とも入力してください",
+		"maxRetriesCannotBeNegative": "最大リトライ回数に負の値は指定できません",
+		"endpointIsRequiredForAzureKeys": "Azure キーにはエンドポイントが必要です",
+		"projectIdIsRequiredForVertexKeys": "Vertex AI キーにはプロジェクト ID が必要です",
+		"regionIsRequiredForVertexKeys": "Vertex AI キーにはリージョンが必要です",
+		"authCredentialsMustBeValidJsonOrEnvVar": "認証情報を指定する場合は、有効な JSON オブジェクトまたは env.VAR 形式にしてください",
+		"enterTheVpcEndpointDnsName": "ID ではなく、VPC コンソールに表示されるエンドポイントの DNS 名を入力してください",
+		"regionIsRequiredForBedrockKeys": "Bedrock キーにはリージョンが必要です",
+		"bedrockAccessKeyPair": "Bedrock: Access Key と Secret Key を両方入力するか、IAM ロール認証を使う場合は両方とも空欄にしてください",
+		"regionIsRequiredForBedrockMantleKeys": "Bedrock Mantle キーにはリージョンが必要です",
+		"bedrockMantleAccessKeyPair": "Bedrock Mantle: Access Key と Secret Key を両方入力するか、IAM ロール認証を使う場合は両方とも空欄にしてください",
+		"regionIsRequiredForSagemakerKeys": "SageMaker キーにはリージョンが必要です",
+		"sagemakerAccessKeyPair": "SageMaker: Access Key と Secret Key を両方入力するか、AWS のデフォルト認証情報チェーンを使う場合は両方とも空欄にしてください",
+		"keyNameIsRequired": "キーの名前は必須です",
+		"keyWeightsMustBeBetween01And1": "キーの重みは 0.1 から 1 の範囲で指定してください",
+		"deploymentsMustHaveAModelIdOnEveryRow": "デプロイメントのすべての行にモデル ID を設定してください",
+		"pleaseSelectAProvider": "プロバイダーを選択してください",
+		"customProviderNameFormat": "カスタムプロバイダー名には英小文字、数字、'-'、'_' のみ使用できます (スペース不可)",
+		"baseProviderTypeIsRequiredForCustomProviders": "カスタムプロバイダーにはベースプロバイダータイプが必要です",
+		"customProviderNameCannotMatchAStandardProvider": "カスタムプロバイダー名に標準プロバイダーと同じ名前は使用できません",
+		"baseUrlIsRequiredForThisProvider": "このプロバイダーにはベース URL が必要です",
+		"baseUrlMustStartWithHttpOrHttps": "ベース URL は http:// または https:// で始まる必要があります",
+		"atLeastOneApiKeyIsRequired": "API キーが少なくとも 1 つ必要です",
+		"apiKeyValueCannotBeEmpty": "API キーの値は空にできません"
 	},
 	"permissionDenied": {
 		"create": "{{entity}}を作成する権限がありません。",
@@ -596,5 +621,11 @@
 	},
 	"badges": {
 		"beta": "ベータ"
+	},
+	"apiErrors": {
+		"networkUnreachable": "ネットワークエラー: サーバーに接続できません",
+		"unexpected": "予期しないエラーが発生しました",
+		"requestTimeout": "リクエストがタイムアウトしました",
+		"network": "ネットワークエラー"
 	}
 }

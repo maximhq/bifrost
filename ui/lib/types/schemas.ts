@@ -1,12 +1,9 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
+import { msg } from "@/lib/i18n/validationMessage";
 import { isRedacted } from "@/lib/utils/validation";
-import type { ParseKeys } from "i18next";
 import { z } from "zod";
-
-// Lazy validation message: resolved when a check fails, so it follows the active locale instead of the one at load time.
-const msg = (key: ParseKeys<"common">) => ({ error: () => i18n.t(key) });
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
 // Individual schemas can still override by passing their own message.
