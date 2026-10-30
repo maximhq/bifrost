@@ -4,9 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46
+**Latest Version:** 2.1.47
 
 ## Changelog
+
+### Upcoming
+
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`mcp.client_configs[].oauth_config.use_client_metadata_document`): sign in with Bifrost's Client ID Metadata Document even when the authorization server does not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with `clientId`.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`mcp.client_configs[].oauth_config.resource`): the OAuth resource indicator, discovered from the MCP server when omitted.
 
 ### 2.1.46
 

@@ -689,6 +689,10 @@ bifrost:
       #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
       #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
       #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #     # resource: "https://mcp.example.com/mcp"             # optional — RFC 8707 resource indicator, discovered when omitted
+      #     # Sign in with Bifrost's client metadata document even when the authorization server does
+      #     # not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with clientId.
+      #     # useClientMetadataDocument: true
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
