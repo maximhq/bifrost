@@ -35,7 +35,7 @@ func (s *Store) LoadModelParamsFromDB(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to load model parameters from database: %w", err)
 	}
-	if len(rows) == 0 {
+	if len(rows) == 0 && !s.hasParamsPatches() {
 		if s.logger != nil {
 			s.logger.Debug("no model parameters rows in database")
 		}
@@ -177,6 +177,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // bootstrap callers can distinguish "DB had rows but all malformed" from
 // "DB had usable rows".
 func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int {
+	paramsData = s.withParamsEntryOverrides(paramsData)
 	newResponseTypes := make(map[string][]string, len(paramsData))
 	newParamsIndex := make(map[string][]string, len(paramsData))
 	applied := 0
@@ -286,8 +287,12 @@ func (s *Store) SetOnModelParametersApplied(fn func()) {
 // store failure returns an error instead, which keeps the caller from caching
 // "no capabilities" for a model whose row exists but was unreachable.
 func (s *Store) LoadModelCapabilities(ctx context.Context, provider schemas.ModelProvider, model string) (*schemas.ModelCapabilities, error) {
-	if s.configStore == nil || model == "" {
+	if model == "" {
 		return nil, nil
+	}
+	if s.configStore == nil {
+		caps, _ := s.patchedCapabilities(nil, string(provider), model)
+		return caps, nil
 	}
 	candidates := s.modelParameterCandidates(model)
 	for _, candidate := range candidates {
@@ -307,13 +312,13 @@ func (s *Store) LoadModelCapabilities(ctx context.Context, provider schemas.Mode
 		if rowProvider == "" || (rowProvider != string(provider) && normalizeProvider(rowProvider) != string(provider)) {
 			continue
 		}
-		var caps schemas.ModelCapabilities
-		if err := json.Unmarshal([]byte(row.Data), &caps); err != nil || IsEmptyModelCapabilities(&caps) {
-			continue
+		if caps, ok := s.patchedCapabilities([]byte(row.Data), string(provider), model, candidate); ok {
+			return caps, nil
 		}
-		return &caps, nil
 	}
-	return nil, nil
+	// A datasheet override can describe a model the params sheet does not list.
+	caps, _ := s.patchedCapabilities(nil, string(provider), model)
+	return caps, nil
 }
 
 // GetModelParametersByModel reads a single model-parameter row from the DB.
@@ -341,7 +346,7 @@ func (s *Store) ResolveModelParameters(ctx context.Context, model string) (*conf
 	for _, candidate := range s.modelParameterCandidates(model) {
 		params, err := s.configStore.GetModelParametersByModel(ctx, candidate)
 		if err == nil {
-			return params, nil
+			return s.patchParamsRow(params, model), nil
 		}
 		if !errors.Is(err, configstore.ErrNotFound) {
 			return nil, err
@@ -350,7 +355,55 @@ func (s *Store) ResolveModelParameters(ctx context.Context, model string) (*conf
 			firstErr = err
 		}
 	}
+	if custom := s.customParamsRow(model); custom != nil {
+		return custom, nil
+	}
 	return nil, firstErr
+}
+
+// patchParamsRow applies the datasheet override for the row's own provider,
+// if any, returning a copy so the stored row is never mutated.
+func (s *Store) patchParamsRow(row *configstoreTables.TableModelParameters, model string) *configstoreTables.TableModelParameters {
+	if row == nil {
+		return nil
+	}
+	provider := gjson.Get(row.Data, "provider").String()
+	p, ok := s.paramsPatchFor(provider, model, row.Model)
+	if !ok && normalizeProvider(provider) != provider {
+		p, ok = s.paramsPatchFor(normalizeProvider(provider), model, row.Model)
+	}
+	if !ok {
+		return row
+	}
+	patched, err := patchParamsBlob([]byte(row.Data), p.provider, p.patch)
+	if err != nil {
+		return row
+	}
+	out := *row
+	out.Data = string(patched)
+	return &out
+}
+
+// customParamsRow synthesizes a parameters row from a datasheet override for
+// a model the params sheet does not list.
+func (s *Store) customParamsRow(model string) *configstoreTables.TableModelParameters {
+	s.entryOverridesMu.RLock()
+	var match paramsPatch
+	found := false
+	for _, p := range s.paramsPatches {
+		if p.model == model && (!found || p.provider < match.provider) {
+			match, found = p, true
+		}
+	}
+	s.entryOverridesMu.RUnlock()
+	if !found {
+		return nil
+	}
+	blob, err := patchParamsBlob(nil, match.provider, match.patch)
+	if err != nil {
+		return nil
+	}
+	return &configstoreTables.TableModelParameters{Model: model, Data: string(blob)}
 }
 
 // modelParameterCandidates returns the ordered lookup keys tried by

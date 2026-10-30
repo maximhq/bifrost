@@ -5619,3 +5619,17 @@ func TestMigrationAddVoiceLivePricingColumns_RunsOnContext(t *testing.T) {
 	}))
 	require.ErrorIs(t, migrationAddVoiceLivePricingColumns(ctx, failing, testMigrationLogger), errProbe)
 }
+
+// An upgraded install has no governance_datasheet_overrides; the migration
+// creates it, and running it again is a no-op.
+func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
+	ctx := context.Background()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+
+	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasTable(&tables.TableDatasheetOverride{}))
+	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
+	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
+}

@@ -3490,6 +3490,77 @@ func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, t
 	return nil
 }
 
+// DATASHEET OVERRIDES METHODS
+
+// GetDatasheetOverrides returns every datasheet override, oldest first so
+// application order is stable across nodes.
+func (s *RDBConfigStore) GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error) {
+	var rows []tables.TableDatasheetOverride
+	if err := s.DB().WithContext(ctx).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// GetDatasheetOverrideByID returns one datasheet override or ErrNotFound.
+func (s *RDBConfigStore) GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error) {
+	var row tables.TableDatasheetOverride
+	if err := s.DB().WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
+}
+
+// UpsertDatasheetOverride writes the override for its (provider, model, mode)
+// target. An existing row for the same target keeps its ID and created_at, so
+// a client saving by target never forks a second row.
+func (s *RDBConfigStore) UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error {
+	upsert := func(txDB *gorm.DB) error {
+		var existing tables.TableDatasheetOverride
+		err := txDB.Select("id", "created_at").
+			Where("provider = ? AND model = ? AND mode = ?", override.Provider, override.Model, override.Mode).
+			First(&existing).Error
+		switch {
+		case err == nil:
+			override.ID = existing.ID
+			override.CreatedAt = existing.CreatedAt
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return err
+		}
+		if override.CreatedAt.IsZero() {
+			override.CreatedAt = time.Now()
+		}
+		override.UpdatedAt = time.Now()
+		if err := txDB.Save(override).Error; err != nil {
+			return s.parseGormError(err)
+		}
+		return nil
+	}
+	if len(tx) > 0 {
+		return upsert(tx[0].WithContext(ctx))
+	}
+	return s.DB().WithContext(ctx).Transaction(upsert)
+}
+
+// DeleteDatasheetOverride removes a datasheet override by ID.
+func (s *RDBConfigStore) DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	txDB := s.DB()
+	if len(tx) > 0 {
+		txDB = tx[0]
+	}
+	res := txDB.WithContext(ctx).Delete(&tables.TableDatasheetOverride{}, "id = ?", id)
+	if res.Error != nil {
+		return s.parseGormError(res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // MODEL PARAMETERS METHODS
 
 // GetModelParameters returns all stored model parameter rows.

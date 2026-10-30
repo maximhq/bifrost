@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"sync"
@@ -78,6 +79,19 @@ type Store struct {
 	overridesMu   sync.RWMutex
 	rawOverrides  []Override
 	customPricing *customPricingData
+
+	// Datasheet entry overrides (entryoverrides.go): user edits merged over
+	// pricingData and the model-parameters rows on every load. Lock order is
+	// mu → entryOverridesMu.
+	entryOverridesMu  sync.RWMutex
+	entryOverrideRows []configstoreTables.TableDatasheetOverride // persisted form, parallel to entryOverrides
+	entryOverrides    []EntryOverride
+	paramsPatches     map[string]paramsPatch     // provider|model → composed params patch
+	paramsUpstream    map[string]json.RawMessage // provider|model → upstream blob a patch replaced
+
+	// Undo log for entry overrides, under mu.
+	pricingUpstream   map[string]configstoreTables.TableModelPricing // upstream rows an override replaced
+	customPricingKeys map[string]struct{}                            // rows synthesized for custom entries
 
 	// Providers whose self-reported usage.cost is ignored in favour of catalog pricing.
 	ignoreProviderCostMu sync.RWMutex

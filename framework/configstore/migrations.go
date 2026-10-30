@@ -585,6 +585,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_relays_tables"}, run: migrationAddRelaysTables},
 	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
 	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
+	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1206,6 +1207,27 @@ func rssFeedsTableMigration(ctx context.Context, migrationName string) *migrator
 			return fmt.Errorf("%s is non-rollbackable: dropping rss_feeds would permanently delete custom feeds, their logos and every builtin enabled choice; the table is additive and older binaries ignore it", migrationName)
 		},
 	}
+}
+
+// migrationAddDatasheetOverridesTable creates governance_datasheet_overrides,
+// the user edit layer the datasheet sync re-applies after every refresh.
+func migrationAddDatasheetOverridesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_datasheet_overrides_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			if mgr.HasTable(&tables.TableDatasheetOverride{}) {
+				return nil
+			}
+			return mgr.CreateTable(&tables.TableDatasheetOverride{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping governance_datasheet_overrides would permanently delete user datasheet edits; the table is additive and older binaries ignore it", migrationName)
+		},
+	})
 }
 
 // migrationAddRSSFeedsIconURLColumn adds the custom-logo column to rss_feeds
