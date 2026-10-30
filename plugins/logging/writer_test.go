@@ -2477,3 +2477,244 @@ func TestReleaseHeldGuardrailRowsWritesRowOnce(t *testing.T) {
 		t.Fatalf("released row must be written as built, got %+v", written.GuardrailDebugParsed)
 	}
 }
+
+// relayPendingForEviction stores a stale pending relay entry the way PreRelayHook builds one.
+func relayPendingForEviction(t *testing.T, plugin *LoggerPlugin, requestID string, idle time.Duration) *pendingRelayLog {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
+		RelayName: "tavily", Method: "POST", Path: "/search", RawQuery: "q=private", RoutePath: "/search", Billable: true, Streams: true, Body: []byte(`{"query":"x"}`),
+	})
+	if err != nil {
+		t.Fatalf("PreRelayHook() error = %v", err)
+	}
+	val, ok := plugin.pendingEndpointLogs.Load(requestID)
+	if !ok {
+		t.Fatal("expected a pending relay entry")
+	}
+	pending := val.(*pendingRelayLog)
+	stale := time.Now().Add(-idle)
+	pending.entry.Timestamp = stale
+	pending.lastActivity.Store(stale.UnixNano())
+	return pending
+}
+
+// TestCleanupStalePendingPersistsRelayPartialRow pins the relay half of the eviction: an idle
+// pending relay entry is written as a processing row that keeps its request side, as an LLM
+// entry is, instead of being dropped.
+func TestCleanupStalePendingPersistsRelayPartialRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	pending := relayPendingForEviction(t, plugin, "relay-evicted", pendingLogTTL+time.Minute)
+
+	plugin.cleanupStalePendingLogs()
+	if _, ok := plugin.pendingEndpointLogs.Load("relay-evicted"); ok {
+		t.Fatal("expected the stale pending relay entry to be taken")
+	}
+	if _, ok := plugin.evictedRelayPartials.Load("relay-evicted"); !ok {
+		t.Fatal("expected an eviction marker for the request")
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	row, err := store.FindRelayLog(context.Background(), pending.entry.ID)
+	if err != nil {
+		t.Fatalf("FindRelayLog() error = %v", err)
+	}
+	if row.Status != "processing" {
+		t.Fatalf("expected status processing, got %q", row.Status)
+	}
+	if row.RoutePath != "/search" || !row.Billable || row.Path != "/search?q=private" {
+		t.Fatalf("expected the request side preserved, got route=%q billable=%v path=%q", row.RoutePath, row.Billable, row.Path)
+	}
+	if row.RequestBody == nil || *row.RequestBody != `{"query":"x"}` {
+		t.Fatal("expected the captured request body preserved")
+	}
+	if row.CreatedAt.Before(time.Now().Add(-5 * time.Minute)) {
+		t.Fatalf("expected CreatedAt reset to ~now so the flush window restarts, got %v", row.CreatedAt)
+	}
+}
+
+// TestRelayStreamActivityKeepsPendingEntry pins that a stream still forwarding chunks is never
+// reaped: core/relay refreshes the activity slot the sweep reads.
+func TestRelayStreamActivityKeepsPendingEntry(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	pending := relayPendingForEviction(t, plugin, "relay-live", pendingLogTTL+time.Hour)
+	pending.lastActivity.Store(time.Now().UnixNano()) // a chunk just went by
+	plugin.cleanupStalePendingLogs()
+	if _, ok := plugin.pendingEndpointLogs.Load("relay-live"); !ok {
+		t.Fatal("a stream with recent activity must keep its pending entry")
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+}
+
+// TestRelayEvictionWithoutQueuedPartialKeepsPendingEntry pins that a full write queue keeps the
+// entry for the next sweep instead of losing it, as the LLM eviction does.
+func TestRelayEvictionWithoutQueuedPartialKeepsPendingEntry(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), logger: testLogger{}, writeQueue: make(chan *writeQueueEntry)}
+	pending := relayPendingForEviction(t, plugin, "relay-full", pendingLogTTL+time.Minute)
+	plugin.cleanupStalePendingLogs()
+	val, ok := plugin.pendingEndpointLogs.Load("relay-full")
+	if !ok {
+		t.Fatal("expected the pending entry kept when nothing was persisted")
+	}
+	if val.(*pendingRelayLog) != pending || pending.evictionAttempts != 1 {
+		t.Fatalf("expected the same entry with one attempt recorded, got attempts=%d", pending.evictionAttempts)
+	}
+	if _, marked := plugin.evictedRelayPartials.Load("relay-full"); marked {
+		t.Fatal("no marker may exist for a partial that was not queued")
+	}
+}
+
+// TestPostRelayHookReconcilesEvictedPartialRow pins the finish half: a reply whose pending entry
+// was evicted updates the persisted processing row instead of inserting a bare second row, so the
+// request side and the outcome end up on one row.
+func TestPostRelayHookReconcilesEvictedPartialRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	pending := relayPendingForEviction(t, plugin, "relay-late", pendingLogTTL+time.Minute)
+	plugin.cleanupStalePendingLogs()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "relay-late")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, "prod")
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{
+		StatusCode: 200, Latency: 120, BytesOut: 42, Streamed: true, Body: []byte(`{"ok":true}`),
+		Usage: &schemas.RelayUsage{Cost: 0.033, Units: schemas.Ptr(4.0), BilledUnits: schemas.Ptr(4.0)},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostRelayHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	page, err := store.SearchRelayLogs(context.Background(), logstore.RelayLogFilters{RequestID: "relay-late"}, logstore.PaginationOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchRelayLogs() error = %v", err)
+	}
+	if len(page.Logs) != 1 {
+		t.Fatalf("expected one row for the request, got %d", len(page.Logs))
+	}
+	row := page.Logs[0]
+	if row.ID != pending.entry.ID {
+		t.Fatalf("expected the partial row reconciled, got a different row %s", row.ID)
+	}
+	if row.Status != "success" || row.StatusCode != 200 || row.Path != "/search?q=private" || row.RoutePath != "/search" {
+		t.Fatalf("expected the outcome on the partial row with its request side intact, got status=%q code=%d path=%q route=%q", row.Status, row.StatusCode, row.Path, row.RoutePath)
+	}
+	if row.Cost == nil || *row.Cost != 0.033 || row.VirtualKeyID == nil || *row.VirtualKeyID != "vk-1" {
+		t.Fatal("expected cost and attribution on the reconciled row")
+	}
+	if row.ResponseBody == nil || *row.ResponseBody != `{"ok":true}` || row.RequestBody == nil {
+		t.Fatal("expected both bodies on the reconciled row")
+	}
+	if _, marked := plugin.evictedRelayPartials.Load("relay-late"); marked {
+		t.Fatal("the marker is consumed by the finish")
+	}
+}
+
+// TestInjectReconcilesEvictedRelayRow pins that a reconciled row parked for its trace is still
+// written as an update once the trace ends, with the backfilled latency, never as a second row.
+func TestInjectReconcilesEvictedRelayRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	pending := relayPendingForEviction(t, plugin, "relay-traced", pendingLogTTL+time.Minute)
+	plugin.cleanupStalePendingLogs()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "relay-traced")
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-relay")
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{StatusCode: 200, Latency: 120}, nil)
+	if err != nil {
+		t.Fatalf("PostRelayHook() error = %v", err)
+	}
+	if _, parked := plugin.pendingRelayLogsToInject.Load("trace-relay"); !parked {
+		t.Fatal("expected the reconcile parked for the trace")
+	}
+	plugin.injectRelayEntries(&schemas.Trace{RootSpan: &schemas.Span{Attributes: map[string]any{
+		schemas.AttrBifrostUpstreamDurationMs: 90.0, schemas.AttrBifrostOverheadDurationMs: 10.0,
+	}}}, "trace-relay")
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	page, err := store.SearchRelayLogs(context.Background(), logstore.RelayLogFilters{RequestID: "relay-traced"}, logstore.PaginationOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchRelayLogs() error = %v", err)
+	}
+	if len(page.Logs) != 1 || page.Logs[0].ID != pending.entry.ID {
+		t.Fatalf("expected the partial row alone, got %d rows", len(page.Logs))
+	}
+	if page.Logs[0].UpstreamLatency == nil || *page.Logs[0].UpstreamLatency != 90 || page.Logs[0].Status != "success" {
+		t.Fatalf("expected the trace's upstream figure on the reconciled row, got %+v", page.Logs[0])
+	}
+}
+
+// TestPostRelayHookReconcilesEvictedPartialRowError pins the reply-less finish: an upstream failure
+// after eviction reconciles onto the partial row and keeps what only the partial knew (streamed,
+// route, relay name), as a one-shot row for the same call would carry them.
+func TestPostRelayHookReconcilesEvictedPartialRowError(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	pending := relayPendingForEviction(t, plugin, "relay-late-err", pendingLogTTL+time.Minute)
+	plugin.cleanupStalePendingLogs()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "relay-late-err")
+	_, _, err = plugin.PostRelayHook(ctx, nil, &schemas.BifrostError{StatusCode: schemas.Ptr(502), Error: &schemas.ErrorField{Message: "connection refused"}, ExtraFields: schemas.BifrostErrorExtraFields{Latency: 30}})
+	if err != nil {
+		t.Fatalf("PostRelayHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	row, err := store.FindRelayLog(context.Background(), pending.entry.ID)
+	if err != nil {
+		t.Fatalf("FindRelayLog() error = %v", err)
+	}
+	if row.Status != "error" || row.StatusCode != 502 {
+		t.Fatalf("expected the error on the partial row, got status=%q code=%d", row.Status, row.StatusCode)
+	}
+	if !row.Streamed || row.RoutePath != "/search" || row.RelayName != "tavily" {
+		t.Fatalf("expected streamed, route and relay kept from the partial, got streamed=%v route=%q relay=%q", row.Streamed, row.RoutePath, row.RelayName)
+	}
+	if row.ErrorDetailsParsed == nil || row.ErrorDetailsParsed.Error.Message != "connection refused" {
+		t.Fatal("expected the error details on the reconciled row")
+	}
+}
+
+// TestRelayEvictionRetryLeavesPendingEntryIntact pins that a sweep whose partial could not be
+// queued does not damage the entry it keeps: a later finish still writes the captured body.
+func TestRelayEvictionRetryLeavesPendingEntryIntact(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), logger: testLogger{}, writeQueue: make(chan *writeQueueEntry)}
+	pending := relayPendingForEviction(t, plugin, "relay-intact", pendingLogTTL+time.Minute)
+	plugin.cleanupStalePendingLogs()
+	if pending.entry.RequestBody == nil || pending.entry.Status != "processing" && pending.entry.Status != logStatusProcessing {
+		t.Fatal("the pending entry must keep its captured body after a failed eviction")
+	}
+	if pending.entry.Path != "/search?q=private" {
+		t.Fatalf("the pending entry's path must be untouched, got %q", pending.entry.Path)
+	}
+	if !pending.entry.CreatedAt.IsZero() {
+		t.Fatal("CreatedAt must not be reset on the kept entry")
+	}
+}

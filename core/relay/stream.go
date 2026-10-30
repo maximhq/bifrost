@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -37,7 +38,8 @@ type Stream struct {
 	usage        *schemas.RelayUsage
 	bytesOut     int64
 
-	capture []byte // the whole body for the log row; nil when content logging is off
+	capture  []byte        // the whole body for the log row; nil when content logging is off
+	activity *atomic.Int64 // the logging plugin's last-activity slot; nil without the plugin
 
 	// A buffered reply past the large-payload response threshold (handOffLarge): the bytes read
 	// while deciding are forwarded first, and the log row keeps a preview, as an LLM row does.
@@ -51,7 +53,7 @@ type Stream struct {
 
 // newStream wraps an open upstream reply. mapping and requestUnits decide what is read; finish runs
 // the post-hooks. The returned stream keeps the whole reply in capture for the log row, as the
-// stream accumulator keeps an LLM stream, but only when the content-logging policy would keep the body, so a
+// stream accumulator keeps an LLM stream, but only when the logging plugin asked for it, so a
 // stream nobody logs the body of never allocates the buffer.
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
@@ -70,6 +72,7 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 	if relayContentCaptureEnabled(ctx) {
 		s.capture = make([]byte, 0, 4096)
 	}
+	s.activity, _ = ctx.Value(schemas.BifrostContextKeyRelayActivity).(*atomic.Int64)
 	if !s.counted {
 		return s
 	}
@@ -89,37 +92,16 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 	return s
 }
 
-// relayContentCaptureEnabled resolves whether a streamed reply's bytes should be buffered for the
-// log row, mirroring the logging plugin's resolveContentPolicy precedence (plugin default,
-// overridden by governance's per-key decision, overridden by the per-request header) without
-// importing plugins/logging: core/relay/span.go already reads
-// BifrostContextKeyGovernanceDisableContentLogging directly for the same reason. Called from
-// newStream, which runs after RunRelayPreHooks has completed every pre-hook including governance's,
-// so this sees the final decision rather than the early, plugin-only one PreRelayHook could offer.
+// relayContentCaptureEnabled reports whether the logging plugin asked for the streamed reply's
+// bytes. The plugin owns the content policy (its static setting, governance's per-key or
+// per-project decision, the per-request override, and retention in object storage) and resolves
+// it in PreRelayHook exactly as PreLLMHook gates input capture: on while content is stored, and
+// provisionally while governance has yet to decide, with the post-hook applying the final policy.
+// core/relay keeps no copy of that precedence. Without the plugin the key is absent and nothing
+// is captured, so a stream nobody logs never pays for the buffer.
 func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
-	enabled, pluginPresent := ctx.Value(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault).(bool)
-	if !pluginPresent {
-		// No logging plugin stamped a default at all — either it is not registered, or its
-		// PreRelayHook did not run. Governance's or the per-request key being present on ctx for
-		// unrelated reasons must not turn capture on by itself; without a plugin to ever read the
-		// buffer, that would just retain the stream's bytes for nothing.
-		return false
-	}
-	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
-		enabled = !disabled
-	}
-	if allowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); allowed {
-		if disabled, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
-			enabled = !disabled
-		}
-	}
-	if !enabled {
-		// Content logging is off for this call, but the logging plugin may still retain it hidden
-		// in object storage; the reply is then captured for that offload, as a buffered one is.
-		retained, _ := ctx.Value(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled).(bool)
-		return retained
-	}
-	return enabled
+	capture, _ := ctx.Value(schemas.BifrostContextKeyRelayContentCapture).(bool)
+	return capture
 }
 
 // largeResponsePreviewBytes is the most of a large reply the log row keeps, the preview an LLM row
@@ -148,6 +130,11 @@ func (s *Stream) Read(p []byte) (int, error) {
 	}
 	if n > 0 {
 		s.bytesOut += int64(n)
+		if s.activity != nil {
+			// One atomic store per chunk, so the logging plugin's stale sweep sees a live stream
+			// the way PostLLMHook's per-chunk LastActivity keeps an LLM stream's pending row.
+			s.activity.Store(time.Now().UnixNano())
+		}
 		if s.runes != nil {
 			s.runes.Write(p[:n])
 		}
