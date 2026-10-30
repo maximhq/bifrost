@@ -1,11 +1,11 @@
 import type { RelayLogFilters, RelayLogPagination } from "@/lib/types/relays";
-import { getRangeForPeriod } from "@/lib/utils/timeRange";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 
 /** Filters sent as repeated query params, one value each. */
 export const RELAY_LOG_MULTI_FILTER_KEYS = [
 	"relay_names",
 	"methods",
-	"statuses",
+	"status",
 	"kinds",
 	"virtual_key_ids",
 	"user_ids",
@@ -18,7 +18,7 @@ export const RELAY_LOG_MULTI_FILTER_KEYS = [
 
 /**
  * Builds the query string shared by the relay log list, stats and histogram requests so all three
- * narrow to the same rows. A relative period is expanded to a fresh window per call, so polling
+ * narrow to the same rows. A relative period is sent as is for the server to resolve, so polling
  * always queries a rolling window.
  */
 export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayLogPagination): string {
@@ -38,12 +38,17 @@ export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayL
 	// 0 is a real bound (max_cost=0 is "free calls only"), so only undefined and NaN mean unset.
 	if (filters.min_cost !== undefined && Number.isFinite(filters.min_cost)) params.set("min_cost", String(filters.min_cost));
 	if (filters.max_cost !== undefined && Number.isFinite(filters.max_cost)) params.set("max_cost", String(filters.max_cost));
+	if (filters.min_latency !== undefined && Number.isFinite(filters.min_latency)) params.set("min_latency", String(filters.min_latency));
+	if (filters.max_latency !== undefined && Number.isFinite(filters.max_latency)) params.set("max_latency", String(filters.max_latency));
 	if (filters.request_id) params.set("request_id", filters.request_id);
+	if (filters.session_id) params.set("session_id", filters.session_id);
 	if (filters.search) params.set("search", filters.search);
 	if (filters.period) {
-		const { from, to } = getRangeForPeriod(filters.period);
-		params.set("start_time", from.toISOString());
-		params.set("end_time", to.toISOString());
+		// The server resolves the period, as it does for the LLM logs, so every poll is a fresh
+		// rolling window and the day periods follow the browser's timezone.
+		params.set("period", filters.period);
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.set("timezone", timezone);
 	} else if (filters.start_time && filters.end_time) {
 		params.set("start_time", filters.start_time);
 		params.set("end_time", filters.end_time);

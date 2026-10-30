@@ -67,11 +67,11 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 	const successRate = stats?.success_rate ?? 0;
 	const totalCost = stats?.total_cost ?? 0;
 	const costPerRequest = totalRequests > 0 ? totalCost / totalRequests : 0;
-	// success_rate is measured over succeeded plus failed calls, so the counts come from the
-	// server's own figures and cancellations are shown on their own rather than folded in.
+	// The server's own counts, as the LLM logs strip reads them: success_rate is measured over
+	// every finished call, cancellations included.
 	const succeeded = stats?.success_count ?? 0;
 	const failed = stats?.error_count ?? 0;
-	const cancelled = Math.max(0, totalRequests - succeeded - failed);
+	const cancelled = stats?.cancelled_count ?? 0;
 
 	const requestsChange = previous ? formatPctChange(totalRequests, previous.total_requests) : undefined;
 	// With no previous period to compare against, the window's own direction fills the slot.
@@ -133,7 +133,9 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 										</MetricTooltipRow>
 										{cancelled > 0 && <MetricTooltipRow name={t("labels.cancelled")}>{formatCount(cancelled)}</MetricTooltipRow>}
 										<MetricTooltipRow name={t("labels.total")}>{formatCount(totalRequests)}</MetricTooltipRow>
-										{previous && <MetricTooltipRow name={t("logs.stats.previousPeriod")}>{`${previous.success_rate.toFixed(2)}%`}</MetricTooltipRow>}
+										{previous && (
+											<MetricTooltipRow name={t("logs.stats.previousPeriod")}>{`${previous.success_rate.toFixed(2)}%`}</MetricTooltipRow>
+										)}
 									</MetricTooltipBody>
 								}
 							/>
@@ -159,7 +161,9 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								points={latencyPoints}
 								bucketSizeSeconds={bucketSizeSeconds}
 								className={warning}
-								rows={(point) => <MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value))}</MetricTooltipRow>}
+								rows={(point) => (
+									<MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value))}</MetricTooltipRow>
+								)}
 							/>
 							{latencyChange?.text && (
 								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[latencyChange.tone]}>
@@ -183,7 +187,9 @@ export function RelayMetricStrip({ stats, histogram, loading, error }: RelayMetr
 								points={costPoints}
 								bucketSizeSeconds={bucketSizeSeconds}
 								className={costChange ? toneClass[costChange.tone] : muted}
-								rows={(point) => <MetricTooltipRow name={t("labels.cost")}>{averaged(point, formatCurrencyNumber(point.value))}</MetricTooltipRow>}
+								rows={(point) => (
+									<MetricTooltipRow name={t("labels.cost")}>{averaged(point, formatCurrencyNumber(point.value))}</MetricTooltipRow>
+								)}
 							/>
 							{costChange?.text ? (
 								<MetricTrailing testId="relay-logs-metric-trailing" className={toneClass[costChange.tone]}>

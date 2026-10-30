@@ -249,7 +249,7 @@ func (l *RelayLog) DeserializeFields() error {
 type RelayLogFilters struct {
 	EndpointNames   []string   `json:"relay_names,omitempty"`
 	Methods         []string   `json:"methods,omitempty"`
-	Statuses        []string   `json:"statuses,omitempty"`
+	Statuses        []string   `json:"status,omitempty"`
 	Kinds           []string   `json:"kinds,omitempty"`
 	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
 	UserIDs         []string   `json:"user_ids,omitempty"`

@@ -22,7 +22,7 @@ interface RelayFilterSidebarProps {
 	onFiltersChange: (filters: RelayLogFilters) => void;
 }
 
-type MultiKey = "relay_names" | "methods" | "statuses" | "kinds" | "virtual_key_ids" | "apps";
+type MultiKey = "relay_names" | "methods" | "status" | "kinds" | "virtual_key_ids" | "apps";
 type EntityKey = "user_ids" | "team_ids" | "customer_ids" | "business_unit_ids" | "project_ids";
 
 /** The Relay Logs filter sidebar, built on the same primitives as the LLM and MCP log sidebars. */
@@ -91,7 +91,14 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 							{t("relayLogs.filters.reset")}
 						</Button>
 					)}
-					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title={t("filters.hideFilters")} aria-label={t("filters.hideFilters")}>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-7"
+						onClick={toggleCollapsed}
+						title={t("filters.hideFilters")}
+						aria-label={t("filters.hideFilters")}
+					>
 						<PanelLeftClose className="size-4" />
 					</Button>
 				</div>
@@ -101,18 +108,19 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 					{/* First two open by default; the rest open only when they carry a value. */}
 					<FilterSection title={t("filters.status")} defaultOpen testId="relay-status-filter-toggle">
 						{(
-								[
-									["success", t("labels.success")],
-									["error", t("labels.error")],
-									["cancelled", t("labels.cancelled")],
-								] as const
-							).map(([status, statusLabel]) => (
+							[
+								["success", t("labels.success")],
+								["error", t("labels.error")],
+								["cancelled", t("labels.cancelled")],
+								["processing", t("logs.statuses.processing")],
+							] as const
+						).map(([status, statusLabel]) => (
 							<CheckboxFilterItem
 								key={status}
 								labelClassName="capitalize"
 								label={statusLabel}
-								checked={(filters.statuses ?? []).includes(status)}
-								onCheckedChange={() => toggle("statuses", status)}
+								checked={(filters.status ?? []).includes(status)}
+								onCheckedChange={() => toggle("status", status)}
 								testId={`relay-status-filter-checkbox-${status}`}
 							/>
 						))}
@@ -136,7 +144,11 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						placeholder={t("relayLogs.filters.searchMethods")}
 						testIdPrefix="relay-method-filter"
 					/>
-					<FilterSection title={t("relayLogs.filters.billing")} defaultOpen={filters.billable !== undefined} testId="relay-billing-filter-toggle">
+					<FilterSection
+						title={t("relayLogs.filters.billing")}
+						defaultOpen={filters.billable !== undefined}
+						testId="relay-billing-filter-toggle"
+					>
 						<CheckboxFilterItem
 							label={t("relayLogs.fields.billable")}
 							checked={filters.billable === true}
@@ -150,7 +162,11 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 							testId="relay-billing-filter-checkbox-not-billable"
 						/>
 					</FilterSection>
-					<FilterSection title={t("relayLogs.fields.kind")} defaultOpen={(filters.kinds ?? []).length > 0} testId="relay-kind-filter-toggle">
+					<FilterSection
+						title={t("relayLogs.fields.kind")}
+						defaultOpen={(filters.kinds ?? []).length > 0}
+						testId="relay-kind-filter-toggle"
+					>
 						<CheckboxFilterItem
 							label={t("relayLogs.filters.calls")}
 							checked={(filters.kinds ?? []).includes("call")}

@@ -111,7 +111,7 @@ describe("formatRelayActiveFiltersSummary", () => {
 			request_id: "req-1",
 			search: "tts",
 			relay_names: ["voice", "search"],
-			statuses: ["error"],
+			status: ["error"],
 			billable: false,
 			min_cost: 0,
 			max_cost: 2,

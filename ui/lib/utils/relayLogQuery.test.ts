@@ -42,11 +42,21 @@ describe("buildRelayLogQuery", () => {
 		expect(new URLSearchParams(buildRelayLogQuery({ search: "x" })).has("request_id")).toBe(false);
 	});
 
-	it("expands a relative period into an absolute window", () => {
+	it("sends a relative period for the server to resolve, as the LLM logs query does", () => {
 		const params = new URLSearchParams(buildRelayLogQuery({ period: "1h" }));
-		const from = new Date(params.get("start_time")!).getTime();
-		const to = new Date(params.get("end_time")!).getTime();
-		expect(to - from).toBeCloseTo(3600_000, -3);
+		expect(params.get("period")).toBe("1h");
+		expect(params.has("start_time")).toBe(false);
+		expect(params.has("end_time")).toBe(false);
+		const today = new URLSearchParams(buildRelayLogQuery({ period: "today" }));
+		expect(today.get("period")).toBe("today");
+		expect(today.get("timezone")).toBeTruthy();
+	});
+
+	it("sends latency bounds and the session id", () => {
+		const params = new URLSearchParams(buildRelayLogQuery({ min_latency: 100, max_latency: 2500, session_id: "s-1" }));
+		expect(params.get("min_latency")).toBe("100");
+		expect(params.get("max_latency")).toBe("2500");
+		expect(params.get("session_id")).toBe("s-1");
 	});
 });
 
