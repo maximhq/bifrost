@@ -544,7 +544,32 @@
 			"proxyUrlRequired": "Proxy-URL ist erforderlich",
 			"rootedPathSearch": "Gib einen Pfad ab Wurzel ein, z. B. /v1/search",
 			"statusRange": "Der Status muss zwischen 100 und 599 liegen"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "Für http/socks5 ist eine Proxy-URL erforderlich",
+		"usernameAndPasswordMustBothBeProvided": "Benutzername und Passwort müssen beide angegeben werden",
+		"maxRetriesCannotBeNegative": "Die maximale Anzahl an Wiederholungen darf nicht negativ sein",
+		"endpointIsRequiredForAzureKeys": "Für Azure-Schlüssel ist ein Endpunkt erforderlich",
+		"projectIdIsRequiredForVertexKeys": "Für Vertex AI-Schlüssel ist eine Projekt-ID erforderlich",
+		"regionIsRequiredForVertexKeys": "Für Vertex AI-Schlüssel ist eine Region erforderlich",
+		"authCredentialsMustBeValidJsonOrEnvVar": "Die Authentifizierungsdaten müssen, falls angegeben, ein gültiges JSON-Objekt oder im Format env.VAR sein",
+		"enterTheVpcEndpointDnsName": "Geben Sie den DNS-Namen des Endpunkts aus der VPC-Konsole ein, nicht seine ID",
+		"regionIsRequiredForBedrockKeys": "Für Bedrock-Schlüssel ist eine Region erforderlich",
+		"bedrockAccessKeyPair": "Für Bedrock: Geben Sie Access Key und Secret Key beide an oder lassen Sie beide für die Authentifizierung über eine IAM-Rolle leer",
+		"regionIsRequiredForBedrockMantleKeys": "Für Bedrock Mantle-Schlüssel ist eine Region erforderlich",
+		"bedrockMantleAccessKeyPair": "Für Bedrock Mantle: Geben Sie Access Key und Secret Key beide an oder lassen Sie beide für die Authentifizierung über eine IAM-Rolle leer",
+		"regionIsRequiredForSagemakerKeys": "Für SageMaker-Schlüssel ist eine Region erforderlich",
+		"sagemakerAccessKeyPair": "Für SageMaker: Geben Sie Access Key und Secret Key beide an oder lassen Sie beide leer, um die Standard-Anmeldedatenkette von AWS zu verwenden",
+		"keyNameIsRequired": "Für den Schlüssel ist ein Name erforderlich",
+		"keyWeightsMustBeBetween01And1": "Schlüsselgewichte müssen zwischen 0,1 und 1 liegen",
+		"deploymentsMustHaveAModelIdOnEveryRow": "Bei Deployments muss in jeder Zeile eine Modell-ID gesetzt sein",
+		"pleaseSelectAProvider": "Bitte wählen Sie einen Anbieter aus",
+		"customProviderNameFormat": "Der Name des benutzerdefinierten Anbieters darf nur Kleinbuchstaben und Ziffern sowie '-' oder '_' enthalten (keine Leerzeichen)",
+		"baseProviderTypeIsRequiredForCustomProviders": "Für benutzerdefinierte Anbieter ist ein Basis-Anbietertyp erforderlich",
+		"customProviderNameCannotMatchAStandardProvider": "Der Name des benutzerdefinierten Anbieters darf nicht mit dem Namen eines Standardanbieters übereinstimmen",
+		"baseUrlIsRequiredForThisProvider": "Für diesen Anbieter ist eine Basis-URL erforderlich",
+		"baseUrlMustStartWithHttpOrHttps": "Die Basis-URL muss mit http:// oder https:// beginnen",
+		"atLeastOneApiKeyIsRequired": "Mindestens ein API-Schlüssel ist erforderlich",
+		"apiKeyValueCannotBeEmpty": "Der Wert des API-Schlüssels darf nicht leer sein"
 	},
 	"permissionDenied": {
 		"create": "Du hast keine Berechtigung, {{entity}} zu erstellen.",
@@ -596,5 +621,11 @@
 	},
 	"badges": {
 		"beta": "BETA"
+	},
+	"apiErrors": {
+		"networkUnreachable": "Netzwerkfehler: Verbindung zum Server nicht möglich",
+		"unexpected": "Ein unerwarteter Fehler ist aufgetreten",
+		"requestTimeout": "Zeitüberschreitung der Anfrage",
+		"network": "Netzwerkfehler"
 	}
 }
