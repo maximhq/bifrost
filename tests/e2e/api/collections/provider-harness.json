@@ -298509,6 +298509,11 @@
                   "});",
                   "pm.test('reports the flat per-request cost', function () {",
                   "  var j = pm.response.json();",
+                  "  if (j.results && j.results.length === 0) {",
+                  "    // DeepSeek does not bill a search that matched nothing, so the response carries no usage.",
+                  "    pm.expect(j.usage, 'an empty search must not report a cost: ' + pm.response.text()).to.be.oneOf([undefined, null]);",
+                  "    return;",
+                  "  }",
                   "  pm.expect(j.usage && j.usage.cost && j.usage.cost.total_cost, 'no usage.cost: ' + pm.response.text()).to.be.closeTo(0.00075, 1e-9);",
                   "});"
                 ]
@@ -298602,6 +298607,11 @@
                   "});",
                   "pm.test('reports the flat per-request cost', function () {",
                   "  var j = pm.response.json();",
+                  "  if (j.results && j.results.length === 0) {",
+                  "    // DeepSeek does not bill a search that matched nothing, so the response carries no usage.",
+                  "    pm.expect(j.usage, 'an empty search must not report a cost: ' + pm.response.text()).to.be.oneOf([undefined, null]);",
+                  "    return;",
+                  "  }",
                   "  pm.expect(j.usage && j.usage.cost && j.usage.cost.total_cost, 'no usage.cost: ' + pm.response.text()).to.be.closeTo(0.00075, 1e-9);",
                   "});"
                 ]

@@ -199,7 +199,8 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 	}
 
 	// A Search that finds nothing returns an empty results array, which is a successful
-	// answer and still billed. Only the envelope failing to decode is an error here.
+	// answer DeepSeek does not bill (see where Usage is set below). Only the envelope
+	// failing to decode is an error here.
 	wire := deepseekSearchWireResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
 		responseBody,
@@ -218,7 +219,8 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 	}
 
 	// DeepSeek does not bill a search that returns no results, so neither does the
-	// gateway. With no usage the cost engine falls through to any pinned row.
+	// gateway: Usage stays nil and the cost engine's empty-result marker keeps a
+	// pinned cost_per_request row from pricing it.
 	response := &schemas.BifrostSearchResponse{
 		Results: results,
 		ExtraFields: schemas.BifrostResponseExtraFields{

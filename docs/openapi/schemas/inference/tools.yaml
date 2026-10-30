@@ -90,6 +90,7 @@ SearchResult:
 
 SearchResponse:
   type: object
+  required: [results]
   properties:
     results:
       type: array
@@ -131,6 +132,7 @@ FetchRequest:
 
 FetchResponse:
   type: object
+  required: [content]
   properties:
     title:
       type: string

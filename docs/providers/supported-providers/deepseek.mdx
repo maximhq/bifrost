@@ -44,8 +44,8 @@ uses, so migrating a client means changing only its base URL:
 
 | Operation | Route | Upstream |
 |-----------|-------|----------|
-| Web Search | `POST /v1/tools/search` | `POST /tools/search` |
-| Page Fetch | `POST /v1/tools/fetch` | `POST /tools/fetch` |
+| Web Search | `POST /v1/tools/search` | `POST /v1/tools/search` |
+| Page Fetch | `POST /v1/tools/fetch` | `POST /v1/tools/fetch` |
 
 Neither call takes a model, which makes them the only routes in Bifrost that work without
 one. Omit `model` and the gateway routes to DeepSeek; a `model` is still accepted as a

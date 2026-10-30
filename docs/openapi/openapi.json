@@ -2275,7 +2275,7 @@
             }
           },
           "402": {
-            "description": "Insufficient DeepSeek account balance. Top up rather than retry.",
+            "description": "Insufficient provider account balance. Top up rather than retry. DeepSeek answers this for its own account balance; the status is passed through from the routed provider.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2285,7 +2285,7 @@
             }
           },
           "429": {
-            "description": "The 5 QPS per-account search limit was exceeded.",
+            "description": "The provider's rate limit was exceeded. DeepSeek answers 429 above its 5 QPS per-account search cap.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2368,7 +2368,7 @@
             }
           },
           "402": {
-            "description": "Insufficient DeepSeek account balance. Top up rather than retry.",
+            "description": "Insufficient provider account balance. Top up rather than retry. DeepSeek answers this for its own account balance; the status is passed through from the routed provider.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2378,7 +2378,7 @@
             }
           },
           "403": {
-            "description": "The page was rejected by DeepSeek's fetch security policy.",
+            "description": "The page was rejected by the provider's fetch security policy. DeepSeek and Exa both refuse a URL their own policy forbids.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2389,6 +2389,16 @@
           },
           "404": {
             "description": "The page carried no usable content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider could not retrieve the page. Exa reports a page it could not read in its `statuses`; the page's own status is kept in the error message, and only a missing page (404 or 410) becomes the 404 above.",
             "content": {
               "application/json": {
                 "schema": {
@@ -124472,6 +124482,9 @@
       },
       "SearchResponse": {
         "type": "object",
+        "required": [
+          "results"
+        ],
         "properties": {
           "results": {
             "type": "array",
@@ -124565,6 +124578,9 @@
       },
       "FetchResponse": {
         "type": "object",
+        "required": [
+          "content"
+        ],
         "properties": {
           "title": {
             "type": "string",
