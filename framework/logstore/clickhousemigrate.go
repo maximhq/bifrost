@@ -273,16 +273,42 @@ func clickhouseReconcileColumns(ctx context.Context, db *gorm.DB, model any, tab
 // clickhouseReconcileSkipIndexes ensures skip indexes exist on an already
 // created table. CREATE TABLE IF NOT EXISTS never adds indexes to an existing
 // table, so indexes introduced after a table shipped need this ALTER path.
+//
+// ADD INDEX only indexes parts written afterwards, so a newly added index is
+// also backfilled with MATERIALIZE INDEX. That mutation reads only the indexed
+// column and hardlinks the rest of each part, and mutations_sync = 0 overrides
+// the DSN's mutations_sync = 1 so the backfill runs in the background instead
+// of holding up startup. Indexes already on the table are left alone, so the
+// backfill is submitted once, not on every boot.
 func clickhouseReconcileSkipIndexes(ctx context.Context, db *gorm.DB, table, cluster string, skipIndexes []string, logger schemas.Logger) error {
+	var names []string
+	if err := db.WithContext(ctx).
+		Raw("SELECT name FROM system.data_skipping_indices WHERE database = currentDatabase() AND table = ?", table).
+		Scan(&names).Error; err != nil {
+		return fmt.Errorf("clickhouse: read skip indexes for %s: %w", table, err)
+	}
+	existing := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		existing[n] = struct{}{}
+	}
 	onCluster := ""
 	if cluster != "" {
 		onCluster = fmt.Sprintf(" ON CLUSTER `%s`", chEscapeIdentifier(cluster))
 	}
 	for _, index := range skipIndexes {
-		stmt := fmt.Sprintf("ALTER TABLE `%s`%s ADD INDEX IF NOT EXISTS %s", table, onCluster, strings.TrimPrefix(index, "INDEX "))
-		logger.Info("[logstore] clickhouse: ensuring skip index on %s", table)
+		def := strings.TrimPrefix(index, "INDEX ")
+		name, _, _ := strings.Cut(def, " ")
+		if _, ok := existing[name]; ok {
+			continue
+		}
+		logger.Info("[logstore] clickhouse: adding skip index %s on %s", name, table)
+		stmt := fmt.Sprintf("ALTER TABLE `%s`%s ADD INDEX IF NOT EXISTS %s", table, onCluster, def)
 		if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
-			return fmt.Errorf("clickhouse: add skip index on %s: %w", table, err)
+			return fmt.Errorf("clickhouse: add skip index %s on %s: %w", name, table, err)
+		}
+		stmt = fmt.Sprintf("ALTER TABLE `%s`%s MATERIALIZE INDEX `%s` SETTINGS mutations_sync = 0", table, onCluster, chEscapeIdentifier(name))
+		if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
+			return fmt.Errorf("clickhouse: materialize skip index %s on %s: %w", name, table, err)
 		}
 	}
 	return nil
@@ -392,6 +418,8 @@ func migrationClickHouseLogsTable(ctx context.Context, db *gorm.DB, cluster stri
 			"INDEX idx_logs_user_id user_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_selected_key_id selected_key_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_logs_id id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_logs_parent_request_id parent_request_id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &Log{}, opts, cluster); err != nil {
@@ -425,6 +453,7 @@ func migrationClickHouseAgentLogsTable(ctx context.Context, db *gorm.DB, cluster
 			"INDEX idx_agent_logs_operation operation TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_status status TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_agent_logs_record_kind record_kind TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_agent_logs_id id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &AgentLog{}, opts, cluster); err != nil {
@@ -453,6 +482,7 @@ func migrationClickHouseRelayLogsTable(ctx context.Context, db *gorm.DB, cluster
 			"INDEX idx_relay_logs_request_id request_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_relay_logs_job_id job_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_relay_logs_status status TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_relay_logs_id id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &RelayLog{}, opts, cluster); err != nil {
@@ -482,6 +512,7 @@ func migrationClickHouseMCPToolLogsTable(ctx context.Context, db *gorm.DB, clust
 			"INDEX idx_mcp_logs_tool_name tool_name TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_session_id session_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_mcp_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_mcp_logs_id id TYPE bloom_filter GRANULARITY 1",
 		},
 	}
 	if err := clickhouseCreateTable(ctx, db, &MCPToolLog{}, opts, cluster); err != nil {

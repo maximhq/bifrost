@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -610,6 +611,57 @@ func (s *ClickHouseLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Conte
 	})
 }
 
+// --- Point lookups by id ---
+
+// chLogTimestampWindow is how far either side of a FindByID timestamp hint the
+// lookup searches. The hint is a JSON round trip of the row's DateTime64(3), so
+// it is normally exact; the slack absorbs a client that rounded it to seconds.
+const chLogTimestampWindow = time.Second
+
+// chIDLookupContext lets a read whose selective predicate is the row id use the
+// id bloom filters under the connection-level FINAL. Before 25.x ClickHouse
+// ignores skip indexes under FINAL, because an index on a mutable column can
+// prune the granule holding a row's newest version while keeping an older one.
+// id is in every versioned table's dedup key and never rewritten
+// (chImmutableColumns), so all versions of a row match its id together.
+//
+// WithSettings replaces any settings already on ctx rather than merging them,
+// and the driver writes max_execution_time into the map, so it is built per call.
+func chIDLookupContext(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"use_skip_indexes_if_final": 1}))
+}
+
+// FindByID overrides the RDB lookup. A bare `WHERE id = ?` cannot use the
+// monthly partitions or the (timestamp, id) sort key, so without help
+// ClickHouse reads every granule of logs under FINAL. A timestamp hint on ctx
+// (LogTimestampContextKey) bounds the lookup to the granules around it; with no
+// hint, or one that matches nothing, the id bloom filter does the pruning.
+func (s *ClickHouseLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	idCtx := chIDLookupContext(ctx)
+	var log Log
+	if ts, ok := logTimestampFromContext(ctx); ok {
+		err := s.scopedLogsDB(idCtx).
+			Where("id = ?", id).
+			// Epoch millis, not time.Time: the driver binds time args at second precision (see chFilterMissing).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)",
+				ts.Add(-chLogTimestampWindow).UnixMilli(), ts.Add(chLogTimestampWindow).UnixMilli()).
+			First(&log).Error
+		if err == nil {
+			return s.withChildAggregates(ctx, log), nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if err := s.scopedLogsDB(idCtx).Where("id = ?", id).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return s.withChildAggregates(ctx, log), nil
+}
+
 // --- Updates (read-modify-write + re-insert) ---
 
 // Update applies an update (a column->value map, or a *Log/Log whose non-zero
@@ -621,7 +673,7 @@ func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) e
 	}
 	defer s.lockRMW("logs", id)()
 	var existing Log
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(chIDLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -676,7 +728,7 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 		if err := func() error {
 			defer s.lockRMWBatch("logs", chunk)()
 			var rows []*Log
-			if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			if err := s.db.WithContext(chIDLookupContext(ctx)).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 				return err
 			}
 			if len(rows) == 0 {
@@ -727,7 +779,7 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 	return forEachRMWChunk(ids, func(chunk []string) error {
 		defer s.lockRMWBatch("logs", chunk)()
 		var rows []*Log
-		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(chIDLookupContext(ctx)).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 			return err
 		}
 		if len(rows) == 0 {
@@ -761,7 +813,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 	}
 	defer s.lockRMW("agent_logs", id)()
 	var existing AgentLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(chIDLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -787,7 +839,7 @@ func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, upda
 	}
 	defer s.lockRMW("relay_logs", id)()
 	var existing RelayLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(chIDLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -807,7 +859,7 @@ func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, en
 	}
 	defer s.lockRMW("mcp_tool_logs", id)()
 	var existing MCPToolLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(chIDLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}

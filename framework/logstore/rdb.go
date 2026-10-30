@@ -4676,17 +4676,22 @@ func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
 		}
 		return nil, err
 	}
-	// The list rolls a row's children up into ChildrenCost, and a request whose cost
-	// was settled onto a child row has none of its own — so without this the detail
-	// view of a video generation or a batch shows no cost at all while the list
-	// beside it shows one. No filters here: a single row is addressed by id, so the
-	// rollup covers every child rather than only those in some window.
+	return s.withChildAggregates(ctx, log), nil
+}
+
+// withChildAggregates returns a single row found by id with its child rollup
+// attached. The list rolls a row's children up into ChildrenCost, and a request
+// whose cost was settled onto a child row has none of its own — so without this
+// the detail view of a video generation or a batch shows no cost at all while
+// the list beside it shows one. No filters here: a single row is addressed by
+// id, so the rollup covers every child rather than only those in some window.
+func (s *RDBLogStore) withChildAggregates(ctx context.Context, log Log) *Log {
 	rows := []Log{log}
 	if err := s.attachChildAggregates(ctx, rows, SearchFilters{}); err != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", id, err))
-		return &log, nil
+		s.logger.Warn(fmt.Sprintf("logstore: child aggregates unavailable for log %s, returning it without them: %s", log.ID, err))
+		return &log
 	}
-	return &rows[0], nil
+	return &rows[0]
 }
 
 // IsLogEntryPresent checks if a log entry is present in the database.

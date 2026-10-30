@@ -515,6 +515,109 @@ func TestClickHouseCreateAndFind(t *testing.T) {
 	require.NoError(t, store.Ping(ctx))
 }
 
+// chSelectedParts returns how many parts ClickHouse read for the most recent
+// finished SELECT on logs whose text contains marker. Fails the test when no
+// such query was logged, so a lookup that stops being issued cannot pass.
+func chSelectedParts(t *testing.T, db *gorm.DB, marker string) uint64 {
+	t.Helper()
+	require.NoError(t, db.Exec("SYSTEM FLUSH LOGS").Error)
+	var parts []uint64
+	require.NoError(t, db.Raw(`SELECT ProfileEvents['SelectedParts'] FROM system.query_log
+		WHERE type = 'QueryFinish' AND current_database = currentDatabase() AND query_kind = 'Select'
+		AND has(tables, currentDatabase() || '.logs') AND position(query, ?) > 0
+		AND event_time > now() - INTERVAL 5 MINUTE
+		ORDER BY event_time_microseconds DESC LIMIT 1`, marker).Scan(&parts).Error)
+	require.Len(t, parts, 1, "no finished SELECT on logs containing %q in system.query_log", marker)
+	return parts[0]
+}
+
+// TestClickHouseIDLookupsPruneParts covers #9316: a lookup by id alone could
+// use neither the monthly partitions nor the (timestamp, id) sort key, so
+// FindByID and every update's read-modify-write read scanned all of logs.
+//
+// Every part holds rows at more than one timestamp, as real parts do: a part
+// with a single timestamp lets the sort key bound its ids and hides the scan.
+// The bloom filter hashes are deterministic, so these fixed ids never flake.
+func TestClickHouseIDLookupsPruneParts(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	months := []time.Time{now.AddDate(0, -2, 0), now.AddDate(0, -1, 0), now}
+	for i, ts := range months {
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{
+			chTestLog(fmt.Sprintf("ch-prune-filler-%d-a", i), ts.Add(-time.Hour)),
+			chTestLog(fmt.Sprintf("ch-prune-filler-%d-b", i), ts.Add(-50*time.Minute)),
+		}))
+	}
+	target := months[1]
+	ids := map[string]time.Time{
+		"ch-prune-hinted":    target.Add(time.Minute),
+		"ch-prune-id-only":   target.Add(2 * time.Minute),
+		"ch-prune-update":    target.Add(3 * time.Minute),
+		"ch-prune-stale":     target.Add(4 * time.Minute),
+		"ch-prune-companion": target.Add(5 * time.Minute),
+	}
+	batch := make([]*Log, 0, len(ids))
+	for id, ts := range ids {
+		batch = append(batch, chTestLog(id, ts))
+	}
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, batch))
+	var parts uint64
+	require.NoError(t, store.db.Raw("SELECT count() FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active").Scan(&parts).Error)
+	require.Equal(t, uint64(4), parts, "rows must land in four parts for pruning to be observable")
+
+	hinted := context.WithValue(ctx, LogTimestampContextKey, ids["ch-prune-hinted"])
+	found, err := store.FindByID(hinted, "ch-prune-hinted")
+	require.NoError(t, err)
+	assert.Equal(t, "ch-prune-hinted", found.ID)
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "id = 'ch-prune-hinted'"), "timestamp hint must prune to the row's part")
+
+	found, err = store.FindByID(ctx, "ch-prune-id-only")
+	require.NoError(t, err)
+	assert.Equal(t, "ch-prune-id-only", found.ID)
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "id = 'ch-prune-id-only'"), "id bloom filter must prune an unhinted lookup under FINAL")
+
+	require.NoError(t, store.Update(ctx, "ch-prune-update", map[string]interface{}{"status": "success"}))
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "id = 'ch-prune-update'"), "Update's read must prune by id")
+
+	// A hint that misses the row (an old link, a client clock) still finds it.
+	stale := context.WithValue(ctx, LogTimestampContextKey, months[0])
+	found, err = store.FindByID(stale, "ch-prune-stale")
+	require.NoError(t, err)
+	assert.Equal(t, "ch-prune-stale", found.ID)
+	assert.True(t, found.Timestamp.Equal(ids["ch-prune-stale"]))
+
+	_, err = store.FindByID(hinted, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestClickHouseReconcileSkipIndexesMaterializesNewIndex covers the upgrade
+// path for #9316: an index added to a table that already holds data must be
+// backfilled onto the existing parts, once, without blocking startup.
+func TestClickHouseReconcileSkipIndexesMaterializesNewIndex(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	for _, idx := range []string{"idx_logs_id", "idx_logs_parent_request_id", "idx_agent_logs_id", "idx_relay_logs_id", "idx_mcp_logs_id"} {
+		var n int64
+		require.NoError(t, store.db.Raw("SELECT count() FROM system.data_skipping_indices WHERE database = currentDatabase() AND name = ?", idx).Scan(&n).Error)
+		assert.Equal(t, int64(1), n, "migration must create skip index %s", idx)
+	}
+
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-materialize-1", time.Now().UTC())))
+	require.NoError(t, store.db.Exec("ALTER TABLE logs DROP INDEX IF EXISTS idx_logs_id").Error)
+	indexes := []string{"INDEX idx_logs_id id TYPE bloom_filter GRANULARITY 1"}
+
+	before := chMutationIDs(t, store.db, "logs")
+	require.NoError(t, clickhouseReconcileSkipIndexes(ctx, store.db, "logs", "", indexes, testLogger{}))
+	cmds := chNewMutationCommands(t, store.db, "logs", before)
+	require.Len(t, cmds, 1, "re-adding the index must submit exactly one backfill")
+	assert.Contains(t, cmds[0], "MATERIALIZE INDEX idx_logs_id")
+
+	before = chMutationIDs(t, store.db, "logs")
+	require.NoError(t, clickhouseReconcileSkipIndexes(ctx, store.db, "logs", "", indexes, testLogger{}))
+	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", before), "an index already on the table must not be backfilled again")
+}
+
 func TestClickHouseIdempotentCreate(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
