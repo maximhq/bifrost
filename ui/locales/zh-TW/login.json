@@ -47,6 +47,10 @@
 		"inMinutes": "{{count}} 分鐘後",
 		"invalidTitle": "此連結已失效",
 		"invalidBody": "授權連結已過期、已被使用，或其令牌已被剝離。請從 MCP 客戶端重新啟動連線以獲取新連結。",
-		"recognizeApplication": "僅當您認識到此應用程式及其回調目標時才繼續："
+		"recognizeApplication": "僅當您認識到此應用程式及其回調目標時才繼續：",
+		"publishedBy": "發布者：<code0>{{host}}</code0>",
+		"localhostWarning": "此應用程式只會返回您自己的電腦，因此無法驗證其名稱。任何在本機執行的應用程式都可能使用它。",
+		"signInRequiredBody": "此授權需要已登入的 Bifrost 帳號。正在帶您前往登入，完成後會直接返回此處。",
+		"signInToBifrost": "登入 Bifrost"
 	}
 }

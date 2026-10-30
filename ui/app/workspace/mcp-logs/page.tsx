@@ -404,7 +404,7 @@ export default function MCPLogsPage() {
 				icon: <DollarSign className="size-4" />,
 			},
 		],
-		[statsData],
+		[statsData, t],
 	);
 
 	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();

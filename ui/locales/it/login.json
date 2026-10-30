@@ -47,6 +47,10 @@
 		"inMinutes": "tra {{count}} minuti",
 		"invalidTitle": "Questo link non è più valido",
 		"invalidBody": "Il link di autorizzazione è scaduto, è già stato usato o il token è stato rimosso. Riavvia la connessione dal tuo client MCP per ottenere un nuovo link.",
-		"recognizeApplication": "Continua solo se riconosci questa applicazione e la sua destinazione di callback:"
+		"recognizeApplication": "Continua solo se riconosci questa applicazione e la sua destinazione di callback:",
+		"publishedBy": "Pubblicato da <code0>{{host}}</code0>",
+		"localhostWarning": "Questa applicazione reindirizza solo al tuo computer, quindi il suo nome non può essere verificato. Qualsiasi app in esecuzione in locale potrebbe usarla.",
+		"signInRequiredBody": "Questa autorizzazione richiede un account Bifrost con accesso effettuato. Ti portiamo all'accesso e poi tornerai direttamente qui.",
+		"signInToBifrost": "Accedi a Bifrost"
 	}
 }

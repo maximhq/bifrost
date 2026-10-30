@@ -47,6 +47,10 @@
 		"inMinutes": "em {{count}} minutos",
 		"invalidTitle": "Esta ligação já não é válida",
 		"invalidBody": "A ligação de autorização expirou, já foi utilizada ou o respetivo token foi removido. Reinicie a ligação a partir do seu cliente MCP para obter uma nova.",
-		"recognizeApplication": "Continue apenas se reconhecer esta aplicação e o seu destino de callback:"
+		"recognizeApplication": "Continue apenas se reconhecer esta aplicação e o seu destino de callback:",
+		"publishedBy": "Publicado por <code0>{{host}}</code0>",
+		"localhostWarning": "Esta aplicação só regressa ao seu próprio computador, pelo que o nome não pode ser verificado. Qualquer aplicação executada localmente poderia utilizá-la.",
+		"signInRequiredBody": "Esta autorização requer uma conta Bifrost com sessão iniciada. Vai ser encaminhado para iniciar sessão e regressará diretamente aqui.",
+		"signInToBifrost": "Iniciar sessão no Bifrost"
 	}
 }

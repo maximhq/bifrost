@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { ComboboxSelect, type ComboboxSelectOption } from "@/components/ui/combobox";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { DEFAULT_PAGE_SIZE_OPTIONS, useTablePageSizePreference } from "@/lib/hooks/useTablePageSizePreference";
+import { getLocale } from "@/lib/i18n";
 import type { DisplayLogEntry, LogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import type { ColumnOrderState, ColumnPinningState, TableMeta, VisibilityState } from "@tanstack/react-table";
@@ -322,7 +323,11 @@ export function LogsDataTable({
 			{/* Pagination Footer */}
 			<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 				<div className="text-muted-foreground flex items-center gap-2">
-					{t("logs.entryRange", { start: startItem.toLocaleString(), end: endItem.toLocaleString(), total: totalItems.toLocaleString() })}
+					{t("logs.entryRange", {
+						start: startItem.toLocaleString(getLocale()),
+						end: endItem.toLocaleString(getLocale()),
+						total: totalItems.toLocaleString(getLocale()),
+					})}
 				</div>
 
 				<div className="flex items-center gap-3">

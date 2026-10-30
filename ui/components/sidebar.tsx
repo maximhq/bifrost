@@ -380,8 +380,7 @@ const SidebarItemView = ({
 							const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
 							const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 							const SubItemIcon = subItem.icon;
-							const subId = subItem.testId ?? subItem.id;
-							const subSlug = slug(subItem.title);
+							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
 								<div className="flex min-w-0 items-center gap-2.5">
 									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />}
@@ -460,7 +459,7 @@ const SidebarItemView = ({
 								{subItem.hasAccess === false ? (
 									<SidebarMenuSubButton
 										data-nav-url={subItemHref}
-										data-testid={`sidebar-subitem-disabled-${subItem.testId ?? subItem.id}`}
+										data-testid={`sidebar-subitem-disabled-${subItem.testId ?? slug(subItem.title)}`}
 										className={subItemClassName}
 										aria-disabled="true"
 									>
@@ -472,7 +471,7 @@ const SidebarItemView = ({
 											to={subItemHref}
 											preload="intent"
 											data-nav-url={subItemHref}
-											data-testid={`sidebar-subitem-link-${subItem.testId ?? subItem.id}`}
+											data-testid={`sidebar-subitem-link-${subItem.testId ?? slug(subItem.title)}`}
 										>
 											{subInner}
 										</Link>
@@ -660,6 +659,7 @@ export default function AppSidebar() {
 			...(IS_ENTERPRISE
 				? [
 						{
+							id: "home",
 							title: t("nav.home"),
 							url: "/workspace/home",
 							icon: House,
@@ -705,6 +705,7 @@ export default function AppSidebar() {
 						hasAccess: hasMCPLogsAccess,
 					},
 					{
+						id: "observability.agent-logs",
 						title: t("nav.agentLogs"),
 						url: "/workspace/agent-logs",
 						icon: Bot,
@@ -712,6 +713,7 @@ export default function AppSidebar() {
 						hasAccess: hasAgentLogsAccess,
 					},
 					{
+						id: "observability.relay-logs",
 						title: t("nav.relayLogs"),
 						url: "/workspace/relay-logs",
 						icon: Waypoints,
@@ -719,6 +721,7 @@ export default function AppSidebar() {
 						hasAccess: hasRelayLogsAccess,
 					},
 					{
+						id: "observability.connectors",
 						title: t("nav.connectors"),
 						url: "/workspace/observability",
 						icon: ChevronsLeftRightEllipsis,
@@ -800,6 +803,7 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				id: "mcp",
 				title: t("nav.mcpGateway"),
 				testId: "mcp-gateway", // keep the pre-rename E2E selector stable
 				icon: MCPIcon,
@@ -854,6 +858,7 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				id: "agents",
 				title: t("nav.agents"),
 				url: "/workspace/agent-gateway",
 				icon: Bot,
@@ -861,6 +866,7 @@ export default function AppSidebar() {
 				hasAccess: hasAgentGatewayAccess,
 				subItems: [
 					{
+						id: "agents.catalog",
 						title: t("nav.agentCatalog"),
 						url: "/workspace/agent-gateway",
 						icon: LayoutGrid,
@@ -868,6 +874,7 @@ export default function AppSidebar() {
 						hasAccess: hasAgentGatewayAccess,
 					},
 					{
+						id: "agents.push-configurations",
 						title: t("nav.pushConfigurations"),
 						url: "/workspace/agent-gateway/push-configs",
 						icon: Webhook,
@@ -875,6 +882,7 @@ export default function AppSidebar() {
 						hasAccess: hasAgentGatewayAccess,
 					},
 					{
+						id: "agents.settings",
 						title: t("nav.agentSettings"),
 						url: "/workspace/config/agent-gateway",
 						icon: Settings,
@@ -884,6 +892,7 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				id: "relays",
 				title: t("nav.relays"),
 				url: "/workspace/relays",
 				icon: Waypoints,
@@ -891,6 +900,7 @@ export default function AppSidebar() {
 				hasAccess: hasRelaysAccess,
 			},
 			{
+				id: "plugins",
 				title: t("nav.plugins"),
 				url: "/workspace/plugins",
 				icon: Puzzle,
@@ -941,6 +951,7 @@ export default function AppSidebar() {
 						hasAccess: hasVirtualKeysAccess,
 					},
 					{
+						id: "governance.org-chart",
 						title: t("nav.orgChart"),
 						url: "/workspace/governance/org-chart",
 						icon: Network,
@@ -950,6 +961,7 @@ export default function AppSidebar() {
 						new: true,
 					},
 					{
+						id: "governance.users",
 						title: t("nav.users"),
 						url: "/workspace/governance/users",
 						icon: Users,
@@ -1036,6 +1048,7 @@ export default function AppSidebar() {
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
 					{
+						id: "guardrails.incidents",
 						title: t("nav.incidents"),
 						url: "/workspace/guardrails/incidents",
 						icon: TriangleAlert,
@@ -1082,6 +1095,7 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				id: "cluster",
 				title: t("nav.cluster"),
 				url: "/workspace/cluster",
 				icon: Network,
@@ -1089,6 +1103,7 @@ export default function AppSidebar() {
 				hasAccess: hasClusterConfigAccess,
 				subItems: [
 					{
+						id: "cluster.nodes",
 						title: t("nav.clusterNodes"),
 						url: "/workspace/cluster/overview",
 						icon: Server,
@@ -1096,6 +1111,7 @@ export default function AppSidebar() {
 						hasAccess: hasClusterConfigAccess,
 					},
 					{
+						id: "cluster.storage",
 						title: t("nav.clusterStorage"),
 						url: "/workspace/cluster/storage",
 						icon: Database,
@@ -1103,6 +1119,7 @@ export default function AppSidebar() {
 						hasAccess: hasClusterConfigAccess,
 					},
 					{
+						id: "cluster.incidents",
 						title: t("nav.incidents"),
 						url: "/workspace/cluster/incidents",
 						icon: TriangleAlert,
@@ -1110,6 +1127,7 @@ export default function AppSidebar() {
 						hasAccess: hasClusterConfigAccess,
 					},
 					{
+						id: "cluster.settings",
 						title: t("nav.settings"),
 						url: "/workspace/cluster/settings",
 						icon: Settings,
@@ -1134,6 +1152,7 @@ export default function AppSidebar() {
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
+						id: "adaptive.incidents",
 						title: t("nav.incidents"),
 						url: "/workspace/adaptive-routing/incidents",
 						icon: TriangleAlert,
@@ -1141,6 +1160,7 @@ export default function AppSidebar() {
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
+						id: "adaptive.settings",
 						title: t("nav.adaptiveRoutingSettings"),
 						url: "/workspace/adaptive-routing/settings",
 						icon: Settings,
@@ -1159,6 +1179,7 @@ export default function AppSidebar() {
 							hasAccess: hasPromptRepositoryAccess,
 						},
 						{
+							id: "skills",
 							title: t("nav.skills"),
 							url: "/workspace/skills-repo",
 							icon: BookOpenText,
@@ -1166,6 +1187,7 @@ export default function AppSidebar() {
 							hasAccess: hasSkillsRepositoryAccess || hasSettingsAccess,
 							subItems: [
 								{
+									id: "skills.repository",
 									title: t("nav.skillsRepository"),
 									url: "/workspace/skills-repo",
 									icon: BookOpenText,
@@ -1173,6 +1195,7 @@ export default function AppSidebar() {
 									hasAccess: hasSkillsRepositoryAccess,
 								},
 								{
+									id: "skills.settings",
 									title: t("nav.skillsSettings"),
 									url: "/workspace/config/skills",
 									icon: Settings,
@@ -1220,6 +1243,7 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 					{
+						id: "settings.warp",
 						title: t("nav.warp"),
 						url: "/workspace/config/warp",
 						icon: WarpNavIcon,
@@ -1676,6 +1700,7 @@ export default function AppSidebar() {
 		onboardingSteps.length,
 		onboardingDoneCount,
 		handleResumeOnboarding,
+		t,
 	]);
 
 	const handlePromoDismiss = useCallback(

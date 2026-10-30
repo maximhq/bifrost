@@ -47,6 +47,10 @@
 		"inMinutes": "{{count}} 分後",
 		"invalidTitle": "このリンクは無効です",
 		"invalidBody": "認可リンクの期限切れ、使用済み、またはトークンが除去されています。MCP クライアントから接続を再開して新しいリンクを取得してください。",
-		"recognizeApplication": "このアプリケーションとコールバック先に心当たりがある場合のみ続行してください："
+		"recognizeApplication": "このアプリケーションとコールバック先に心当たりがある場合のみ続行してください：",
+		"publishedBy": "発行元: <code0>{{host}}</code0>",
+		"localhostWarning": "このアプリケーションはお使いのコンピューターにのみ戻るため、名前を検証できません。ローカルで実行されているどのアプリでも使用できます。",
+		"signInRequiredBody": "この認可には、サインイン済みの Bifrost アカウントが必要です。サインイン画面に移動し、完了後すぐにここへ戻ります。",
+		"signInToBifrost": "Bifrost にサインイン"
 	}
 }

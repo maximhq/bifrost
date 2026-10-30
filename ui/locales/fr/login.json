@@ -47,6 +47,10 @@
 		"inMinutes": "dans {{count}} minutes",
 		"invalidTitle": "Ce lien n’est plus valide",
 		"invalidBody": "Le lien d’autorisation a expiré, a déjà été utilisé, ou son jeton a été retiré. Relancez la connexion depuis votre client MCP pour obtenir un nouveau lien.",
-		"recognizeApplication": "Continuez uniquement si vous reconnaissez cette application et sa destination de rappel :"
+		"recognizeApplication": "Continuez uniquement si vous reconnaissez cette application et sa destination de rappel :",
+		"publishedBy": "Publié par <code0>{{host}}</code0>",
+		"localhostWarning": "Cette application ne redirige que vers votre propre ordinateur, son nom ne peut donc pas être vérifié. N'importe quelle application exécutée localement pourrait l'utiliser.",
+		"signInRequiredBody": "Cette autorisation nécessite un compte Bifrost connecté. Vous allez être redirigé vers la connexion, puis ramené directement ici.",
+		"signInToBifrost": "Se connecter à Bifrost"
 	}
 }

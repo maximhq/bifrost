@@ -38,7 +38,11 @@ export function getLocale(): SupportedLocale {
 export async function changeLocale(locale: SupportedLocale): Promise<SupportedLocale> {
 	await i18n.changeLanguage(locale);
 	if (typeof window !== "undefined") {
-		window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+		try {
+			window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+		} catch {
+			// Storage blocked or full: the language still applies for this session.
+		}
 	}
 	return getLocale();
 }
