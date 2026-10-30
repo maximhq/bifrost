@@ -4293,7 +4293,7 @@ const NO_FLOW = "OAuth flow not found";
 const AUTH27 = folder("AUTH-27 per_user_oauth create with admin verification", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth27")}, created and verified by consenting as admin.`, [
   ...puConfig("AUTH-27", false),
   ...asServer("AUTH-27", "auth27"),
-  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration")]),
+  createOAuth("AUTH-27", "create the per-user OAuth client", puBody("auth27"), "auth27", [statusIs("pending_oauth"), messageStarts("Test OAuth configuration"), A.skip(A.custom("the message does not say the login \"will not be saved\"", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.not.include('will not be saved');"]))]),
   consentAs("AUTH-27", "consent as admin", "auth27", "admin"),
   followCallback("AUTH-27", "follow the callback", "auth27", callbackSuccess()),
   completeOAuth("AUTH-27", "complete", "auth27", [A.status(200), messageStarts("OAuth configuration verified successfully. 2 tools discovered")]),
@@ -4729,6 +4729,26 @@ const CONN25 = folder("CONN-25 OpenAPI credentials", `Setup: admin credentials; 
   deleteClient("CONN-25", "conn25h-c"),
   deleteClient("CONN-25", "conn25k-c"),
   deleteClient("CONN-25", "conn25u-c"),
+]);
+
+const CONN27_CRED = { KeyAuth: { value: "k-admin" } };
+// deleteIfPresent removes a client that a known issue may have let through; once it is fixed there is nothing to delete.
+const deleteIfPresent = (id, clientId) => request(id, `teardown: delete client ${clientId} if it exists`, "DELETE", `/api/mcp/client/${clientId}`, {
+  asserts: [A.custom("status is 200 or 404", ["pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.oneOf([200, 404]);"])],
+});
+const CONN27 = folder("CONN-27 OpenAPI per_user_headers with spec credentials is refused", `Setup: admin credentials; fleet server conn27 with a REST surface; ${PETS_TEXT}, with an apiKey scheme KeyAuth sent in header X-Key, and the credential k-admin for it.`, [
+  ...freshServer("CONN-27", "conn27", ["echo_tool"]),
+  createExpect("CONN-27", "create a per_user_headers OpenAPI client with security_credentials", oasClient("conn27u-c", "conn27u", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.skip(A.status(400))]),
+  request("CONN-27", "no per_user_headers client with security_credentials was created", "GET", "/api/mcp/clients?server=conn27u-c", { asserts: [A.status(200), A.skip(A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"]))] }),
+  deleteIfPresent("CONN-27", "conn27u-c"),
+  createExpect("CONN-27", "control: create an auth_type none OpenAPI client with the same security_credentials", oasClient("conn27n-c", "conn27n", "conn27", {}, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(200)]),
+  request("CONN-27", "control: PUT security_credentials onto the auth_type none client", "PUT", "/api/mcp/client/conn27n-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.status(200)] }),
+  createClient("CONN-27", oasClient("conn27p-c", "conn27p", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY }), "setup: create a per_user_headers OpenAPI client without security_credentials"),
+  request("CONN-27", "control: PUT openapi_config with only its base_url onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { base_url: REST("conn27") } }, asserts: [A.status(200)] }),
+  request("CONN-27", "PUT security_credentials onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.skip(A.status(400))] }),
+  getClient("CONN-27", "conn27p-c", "the per_user_headers client keeps no security_credentials", [A.skip(A.custom("openapi_config has no security_credentials", ["var oc = pm.response.json().clients[0].config.openapi_config || {};", "pm.expect(Object.keys(oc.security_credentials || {}), 'body: ' + pm.response.text()).to.eql([]);"]))]),
+  deleteClient("CONN-27", "conn27n-c"),
+  deleteClient("CONN-27", "conn27p-c"),
 ]);
 
 // ================================================================ the MCP library against the mock's HTTP catalog
@@ -6090,6 +6110,59 @@ const ADM68 = folder("ADM-68 verify-headers activates the admin credential", `Se
   deleteClient("ADM-68", "adm68-h"),
 ]);
 
+// pollClientTools re-reads one client every 500ms until it lists n tools or a deadline passes: seconds after the time
+// (ms) kept in t0Var, or after the poll starts without one. It keeps how long after that time the client first listed n
+// tools in <clientId>_seen_ms, or -1 when it never did.
+const pollClientTools = (clientId, n, seconds, t0Var) => [
+  `var t0 = ${t0Var ? `Number(pm.collectionVariables.get(${lit(t0Var)}))` : "Date.now()"};`,
+  `var deadline = t0 + ${seconds * 1000};`,
+  `pm.collectionVariables.set(${lit(clientId + "_seen_ms")}, -1);`,
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var c = !err && res.code === 200 ? (res.json().clients || [])[0] : null;",
+  `    if (c && (c.tools || []).length >= ${n}) { pm.collectionVariables.set(${lit(clientId + "_seen_ms")}, Date.now() - t0); return; }`,
+  "    if (Date.now() >= deadline) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+// seenWithin checks the client polled by pollClientTools listed the tools within seconds of the kept time.
+const seenWithin = (clientId, seconds) => A.custom(`it first listed them within ${seconds}s of the add`, [
+  `var ms = Number(pm.collectionVariables.get(${lit(clientId + "_seen_ms")}));`,
+  "pm.expect(ms, 'ms after the add (-1: never)').to.be.at.least(0);",
+  `pm.expect(ms, 'ms after the add').to.be.at.most(${seconds * 1000});`,
+]);
+const SYNC_5S = configField("tool_sync_interval", 5000000000);
+const ADM86_TOOLS = ["add_tool", "echo_tool", "extra_tool"];
+const ADM86 = folder("ADM-86 Verifying a pending client starts its tool sync", `Setup: admin credentials; ${OAUTH_SERVER_TEXT} (adm86o); fleet server adm86h (echo_tool, add_tool) requires x-key: good; ${BOOT_TEXT("adm86-h", "a per_user_headers", "adm86h")}, per_user_header_keys ["x-key"]; ${BOOT_TEXT("adm86-o", "a per_user_oauth", "adm86o")}; client adm86-c, declared in config.json as a headers client on adm86h sending x-key: good; all three with tool_sync_interval "5s".`, [
+  ...allowlistOn("ADM-86"),
+  ...freshServer("ADM-86", "adm86h", ["echo_tool", "add_tool"]),
+  mockAuth("ADM-86", "adm86h", "setup: adm86h requires x-key: good", { require_headers: { "x-key": "good" } }),
+  ...asServer("ADM-86", "adm86o"),
+  getClient("ADM-86", "adm86-h", "control: the per_user_headers client is pending_verification, syncing every 5s", [clientState("pending_verification"), SYNC_5S]),
+  getClient("ADM-86", "adm86-o", "control: the per_user_oauth client is pending_verification, syncing every 5s", [clientState("pending_verification"), SYNC_5S]),
+  getClient("ADM-86", "adm86-c", "control: the config.json headers client syncs every 5s and first lists add_tool and echo_tool", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), SYNC_5S], { pre: pollClientTools("adm86-c", 2, 30) }),
+  verifyHeaders("ADM-86", "verify-headers with x-key good", "adm86-h", { "x-key": "good" }, [A.status(200), A.jsonEquals("tools_count", 2)]),
+  clientPost("ADM-86", "initiate-verification on the per_user_oauth client", "adm86-o", "initiate-verification", [A.status(200), statusIs("pending_oauth")], {
+    extraTests: ["pm.collectionVariables.set('adm86o_oc', pm.response.json().oauth_config_id);", "pm.collectionVariables.set('adm86o_au', pm.response.json().authorize_url);"],
+  }),
+  consentAs("ADM-86", "consent as admin", "adm86o", "admin"),
+  followCallback("ADM-86", "follow the callback", "adm86o", callbackSuccess()),
+  completeOAuth("ADM-86", "complete", "adm86o", [A.status(200), messageStarts("OAuth credentials updated and verified successfully. 2 tools discovered")]),
+  getClient("ADM-86", "adm86-h", "the per_user_headers client is healthy with two tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  getClient("ADM-86", "adm86-o", "the per_user_oauth client is healthy with two tools", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  request("ADM-86", "adm86h adds extra_tool", "POST", "/control/adm86h/tools/add", { base: CHAOS, noAuth: true, body: { tool: { name: "extra_tool" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm86_t0', Date.now());"] }),
+  mockPost("ADM-86", "adm86o", "tools/add", "adm86o adds extra_tool", { tool: { name: "extra_tool" } }),
+  getClient("ADM-86", "adm86-c", "control: the config.json headers client lists extra_tool within 30s", [toolNamesAre(ADM86_TOOLS), seenWithin("adm86-c", 30)], { pre: pollClientTools("adm86-c", 3, 30, "adm86_t0") }),
+  getClient("ADM-86", "adm86-h", "the per_user_headers client lists extra_tool within 20s", [A.skip(toolNamesAre(ADM86_TOOLS)), A.skip(seenWithin("adm86-h", 20))], { pre: pollClientTools("adm86-h", 3, 20, "adm86_t0") }),
+  getClient("ADM-86", "adm86-o", "the per_user_oauth client lists extra_tool within 20s", [A.skip(toolNamesAre(ADM86_TOOLS)), A.skip(seenWithin("adm86-o", 20))], { pre: pollClientTools("adm86-o", 3, 20, "adm86_t0") }),
+  deleteClient("ADM-86", "adm86-c"),
+  deleteClient("ADM-86", "adm86-h"),
+  deleteClient("ADM-86", "adm86-o"),
+  restoreConfig("ADM-86"),
+]);
+
 // ================================================================ per-user header credentials, flows and the sessions list
 
 const HDR_FLOWS = "/api/mcp/per-user-headers/flows/";
@@ -6968,9 +7041,9 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM86]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
-    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP52, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
