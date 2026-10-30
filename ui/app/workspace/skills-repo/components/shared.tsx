@@ -93,6 +93,7 @@ export function HeaderMetaItem({
 
 /** Shows the description clamped to 3 lines with a Show more/less toggle when it overflows. */
 function ClampedDescription({ description }: { description: string }) {
+	const { t } = useTranslation("config");
 	const [expanded, setExpanded] = useState(false);
 	const [isOverflowing, setIsOverflowing] = useState(false);
 	const textRef = useRef<HTMLParagraphElement>(null);
@@ -122,7 +123,7 @@ function ClampedDescription({ description }: { description: string }) {
 						onClick={() => setExpanded(false)}
 						className="ml-1 cursor-pointer text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
 					>
-						Show less
+						{t("skillsRepo.showLess")}
 					</button>
 				)}
 			</p>
@@ -133,7 +134,7 @@ function ClampedDescription({ description }: { description: string }) {
 					className="bg-card absolute right-0 bottom-0 cursor-pointer pr-4 pl-8 text-xs font-medium text-blue-600 transition-colors hover:underline dark:text-blue-400"
 				>
 					<span className="from-card pointer-events-none absolute top-0 right-full h-full w-8 bg-gradient-to-l to-transparent" />
-					Show more
+					{t("skillsRepo.showMore")}
 				</button>
 			)}
 		</div>

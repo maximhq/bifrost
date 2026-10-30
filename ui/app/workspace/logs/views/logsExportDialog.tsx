@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { downloadCSV } from "@/lib/utils/csv";
 import { Download, Loader2, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
 	DEFAULT_MAX_EXPORT_LIMIT,
@@ -47,6 +48,8 @@ export function LogsExportDialog({
 	order = "desc",
 	grouped = false,
 }: LogsExportDialogProps) {
+	const { t } = useTranslation("observability");
+	const { t: tCommon } = useTranslation("common");
 	const [exportScope, setExportScope] = useState<LogsExportScope>("current_page");
 	const [exportMaxLimit, setExportMaxLimit] = useState("");
 	const [isExporting, setIsExporting] = useState(false);
@@ -82,7 +85,7 @@ export function LogsExportDialog({
 			exportRunRef.current++;
 			setIsExporting(false);
 			setProgress(null);
-			toast.info("Export cancelled", { id: "logs-export-cancel" });
+			toast.info(t("logs.export.toastCancelled"), { id: "logs-export-cancel" });
 		} else {
 			onOpenChange(false);
 		}
@@ -91,12 +94,12 @@ export function LogsExportDialog({
 	const handleExport = async () => {
 		if (exportScope === "current_page") {
 			if (currentPageLogs.length === 0) {
-				toast.info("No logs on the current page to export");
+				toast.info(t("logs.export.toastNoLogsOnPage"));
 				return;
 			}
 			const csv = logsToCSV(currentPageLogs);
 			downloadCSV(csv, "logs");
-			toast.success(`Exported ${currentPageLogs.length} logs`);
+			toast.success(t("logs.export.toastExported", { count: currentPageLogs.length }));
 			onOpenChange(false);
 			return;
 		}
@@ -104,13 +107,13 @@ export function LogsExportDialog({
 		// Scope: All matching entries (client-side batched collection)
 		const userCap = exportMaxLimit ? Number(exportMaxLimit) : undefined;
 		if (userCap !== undefined && (!Number.isInteger(userCap) || userCap < 1)) {
-			toast.error("Max entries must be a whole number of at least 1");
+			toast.error(t("logs.export.toastInvalidMax"));
 			return;
 		}
 		const targetTotal = calculateExportTargetCount(totalLogs, userCap);
 
 		if (targetTotal === 0 || totalLogs === 0) {
-			toast.info("No logs matched the selected filters to export");
+			toast.info(t("logs.export.toastNoMatch"));
 			return;
 		}
 
@@ -148,23 +151,23 @@ export function LogsExportDialog({
 			});
 
 			if (isRunCancelled()) {
-				toast.info("Export cancelled", { id: "logs-export-cancel" });
+				toast.info(t("logs.export.toastCancelled"), { id: "logs-export-cancel" });
 				return;
 			}
 
 			if (collectedLogs.length === 0) {
-				toast.info("No logs matched the selected filters to export");
+				toast.info(t("logs.export.toastNoMatch"));
 				onOpenChange(false);
 				return;
 			}
 
 			const csv = logsToCSV(collectedLogs);
 			downloadCSV(csv, "logs");
-			toast.success(`Exported ${collectedLogs.length} logs`);
+			toast.success(t("logs.export.toastExported", { count: collectedLogs.length }));
 			onOpenChange(false);
 		} catch (error) {
 			if (!isRunCancelled()) {
-				toast.error(`Export failed: ${getErrorMessage(error)}`);
+				toast.error(t("logs.export.toastFailed", { error: getErrorMessage(error) }));
 			}
 		} finally {
 			if (!isRunCancelled()) {
@@ -178,13 +181,13 @@ export function LogsExportDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="sm:max-w-[425px]">
 				<DialogHeader className="pb-0">
-					<DialogTitle>Export Logs</DialogTitle>
-					<DialogDescription>Download logs as CSV with current filters and sorting applied.</DialogDescription>
+					<DialogTitle>{t("logs.export.title")}</DialogTitle>
+					<DialogDescription>{t("logs.export.description")}</DialogDescription>
 				</DialogHeader>
 
 				<div className="space-y-4">
 					<div className="space-y-2">
-						<Label className="text-sm">Export scope</Label>
+						<Label className="text-sm">{t("logs.export.scope")}</Label>
 						<div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="logs-export-scope">
 							<button
 								type="button"
@@ -199,8 +202,8 @@ export function LogsExportDialog({
 									isExporting && "cursor-not-allowed opacity-60",
 								)}
 							>
-								<span className="font-medium">Current page</span>
-								<span className="text-muted-foreground text-xs">{currentPageLogs.length} entries</span>
+								<span className="font-medium">{t("logs.export.currentPage")}</span>
+								<span className="text-muted-foreground text-xs">{t("logs.export.entriesCount", { count: currentPageLogs.length })}</span>
 							</button>
 
 							<button
@@ -216,8 +219,8 @@ export function LogsExportDialog({
 									isExporting && "cursor-not-allowed opacity-60",
 								)}
 							>
-								<span className="font-medium">All entries</span>
-								<span className="text-muted-foreground text-xs">{totalLogs.toLocaleString()} total</span>
+								<span className="font-medium">{t("logs.export.allEntries")}</span>
+								<span className="text-muted-foreground text-xs">{t("logs.export.totalCount", { total: totalLogs.toLocaleString() })}</span>
 							</button>
 						</div>
 					</div>
@@ -225,7 +228,7 @@ export function LogsExportDialog({
 					{exportScope === "all" && (
 						<div className="space-y-2">
 							<Label htmlFor="logs-export-max-limit" className="text-sm">
-								Max entries <span className="text-muted-foreground font-normal">(optional, up to 10,000)</span>
+								{t("logs.export.maxEntries")} <span className="text-muted-foreground font-normal">{t("logs.export.maxEntriesHint")}</span>
 							</Label>
 							<Input
 								id="logs-export-max-limit"
@@ -234,7 +237,9 @@ export function LogsExportDialog({
 								min="1"
 								max="10000"
 								disabled={isExporting}
-								placeholder={`Default ${Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString()}`}
+								placeholder={t("logs.export.defaultMax", {
+									value: Math.min(DEFAULT_MAX_EXPORT_LIMIT, totalLogs || DEFAULT_MAX_EXPORT_LIMIT).toLocaleString(),
+								})}
 								value={exportMaxLimit}
 								onChange={(e) => setExportMaxLimit(e.target.value)}
 							/>
@@ -242,19 +247,21 @@ export function LogsExportDialog({
 					)}
 
 					{activeFilters.length > 0 && (
-						<p className="text-muted-foreground text-xs leading-relaxed">Filters applied: {activeFilters.join(", ")}</p>
+						<p className="text-muted-foreground text-xs leading-relaxed">
+							{t("logs.export.filtersApplied", { filters: activeFilters.join(", ") })}
+						</p>
 					)}
 
 					<div className="text-muted-foreground flex items-center gap-2">
 						<ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-						<p className="text-xs">Prompt and response message bodies are excluded from the export.</p>
+						<p className="text-xs">{t("logs.export.bodiesExcluded")}</p>
 					</div>
 
 					{isExporting && progress && (
 						<div className="space-y-1.5 pt-1" data-testid="logs-export-progress">
 							<Progress value={progress.total > 0 ? (progress.current / progress.total) * 100 : 0} className="h-1.5" />
 							<p className="text-muted-foreground text-center text-xs">
-								Exporting {progress.current.toLocaleString()} of {progress.total.toLocaleString()} logs...
+								{t("logs.export.progress", { current: progress.current.toLocaleString(), total: progress.total.toLocaleString() })}
 							</p>
 						</div>
 					)}
@@ -265,10 +272,10 @@ export function LogsExportDialog({
 						{isExporting ? (
 							<>
 								<X className="mr-1 h-3.5 w-3.5" />
-								Cancel Export
+								{t("logs.export.cancelExport")}
 							</>
 						) : (
-							"Cancel"
+							tCommon("cancel")
 						)}
 					</Button>
 
@@ -276,12 +283,12 @@ export function LogsExportDialog({
 						{isExporting ? (
 							<>
 								<Loader2 className="h-4 w-4 animate-spin" />
-								Exporting...
+								{t("logs.export.exporting")}
 							</>
 						) : (
 							<>
 								<Download className="h-4 w-4" />
-								Export CSV
+								{t("logs.export.exportCsv")}
 							</>
 						)}
 					</Button>

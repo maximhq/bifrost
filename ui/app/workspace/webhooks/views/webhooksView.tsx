@@ -338,7 +338,14 @@ export default function WebhooksView() {
 	// duplicate. Only fatal when there is no data to fall back on; a transient
 	// poll failure over cached rows keeps rendering the list.
 	if (showLoadError(error, data)) {
-		return <LoadErrorView entity="webhook endpoints" error={error} onRetry={() => void refetch()} testId="webhooks-load-error" />;
+		return (
+			<LoadErrorView
+				entity={tCommon("entities.webhookEndpoints")}
+				error={error}
+				onRetry={() => void refetch()}
+				testId="webhooks-load-error"
+			/>
+		);
 	}
 
 	return (

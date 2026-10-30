@@ -646,12 +646,12 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 						{/* TTFT cutoff */}
 						<div className="space-y-3">
-							<Label htmlFor="ttft_timeout_ms">Time to first token cutoff (ms)</Label>
+							<Label htmlFor="ttft_timeout_ms">{t("routing.ttftCutoffMs")}</Label>
 							<Input
 								id="ttft_timeout_ms"
 								type="text"
 								inputMode="numeric"
-								placeholder={ttftDisplay.mixed ? "Mixed" : "Off"}
+								placeholder={ttftDisplay.mixed ? t("routing.ttftMixed") : t("routing.off")}
 								aria-invalid={errors.ttft_timeout_ms ? true : undefined}
 								aria-describedby={errors.ttft_timeout_ms ? "ttft_timeout_ms-error" : undefined}
 								data-testid="routing-rule-ttft-timeout-input"
@@ -659,13 +659,10 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									onChange: () => {
 										setTtftEdited(true);
 									},
-									validate: (value) =>
-										parseTTFTTimeoutInput(value) !== null || `Enter a whole number from 1 to ${MAX_TTFT_TIMEOUT_MS}, or leave it empty`,
+									validate: (value) => parseTTFTTimeoutInput(value) !== null || t("routing.ttftInvalid", { max: MAX_TTFT_TIMEOUT_MS }),
 								})}
 							/>
-							<p className="text-muted-foreground text-xs">
-								Streaming only. If no token arrives in time, Bifrost moves to the next fallback. The last fallback is never cut off.
-							</p>
+							<p className="text-muted-foreground text-xs">{t("routing.ttftHelp")}</p>
 							{errors.ttft_timeout_ms && (
 								<p id="ttft_timeout_ms-error" className="text-destructive text-sm" data-testid="routing-rule-ttft-timeout-error">
 									{errors.ttft_timeout_ms.message}
@@ -673,7 +670,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							)}
 							{!errors.ttft_timeout_ms && ttftDisplay.active && !hasCompleteFallback && (
 								<p className="text-sm text-amber-600 dark:text-amber-500" data-testid="routing-rule-ttft-timeout-no-fallback-warning">
-									This rule has no fallbacks, so the cutoff only applies when the request brings its own.
+									{t("routing.ttftNoFallbackWarning")}
 								</p>
 							)}
 						</div>

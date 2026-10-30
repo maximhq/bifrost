@@ -401,11 +401,10 @@ export default function MCPView() {
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="mcp-max-protocol-version" className="text-sm font-medium">
-							Max Protocol Version
+							{t("mcpSettings.maxProtocolVersion")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Newest MCP protocol version Bifrost offers to MCP servers. Auto uses the latest Bifrost supports. Each server can override
-							this.
+							{t("mcpSettings.maxProtocolVersionHelp")}
 						</p>
 					</div>
 					<Select

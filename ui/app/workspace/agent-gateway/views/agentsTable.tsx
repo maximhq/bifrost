@@ -26,8 +26,10 @@ import type { AgentRegistrationView } from "@/lib/types/agents";
 import AgentAccessSummary from "@enterprise/components/agent-gateway/agentAccessSummary";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { format, formatDistanceToNow } from "date-fns";
+import type { TFunction } from "i18next";
 import { Check, ChevronLeft, ChevronRight, Copy, Info, MoreHorizontal, PencilIcon, Plus, Search, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import AgentSheet from "./agentSheet";
 import { AgentsEmptyState } from "./agentsEmptyState";
 
@@ -44,11 +46,19 @@ function AgentActionsMenu({
 	onEdit: (agent: AgentRegistrationView) => void;
 	onDelete: (agent: AgentRegistrationView) => void;
 }) {
+	const { t } = useTranslation("observability");
+	const { t: tCommon } = useTranslation("common");
 	const [isOpen, setIsOpen] = useState(false);
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 			<DropdownMenuTrigger asChild>
-				<Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Agent actions" data-testid={`agent-actions-${agent.name}-btn`}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="h-8 w-8"
+					aria-label={t("agentGateway.agentsTable.agentActions")}
+					data-testid={`agent-actions-${agent.name}-btn`}
+				>
 					<MoreHorizontal className="h-4 w-4" />
 				</Button>
 			</DropdownMenuTrigger>
@@ -71,7 +81,7 @@ function AgentActionsMenu({
 						}}
 					>
 						<PencilIcon className="h-4 w-4" />
-						Edit
+						{tCommon("edit")}
 					</DropdownMenuItem>
 				)}
 				{hasDeleteAccess && (
@@ -86,7 +96,7 @@ function AgentActionsMenu({
 						}}
 					>
 						<Trash2 className="h-4 w-4" />
-						Delete
+						{tCommon("delete")}
 					</DropdownMenuItem>
 				)}
 			</DropdownMenuContent>
@@ -96,7 +106,8 @@ function AgentActionsMenu({
 
 // AgentEndpointCell copies the gateway-hosted public Agent Card URL.
 function AgentEndpointCell({ name, baseUrl }: { name: string; baseUrl: string }) {
-	const { copy, copied } = useCopyToClipboard({ successMessage: "Agent Card URL copied" });
+	const { t } = useTranslation("observability");
+	const { copy, copied } = useCopyToClipboard({ successMessage: t("agentGateway.agentsTable.cardUrlCopied") });
 	const agentCardUrl = `${baseUrl}/agents/a2a/${name}/.well-known/agent-card.json`;
 
 	return (
@@ -105,7 +116,7 @@ function AgentEndpointCell({ name, baseUrl }: { name: string; baseUrl: string })
 				<button
 					type="button"
 					className="text-muted-foreground hover:text-foreground flex w-full min-w-0 cursor-pointer items-center gap-1.5 font-mono text-sm transition-colors"
-					aria-label="Copy Agent Card URL"
+					aria-label={t("agentGateway.agentsTable.copyCardUrl")}
 					data-testid={`agent-endpoint-copy-${name}`}
 					onClick={(event) => {
 						event.stopPropagation();
@@ -123,20 +134,23 @@ function AgentEndpointCell({ name, baseUrl }: { name: string; baseUrl: string })
 	);
 }
 
-function formatAgentAccess(agent: AgentRegistrationView) {
-	if (agent.allow_by_default) return "Allowed by default";
+function formatAgentAccess(agent: AgentRegistrationView, t: TFunction<"observability">) {
+	if (agent.allow_by_default) return t("agentGateway.agentsTable.accessAllowedByDefault");
 
 	const virtualKeyCount = agent.virtual_key_ids?.length ?? 0;
-	return virtualKeyCount > 0 ? `${virtualKeyCount} ${virtualKeyCount === 1 ? "VK" : "VKs"}` : "None";
+	return virtualKeyCount > 0
+		? t("agentGateway.agentsTable.accessVkCount", { count: virtualKeyCount })
+		: t("agentGateway.agentsTable.accessNone");
 }
 
 function HeaderWithTooltip({ label, tooltip, testId }: { label: string; tooltip: ReactNode; testId?: string }) {
+	const { t } = useTranslation("observability");
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
 				<button
 					type="button"
-					aria-label={`${label} column guidance`}
+					aria-label={t("agentGateway.agentsTable.columnGuidance", { label })}
 					data-testid={testId}
 					className="inline-flex cursor-help items-center gap-2"
 				>
@@ -192,6 +206,8 @@ export default function AgentsTable({
 	const [deleteAgent] = useDeleteAgentMutation();
 	const [updateAgent] = useUpdateAgentMutation();
 	const { toast } = useToast();
+	const { t } = useTranslation("observability");
+	const { t: tCommon } = useTranslation("common");
 
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -216,10 +232,13 @@ export default function AgentsTable({
 	const handleDelete = async (agent: AgentRegistrationView) => {
 		try {
 			await deleteAgent(agent.name).unwrap();
-			toast({ title: "Deleted", description: `Agent ${agent.name} removed successfully.` });
+			toast({
+				title: t("agentGateway.agentsTable.toastDeleted"),
+				description: t("agentGateway.agentsTable.toastRemoved", { name: agent.name }),
+			});
 			refetch?.();
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
@@ -242,10 +261,10 @@ export default function AgentsTable({
 					virtual_key_ids: agent.virtual_key_ids ?? [],
 				},
 			}).unwrap();
-			toast({ title: `Agent ${enabled ? "enabled" : "disabled"} successfully` });
+			toast({ title: enabled ? t("agentGateway.agentsTable.toastEnabled") : t("agentGateway.agentsTable.toastDisabled") });
 			refetch?.();
 		} catch (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setTogglingAgents((prev) => {
 				const next = new Set(prev);
@@ -256,7 +275,7 @@ export default function AgentsTable({
 	};
 
 	// Rendered on the empty branch too so the topbar keeps its title.
-	const pageTitle = <PageTitle title="Agent Catalog">Manage upstream A2A agents served through the gateway.</PageTitle>;
+	const pageTitle = <PageTitle title={t("agentGateway.agentsTable.title")}>{t("agentGateway.agentsTable.subtitle")}</PageTitle>;
 
 	const sheet = sheetOpen && <AgentSheet agent={selectedAgent ?? undefined} onClose={() => setSheetOpen(false)} onSaved={handleSaved} />;
 
@@ -279,21 +298,18 @@ export default function AgentsTable({
 			<AlertDialog open={!!agentToDelete} onOpenChange={(open) => !open && setAgentToDelete(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Remove Agent</AlertDialogTitle>
-						<AlertDialogDescription>
-							Are you sure you want to remove agent {agentToDelete?.name}? Its gateway endpoints stop resolving and its virtual key grants
-							are removed.
-						</AlertDialogDescription>
+						<AlertDialogTitle>{t("agentGateway.agentsTable.removeTitle")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("agentGateway.agentsTable.removeConfirm", { name: agentToDelete?.name })}</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogCancel>{tCommon("cancel")}</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
 								if (agentToDelete) void handleDelete(agentToDelete);
 							}}
 							className="bg-destructive hover:bg-destructive/90"
 						>
-							Delete
+							{tCommon("delete")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -305,8 +321,8 @@ export default function AgentsTable({
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search agents by name"
-						placeholder="Search by name..."
+						aria-label={t("agentGateway.agentsTable.searchLabel")}
+						placeholder={t("agentGateway.agentsTable.searchPlaceholder")}
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -318,11 +334,11 @@ export default function AgentsTable({
 						onClick={handleCreate}
 						disabled={!hasCreateAccess}
 						data-testid="create-agent-btn"
-						aria-label="New Agent"
+						aria-label={t("agentGateway.agentsTable.newAgent")}
 						className="h-8 gap-2"
 					>
 						<Plus />
-						<span className="hidden sm:inline">New Agent</span>
+						<span className="hidden sm:inline">{t("agentGateway.agentsTable.newAgent")}</span>
 					</Button>
 				</div>
 			</div>
@@ -332,23 +348,18 @@ export default function AgentsTable({
 					<Table data-testid="agents-table" containerClassName="h-full overflow-auto" className="w-full min-w-[1146px] table-fixed">
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
-								<TableHead className="w-[200px] font-semibold">Name</TableHead>
-								<TableHead className="w-[200px] font-semibold">Endpoint</TableHead>
-								<TableHead className="w-[300px] font-semibold">Agent Card URL</TableHead>
+								<TableHead className="w-[200px] font-semibold">{t("agentGateway.agentsTable.columns.name")}</TableHead>
+								<TableHead className="w-[200px] font-semibold">{t("agentGateway.agentsTable.columns.endpoint")}</TableHead>
+								<TableHead className="w-[300px] font-semibold">{t("agentGateway.agentsTable.columns.cardUrl")}</TableHead>
 								<TableHead className="w-[160px] font-semibold">
 									<HeaderWithTooltip
-										label="Access"
+										label={t("agentGateway.agentsTable.columns.access")}
 										testId="agent-access-info-trigger"
-										tooltip={
-											<p>
-												Which callers may reach this agent. "Allowed by default" lets any valid virtual key through; otherwise only virtual
-												keys with direct grants may reach it.
-											</p>
-										}
+										tooltip={<p>{t("agentGateway.agentsTable.accessHelp")}</p>}
 									/>
 								</TableHead>
-								<TableHead className="w-[150px] pr-6 font-semibold">Updated</TableHead>
-								<TableHead className="w-[90px] font-semibold">Status</TableHead>
+								<TableHead className="w-[150px] pr-6 font-semibold">{t("agentGateway.agentsTable.columns.updated")}</TableHead>
+								<TableHead className="w-[90px] font-semibold">{t("filters.status")}</TableHead>
 								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -356,7 +367,7 @@ export default function AgentsTable({
 							{agents.length === 0 ? (
 								<TableRow>
 									<TableCell colSpan={7} className="h-24 text-center">
-										<span className="text-muted-foreground text-sm">No matching agents found.</span>
+										<span className="text-muted-foreground text-sm">{t("agentGateway.agentsTable.noMatching")}</span>
 									</TableCell>
 								</TableRow>
 							) : (
@@ -380,7 +391,7 @@ export default function AgentsTable({
 											</div>
 										</TableCell>
 										<TableCell data-testid={`agent-access-${agent.name}`}>
-											<AgentAccessSummary agent={agent} fallback={formatAgentAccess(agent)} />
+											<AgentAccessSummary agent={agent} fallback={formatAgentAccess(agent, t)} />
 										</TableCell>
 										<TableCell className="text-muted-foreground pr-6 text-sm">
 											<Tooltip>
@@ -422,8 +433,11 @@ export default function AgentsTable({
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
-							{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("agentGateway.agentsTable.entriesRange", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + limit, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 						<div className="flex items-center gap-2">
 							<Button
@@ -432,14 +446,14 @@ export default function AgentsTable({
 								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 								disabled={offset === 0}
 								data-testid="agents-pagination-prev-btn"
-								aria-label="Previous page"
+								aria-label={t("labels.previousPage")}
 							>
 								<ChevronLeft className="size-3" />
 							</Button>
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>{t("labels.page")}</span>
 								<span>{Math.floor(offset / limit) + 1}</span>
-								<span>of {Math.ceil(totalCount / limit)}</span>
+								<span>{t("labels.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
 							</div>
 							<Button
 								variant="ghost"
@@ -447,7 +461,7 @@ export default function AgentsTable({
 								onClick={() => onOffsetChange(offset + limit)}
 								disabled={offset + limit >= totalCount}
 								data-testid="agents-pagination-next-btn"
-								aria-label="Next page"
+								aria-label={t("labels.nextPage")}
 							>
 								<ChevronRight className="size-3" />
 							</Button>

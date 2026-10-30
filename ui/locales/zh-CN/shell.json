@@ -360,7 +360,11 @@
 			"followUp": "提出追问，当前回答结束后会发送…",
 			"placeholder": "询问你的 Bifrost 数据…",
 			"stop": "停止",
-			"send": "发送"
+			"send": "发送",
+			"commandClear": "开始新对话",
+			"settings": "Warp 设置",
+			"switchModel": "切换模型",
+			"defaultModel": "默认"
 		},
 		"question": {
 			"label": "问题",
@@ -449,16 +453,17 @@
 			"render_chart": {
 				"running": "正在绘制图表",
 				"done": "已绘制图表"
+			},
+			"list_topics": {
+				"running": "正在列出主题",
+				"done": "主题已列出"
 			}
 		},
 		"errors": {
 			"not_configured": {
 				"summary": "Warp 尚未配置。",
 				"cause": "未设置供应商和模型，或在设置中关闭了 Warp。",
-				"suggestions": [
-					"打开 Warp 设置并选择供应商和模型。",
-					"确认已打开「启用 Warp」。"
-				]
+				"suggestions": ["打开 Warp 设置并选择供应商和模型。", "确认已打开「启用 Warp」。"]
 			},
 			"max_iterations": {
 				"summary": "Warp 未能得出答案。",
@@ -473,11 +478,7 @@
 			"timeout": {
 				"summary": "耗时过长。",
 				"cause": "整个请求在 Warp 完成前已超过时间预算。时间范围长、范围宽会使每次查询更慢，而 Warp 会运行多次查询。",
-				"suggestions": [
-					"尝试更短的时间范围。",
-					"缩小到一个团队、客户或虚拟密钥。",
-					"若模型本身较慢，可在 Warp 设置中提高请求超时。"
-				]
+				"suggestions": ["尝试更短的时间范围。", "缩小到一个团队、客户或虚拟密钥。", "若模型本身较慢，可在 Warp 设置中提高请求超时。"]
 			},
 			"upstream_error": {
 				"summary": "无法到达 Warp 的模型。",
@@ -491,10 +492,7 @@
 			"tool_error": {
 				"summary": "一次查询失败。",
 				"cause": "Warp 的某次数据查询返回了错误，且在剩余步骤内无法恢复。",
-				"suggestions": [
-					"尝试更窄的时间范围。",
-					"确认你提到的模型、密钥或团队确实存在。"
-				]
+				"suggestions": ["尝试更窄的时间范围。", "确认你提到的模型、密钥或团队确实存在。"]
 			},
 			"cancelled": {
 				"summary": "已停止。",
@@ -504,10 +502,7 @@
 			"unknown": {
 				"summary": "出了点问题。",
 				"cause": "Warp 返回了错误，但没有可识别的错误码。",
-				"suggestions": [
-					"再试一次该问题。",
-					"若持续发生，请连同下方详情一并反馈。"
-				]
+				"suggestions": ["再试一次该问题。", "若持续发生，请连同下方详情一并反馈。"]
 			},
 			"access_denied": {
 				"summary": "你的账户无权访问 Warp 的模型。",
@@ -529,20 +524,61 @@
 			"rate_limited": {
 				"summary": "你已触发速率限制。",
 				"cause": "你的账户在限额周期内发送的请求数或令牌数超过速率限制，因此治理拒绝了 Warp 的模型调用。Warp 发起的模型调用计入你的用量，因此会共用相同的限额。",
-				"suggestions": [
-					"稍等片刻后重试。",
-					"如果问题持续发生，请管理员提高限额。",
-					"下方详情会说明是哪项限额拒绝了请求。"
-				]
+				"suggestions": ["稍等片刻后重试。", "如果问题持续发生，请管理员提高限额。", "下方详情会说明是哪项限额拒绝了请求。"]
 			},
 			"model_blocked": {
 				"summary": "你的账户不允许使用 Warp 的模型。",
 				"cause": "此部署的治理规则禁止你的账户使用 Warp 设定的模型或提供商，因此请求在到达提供商之前就被拒绝了。",
-				"suggestions": [
-					"请管理员允许你的账户使用 Warp 的模型。",
-					"或者在 Warp 设置中选择你的账户有权使用的模型。"
-				]
+				"suggestions": ["请管理员允许你的账户使用 Warp 的模型。", "或者在 Warp 设置中选择你的账户有权使用的模型。"]
 			}
+		},
+		"dock": {
+			"resize": "调整 Warp 面板大小",
+			"description": "向 Warp 询问此部署的日志、用量和支出。"
+		},
+		"chart": {
+			"openInLogs": "在日志中打开",
+			"empty": "此时间窗口内没有数据。"
 		}
+	},
+	"rssSources": {
+		"newsOn": "已开启新闻",
+		"newsOff": "已为此网关关闭新闻",
+		"updateSettingsFailed": "无法更新新闻设置",
+		"updateFeedFailed": "无法更新 {{name}}",
+		"updatedLogo": "已更新 {{name}} 的 Logo",
+		"removedLogo": "已移除 {{name}} 的 Logo",
+		"updateLogoFailed": "无法更新 {{name}} 的 Logo",
+		"removed": "已移除 {{name}}",
+		"removeFailed": "无法移除 {{name}}",
+		"title": "新闻来源",
+		"description": "选择哪些 RSS 订阅源显示在此网关所有人的通知托盘「新闻」标签页中。",
+		"showNews": "在通知托盘中显示新闻",
+		"showNewsHelp": "关闭后，此网关上所有人都将看不到「新闻」标签页，并且不再获取新闻条目。下方的来源会被保留。",
+		"settingLoadFailed": "无法加载此设置。",
+		"tryAgain": "重试",
+		"loading": "正在加载来源",
+		"loadFailed": "无法加载来源。",
+		"builtinFeeds": "内置订阅源",
+		"customFeeds": "自定义订阅源",
+		"noCustomFeeds": "暂无自定义订阅源。请在下方添加任意 RSS 或 Atom URL。",
+		"removeAria": "移除 {{name}}",
+		"disableAria": "禁用 {{name}}",
+		"enableAria": "启用 {{name}}",
+		"changeLogoAria": "更换 {{name}} 的 Logo",
+		"uploadLogo": "上传 Logo",
+		"removeLogo": "移除 Logo",
+		"addedFeed": "已添加 {{name}}",
+		"addFeedTitle": "添加订阅源",
+		"name": "名称",
+		"namePlaceholder": "Bifrost 发布动态",
+		"feedUrl": "订阅源 URL",
+		"logo": "Logo",
+		"optional": "（可选）",
+		"logoPreviewName": "Logo 预览",
+		"uploadedImage": "已上传的图片",
+		"upload": "上传",
+		"logoHelp": "图片 URL，或不超过 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。默认使用网站的 favicon。",
+		"addFeed": "添加订阅源"
 	}
 }

@@ -50,7 +50,23 @@
 		"recognizeApplication": "Continue only if you recognize this application and its callback destination:",
 		"publishedBy": "Published by <code0>{{host}}</code0>",
 		"localhostWarning": "This application only returns to your own computer, so its name cannot be verified. Any app running locally could use it.",
-		"signInRequiredBody": "This authorization needs a signed-in Bifrost account. Taking you to sign in, you'll come straight back here.",
+		"signInRedirectBody": "This authorization needs a signed-in Bifrost account. Taking you to sign in, you'll come straight back here.",
 		"signInToBifrost": "Sign in to Bifrost"
+	},
+	"setup": {
+		"instructionsIntro": "The setup token is a secret the operator sets on the server. Set it one of two ways, then restart Bifrost:",
+		"instructionsEnv": "Set the <code>BIFROST_SETUP_TOKEN</code> environment variable.",
+		"instructionsConfig": "Add <code>setup_token</code> at the top level of <code>config.json</code>. It accepts a literal value, an <code>env.VAR</code> reference, or a <code>vault.path</code> reference:",
+		"instructionsHeader": "API clients send the same value in the <code>{{header}}</code> header. The token stops working once dashboard authentication is enabled.",
+		"unreachable": "Could not reach Bifrost. Check that the server is running.",
+		"invalidToken": "Invalid setup token",
+		"checkFailed": "Bifrost returned {{status}} while checking the token",
+		"title": "Finish setting up Bifrost",
+		"description": "Dashboard authentication is not configured, so the API is locked. Enter the setup token to continue and create an admin account.",
+		"tokenLabel": "Setup token",
+		"tokenPlaceholder": "Enter the setup token",
+		"continue": "Continue",
+		"whereToFind": "Where do I find the setup token?",
+		"notConfigured": "No setup token is configured on this server, so setup cannot continue yet."
 	}
 }

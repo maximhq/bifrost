@@ -24,7 +24,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import i18n from "@/lib/i18n";
-import { fieldLabelByKey, PricingFieldKey, pricingFieldUnit } from "../../custom-pricing/overrides/pricingFields";
+import { fieldLabelKeyByKey, PricingFieldKey, pricingFieldUnit } from "../../custom-pricing/overrides/pricingFields";
 import OverriddenPrice from "./overriddenPrice";
 
 const DEFAULT_PRICING_SOURCE_URL = "https://getbifrost.ai/datasheet";
@@ -381,7 +381,9 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 													<div className="space-y-1">
 														{patchEntries.map(([key, value]) => (
 															<div key={key} className="flex items-baseline justify-between gap-3 text-xs">
-																<span className="text-muted-foreground">{fieldLabelByKey[key as PricingFieldKey] || key}</span>
+																<span className="text-muted-foreground">
+																	{fieldLabelKeyByKey[key as PricingFieldKey] ? t(fieldLabelKeyByKey[key as PricingFieldKey]) : key}
+																</span>
 																<span className="font-mono">{formatPatchValue(key, value)}</span>
 															</div>
 														))}

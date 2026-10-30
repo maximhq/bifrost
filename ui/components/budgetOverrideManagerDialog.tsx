@@ -9,6 +9,7 @@ import { budgetOverrideFormSchema } from "@/lib/types/schemas";
 import { formatCurrency, getBudgetOverrideValidUntil, getEffectiveBudgetLimit, hasActiveBudgetOverride } from "@/lib/utils/governance";
 import { Pencil, Plus } from "lucide-react";
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 // One overridable budget row. `budget` is the persisted row the override applies to;
@@ -48,8 +49,10 @@ export function BudgetOverrideManagerDialog({
 	onSave,
 	onRemove,
 	disabled,
-	triggerLabel = "Add override",
+	triggerLabel,
 }: BudgetOverrideManagerDialogProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const [open, setOpen] = useState(false);
 	const [expandedKey, setExpandedKey] = useState<string | null>(null);
 	const [amount, setAmount] = useState("");
@@ -82,7 +85,7 @@ export function BudgetOverrideManagerDialog({
 			...(mode === "cycles" ? { cycles: parsedCycles } : {}),
 		});
 		if (!parsed.success) {
-			setError(parsed.error.issues[0]?.message ?? "Invalid input");
+			setError(parsed.error.issues[0]?.message ?? t("budgetOverride.invalidInput"));
 			return;
 		}
 		setBusyKey(row.key);
@@ -90,7 +93,7 @@ export function BudgetOverrideManagerDialog({
 		try {
 			const wasActive = hasActiveBudgetOverride(row.budget);
 			await onSave(row.budget.id, { amount: parsedAmount, mode, ...(mode === "cycles" ? { cycles: parsedCycles } : {}) });
-			toast.success(wasActive ? "Budget override updated" : "Budget override added");
+			toast.success(wasActive ? t("budgetOverride.updated") : t("budgetOverride.added"));
 			setExpandedKey(null);
 		} catch (mutationError) {
 			setError(getErrorMessage(mutationError));
@@ -104,7 +107,7 @@ export function BudgetOverrideManagerDialog({
 		setError(null);
 		try {
 			await onRemove(row.budget.id);
-			toast.success("Budget override removed");
+			toast.success(t("budgetOverride.removed"));
 			if (expandedKey === row.key) setExpandedKey(null);
 		} catch (mutationError) {
 			// Remove can fire from a collapsed row where the inline error never renders,
@@ -131,8 +134,11 @@ export function BudgetOverrideManagerDialog({
 						<p className="truncate text-sm font-medium">{row.label}</p>
 						<p className="text-muted-foreground text-xs">
 							{active
-								? `+${formatCurrency(b.override_amount ?? 0)} override · effective ${formatCurrency(getEffectiveBudgetLimit(b))}`
-								: `Base ${formatCurrency(b.max_limit)}`}
+								? t("budgetOverride.rowActive", {
+										amount: formatCurrency(b.override_amount ?? 0),
+										effective: formatCurrency(getEffectiveBudgetLimit(b)),
+									})
+								: t("budgetOverride.rowBase", { amount: formatCurrency(b.max_limit) })}
 						</p>
 					</div>
 					<div className="flex shrink-0 items-center gap-1">
@@ -148,7 +154,7 @@ export function BudgetOverrideManagerDialog({
 									data-testid={`budget-override-edit-${b.id}`}
 								>
 									<Pencil className="h-3 w-3" />
-									Edit
+									{t("budgetOverride.edit")}
 								</Button>
 								<Button
 									type="button"
@@ -160,7 +166,7 @@ export function BudgetOverrideManagerDialog({
 									onClick={() => remove(row)}
 									data-testid={`budget-override-remove-${b.id}`}
 								>
-									Remove
+									{t("budgetOverride.remove")}
 								</Button>
 							</>
 						) : (
@@ -174,7 +180,7 @@ export function BudgetOverrideManagerDialog({
 								data-testid={`budget-override-add-${b.id}`}
 							>
 								<Plus className="h-3 w-3" />
-								Add override
+								{t("budgetOverride.addOverride")}
 							</Button>
 						)}
 					</div>
@@ -185,7 +191,7 @@ export function BudgetOverrideManagerDialog({
 						<div className="grid grid-cols-2 gap-3">
 							<div className="space-y-1.5">
 								<Label className="text-xs" htmlFor={`override-amount-${b.id}`}>
-									Additional budget
+									{t("budgetOverride.additionalBudget")}
 								</Label>
 								<div className="relative">
 									<span
@@ -209,14 +215,14 @@ export function BudgetOverrideManagerDialog({
 								</div>
 							</div>
 							<div className="space-y-1.5">
-								<Label className="text-xs">Duration</Label>
+								<Label className="text-xs">{t("budgetOverride.duration")}</Label>
 								<Select value={mode} onValueChange={(value) => setMode(value as "cycles" | "forever")} disabled={busy}>
 									<SelectTrigger className="w-full rounded-sm" data-testid="budget-override-mode">
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent className="rounded-sm">
-										<SelectItem value="cycles">For a number of reset cycles</SelectItem>
-										<SelectItem value="forever">Until removed</SelectItem>
+										<SelectItem value="cycles">{t("budgetOverride.modeCycles")}</SelectItem>
+										<SelectItem value="forever">{t("budgetOverride.modeForever")}</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -225,7 +231,7 @@ export function BudgetOverrideManagerDialog({
 						{mode === "cycles" ? (
 							<div className="space-y-1.5">
 								<Label className="text-xs" htmlFor={`override-cycles-${b.id}`}>
-									Reset cycles
+									{t("budgetOverride.resetCycles")}
 								</Label>
 								<Input
 									id={`override-cycles-${b.id}`}
@@ -240,7 +246,12 @@ export function BudgetOverrideManagerDialog({
 								/>
 								{validUntil ? (
 									<p className="text-muted-foreground text-xs">
-										Valid until <span className="text-foreground font-medium">{validUntil.toLocaleString()}</span>
+										<Trans
+											t={t}
+											i18nKey="budgetOverride.validUntil"
+											values={{ date: validUntil.toLocaleString() }}
+											components={{ b0: <span className="text-foreground font-medium" /> }}
+										/>
 									</p>
 								) : null}
 							</div>
@@ -262,7 +273,7 @@ export function BudgetOverrideManagerDialog({
 								disabled={busy}
 								data-testid={`budget-override-cancel-${b.id}`}
 							>
-								Cancel
+								{tCommon("cancel")}
 							</Button>
 							<Button
 								type="button"
@@ -272,7 +283,7 @@ export function BudgetOverrideManagerDialog({
 								isLoading={busy}
 								data-testid="budget-override-save"
 							>
-								{active ? "Update" : "Add"}
+								{active ? t("budgetOverride.update") : t("budgetOverride.add")}
 							</Button>
 						</div>
 					</div>
@@ -302,13 +313,13 @@ export function BudgetOverrideManagerDialog({
 					data-testid="budget-override-open"
 				>
 					<Plus className="h-3 w-3" />
-					{triggerLabel}
+					{triggerLabel ?? t("budgetOverride.addOverride")}
 				</Button>
 			</DialogTrigger>
 			<DialogContent className="rounded-sm sm:max-w-lg" data-testid="budget-override-manager-dialog">
 				<DialogHeader>
 					<DialogTitle>{title}</DialogTitle>
-					<DialogDescription>Temporarily add spending capacity to a budget without changing its base limit.</DialogDescription>
+					<DialogDescription>{t("budgetOverride.managerDescription")}</DialogDescription>
 				</DialogHeader>
 
 				<div className="max-h-[60vh] space-y-4 overflow-y-auto py-2">

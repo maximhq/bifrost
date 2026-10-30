@@ -4,15 +4,7 @@ import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Info, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
-
-const DEFAULT_LABEL = "Agent access";
-
-const DEFAULT_TOOLTIP = (
-	<p>
-		Grant this key access to registered agents. The key can then call each agent at{" "}
-		<span className="font-medium">/agents/a2a/&lt;name&gt;</span>. Agents marked open to all keys need no grant.
-	</p>
-);
+import { Trans, useTranslation } from "react-i18next";
 
 interface AgentGrantsEditorProps {
 	/** Granted agent names. Agents are keyed by name, so the name is the grant. */
@@ -30,7 +22,8 @@ interface AgentGrantsEditorProps {
  * beneath. Agents that already allow every key by default are labelled as such
  * so an explicit grant is never added where it would be redundant.
  */
-export function AgentGrantsEditor({ value, onChange, label = DEFAULT_LABEL, tooltip = DEFAULT_TOOLTIP }: AgentGrantsEditorProps) {
+export function AgentGrantsEditor({ value, onChange, label, tooltip }: AgentGrantsEditorProps) {
+	const { t } = useTranslation("common");
 	const add = (option: { value: string }) => {
 		if (value.includes(option.value)) return;
 		onChange([...value, option.value]);
@@ -41,7 +34,7 @@ export function AgentGrantsEditor({ value, onChange, label = DEFAULT_LABEL, tool
 	return (
 		<div className="mt-6 space-y-2">
 			<div className="flex items-center gap-2">
-				<Label className="text-sm font-medium">{label}</Label>
+				<Label className="text-sm font-medium">{label ?? t("agentGrants.label")}</Label>
 				<TooltipProvider>
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -49,12 +42,23 @@ export function AgentGrantsEditor({ value, onChange, label = DEFAULT_LABEL, tool
 								<Info className="text-muted-foreground h-3 w-3" />
 							</span>
 						</TooltipTrigger>
-						<TooltipContent>{tooltip}</TooltipContent>
+						<TooltipContent>
+							{tooltip ?? (
+								<p>
+									<Trans
+										t={t}
+										i18nKey="agentGrants.tooltip"
+										values={{ path: "/agents/a2a/<name>" }}
+										components={{ path0: <span className="font-medium" /> }}
+									/>
+								</p>
+							)}
+						</TooltipContent>
 					</Tooltip>
 				</TooltipProvider>
 			</div>
 
-			<AgentSelector mode="add" fullWidth placeholder="Select an agent to add" onSelect={add} excludeIds={value} />
+			<AgentSelector mode="add" fullWidth placeholder={t("agentGrants.selectPlaceholder")} onSelect={add} excludeIds={value} />
 
 			{value.length > 0 && (
 				<div className="divide-y overflow-hidden rounded-md border">
@@ -64,7 +68,13 @@ export function AgentGrantsEditor({ value, onChange, label = DEFAULT_LABEL, tool
 								<span className="truncate text-sm font-medium">{name}</span>
 								<span className="text-muted-foreground truncate text-xs">/agents/a2a/{name}</span>
 							</div>
-							<Button type="button" variant="ghost" size="sm" aria-label={`Remove ${name}`} onClick={() => remove(name)}>
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								aria-label={t("agentGrants.removeAria", { name })}
+								onClick={() => remove(name)}
+							>
 								<Trash2 className="h-4 w-4" />
 							</Button>
 						</div>

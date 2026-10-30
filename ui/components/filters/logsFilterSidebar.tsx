@@ -1433,6 +1433,7 @@ function ProjectFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 // its name is the only thing a person recognises, so rows are keyed by id and
 // shown by name, and nothing can be typed in that the server did not offer.
 function TopicFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("observability");
 	const hasActive = (filters.topic_ids || []).length > 0;
 	const [opened, setOpened] = useState(defaultOpen || hasActive);
 	const searchInputRef = useAutoFocusOnOpen(opened);
@@ -1463,7 +1464,7 @@ function TopicFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentP
 
 	return (
 		<FilterSection
-			title="Topics"
+			title={t("filters.topics")}
 			defaultOpen={defaultOpen || hasActive}
 			loading={isLoading}
 			onOpenChange={setOpened}
@@ -1471,7 +1472,7 @@ function TopicFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentP
 		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
-				placeholder="Search topics"
+				placeholder={t("filters.searchTopics")}
 				items={items}
 				isSelected={(id) => current.includes(id)}
 				onToggle={toggle}
@@ -1506,10 +1507,7 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 // LocalCachingFilter – filter by semantic-cache hit type (direct / semantic)
 // ---------------------------------------------------------------------------
 
-const LocalCachingOptions: { key: "direct" | "semantic"; label: string }[] = [
-	{ key: "direct", label: "Direct cache" },
-	{ key: "semantic", label: "Semantic cache" },
-];
+const LocalCachingOptions: { key: "direct" | "semantic" }[] = [{ key: "direct" }, { key: "semantic" }];
 
 function LocalCachingFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const { t } = useTranslation("observability");

@@ -3,6 +3,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { cleanNumericInput } from "@/lib/utils/strings";
 import React, { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const NumberAndSelect = ({
 	id,
@@ -29,6 +30,7 @@ const NumberAndSelect = ({
 	dataTestId?: string;
 	inputClassName?: string;
 }) => {
+	const { t } = useTranslation("common");
 	// Internal string state to allow intermediate inputs like "0." or ""
 	const [displayValue, setDisplayValue] = useState(value !== undefined ? String(value) : "");
 
@@ -98,7 +100,7 @@ const NumberAndSelect = ({
 			<div className="grow space-y-2">{numberInput}</div>
 			<div className="w-40 space-y-2">
 				<Label htmlFor={`${id}-select`} className={labelClassName}>
-					Reset Period
+					{t("numberAndSelect.resetPeriod")}
 				</Label>
 				<Select value={selectValue} onValueChange={(value) => onChangeSelect(value as string)}>
 					<SelectTrigger className="m-0 w-full">

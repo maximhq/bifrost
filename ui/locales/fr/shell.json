@@ -360,7 +360,11 @@
 			"followUp": "Posez une question de suivi ; elle sera envoyée à la fin de cette réponse...",
 			"placeholder": "Posez une question sur vos données Bifrost...",
 			"stop": "Arrêter",
-			"send": "Envoyer"
+			"send": "Envoyer",
+			"commandClear": "Démarrer une nouvelle conversation",
+			"settings": "Paramètres Warp",
+			"switchModel": "Changer de modèle",
+			"defaultModel": "Par défaut"
 		},
 		"question": {
 			"label": "Question",
@@ -449,6 +453,10 @@
 			"render_chart": {
 				"running": "Création d’un graphique",
 				"done": "Graphique créé"
+			},
+			"list_topics": {
+				"running": "Liste des sujets en cours",
+				"done": "Liste des sujets terminée"
 			}
 		},
 		"errors": {
@@ -504,10 +512,7 @@
 			"unknown": {
 				"summary": "Une erreur s'est produite.",
 				"cause": "Warp a renvoyé une erreur sans code reconnu.",
-				"suggestions": [
-					"Réessayez la question.",
-					"Si cela continue, signalez-le avec les détails ci-dessous."
-				]
+				"suggestions": ["Réessayez la question.", "Si cela continue, signalez-le avec les détails ci-dessous."]
 			},
 			"access_denied": {
 				"summary": "Votre compte n’a pas accès au modèle de Warp.",
@@ -543,6 +548,54 @@
 					"Vous pouvez aussi choisir dans les paramètres de Warp un modèle auquel votre compte a accès."
 				]
 			}
+		},
+		"dock": {
+			"resize": "Redimensionner le panneau Warp",
+			"description": "Posez à Warp des questions sur les journaux, l’utilisation et les dépenses de ce déploiement."
+		},
+		"chart": {
+			"openInLogs": "Ouvrir dans les journaux",
+			"empty": "Aucune donnée sur cette période."
 		}
+	},
+	"rssSources": {
+		"newsOn": "Actualités activées",
+		"newsOff": "Actualités désactivées pour cette passerelle",
+		"updateSettingsFailed": "Impossible de mettre à jour les paramètres des actualités",
+		"updateFeedFailed": "Impossible de mettre à jour {{name}}",
+		"updatedLogo": "Logo de {{name}} mis à jour",
+		"removedLogo": "Logo de {{name}} retiré",
+		"updateLogoFailed": "Impossible de mettre à jour le logo de {{name}}",
+		"removed": "{{name}} retiré",
+		"removeFailed": "Impossible de retirer {{name}}",
+		"title": "Sources d’actualités",
+		"description": "Choisissez les flux RSS qui apparaissent dans l’onglet Actualités du centre de notifications pour tous les utilisateurs de cette passerelle.",
+		"showNews": "Afficher les actualités dans le centre de notifications",
+		"showNewsHelp": "Si vous désactivez cette option, l’onglet Actualités est masqué pour tous les utilisateurs de cette passerelle et la récupération des actualités s’arrête. Vos sources ci-dessous sont conservées.",
+		"settingLoadFailed": "Impossible de charger ce paramètre.",
+		"tryAgain": "Réessayer",
+		"loading": "Chargement des sources",
+		"loadFailed": "Impossible de charger les sources.",
+		"builtinFeeds": "Flux intégrés",
+		"customFeeds": "Flux personnalisés",
+		"noCustomFeeds": "Aucun flux personnalisé pour le moment. Ajoutez n’importe quelle URL RSS ou Atom ci-dessous.",
+		"removeAria": "Retirer {{name}}",
+		"disableAria": "Désactiver {{name}}",
+		"enableAria": "Activer {{name}}",
+		"changeLogoAria": "Changer le logo de {{name}}",
+		"uploadLogo": "Importer un logo",
+		"removeLogo": "Retirer le logo",
+		"addedFeed": "{{name}} ajouté",
+		"addFeedTitle": "Ajouter un flux",
+		"name": "Nom",
+		"namePlaceholder": "Versions de Bifrost",
+		"feedUrl": "URL du flux",
+		"logo": "Logo",
+		"optional": "(facultatif)",
+		"logoPreviewName": "Aperçu du logo",
+		"uploadedImage": "Image importée",
+		"upload": "Importer",
+		"logoHelp": "Une URL d’image ou un fichier PNG, JPEG, GIF, WebP, SVG ou ICO jusqu’à 96 Ko. Par défaut, le favicon du site.",
+		"addFeed": "Ajouter le flux"
 	}
 }

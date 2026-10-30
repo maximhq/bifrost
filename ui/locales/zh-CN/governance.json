@@ -51,7 +51,15 @@
 			"updateAction": "更新客户",
 			"createAction": "创建客户",
 			"calendarAlignHelp": "启用日历对齐会将此客户的预算用量重置为 <bold0>$0.00</bold0>，并将 token/请求速率限制计数重置为 <bold1>0</bold1>，然后将每个重置日期对齐到当前周期开始（例如日、周、月或年的开始）。用量重置无法撤销，但之后可以关闭日历对齐。此操作将在保存时生效。"
-		}
+		},
+		"detail": {
+			"title": "客户详情",
+			"description": "此客户的用量详情。",
+			"info": "信息",
+			"name": "名称",
+			"noBudgets": "未配置预算"
+		},
+		"actionsAria": "客户操作 {{name}}"
 	},
 	"teams": {
 		"title": "团队",
@@ -98,10 +106,13 @@
 			"updateAction": "更新团队",
 			"createAction": "创建团队",
 			"calendarAlignHelp": "启用日历对齐会将此团队的预算用量重置为 <bold0>$0.00</bold0>，并将 token/请求速率限制计数重置为 <bold1>0</bold1>，然后将每个重置日期对齐到当前周期开始（例如日、周、月或年的开始）。用量重置无法撤销，但之后可以关闭日历对齐。此操作将在保存时生效。"
-		}
+		},
+		"actionsAria": "{{name}} 的团队操作"
 	},
 	"virtualKeys": {
-		"loadFailed": "加载虚拟密钥失败：{{message}}"
+		"loadFailed": "加载虚拟密钥失败：{{message}}",
+		"metadataFilterInvalid": "此链接中的元数据筛选键无效，因此未应用。键由 1-256 个字母、数字、“.”、“_”或“-”组成。",
+		"clearFilter": "清除筛选"
 	},
 	"plugins": {
 		"title": "插件",
@@ -353,7 +364,26 @@
 			"filterEvent": "事件",
 			"filterResponseStatus": "响应状态",
 			"filterWebhooks": "Webhook",
-			"searchWebhooks": "搜索 webhook…"
+			"searchWebhooks": "搜索 webhook…",
+			"table": {
+				"waiting": "正在等待新的投递…",
+				"empty": "未找到投递记录。请尝试调整筛选条件和/或时间范围。",
+				"range": "第 {{from}}-{{to}} 条，共 {{total}} 条投递"
+			},
+			"header": {
+				"searchByDeliveryId": "按投递 ID 搜索",
+				"switchLookup": "在请求 ID 和投递 ID 查找之间切换"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "投递 ID",
+				"actions": "操作",
+				"collapseSends": "折叠发送记录",
+				"expandSends": "展开发送记录",
+				"noPermission": "您没有重新投递的权限",
+				"openInLogs": "{{id}} — 在日志中打开"
+			},
+			"copyRequestId": "复制请求 ID {{id}}"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "解锁用户排行以获得更好可见性"
 	},
 	"promptDeployments": {
-		"unlockTitle": "解锁提示词部署，以便更好地做提示词版本管理与 A/B 测试。"
+		"unlockTitle": "解锁提示词部署，以便更好地做提示词版本管理与 A/B 测试。",
+		"accordionTitle": "部署"
 	},
 	"connectorsUnlock": {
 		"splunk": "解锁原生 Splunk 数据接入以提升可观测性",
@@ -389,7 +420,8 @@
 		"datadog": "解锁原生 Datadog 数据接入以提升可观测性",
 		"bigquery": "解锁原生 BigQuery 数据接入以进行分析",
 		"kafka": "解锁原生 Kafka 日志流式传输以实现实时可观测性",
-		"kafkaDescription": "此功能属于 Bifrost 企业版许可证。将已完成的请求追踪以 JSON 流式发送到 Kafka topic，用于实时分析、告警与下游处理。"
+		"kafkaDescription": "此功能属于 Bifrost 企业版许可证。将已完成的请求追踪以 JSON 流式发送到 Kafka topic，用于实时分析、告警与下游处理。",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "解锁访问配置以提升管控",
@@ -439,7 +471,9 @@
 		"reset": "重置",
 		"addBudgetButton": "添加预算",
 		"maximumSpend": "最大支出（美元）",
-		"noBudgetLimits": "尚未配置预算上限。"
+		"noBudgetLimits": "尚未配置预算上限。",
+		"removeBudgetAria": "移除预算 {{number}}",
+		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。"
 	},
 	"filters": {
 		"filters": "筛选",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} 个模式",
 		"removeAria": "移除 {{name}}",
 		"noneLeftClick": "没有可配置的供应商。点击添加"
+	},
+	"orgChart": {
+		"unlockTitle": "解锁组织架构图",
+		"unlockDescription": "在同一棵树中查看各业务单元、团队和用户的预算、支出、模型和工具。此功能属于 Bifrost 企业版许可证。"
+	},
+	"usage": {
+		"budgetAria": "预算用量",
+		"tokenAria": "Token 用量",
+		"requestAria": "请求用量",
+		"resets": "{{period}}重置",
+		"tokens": "{{value}} 个 token",
+		"req": "{{value}} 次请求",
+		"tokenTooltip": "{{used}} / {{max}} 个 token",
+		"requestTooltip": "{{used}} / {{max}} 次请求",
+		"keyCount_one": "{{count}} 个密钥",
+		"keyCount_other": "{{count}} 个密钥"
+	},
+	"budgetOverride": {
+		"updated": "预算覆盖已更新",
+		"added": "预算覆盖已添加",
+		"removed": "预算覆盖已移除",
+		"invalidInput": "输入无效",
+		"editOverride": "编辑覆盖",
+		"addOverride": "添加覆盖",
+		"editTitle": "编辑预算覆盖",
+		"addTitle": "添加预算覆盖",
+		"description": "在不更改基础 {{budget}} 预算的情况下，临时增加支出额度。",
+		"additionalBudget": "额外预算",
+		"duration": "时长",
+		"modeCycles": "持续若干个重置周期",
+		"modeForever": "直到移除",
+		"resetCycles": "重置周期数",
+		"cycleHint": "当前重置周期计为第一个周期。",
+		"validUntil": "有效期至 <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "当前生效上限：<b0>{{limit}}</b0>",
+		"removeOverride": "移除覆盖",
+		"updateOverride": "更新覆盖",
+		"managerDescription": "在不更改基础上限的情况下，临时为预算增加支出额度。",
+		"rowActive": "+{{amount}} 覆盖 · 生效 {{effective}}",
+		"rowBase": "基础 {{amount}}",
+		"edit": "编辑",
+		"remove": "移除",
+		"update": "更新",
+		"add": "添加"
 	}
 }

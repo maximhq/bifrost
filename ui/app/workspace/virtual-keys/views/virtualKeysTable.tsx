@@ -125,7 +125,17 @@ function virtualKeysToCSV(vks: VirtualKey[]): string {
 		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
-		return [vk.name, status, assignedTo, vk.assigned_user?.email ?? "", budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at];
+		return [
+			vk.name,
+			status,
+			assignedTo,
+			vk.assigned_user?.email ?? "",
+			budgetLimit,
+			budgetSpent,
+			budgetReset,
+			vk.description || "",
+			vk.created_at,
+		];
 	});
 	return [headers, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
 }

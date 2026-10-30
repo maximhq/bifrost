@@ -450,7 +450,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 
 					{pinned.length > 0 && (
 						<ComboboxGroup>
-							<ComboboxLabel>Selected</ComboboxLabel>
+							<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
 							{pinned.map(renderOption)}
 						</ComboboxGroup>
 					)}
@@ -461,7 +461,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 							{base.map(renderOption)}
 							{custom.length > 0 && (
 								<ComboboxGroup>
-									<ComboboxLabel>Custom Providers</ComboboxLabel>
+									<ComboboxLabel>{t("providerSelect.customProviders")}</ComboboxLabel>
 									{custom.map(renderOption)}
 								</ComboboxGroup>
 							)}

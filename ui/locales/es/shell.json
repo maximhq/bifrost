@@ -360,7 +360,11 @@
 			"followUp": "Haz una pregunta de seguimiento; se enviará cuando termine esta respuesta...",
 			"placeholder": "Pregunta sobre tus datos de Bifrost...",
 			"stop": "Detener",
-			"send": "Enviar"
+			"send": "Enviar",
+			"commandClear": "Iniciar una conversación nueva",
+			"settings": "Ajustes de Warp",
+			"switchModel": "Cambiar de modelo",
+			"defaultModel": "Predeterminado"
 		},
 		"question": {
 			"label": "Pregunta",
@@ -449,16 +453,17 @@
 			"render_chart": {
 				"running": "Dibujando un gráfico",
 				"done": "Gráfico dibujado"
+			},
+			"list_topics": {
+				"running": "Enumerando temas",
+				"done": "Temas enumerados"
 			}
 		},
 		"errors": {
 			"not_configured": {
 				"summary": "Warp aún no está configurado.",
 				"cause": "No hay proveedor ni modelo definidos, o Warp está desactivado en la configuración.",
-				"suggestions": [
-					"Abre los ajustes de Warp y elige un proveedor y un modelo.",
-					"Asegúrate de que Habilitar Warp esté activado."
-				]
+				"suggestions": ["Abre los ajustes de Warp y elige un proveedor y un modelo.", "Asegúrate de que Habilitar Warp esté activado."]
 			},
 			"max_iterations": {
 				"summary": "Warp no pudo llegar a una respuesta.",
@@ -504,10 +509,7 @@
 			"unknown": {
 				"summary": "Algo salió mal.",
 				"cause": "Warp devolvió un error sin un código reconocido.",
-				"suggestions": [
-					"Vuelve a intentar la pregunta.",
-					"Si sigue ocurriendo, infórmalo con los detalles de abajo."
-				]
+				"suggestions": ["Vuelve a intentar la pregunta.", "Si sigue ocurriendo, infórmalo con los detalles de abajo."]
 			},
 			"access_denied": {
 				"summary": "Tu cuenta no tiene acceso al modelo de Warp.",
@@ -543,6 +545,54 @@
 					"También puedes configurar Warp para usar un modelo permitido para tu cuenta en los ajustes de Warp."
 				]
 			}
+		},
+		"dock": {
+			"resize": "Cambiar el tamaño del panel de Warp",
+			"description": "Hazle a Warp preguntas sobre los registros, el uso y el gasto de este despliegue."
+		},
+		"chart": {
+			"openInLogs": "Abrir en Registros",
+			"empty": "No hay datos en este período."
 		}
+	},
+	"rssSources": {
+		"newsOn": "Noticias activadas",
+		"newsOff": "Noticias desactivadas para este gateway",
+		"updateSettingsFailed": "No se pudo actualizar la configuración de noticias",
+		"updateFeedFailed": "No se pudo actualizar {{name}}",
+		"updatedLogo": "Se actualizó el logotipo de {{name}}",
+		"removedLogo": "Se quitó el logotipo de {{name}}",
+		"updateLogoFailed": "No se pudo actualizar el logotipo de {{name}}",
+		"removed": "Se eliminó {{name}}",
+		"removeFailed": "No se pudo eliminar {{name}}",
+		"title": "Fuentes de noticias",
+		"description": "Elige qué feeds RSS aparecen en la pestaña Noticias de la bandeja de notificaciones para todos los usuarios de este gateway.",
+		"showNews": "Mostrar noticias en la bandeja de notificaciones",
+		"showNewsHelp": "Al desactivar esta opción, la pestaña Noticias se oculta para todos los usuarios de este gateway y se deja de obtener noticias. Tus fuentes de abajo se conservan.",
+		"settingLoadFailed": "No se pudo cargar este ajuste.",
+		"tryAgain": "Intentar de nuevo",
+		"loading": "Cargando fuentes",
+		"loadFailed": "No se pudieron cargar las fuentes.",
+		"builtinFeeds": "Feeds integrados",
+		"customFeeds": "Feeds personalizados",
+		"noCustomFeeds": "Aún no hay feeds personalizados. Añade abajo cualquier URL RSS o Atom.",
+		"removeAria": "Eliminar {{name}}",
+		"disableAria": "Deshabilitar {{name}}",
+		"enableAria": "Habilitar {{name}}",
+		"changeLogoAria": "Cambiar el logotipo de {{name}}",
+		"uploadLogo": "Subir logotipo",
+		"removeLogo": "Quitar logotipo",
+		"addedFeed": "Se añadió {{name}}",
+		"addFeedTitle": "Añadir un feed",
+		"name": "Nombre",
+		"namePlaceholder": "Lanzamientos de Bifrost",
+		"feedUrl": "URL del feed",
+		"logo": "Logotipo",
+		"optional": "(opcional)",
+		"logoPreviewName": "Vista previa del logotipo",
+		"uploadedImage": "Imagen subida",
+		"upload": "Subir",
+		"logoHelp": "Una URL de imagen o un archivo PNG, JPEG, GIF, WebP, SVG o ICO de hasta 96 KB. Por defecto se usa el favicon del sitio.",
+		"addFeed": "Añadir feed"
 	}
 }
