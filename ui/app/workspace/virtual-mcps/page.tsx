@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import VirtualMCPSheet, { VirtualMCPSheetTarget } from "./views/virtualMcpSheet";
 import VirtualMCPWizard from "./views/virtualMcpWizard";
 import VirtualMCPsTable from "./views/virtualMcpsTable";
+import { useActionParam } from "@/hooks/useActionParam";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 const PAGE_SIZE = 25;
 
@@ -22,6 +24,8 @@ export default function VirtualMCPsPage() {
 
 	const [sheetTarget, setSheetTarget] = useState<VirtualMCPSheetTarget | null>(null);
 	const [creating, setCreating] = useState(false);
+	const canCreate = useRbac(RbacResource.VirtualMCPs, RbacOperation.Create);
+	useActionParam("create", () => setCreating(true), { isOpen: creating, enabled: canCreate });
 
 	const debouncedSearch = useDebouncedValue(urlState.q, 300);
 

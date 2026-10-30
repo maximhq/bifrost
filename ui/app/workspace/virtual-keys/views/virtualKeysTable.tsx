@@ -85,6 +85,7 @@ import { assignedToLabel, csvAssignedToCell, latestGraceDeadline } from "./virtu
 import "@enterprise/lib/registrations/userPicker";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
+import { useActionParam } from "@/hooks/useActionParam";
 
 const formatResetDuration = (duration: string) =>
 	i18n.t(`virtualKeys.resetDurations.${duration}`, { ns: "models", defaultValue: resetDurationLabels[duration] || duration });
@@ -644,6 +645,7 @@ export default function VirtualKeysTable({
 		setEditingVirtualKeyId(null);
 		setShowVirtualKeySheet(true);
 	};
+	useActionParam("create", handleAddVirtualKey, { isOpen: showVirtualKeySheet, enabled: hasCreateAccess });
 
 	const handleEditVirtualKey = (vk: VirtualKey) => {
 		setEditingVirtualKeyId(vk.id);

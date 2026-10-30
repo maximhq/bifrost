@@ -32,6 +32,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
 import { TeamsEmptyState } from "./teamsEmptyState";
+import { useActionParam } from "@/hooks/useActionParam";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -186,6 +187,7 @@ export default function TeamsTable({
 	const handleAddTeam = () => {
 		onTeamAdd();
 	};
+	useActionParam("create", handleAddTeam, { isOpen: selectedTeamId !== null, enabled: hasCreateAccess });
 
 	const handleEditTeam = (team: Team) => {
 		onTeamSelect(team);

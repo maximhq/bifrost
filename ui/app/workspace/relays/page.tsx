@@ -15,6 +15,7 @@ import { DeleteEndpointDialog } from "./dialogs/deleteEndpointDialog";
 import { AddEndpointSheet } from "./sheets/addEndpointSheet";
 import { EndpointsEmptyState } from "./views/endpointsEmptyState";
 import { EndpointView } from "./views/endpointView";
+import { useActionParam } from "@/hooks/useActionParam";
 
 /** Relays, laid out like the providers page: the endpoints on the left, the selected one on the right. */
 export default function RelaysPage() {
@@ -25,6 +26,7 @@ export default function RelaysPage() {
 	const endpoints = data?.relays;
 	const [selected, setSelected] = useQueryState("relay");
 	const [showAddSheet, setShowAddSheet] = useState(false);
+	useActionParam("create", () => setShowAddSheet(true), { isOpen: showAddSheet, enabled: canCreate });
 	const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
 

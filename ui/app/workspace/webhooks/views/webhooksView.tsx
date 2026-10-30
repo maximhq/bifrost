@@ -41,6 +41,7 @@ import { WebhookDetailsSheet } from "./webhookDetailsSheet";
 import { WebhookSheet } from "./webhookSheet";
 import { WebhooksEmptyState } from "./webhooksEmptyState";
 import WebhooksFilterBar from "./webhooksFilterBar";
+import { useActionParam } from "@/hooks/useActionParam";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
@@ -259,6 +260,7 @@ export default function WebhooksView() {
 		setEditingEndpoint(null);
 		setSheetOpen(true);
 	};
+	useActionParam("create", handleAdd, { isOpen: sheetOpen, enabled: hasCreateAccess });
 
 	const handleEdit = (endpoint: WebhookEndpoint) => {
 		setEditingEndpoint(endpoint);
