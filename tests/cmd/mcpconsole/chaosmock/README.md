@@ -125,7 +125,10 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/notify/tools-changed` | | push `notifications/tools/list_changed` |
 | `POST /control/<s>/stdio/register` | `{"pid":N,"env":{...}}` | record the bridging child process and its shared environment (the child does this itself) |
 | `POST /control/<s>/stdio/kill` | | kill the bridging child process |
-| `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts |
+| `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts (OAuth counters and log too) |
+| `POST /control/<s>/oauth/expire` | `{"identity":"..."}` / `{}` | that identity's live access tokens (everyone's when empty) now fail at the server |
+| `POST /control/<s>/oauth/revoke` | `{"identity":"..."}` / `{"token":"..."}` / `{}` | end whole grants: access tokens fail, refresh tokens get `invalid_grant` |
+| `POST /control/<s>/oauth/fail` | `{"fail":{"endpoint","grant_type","status","error","count"}}` | the next `count` matching authorization server requests fail |
 
 Clients read instructions during the handshake, so changing them reaches only
 clients that initialize afterwards.
@@ -147,6 +150,55 @@ Without `reply` or `reply_env`, a call echoes `"<tool>:<arguments>"`. A
 definition that would misbehave quietly is rejected with 400: annotations or a
 reply that is not an object, both `reply` and `reply_env`, or a tool fault
 field that cannot apply to one tool.
+
+## OAuth
+
+`POST /control/<s>/auth {"auth":{"oauth":{...}}}` makes a server an OAuth 2.1
+protected resource with its own authorization server, so a client's whole
+upstream OAuth path runs for real: discovery (RFC 9728, RFC 8414), dynamic
+registration (RFC 7591), authorization with PKCE S256 (RFC 7636), code exchange
+and refresh (RFC 6749, with RFC 8707 resource indicators).
+
+| Path | Serves |
+|---|---|
+| `/.well-known/oauth-protected-resource/s/<s>/mcp` (or `/sse`) | protected resource metadata |
+| `/.well-known/oauth-authorization-server/s/<s>/as` | authorization server metadata |
+| `/s/<s>/as/register`, `/authorize`, `/token` | the authorization server |
+
+Only the path-inserted forms exist: one fleet hosts many servers, so the root
+documents are 404. Every published URL uses the host the request arrived on.
+
+Consent is approved automatically. A test follows the authorization URL
+without following redirects, reads the code from the `Location` header, and
+picks who approves by adding `login_hint=<identity>` (otherwise `approve_as`,
+default `user`). That identity is what calls are attributed to, so
+`calls_by_identity` shows per-user isolation.
+
+| `oauth` field | Effect |
+|---|---|
+| `challenge_scope` | adds `scope="..."` to the 401 challenge |
+| `challenge` | `"bare"` sends a challenge without `resource_metadata` |
+| `resource` | the resource the metadata publishes (default: the endpoint's URL) |
+| `registration` | `false` removes dynamic registration |
+| `clients` | pre-registered clients `{client_id, client_secret, redirect_uris}` |
+| `approve_as` | the identity that approves without a `login_hint` |
+| `deny` | every authorization ends in `access_denied` |
+| `access_ttl` | access token lifetime (default `1h`) |
+| `rotate_refresh` | a refresh issues a new refresh token and retires the old one |
+
+With OAuth on, POST and GET on the MCP endpoint need an access token from this
+server, or a static `bearer` token. A refusal is 401 with a plain-text body
+(mcp-go reads a JSON error body as a JSON-RPC response) and
+`WWW-Authenticate: Bearer resource_metadata="..."`. DELETE stays open: ending a
+session needs only its id, and mcp-go sends it without credentials.
+
+`GET /control/<s>` gains `oauth`: clients, grants with their current tokens,
+counters (`prm`, `metadata`, `register`, `authorize`, `token_code`,
+`token_refresh`, `token_errors`, `rejected`), queued failures, and a log of the
+last 500 requests with the raw secrets, verifier result (`pkce`), resource and
+tokens presented and issued. A grant's earlier access tokens stay valid until
+they expire, as with a real server. Changing the configuration keeps clients
+and grants, and `faults/clear` drops queued failures.
 
 ## Faults
 

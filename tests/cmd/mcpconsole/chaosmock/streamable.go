@@ -39,6 +39,16 @@ func (s *Server) ServeStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.failRequest(w, s.faults.forRequest("")) {
 			return
 		}
+		// Without OAuth these stay open to anyone, as they always have. With
+		// it the GET needs a token too, since the GET a client sends with no
+		// credential is where its discovery starts. DELETE stays open: ending
+		// a session needs only its id, and clients commonly send it without
+		// credentials, which would otherwise read as rejected requests.
+		if r.Method == http.MethodGet && s.auth.get().OAuth != nil {
+			if _, ok := s.authenticate(w, r); !ok {
+				return
+			}
+		}
 		if r.Method == http.MethodGet {
 			s.serveListeningStream(w, r)
 		} else {
@@ -116,14 +126,8 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authResult := s.auth.check(r.Header)
-	if !authResult.OK {
-		// A genuine credential rejection, distinct from an injected 401. Both
-		// produce 401 on the wire, but only this one reflects what the caller
-		// actually presented, and only this one changes when a token is
-		// revoked.
-		w.Header().Set("WWW-Authenticate", `Bearer realm="chaosmock"`)
-		http.Error(w, authResult.Reason, http.StatusUnauthorized)
+	identity, ok := s.authenticate(w, r)
+	if !ok {
 		return
 	}
 
@@ -131,8 +135,6 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, newError(nil, CodeParseError, "invalid JSON"))
 		return
 	}
-
-	identity := authResult.Identity
 
 	// Session validity is only meaningful once one has been issued. An
 	// initialize request legitimately arrives without a session id, and must
