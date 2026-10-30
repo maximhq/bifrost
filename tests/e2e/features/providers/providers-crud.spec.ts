@@ -520,6 +520,95 @@ test.describe("Providers", () => {
       await expect(providerItem).toBeVisible({ timeout: 15000 });
     });
 
+    test("should persist boolean schema compatibility through creation and API Structure edits", async ({
+      providersPage,
+      providerSettingsPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-boolean-schema-${Date.now()}`,
+        baseProviderType: "openai",
+        baseUrl: new URL(page.url()).origin,
+      });
+      const providerPath = `/api/providers/${encodeURIComponent(providerData.name)}`;
+      const compatibilitySwitch = providerSettingsPage.getBooleanSchemaNodesUnsupportedSwitch();
+      const reloadAndExpectCompatibility = async (enabled: boolean) => {
+        await page.reload();
+        await providersPage.selectProvider(providerData.name);
+        await providerSettingsPage.selectConfigTab("api-structure");
+        await expect(compatibilitySwitch).toHaveAttribute("data-state", enabled ? "checked" : "unchecked");
+
+        const response = await page.request.get(providerPath);
+        expect(response.ok(), await response.text()).toBe(true);
+        const saved = (await response.json()) as {
+          custom_provider_config?: { boolean_schema_nodes_unsupported?: boolean };
+        };
+        // A disabled flag is omitted from the stored provider's JSON.
+        expect(saved.custom_provider_config?.boolean_schema_nodes_unsupported ?? false).toBe(enabled);
+      };
+
+      try {
+        await providersPage.fillCustomProviderForm(providerData);
+        await providersPage.customProviderAllowPrivateNetworkSwitch.click();
+        await expect(providersPage.customProviderAllowPrivateNetworkSwitch).toHaveAttribute("data-state", "checked");
+        const creationSwitch = providersPage.customProviderBooleanSchemaNodesUnsupportedSwitch;
+        await expect(creationSwitch).toBeVisible();
+        await expect(creationSwitch).toHaveAttribute("data-state", "unchecked");
+        await creationSwitch.click();
+        await expect(creationSwitch).toHaveAttribute("data-state", "checked");
+        await providersPage.saveCustomProvider();
+        await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+        await reloadAndExpectCompatibility(true);
+        for (const enabled of [false, true]) {
+          await compatibilitySwitch.click();
+          await providerSettingsPage.getConfigSaveBtn("api-structure").click();
+          await providerSettingsPage.waitForSuccessToast();
+          await reloadAndExpectCompatibility(enabled);
+        }
+      } finally {
+        await page.request.delete(providerPath);
+      }
+    });
+
+    test("should hide boolean schema compatibility for other base formats during creation", async ({
+      providersPage,
+    }) => {
+      await providersPage.fillCustomProviderForm(createCustomProviderData({
+        baseProviderType: "anthropic",
+      }));
+
+      await expect(providersPage.baseProviderSelect).toContainText("Anthropic");
+      await expect(providersPage.customProviderBooleanSchemaNodesUnsupportedSwitch).toHaveCount(0);
+      await providersPage.customProviderCancelBtn.click();
+      await expect(providersPage.customProviderSheet).not.toBeVisible();
+    });
+
+    test("should hide boolean schema compatibility for other base formats in API Structure", async ({
+      providersPage,
+      providerSettingsPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-boolean-schema-anthropic-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: new URL(page.url()).origin,
+      });
+      try {
+        await providersPage.fillCustomProviderForm(providerData);
+        await providersPage.customProviderAllowPrivateNetworkSwitch.click();
+        await expect(providersPage.customProviderAllowPrivateNetworkSwitch).toHaveAttribute("data-state", "checked");
+        await providersPage.saveCustomProvider();
+        await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+        await providersPage.selectProvider(providerData.name);
+        await providerSettingsPage.selectConfigTab("api-structure");
+
+        await expect(providerSettingsPage.getBooleanSchemaNodesUnsupportedSwitch()).toHaveCount(0);
+      } finally {
+        await page.request.delete(`/api/providers/${encodeURIComponent(providerData.name)}`);
+      }
+    });
+
     test("should create a custom Anthropic-compatible provider", async ({
       providersPage,
     }) => {

@@ -298482,6 +298482,485 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Custom provider boolean schema nodes (boolean-schema-nodes)",
+      "description": "Offline HTTP route coverage for custom_provider_config.boolean_schema_nodes_unsupported. Each row creates and deletes an OpenAI-base custom provider and a dummy key through /api/providers, then dispatches its main request through /v1/chat/completions or /v1/responses. The flagged, explicit-false and omitted-flag providers each cover streaming and non-streaming calls. Assertions inspect the serialized outbound extra_fields.raw_request, including the terminal SSE frame, rather than the submitted client body. Start runners/provider-error-fixture.mjs and an isolated gateway with provider_config/provider-error-fixture.config.json; no upstream credentials are needed. Select this whole folder with compat off. Set baseUrl to the isolated gateway and optionally providerErrorFixtureUrl (default http://127.0.0.1:8791); setupToken is required only when the management API uses the setup lock. Missing prerequisites fail these rows rather than skipping coverage.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var base = pm.variables.get('baseUrl');",
+              "var fixture = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+              "var name = pm.info.requestName;",
+              "var run = Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "var provider = 'harness-boolean-schema-nodes-' + run;",
+              "var model = 'upstream-ok~boolean-schema-nodes-' + run;",
+              "var config = { base_provider_type: 'openai', is_key_less: false };",
+              "if (name.indexOf('flagged') !== -1) { config.boolean_schema_nodes_unsupported = true; }",
+              "if (name.indexOf('explicit false') !== -1) { config.boolean_schema_nodes_unsupported = false; }",
+              "pm.variables.set('booleanSchemaProvider', provider);",
+              "pm.variables.set('booleanSchemaModel', model);",
+              "var headers = { 'Content-Type': 'application/json' };",
+              "var token = pm.variables.get('setupToken');",
+              "if (token) { headers['X-Bifrost-Setup-Token'] = token; }",
+              "var body = { provider: provider, send_back_raw_request: true, custom_provider_config: config, network_config: { base_url: fixture, allow_private_network: true, max_retries: 0, default_request_timeout_in_seconds: 10 } };",
+              "pm.sendRequest({ url: base + '/api/providers', method: 'POST', header: headers, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+              "  pm.test('setup: custom provider is created', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+              "  });",
+              "  if (err || !res || res.code !== 200) { return; }",
+              "  var key = { name: provider + '-key', value: 'test-key', models: [model], weight: 1 };",
+              "  pm.sendRequest({ url: base + '/api/providers/' + encodeURIComponent(provider) + '/keys', method: 'POST', header: headers, body: { mode: 'raw', raw: JSON.stringify(key) } }, function (keyErr, keyRes) {",
+              "    pm.test('setup: fixture key is created', function () {",
+              "      pm.expect(keyErr, String(keyErr)).to.equal(null);",
+              "      pm.expect(keyRes && keyRes.code, keyRes ? keyRes.text() : 'no response').to.equal(200);",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var base = pm.variables.get('baseUrl');",
+              "var headers = {};",
+              "var token = pm.variables.get('setupToken');",
+              "if (token) { headers['X-Bifrost-Setup-Token'] = token; }",
+              "pm.sendRequest({ url: base + '/api/providers/' + encodeURIComponent(pm.variables.get('booleanSchemaProvider')), method: 'DELETE', header: headers }, function (err, res) {",
+              "  pm.test('cleanup: custom provider and its key are removed', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res && res.code, res ? res.text() : 'no response').to.equal(200);",
+              "  });",
+              "});",
+              "var text = pm.response.text();",
+              "pm.test('request succeeds through provider dispatch', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 800)).to.equal(200);",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.equal(pm.variables.get('booleanSchemaProvider'));",
+              "});",
+              "var sent = JSON.parse(pm.variables.replaceIn(pm.request.body.raw));",
+              "var responses = Object.prototype.hasOwnProperty.call(sent, 'input');",
+              "var rr = null;",
+              "var frames = [];",
+              "if (sent.stream) {",
+              "  text.split(/\\r?\\n/).forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) { return; }",
+              "    var data = line.slice(5).trim();",
+              "    if (!data || data === '[DONE]') { return; }",
+              "    var frame; try { frame = JSON.parse(data); } catch (e) { return; }",
+              "    frames.push(frame);",
+              "    var extra = frame.extra_fields || (frame.response || {}).extra_fields || {};",
+              "    if (extra.raw_request) { rr = extra.raw_request; }",
+              "  });",
+              "  pm.test('stream is SSE and reaches its terminal event with text', function () {",
+              "    pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream');",
+              "    if (responses) {",
+              "      var terminal = frames.filter(function (f) { return f.type === 'response.completed'; });",
+              "      pm.expect(terminal.length, text.slice(-1000)).to.equal(1);",
+              "      pm.expect(terminal[0].response.status).to.equal('completed');",
+              "      pm.expect(terminal[0].response.output.some(function (item) { return item.type === 'message' && item.content.some(function (part) { return part.type === 'output_text' && part.text === 'hello'; }); })).to.equal(true);",
+              "    } else {",
+              "      pm.expect(frames.some(function (f) { return (f.choices || []).some(function (choice) { return choice.finish_reason === 'stop'; }); }), text.slice(-1000)).to.equal(true);",
+              "      pm.expect(frames.map(function (f) { return ((((f.choices || [])[0] || {}).delta || {}).content) || ''; }).join('')).to.equal('hello');",
+              "      pm.expect(text).to.include('data: [DONE]');",
+              "    }",
+              "  });",
+              "} else {",
+              "  var body = pm.response.json();",
+              "  rr = (body.extra_fields || {}).raw_request;",
+              "  pm.test('fixture reply is relayed with text', function () {",
+              "    if (responses) {",
+              "      pm.expect(body.object).to.equal('response');",
+              "      pm.expect(body.output.some(function (item) { return item.type === 'message' && item.content.some(function (part) { return part.text === 'hello'; }); })).to.equal(true);",
+              "    } else { pm.expect(body.choices[0].message.content).to.equal('hello'); }",
+              "  });",
+              "}",
+              "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+              "pm.test('outbound raw_request is captured after serialization', function () { pm.expect(rr, text.slice(0, 1000)).to.be.an('object'); });",
+              "if (!rr) { return; }",
+              "var enabled = pm.info.requestName.indexOf('flagged') !== -1;",
+              "var original = responses ? sent.tools[0].parameters : sent.tools[0].function.parameters;",
+              "var actual = responses ? rr.tools[0].parameters : rr.tools[0].function.parameters;",
+              "var expected = enabled ? {\"type\":\"object\",\"description\":\"Mixed schema and instance booleans\",\"properties\":{\"allow\":{},\"deny\":{\"not\":{}},\"list\":{\"type\":\"array\",\"items\":{\"anyOf\":[{},{\"not\":{}},{\"type\":\"object\",\"properties\":{\"accept\":{},\"reject\":{\"not\":{}}},\"additionalProperties\":true}]}},\"tuple\":{\"type\":\"array\",\"items\":[{},{\"not\":{}}]},\"composition\":{\"allOf\":[{},{\"anyOf\":[{\"not\":{}},{}]},{\"oneOf\":[{},{\"not\":{}}]}],\"not\":{\"not\":{}}},\"values\":{\"enum\":[true,false,{\"items\":true,\"properties\":{\"allow\":false}}],\"const\":{\"items\":false,\"properties\":{\"allow\":true}},\"default\":{\"enabled\":true,\"items\":false},\"examples\":[true,false,{\"items\":false}],\"additionalProperties\":false},\"open\":{\"type\":\"object\",\"properties\":{\"flag\":{}},\"additionalProperties\":true},\"closed\":{\"type\":\"object\",\"properties\":{\"flag\":{\"not\":{}}},\"additionalProperties\":false}},\"required\":[\"allow\"],\"additionalProperties\":false,\"$defs\":{\"any\":{},\"never\":{\"not\":{}}},\"anyOf\":[{\"properties\":{\"nested\":{}}}],\"default\":{\"allow\":true,\"items\":false}} : original;",
+              "pm.test('true and false parameter schemas have the configured wire forms', function () {",
+              "  pm.expect(actual.properties.allow).to.eql(expected.properties.allow);",
+              "  pm.expect(actual.properties.deny).to.eql(expected.properties.deny);",
+              "});",
+              "pm.test('nested items, tuple items, compositions and definitions have the configured wire forms', function () {",
+              "  ['list', 'tuple', 'composition', 'open', 'closed'].forEach(function (key) { pm.expect(actual.properties[key], key).to.eql(expected.properties[key]); });",
+              "  pm.expect(actual.$defs).to.eql(expected.$defs);",
+              "  pm.expect(actual.anyOf).to.eql(expected.anyOf);",
+              "});",
+              "pm.test('enum, const, default and examples remain instance data', function () {",
+              "  ['enum', 'const', 'default', 'examples'].forEach(function (key) { pm.expect(actual.properties.values[key], key).to.eql(original.properties.values[key]); });",
+              "  pm.expect(actual.default).to.eql(original.default);",
+              "});",
+              "pm.test('boolean additionalProperties remains unchanged at every depth', function () {",
+              "  pm.expect(actual.additionalProperties).to.equal(false);",
+              "  pm.expect(actual.properties.open.additionalProperties).to.equal(true);",
+              "  pm.expect(actual.properties.closed.additionalProperties).to.equal(false);",
+              "  pm.expect(actual.properties.values.additionalProperties).to.equal(false);",
+              "  pm.expect(actual.properties.list.items.anyOf[2].additionalProperties).to.equal(true);",
+              "});",
+              "pm.test('all tool parameters and non-schema tool fields match exactly', function () {",
+              "  var tools = JSON.parse(JSON.stringify(sent.tools));",
+              "  if (responses) { tools[0].parameters = expected; } else { tools[0].function.parameters = expected; }",
+              "  pm.expect(rr.tools).to.eql(tools);",
+              "});",
+              "pm.test('store follows the fixture catalog capability on each endpoint', function () {",
+              "  if (responses) {",
+              "    pm.expect(rr.store).to.equal(sent.store);",
+              "  } else {",
+              "    // The fixture catalog leaves chat store unsupported; normal conversion omits it.",
+              "    pm.expect(rr.store, 'unsupported chat store must be omitted').to.equal(undefined);",
+              "  }",
+              "});",
+              "pm.test('model and non-schema request fields reach the provider unchanged', function () {",
+              "  pm.expect(rr.model).to.equal(pm.variables.get('booleanSchemaModel'));",
+              "  ['temperature', 'top_p', 'metadata', 'parallel_tool_calls', 'tool_choice', 'user'].forEach(function (key) { pm.expect(rr[key], key).to.eql(sent[key]); });",
+              "  pm.expect(rr.stream || false).to.equal(sent.stream || false);",
+              "  if (responses) {",
+              "    pm.expect(rr.input).to.eql(sent.input);",
+              "    pm.expect(rr.instructions).to.equal(sent.instructions);",
+              "    pm.expect(rr.max_output_tokens).to.equal(sent.max_output_tokens);",
+              "    pm.expect(rr.messages).to.equal(undefined);",
+              "  } else {",
+              "    pm.expect(rr.messages).to.eql(sent.messages);",
+              "    pm.expect(rr.max_completion_tokens).to.equal(sent.max_completion_tokens);",
+              "    pm.expect(rr.input).to.equal(undefined);",
+              "    if (sent.stream) { pm.expect(rr.stream_options).to.eql(sent.stream_options); }",
+              "  }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "297.1 openai-base custom provider flagged chat completions (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with hello; do not call a tool.\"\n    }\n  ],\n  \"max_completion_tokens\": 32,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"schema_probe\",\n        \"description\": \"Preserve tool metadata\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"description\": \"Mixed schema and instance booleans\",\n          \"properties\": {\n            \"allow\": true,\n            \"deny\": false,\n            \"list\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"anyOf\": [\n                  true,\n                  false,\n                  {\n                    \"type\": \"object\",\n                    \"properties\": {\n                      \"accept\": true,\n                      \"reject\": false\n                    },\n                    \"additionalProperties\": true\n                  }\n                ]\n              }\n            },\n            \"tuple\": {\n              \"type\": \"array\",\n              \"items\": [\n                true,\n                false\n              ]\n            },\n            \"composition\": {\n              \"allOf\": [\n                true,\n                {\n                  \"anyOf\": [\n                    false,\n                    true\n                  ]\n                },\n                {\n                  \"oneOf\": [\n                    true,\n                    false\n                  ]\n                }\n              ],\n              \"not\": false\n            },\n            \"values\": {\n              \"enum\": [\n                true,\n                false,\n                {\n                  \"items\": true,\n                  \"properties\": {\n                    \"allow\": false\n                  }\n                }\n              ],\n              \"const\": {\n                \"items\": false,\n                \"properties\": {\n                  \"allow\": true\n                }\n              },\n              \"default\": {\n                \"enabled\": true,\n                \"items\": false\n              },\n              \"examples\": [\n                true,\n                false,\n                {\n                  \"items\": false\n                }\n              ],\n              \"additionalProperties\": false\n            },\n            \"open\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": true\n              },\n              \"additionalProperties\": true\n            },\n            \"closed\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": false\n              },\n              \"additionalProperties\": false\n            }\n          },\n          \"required\": [\n            \"allow\"\n          ],\n          \"additionalProperties\": false,\n          \"$defs\": {\n            \"any\": true,\n            \"never\": false\n          },\n          \"anyOf\": [\n            {\n              \"properties\": {\n                \"nested\": true\n              }\n            }\n          ],\n          \"default\": {\n            \"allow\": true,\n            \"items\": false\n          }\n        },\n        \"strict\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"plain_probe\",\n        \"description\": \"Leave ordinary schemas alone\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"enabled\": {\n              \"type\": \"boolean\",\n              \"default\": false\n            }\n          },\n          \"additionalProperties\": true\n        },\n        \"strict\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.2 openai-base custom provider flagged streaming chat (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with hello; do not call a tool.\"\n    }\n  ],\n  \"max_completion_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"schema_probe\",\n        \"description\": \"Preserve tool metadata\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"description\": \"Mixed schema and instance booleans\",\n          \"properties\": {\n            \"allow\": true,\n            \"deny\": false,\n            \"list\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"anyOf\": [\n                  true,\n                  false,\n                  {\n                    \"type\": \"object\",\n                    \"properties\": {\n                      \"accept\": true,\n                      \"reject\": false\n                    },\n                    \"additionalProperties\": true\n                  }\n                ]\n              }\n            },\n            \"tuple\": {\n              \"type\": \"array\",\n              \"items\": [\n                true,\n                false\n              ]\n            },\n            \"composition\": {\n              \"allOf\": [\n                true,\n                {\n                  \"anyOf\": [\n                    false,\n                    true\n                  ]\n                },\n                {\n                  \"oneOf\": [\n                    true,\n                    false\n                  ]\n                }\n              ],\n              \"not\": false\n            },\n            \"values\": {\n              \"enum\": [\n                true,\n                false,\n                {\n                  \"items\": true,\n                  \"properties\": {\n                    \"allow\": false\n                  }\n                }\n              ],\n              \"const\": {\n                \"items\": false,\n                \"properties\": {\n                  \"allow\": true\n                }\n              },\n              \"default\": {\n                \"enabled\": true,\n                \"items\": false\n              },\n              \"examples\": [\n                true,\n                false,\n                {\n                  \"items\": false\n                }\n              ],\n              \"additionalProperties\": false\n            },\n            \"open\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": true\n              },\n              \"additionalProperties\": true\n            },\n            \"closed\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": false\n              },\n              \"additionalProperties\": false\n            }\n          },\n          \"required\": [\n            \"allow\"\n          ],\n          \"additionalProperties\": false,\n          \"$defs\": {\n            \"any\": true,\n            \"never\": false\n          },\n          \"anyOf\": [\n            {\n              \"properties\": {\n                \"nested\": true\n              }\n            }\n          ],\n          \"default\": {\n            \"allow\": true,\n            \"items\": false\n          }\n        },\n        \"strict\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"plain_probe\",\n        \"description\": \"Leave ordinary schemas alone\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"enabled\": {\n              \"type\": \"boolean\",\n              \"default\": false\n            }\n          },\n          \"additionalProperties\": true\n        },\n        \"strict\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.3 openai-base custom provider flagged Responses (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with hello; do not call a tool.\"\n        }\n      ]\n    }\n  ],\n  \"instructions\": \"Keep the reply short.\",\n  \"max_output_tokens\": 32,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"schema_probe\",\n      \"description\": \"Preserve tool metadata\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"description\": \"Mixed schema and instance booleans\",\n        \"properties\": {\n          \"allow\": true,\n          \"deny\": false,\n          \"list\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"anyOf\": [\n                true,\n                false,\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"accept\": true,\n                    \"reject\": false\n                  },\n                  \"additionalProperties\": true\n                }\n              ]\n            }\n          },\n          \"tuple\": {\n            \"type\": \"array\",\n            \"items\": [\n              true,\n              false\n            ]\n          },\n          \"composition\": {\n            \"allOf\": [\n              true,\n              {\n                \"anyOf\": [\n                  false,\n                  true\n                ]\n              },\n              {\n                \"oneOf\": [\n                  true,\n                  false\n                ]\n              }\n            ],\n            \"not\": false\n          },\n          \"values\": {\n            \"enum\": [\n              true,\n              false,\n              {\n                \"items\": true,\n                \"properties\": {\n                  \"allow\": false\n                }\n              }\n            ],\n            \"const\": {\n              \"items\": false,\n              \"properties\": {\n                \"allow\": true\n              }\n            },\n            \"default\": {\n              \"enabled\": true,\n              \"items\": false\n            },\n            \"examples\": [\n              true,\n              false,\n              {\n                \"items\": false\n              }\n            ],\n            \"additionalProperties\": false\n          },\n          \"open\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": true\n            },\n            \"additionalProperties\": true\n          },\n          \"closed\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": false\n            },\n            \"additionalProperties\": false\n          }\n        },\n        \"required\": [\n          \"allow\"\n        ],\n        \"additionalProperties\": false,\n        \"$defs\": {\n          \"any\": true,\n          \"never\": false\n        },\n        \"anyOf\": [\n          {\n            \"properties\": {\n              \"nested\": true\n            }\n          }\n        ],\n        \"default\": {\n          \"allow\": true,\n          \"items\": false\n        }\n      },\n      \"strict\": false\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"plain_probe\",\n      \"description\": \"Leave ordinary schemas alone\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"enabled\": {\n            \"type\": \"boolean\",\n            \"default\": false\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.4 openai-base custom provider flagged streaming Responses (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with hello; do not call a tool.\"\n        }\n      ]\n    }\n  ],\n  \"instructions\": \"Keep the reply short.\",\n  \"max_output_tokens\": 32,\n  \"stream\": true,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"schema_probe\",\n      \"description\": \"Preserve tool metadata\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"description\": \"Mixed schema and instance booleans\",\n        \"properties\": {\n          \"allow\": true,\n          \"deny\": false,\n          \"list\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"anyOf\": [\n                true,\n                false,\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"accept\": true,\n                    \"reject\": false\n                  },\n                  \"additionalProperties\": true\n                }\n              ]\n            }\n          },\n          \"tuple\": {\n            \"type\": \"array\",\n            \"items\": [\n              true,\n              false\n            ]\n          },\n          \"composition\": {\n            \"allOf\": [\n              true,\n              {\n                \"anyOf\": [\n                  false,\n                  true\n                ]\n              },\n              {\n                \"oneOf\": [\n                  true,\n                  false\n                ]\n              }\n            ],\n            \"not\": false\n          },\n          \"values\": {\n            \"enum\": [\n              true,\n              false,\n              {\n                \"items\": true,\n                \"properties\": {\n                  \"allow\": false\n                }\n              }\n            ],\n            \"const\": {\n              \"items\": false,\n              \"properties\": {\n                \"allow\": true\n              }\n            },\n            \"default\": {\n              \"enabled\": true,\n              \"items\": false\n            },\n            \"examples\": [\n              true,\n              false,\n              {\n                \"items\": false\n              }\n            ],\n            \"additionalProperties\": false\n          },\n          \"open\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": true\n            },\n            \"additionalProperties\": true\n          },\n          \"closed\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": false\n            },\n            \"additionalProperties\": false\n          }\n        },\n        \"required\": [\n          \"allow\"\n        ],\n        \"additionalProperties\": false,\n        \"$defs\": {\n          \"any\": true,\n          \"never\": false\n        },\n        \"anyOf\": [\n          {\n            \"properties\": {\n              \"nested\": true\n            }\n          }\n        ],\n        \"default\": {\n          \"allow\": true,\n          \"items\": false\n        }\n      },\n      \"strict\": false\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"plain_probe\",\n      \"description\": \"Leave ordinary schemas alone\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"enabled\": {\n            \"type\": \"boolean\",\n            \"default\": false\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.5 openai-base custom provider explicit false chat completions (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with hello; do not call a tool.\"\n    }\n  ],\n  \"max_completion_tokens\": 32,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"schema_probe\",\n        \"description\": \"Preserve tool metadata\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"description\": \"Mixed schema and instance booleans\",\n          \"properties\": {\n            \"allow\": true,\n            \"deny\": false,\n            \"list\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"anyOf\": [\n                  true,\n                  false,\n                  {\n                    \"type\": \"object\",\n                    \"properties\": {\n                      \"accept\": true,\n                      \"reject\": false\n                    },\n                    \"additionalProperties\": true\n                  }\n                ]\n              }\n            },\n            \"tuple\": {\n              \"type\": \"array\",\n              \"items\": [\n                true,\n                false\n              ]\n            },\n            \"composition\": {\n              \"allOf\": [\n                true,\n                {\n                  \"anyOf\": [\n                    false,\n                    true\n                  ]\n                },\n                {\n                  \"oneOf\": [\n                    true,\n                    false\n                  ]\n                }\n              ],\n              \"not\": false\n            },\n            \"values\": {\n              \"enum\": [\n                true,\n                false,\n                {\n                  \"items\": true,\n                  \"properties\": {\n                    \"allow\": false\n                  }\n                }\n              ],\n              \"const\": {\n                \"items\": false,\n                \"properties\": {\n                  \"allow\": true\n                }\n              },\n              \"default\": {\n                \"enabled\": true,\n                \"items\": false\n              },\n              \"examples\": [\n                true,\n                false,\n                {\n                  \"items\": false\n                }\n              ],\n              \"additionalProperties\": false\n            },\n            \"open\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": true\n              },\n              \"additionalProperties\": true\n            },\n            \"closed\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": false\n              },\n              \"additionalProperties\": false\n            }\n          },\n          \"required\": [\n            \"allow\"\n          ],\n          \"additionalProperties\": false,\n          \"$defs\": {\n            \"any\": true,\n            \"never\": false\n          },\n          \"anyOf\": [\n            {\n              \"properties\": {\n                \"nested\": true\n              }\n            }\n          ],\n          \"default\": {\n            \"allow\": true,\n            \"items\": false\n          }\n        },\n        \"strict\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"plain_probe\",\n        \"description\": \"Leave ordinary schemas alone\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"enabled\": {\n              \"type\": \"boolean\",\n              \"default\": false\n            }\n          },\n          \"additionalProperties\": true\n        },\n        \"strict\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.6 openai-base custom provider explicit false streaming chat (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with hello; do not call a tool.\"\n    }\n  ],\n  \"max_completion_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"schema_probe\",\n        \"description\": \"Preserve tool metadata\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"description\": \"Mixed schema and instance booleans\",\n          \"properties\": {\n            \"allow\": true,\n            \"deny\": false,\n            \"list\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"anyOf\": [\n                  true,\n                  false,\n                  {\n                    \"type\": \"object\",\n                    \"properties\": {\n                      \"accept\": true,\n                      \"reject\": false\n                    },\n                    \"additionalProperties\": true\n                  }\n                ]\n              }\n            },\n            \"tuple\": {\n              \"type\": \"array\",\n              \"items\": [\n                true,\n                false\n              ]\n            },\n            \"composition\": {\n              \"allOf\": [\n                true,\n                {\n                  \"anyOf\": [\n                    false,\n                    true\n                  ]\n                },\n                {\n                  \"oneOf\": [\n                    true,\n                    false\n                  ]\n                }\n              ],\n              \"not\": false\n            },\n            \"values\": {\n              \"enum\": [\n                true,\n                false,\n                {\n                  \"items\": true,\n                  \"properties\": {\n                    \"allow\": false\n                  }\n                }\n              ],\n              \"const\": {\n                \"items\": false,\n                \"properties\": {\n                  \"allow\": true\n                }\n              },\n              \"default\": {\n                \"enabled\": true,\n                \"items\": false\n              },\n              \"examples\": [\n                true,\n                false,\n                {\n                  \"items\": false\n                }\n              ],\n              \"additionalProperties\": false\n            },\n            \"open\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": true\n              },\n              \"additionalProperties\": true\n            },\n            \"closed\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": false\n              },\n              \"additionalProperties\": false\n            }\n          },\n          \"required\": [\n            \"allow\"\n          ],\n          \"additionalProperties\": false,\n          \"$defs\": {\n            \"any\": true,\n            \"never\": false\n          },\n          \"anyOf\": [\n            {\n              \"properties\": {\n                \"nested\": true\n              }\n            }\n          ],\n          \"default\": {\n            \"allow\": true,\n            \"items\": false\n          }\n        },\n        \"strict\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"plain_probe\",\n        \"description\": \"Leave ordinary schemas alone\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"enabled\": {\n              \"type\": \"boolean\",\n              \"default\": false\n            }\n          },\n          \"additionalProperties\": true\n        },\n        \"strict\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.7 openai-base custom provider explicit false Responses (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with hello; do not call a tool.\"\n        }\n      ]\n    }\n  ],\n  \"instructions\": \"Keep the reply short.\",\n  \"max_output_tokens\": 32,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"schema_probe\",\n      \"description\": \"Preserve tool metadata\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"description\": \"Mixed schema and instance booleans\",\n        \"properties\": {\n          \"allow\": true,\n          \"deny\": false,\n          \"list\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"anyOf\": [\n                true,\n                false,\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"accept\": true,\n                    \"reject\": false\n                  },\n                  \"additionalProperties\": true\n                }\n              ]\n            }\n          },\n          \"tuple\": {\n            \"type\": \"array\",\n            \"items\": [\n              true,\n              false\n            ]\n          },\n          \"composition\": {\n            \"allOf\": [\n              true,\n              {\n                \"anyOf\": [\n                  false,\n                  true\n                ]\n              },\n              {\n                \"oneOf\": [\n                  true,\n                  false\n                ]\n              }\n            ],\n            \"not\": false\n          },\n          \"values\": {\n            \"enum\": [\n              true,\n              false,\n              {\n                \"items\": true,\n                \"properties\": {\n                  \"allow\": false\n                }\n              }\n            ],\n            \"const\": {\n              \"items\": false,\n              \"properties\": {\n                \"allow\": true\n              }\n            },\n            \"default\": {\n              \"enabled\": true,\n              \"items\": false\n            },\n            \"examples\": [\n              true,\n              false,\n              {\n                \"items\": false\n              }\n            ],\n            \"additionalProperties\": false\n          },\n          \"open\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": true\n            },\n            \"additionalProperties\": true\n          },\n          \"closed\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": false\n            },\n            \"additionalProperties\": false\n          }\n        },\n        \"required\": [\n          \"allow\"\n        ],\n        \"additionalProperties\": false,\n        \"$defs\": {\n          \"any\": true,\n          \"never\": false\n        },\n        \"anyOf\": [\n          {\n            \"properties\": {\n              \"nested\": true\n            }\n          }\n        ],\n        \"default\": {\n          \"allow\": true,\n          \"items\": false\n        }\n      },\n      \"strict\": false\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"plain_probe\",\n      \"description\": \"Leave ordinary schemas alone\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"enabled\": {\n            \"type\": \"boolean\",\n            \"default\": false\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.8 openai-base custom provider explicit false streaming Responses (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with hello; do not call a tool.\"\n        }\n      ]\n    }\n  ],\n  \"instructions\": \"Keep the reply short.\",\n  \"max_output_tokens\": 32,\n  \"stream\": true,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"schema_probe\",\n      \"description\": \"Preserve tool metadata\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"description\": \"Mixed schema and instance booleans\",\n        \"properties\": {\n          \"allow\": true,\n          \"deny\": false,\n          \"list\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"anyOf\": [\n                true,\n                false,\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"accept\": true,\n                    \"reject\": false\n                  },\n                  \"additionalProperties\": true\n                }\n              ]\n            }\n          },\n          \"tuple\": {\n            \"type\": \"array\",\n            \"items\": [\n              true,\n              false\n            ]\n          },\n          \"composition\": {\n            \"allOf\": [\n              true,\n              {\n                \"anyOf\": [\n                  false,\n                  true\n                ]\n              },\n              {\n                \"oneOf\": [\n                  true,\n                  false\n                ]\n              }\n            ],\n            \"not\": false\n          },\n          \"values\": {\n            \"enum\": [\n              true,\n              false,\n              {\n                \"items\": true,\n                \"properties\": {\n                  \"allow\": false\n                }\n              }\n            ],\n            \"const\": {\n              \"items\": false,\n              \"properties\": {\n                \"allow\": true\n              }\n            },\n            \"default\": {\n              \"enabled\": true,\n              \"items\": false\n            },\n            \"examples\": [\n              true,\n              false,\n              {\n                \"items\": false\n              }\n            ],\n            \"additionalProperties\": false\n          },\n          \"open\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": true\n            },\n            \"additionalProperties\": true\n          },\n          \"closed\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": false\n            },\n            \"additionalProperties\": false\n          }\n        },\n        \"required\": [\n          \"allow\"\n        ],\n        \"additionalProperties\": false,\n        \"$defs\": {\n          \"any\": true,\n          \"never\": false\n        },\n        \"anyOf\": [\n          {\n            \"properties\": {\n              \"nested\": true\n            }\n          }\n        ],\n        \"default\": {\n          \"allow\": true,\n          \"items\": false\n        }\n      },\n      \"strict\": false\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"plain_probe\",\n      \"description\": \"Leave ordinary schemas alone\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"enabled\": {\n            \"type\": \"boolean\",\n            \"default\": false\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.9 openai-base custom provider default off (flag omitted) chat completions (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with hello; do not call a tool.\"\n    }\n  ],\n  \"max_completion_tokens\": 32,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"schema_probe\",\n        \"description\": \"Preserve tool metadata\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"description\": \"Mixed schema and instance booleans\",\n          \"properties\": {\n            \"allow\": true,\n            \"deny\": false,\n            \"list\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"anyOf\": [\n                  true,\n                  false,\n                  {\n                    \"type\": \"object\",\n                    \"properties\": {\n                      \"accept\": true,\n                      \"reject\": false\n                    },\n                    \"additionalProperties\": true\n                  }\n                ]\n              }\n            },\n            \"tuple\": {\n              \"type\": \"array\",\n              \"items\": [\n                true,\n                false\n              ]\n            },\n            \"composition\": {\n              \"allOf\": [\n                true,\n                {\n                  \"anyOf\": [\n                    false,\n                    true\n                  ]\n                },\n                {\n                  \"oneOf\": [\n                    true,\n                    false\n                  ]\n                }\n              ],\n              \"not\": false\n            },\n            \"values\": {\n              \"enum\": [\n                true,\n                false,\n                {\n                  \"items\": true,\n                  \"properties\": {\n                    \"allow\": false\n                  }\n                }\n              ],\n              \"const\": {\n                \"items\": false,\n                \"properties\": {\n                  \"allow\": true\n                }\n              },\n              \"default\": {\n                \"enabled\": true,\n                \"items\": false\n              },\n              \"examples\": [\n                true,\n                false,\n                {\n                  \"items\": false\n                }\n              ],\n              \"additionalProperties\": false\n            },\n            \"open\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": true\n              },\n              \"additionalProperties\": true\n            },\n            \"closed\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": false\n              },\n              \"additionalProperties\": false\n            }\n          },\n          \"required\": [\n            \"allow\"\n          ],\n          \"additionalProperties\": false,\n          \"$defs\": {\n            \"any\": true,\n            \"never\": false\n          },\n          \"anyOf\": [\n            {\n              \"properties\": {\n                \"nested\": true\n              }\n            }\n          ],\n          \"default\": {\n            \"allow\": true,\n            \"items\": false\n          }\n        },\n        \"strict\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"plain_probe\",\n        \"description\": \"Leave ordinary schemas alone\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"enabled\": {\n              \"type\": \"boolean\",\n              \"default\": false\n            }\n          },\n          \"additionalProperties\": true\n        },\n        \"strict\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.10 openai-base custom provider default off (flag omitted) streaming chat (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with hello; do not call a tool.\"\n    }\n  ],\n  \"max_completion_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"schema_probe\",\n        \"description\": \"Preserve tool metadata\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"description\": \"Mixed schema and instance booleans\",\n          \"properties\": {\n            \"allow\": true,\n            \"deny\": false,\n            \"list\": {\n              \"type\": \"array\",\n              \"items\": {\n                \"anyOf\": [\n                  true,\n                  false,\n                  {\n                    \"type\": \"object\",\n                    \"properties\": {\n                      \"accept\": true,\n                      \"reject\": false\n                    },\n                    \"additionalProperties\": true\n                  }\n                ]\n              }\n            },\n            \"tuple\": {\n              \"type\": \"array\",\n              \"items\": [\n                true,\n                false\n              ]\n            },\n            \"composition\": {\n              \"allOf\": [\n                true,\n                {\n                  \"anyOf\": [\n                    false,\n                    true\n                  ]\n                },\n                {\n                  \"oneOf\": [\n                    true,\n                    false\n                  ]\n                }\n              ],\n              \"not\": false\n            },\n            \"values\": {\n              \"enum\": [\n                true,\n                false,\n                {\n                  \"items\": true,\n                  \"properties\": {\n                    \"allow\": false\n                  }\n                }\n              ],\n              \"const\": {\n                \"items\": false,\n                \"properties\": {\n                  \"allow\": true\n                }\n              },\n              \"default\": {\n                \"enabled\": true,\n                \"items\": false\n              },\n              \"examples\": [\n                true,\n                false,\n                {\n                  \"items\": false\n                }\n              ],\n              \"additionalProperties\": false\n            },\n            \"open\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": true\n              },\n              \"additionalProperties\": true\n            },\n            \"closed\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"flag\": false\n              },\n              \"additionalProperties\": false\n            }\n          },\n          \"required\": [\n            \"allow\"\n          ],\n          \"additionalProperties\": false,\n          \"$defs\": {\n            \"any\": true,\n            \"never\": false\n          },\n          \"anyOf\": [\n            {\n              \"properties\": {\n                \"nested\": true\n              }\n            }\n          ],\n          \"default\": {\n            \"allow\": true,\n            \"items\": false\n          }\n        },\n        \"strict\": false\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"plain_probe\",\n        \"description\": \"Leave ordinary schemas alone\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"enabled\": {\n              \"type\": \"boolean\",\n              \"default\": false\n            }\n          },\n          \"additionalProperties\": true\n        },\n        \"strict\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.11 openai-base custom provider default off (flag omitted) Responses (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with hello; do not call a tool.\"\n        }\n      ]\n    }\n  ],\n  \"instructions\": \"Keep the reply short.\",\n  \"max_output_tokens\": 32,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"schema_probe\",\n      \"description\": \"Preserve tool metadata\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"description\": \"Mixed schema and instance booleans\",\n        \"properties\": {\n          \"allow\": true,\n          \"deny\": false,\n          \"list\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"anyOf\": [\n                true,\n                false,\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"accept\": true,\n                    \"reject\": false\n                  },\n                  \"additionalProperties\": true\n                }\n              ]\n            }\n          },\n          \"tuple\": {\n            \"type\": \"array\",\n            \"items\": [\n              true,\n              false\n            ]\n          },\n          \"composition\": {\n            \"allOf\": [\n              true,\n              {\n                \"anyOf\": [\n                  false,\n                  true\n                ]\n              },\n              {\n                \"oneOf\": [\n                  true,\n                  false\n                ]\n              }\n            ],\n            \"not\": false\n          },\n          \"values\": {\n            \"enum\": [\n              true,\n              false,\n              {\n                \"items\": true,\n                \"properties\": {\n                  \"allow\": false\n                }\n              }\n            ],\n            \"const\": {\n              \"items\": false,\n              \"properties\": {\n                \"allow\": true\n              }\n            },\n            \"default\": {\n              \"enabled\": true,\n              \"items\": false\n            },\n            \"examples\": [\n              true,\n              false,\n              {\n                \"items\": false\n              }\n            ],\n            \"additionalProperties\": false\n          },\n          \"open\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": true\n            },\n            \"additionalProperties\": true\n          },\n          \"closed\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": false\n            },\n            \"additionalProperties\": false\n          }\n        },\n        \"required\": [\n          \"allow\"\n        ],\n        \"additionalProperties\": false,\n        \"$defs\": {\n          \"any\": true,\n          \"never\": false\n        },\n        \"anyOf\": [\n          {\n            \"properties\": {\n              \"nested\": true\n            }\n          }\n        ],\n        \"default\": {\n          \"allow\": true,\n          \"items\": false\n        }\n      },\n      \"strict\": false\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"plain_probe\",\n      \"description\": \"Leave ordinary schemas alone\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"enabled\": {\n            \"type\": \"boolean\",\n            \"default\": false\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "297.12 openai-base custom provider default off (flag omitted) streaming Responses (boolean-schema-nodes)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{booleanSchemaProvider}}/{{booleanSchemaModel}}\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with hello; do not call a tool.\"\n        }\n      ]\n    }\n  ],\n  \"instructions\": \"Keep the reply short.\",\n  \"max_output_tokens\": 32,\n  \"stream\": true,\n  \"temperature\": 0.25,\n  \"top_p\": 0.8,\n  \"metadata\": {\n    \"probe\": \"boolean-schema-nodes\",\n    \"enabled\": true,\n    \"items\": false,\n    \"properties\": {\n      \"allow\": true\n    },\n    \"default\": false\n  },\n  \"parallel_tool_calls\": false,\n  \"tool_choice\": \"auto\",\n  \"store\": false,\n  \"user\": \"boolean-schema-route\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"schema_probe\",\n      \"description\": \"Preserve tool metadata\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"description\": \"Mixed schema and instance booleans\",\n        \"properties\": {\n          \"allow\": true,\n          \"deny\": false,\n          \"list\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"anyOf\": [\n                true,\n                false,\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"accept\": true,\n                    \"reject\": false\n                  },\n                  \"additionalProperties\": true\n                }\n              ]\n            }\n          },\n          \"tuple\": {\n            \"type\": \"array\",\n            \"items\": [\n              true,\n              false\n            ]\n          },\n          \"composition\": {\n            \"allOf\": [\n              true,\n              {\n                \"anyOf\": [\n                  false,\n                  true\n                ]\n              },\n              {\n                \"oneOf\": [\n                  true,\n                  false\n                ]\n              }\n            ],\n            \"not\": false\n          },\n          \"values\": {\n            \"enum\": [\n              true,\n              false,\n              {\n                \"items\": true,\n                \"properties\": {\n                  \"allow\": false\n                }\n              }\n            ],\n            \"const\": {\n              \"items\": false,\n              \"properties\": {\n                \"allow\": true\n              }\n            },\n            \"default\": {\n              \"enabled\": true,\n              \"items\": false\n            },\n            \"examples\": [\n              true,\n              false,\n              {\n                \"items\": false\n              }\n            ],\n            \"additionalProperties\": false\n          },\n          \"open\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": true\n            },\n            \"additionalProperties\": true\n          },\n          \"closed\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"flag\": false\n            },\n            \"additionalProperties\": false\n          }\n        },\n        \"required\": [\n          \"allow\"\n        ],\n        \"additionalProperties\": false,\n        \"$defs\": {\n          \"any\": true,\n          \"never\": false\n        },\n        \"anyOf\": [\n          {\n            \"properties\": {\n              \"nested\": true\n            }\n          }\n        ],\n        \"default\": {\n          \"allow\": true,\n          \"items\": false\n        }\n      },\n      \"strict\": false\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"plain_probe\",\n      \"description\": \"Leave ordinary schemas alone\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"enabled\": {\n            \"type\": \"boolean\",\n            \"default\": false\n          }\n        },\n        \"additionalProperties\": true\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
