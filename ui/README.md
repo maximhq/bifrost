@@ -87,6 +87,8 @@ return <button>{t("save")}</button>;
 const { t: tShell } = useTranslation("shell");
 ```
 
+Run `npm run i18n:check` before opening a pull request. It flags hardcoded user-facing strings and zod messages, and compares every catalog with English (missing keys, placeholders, `<Trans>` tags, plural forms, empty values, duplicate keys). The `ui-i18n` workflow runs it on every pull request that touches `ui/`. See the "UI i18n" section of the repo `AGENTS.md` for the full conventions.
+
 Default namespace is `common`. `I18nextProvider` is mounted in `app/clientLayout.tsx`, so any Router child can use `useTranslation`.
 
 #### Switching language
