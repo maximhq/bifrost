@@ -1,16 +1,19 @@
 import type { MCPTopToolsResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { formatCost, getModelColor } from "../../utils/chartUtils";
 import { rankingBarShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
+import { NoChartData } from "./noChartData";
 
 interface MCPTopToolsChartProps {
 	data: MCPTopToolsResponse | null;
 }
 
 function CustomTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -21,11 +24,11 @@ function CustomTooltip({ active, payload }: any) {
 			<div className="mb-1 text-xs font-medium text-zinc-700 dark:text-zinc-300">{data.tool_name}</div>
 			<div className="space-y-1 text-sm">
 				<div className="flex items-center justify-between gap-4">
-					<span className="text-zinc-600 dark:text-zinc-400">Count</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.count")}</span>
 					<span className="font-medium">{data.count.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
-					<span className="text-zinc-600 dark:text-zinc-400">Cost</span>
+					<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cost")}</span>
 					<span className="font-medium">{formatCost(data.cost)}</span>
 				</div>
 			</div>
@@ -43,7 +46,7 @@ function MCPTopToolsChartImpl({ data }: MCPTopToolsChartProps) {
 	}, [data]);
 
 	if (!data?.tools || chartData.length === 0) {
-		return <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>;
+		return <NoChartData />;
 	}
 
 	return (

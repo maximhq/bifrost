@@ -12,6 +12,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, LayoutGrid, Library, List, Plus, Search, Settings } from "lucide-react";
 import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { MCPLibraryAddServerSheet } from "./views/mcpLibraryAddServerSheet";
 import { MCPLibraryFilterSidebar, type MCPLibraryFilters } from "./views/mcpLibraryFilterSidebar";
 import { MCPLibraryInstallSheet } from "./views/mcpLibraryInstallSheet";
@@ -34,6 +35,8 @@ function getInitialViewMode(): MCPLibraryViewMode {
 }
 
 export default function MCPLibraryPage() {
+	const { t } = useTranslation("mcp");
+	const { t: tCommon } = useTranslation("common");
 	const hasCreateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Create);
 	const hasDeleteMCPLibraryAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -106,7 +109,7 @@ export default function MCPLibraryPage() {
 		if (!libraryError) return;
 		const message = getErrorMessage(libraryError);
 		if (message.toLowerCase().includes("mcp is not configured in this bifrost instance")) return;
-		toast({ title: "Error", description: message, variant: "destructive" });
+		toast({ title: tCommon("error"), description: message, variant: "destructive" });
 	}, [libraryError, toast]);
 
 	// The server marks each entry installed by checking every MCP client, not one page.
@@ -144,7 +147,7 @@ export default function MCPLibraryPage() {
 					<div className="flex min-h-full flex-col gap-4 p-4 pb-2 md:h-full">
 						{/* Search + Actions */}
 						<div className="-mx-2 flex flex-col gap-3 px-2 py-2 sm:flex-row sm:items-center">
-							<PageTitle title="MCP Server Library">Browse and install MCP servers from the synced catalog.</PageTitle>
+							<PageTitle title={t("library.title")}>{t("library.description")}</PageTitle>
 							{!isCatalogEmpty && (
 								<>
 									<div className="relative max-w-md flex-1">
@@ -152,12 +155,12 @@ export default function MCPLibraryPage() {
 										<Input
 											value={urlState.search}
 											onChange={(e) => setUrlState({ search: e.target.value, offset: 0 })}
-											placeholder="Search servers..."
+											placeholder={t("library.searchPlaceholder")}
 											className="h-9 pl-9"
 											data-testid="mcp-library-search-input"
 										/>
 									</div>
-									<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label="Library view mode">
+									<div className="border-border flex w-fit overflow-hidden rounded-sm border p-0.5" aria-label={t("library.viewModeAria")}>
 										<Button
 											type="button"
 											variant="ghost"
@@ -170,11 +173,11 @@ export default function MCPLibraryPage() {
 											onClick={() => handleViewModeChange("table")}
 											aria-pressed={viewMode === "table"}
 											// The "Table" label is hidden below sm, leaving a bare icon.
-											aria-label="Table view"
+											aria-label={t("library.tableView")}
 											data-testid="mcp-library-table-view-toggle"
 										>
 											<List className="h-4 w-4" />
-											<span className="hidden sm:inline">Table</span>
+											<span className="hidden sm:inline">{t("library.tableLabel")}</span>
 										</Button>
 										<Button
 											type="button"
@@ -188,11 +191,11 @@ export default function MCPLibraryPage() {
 											onClick={() => handleViewModeChange("grid")}
 											aria-pressed={viewMode === "grid"}
 											// The "Grid" label is hidden below sm, leaving a bare icon.
-											aria-label="Grid view"
+											aria-label={t("library.gridView")}
 											data-testid="mcp-library-grid-view-toggle"
 										>
 											<LayoutGrid className="h-4 w-4" />
-											<span className="hidden sm:inline">Grid</span>
+											<span className="hidden sm:inline">{t("library.grid")}</span>
 										</Button>
 									</div>
 								</>
@@ -201,13 +204,13 @@ export default function MCPLibraryPage() {
 								{hasCreateMCPClientAccess && (
 									<Button size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
 										<Plus className="h-4 w-4" />
-										Add to Library
+										{t("library.addToLibrary")}
 									</Button>
 								)}
 								{hasSettingsAccess && (
 									<Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} data-testid="mcp-library-settings-btn">
 										<Settings className="h-4 w-4" />
-										Settings
+										{t("library.settingsButton")}
 									</Button>
 								)}
 							</div>
@@ -241,18 +244,16 @@ export default function MCPLibraryPage() {
 									</div>
 									<div className="flex flex-col gap-1">
 										<h1 className="text-muted-foreground text-xl font-medium">
-											{isCatalogEmpty ? "No synced servers yet" : "No servers found"}
+											{isCatalogEmpty ? t("library.emptyCatalogTitle") : t("library.noServersFound")}
 										</h1>
 										<div className="text-muted-foreground mx-auto mt-2 w-full max-w-[600px] text-sm font-normal">
-											{isCatalogEmpty
-												? "Configure the library sync source in Settings to populate this catalog."
-												: "Try adjusting your search or filters."}
+											{isCatalogEmpty ? t("library.emptyCatalogDescription") : t("library.noServersFoundDescription")}
 										</div>
 										{isCatalogEmpty && hasSettingsAccess && (
 											<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 												<Button onClick={() => setSettingsOpen(true)} data-testid="mcp-library-empty-settings-btn">
 													<Settings className="h-4 w-4" />
-													Configure sync
+													{t("library.configureSync")}
 												</Button>
 											</div>
 										)}
@@ -306,15 +307,15 @@ export default function MCPLibraryPage() {
 													onClick={() => setUrlState({ offset: Math.max(0, urlState.offset - PAGE_SIZE) }, { history: "push" })}
 													disabled={urlState.offset === 0}
 													data-testid="mcp-library-pagination-prev-btn"
-													aria-label="Previous page"
+													aria-label={t("common.previousPage")}
 												>
 													<ChevronLeft className="size-3" />
 												</Button>
 
 												<div className="flex items-center gap-1">
-													<span>Page</span>
+													<span>{t("common.page")}</span>
 													<span>{currentPage}</span>
-													<span>of {totalPages}</span>
+													<span>{t("common.ofPages", { total: totalPages })}</span>
 												</div>
 
 												<Button
@@ -323,7 +324,7 @@ export default function MCPLibraryPage() {
 													onClick={() => setUrlState({ offset: urlState.offset + PAGE_SIZE }, { history: "push" })}
 													disabled={urlState.offset + PAGE_SIZE >= totalCount}
 													data-testid="mcp-library-pagination-next-btn"
-													aria-label="Next page"
+													aria-label={t("common.nextPage")}
 												>
 													<ChevronRight className="size-3" />
 												</Button>

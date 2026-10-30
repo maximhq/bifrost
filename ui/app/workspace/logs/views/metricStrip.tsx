@@ -6,6 +6,9 @@ import { cn } from "@/lib/utils";
 import { COMPACT_NUMBER_FORMAT, formatCurrencyNumber } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
 import { useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 import { Line, LineChart, XAxis, YAxis } from "recharts";
 import {
 	buildSparkPoints,
@@ -163,8 +166,12 @@ export function Sparkline({ points, className, bucketSizeSeconds, rows }: Sparkl
 }
 
 /** Marks a value the sparkline averaged, so it is not read as an exact total. */
-export function averaged(point: SparkPoint, text: string): string {
-	return point.buckets > 1 ? `avg ${text}` : text;
+export function averaged(
+	point: SparkPoint,
+	text: string,
+	translate: TFunction<"observability"> = i18n.getFixedT(null, "observability"),
+): string {
+	return point.buckets > 1 ? translate("logs.stats.averaged", { value: text }) : text;
 }
 
 /** A single-value meter, used for the two success rates. */
@@ -235,6 +242,7 @@ interface MetricStripProps {
  * receives, so the interactivity costs no extra request.
  */
 export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHistogram, loading, error }: MetricStripProps) {
+	const { t } = useTranslation("observability");
 	// Every readout below falls back to 0 when stats is undefined, so without this
 	// a failed request renders as a genuinely empty window.
 	const state = metricsState(stats, loading ?? false, error);
@@ -306,7 +314,7 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 			>
 				<MetricSegment
 					state={state}
-					title="Total Requests"
+					title={t("logs.stats.totalRequests")}
 					footer={
 						<>
 							<Sparkline
@@ -315,10 +323,10 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 								className={toneClass[requestsSignal.tone]}
 								rows={(point, index) => (
 									<>
-										<MetricTooltipRow name="Requests">{averaged(point, formatCount(point.value))}</MetricTooltipRow>
+										<MetricTooltipRow name={t("logs.stats.requests")}>{averaged(point, formatCount(point.value), t)}</MetricTooltipRow>
 										{errorPoints[index] && errorPoints[index].value > 0 && (
-											<MetricTooltipRow name="Failed" className={negative}>
-												{averaged(point, formatCount(errorPoints[index].value))}
+											<MetricTooltipRow name={t("logs.stats.failed")} className={negative}>
+												{averaged(point, formatCount(errorPoints[index].value), t)}
 											</MetricTooltipRow>
 										)}
 									</>
@@ -326,7 +334,13 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 							/>
 							{requestsSignal.text && (
 								<MetricTrailing testId="logs-metric-trailing" className={toneClass[requestsSignal.tone]}>
-									{requestsSignal.text}
+									{requestsSignal.text === "↗ rising"
+										? t("logs.stats.rising")
+										: requestsSignal.text === "↘ falling"
+											? t("logs.stats.falling")
+											: requestsSignal.text === "→ steady"
+												? t("logs.stats.steady")
+												: requestsSignal.text}
 								</MetricTrailing>
 							)}
 						</>
@@ -337,21 +351,23 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 
 				<MetricSegment
 					state={state}
-					title="Success Rate"
+					title={t("logs.stats.successRate")}
 					footer={
 						<>
 							<RatioBar
 								percent={successRate}
 								tooltip={
-									<MetricTooltipBody heading="Of all requests in this window">
-										<MetricTooltipRow name="Succeeded" className={positive}>
+									<MetricTooltipBody heading={t("logs.stats.ofAllRequests")}>
+										<MetricTooltipRow name={t("logs.stats.succeeded")} className={positive}>
 											{formatCount(success.passed)}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Failed" className={negative}>
+										<MetricTooltipRow name={t("logs.stats.failed")} className={negative}>
 											{formatCount(success.failed)}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Total">{formatCount(totalRequests)}</MetricTooltipRow>
-										{previous && <MetricTooltipRow name="Previous period">{`${previous.success_rate.toFixed(2)}%`}</MetricTooltipRow>}
+										<MetricTooltipRow name={t("logs.stats.tooltipTotal")}>{formatCount(totalRequests)}</MetricTooltipRow>
+										{previous && (
+											<MetricTooltipRow name={t("logs.stats.previousPeriod")}>{`${previous.success_rate.toFixed(2)}%`}</MetricTooltipRow>
+										)}
 									</MetricTooltipBody>
 								}
 							/>
@@ -369,22 +385,24 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 
 				<MetricSegment
 					state={state}
-					title="User Success"
+					title={t("logs.stats.userSuccessRate")}
 					footer={
 						<>
 							<RatioBar
 								percent={userSuccessRate}
 								tooltip={
-									<MetricTooltipBody heading="Of user-facing requests only">
-										<MetricTooltipRow name="Succeeded" className={positive}>
+									<MetricTooltipBody heading={t("logs.stats.ofUserFacing")}>
+										<MetricTooltipRow name={t("logs.stats.succeeded")} className={positive}>
 											{formatCount(userSuccess.passed)}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Failed" className={negative}>
+										<MetricTooltipRow name={t("logs.stats.failed")} className={negative}>
 											{formatCount(userSuccess.failed)}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Total">{formatCount(userRequests)}</MetricTooltipRow>
+										<MetricTooltipRow name={t("logs.stats.tooltipTotal")}>{formatCount(userRequests)}</MetricTooltipRow>
 										{previous && (
-											<MetricTooltipRow name="Previous period">{`${previous.user_facing_success_rate.toFixed(2)}%`}</MetricTooltipRow>
+											<MetricTooltipRow
+												name={t("logs.stats.previousPeriod")}
+											>{`${previous.user_facing_success_rate.toFixed(2)}%`}</MetricTooltipRow>
 										)}
 									</MetricTooltipBody>
 								}
@@ -403,7 +421,7 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 
 				<MetricSegment
 					state={state}
-					title="Avg Latency"
+					title={t("logs.stats.avgLatency")}
 					footer={
 						<>
 							<Sparkline
@@ -412,9 +430,11 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 								className={warning}
 								rows={(point, index) => (
 									<>
-										<MetricTooltipRow name="Average">{averaged(point, formatMs(point.value))}</MetricTooltipRow>
+										<MetricTooltipRow name={t("logs.stats.tooltipAverage")}>{averaged(point, formatMs(point.value), t)}</MetricTooltipRow>
 										{latencyP95Points[index] && (
-											<MetricTooltipRow name="p95">{averaged(point, formatMs(latencyP95Points[index].value))}</MetricTooltipRow>
+											<MetricTooltipRow name={t("logs.stats.p95")}>
+												{averaged(point, formatMs(latencyP95Points[index].value), t)}
+											</MetricTooltipRow>
 										)}
 									</>
 								)}
@@ -435,21 +455,21 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 
 				<MetricSegment
 					state={state}
-					title="Total Tokens"
+					title={t("logs.stats.totalTokens")}
 					footer={
 						<>
 							<StackedBar
 								first={promptTokens}
 								second={completionTokens}
 								tooltip={
-									<MetricTooltipBody heading="Token split">
-										<MetricTooltipRow name="Input" className="text-chart-token-input">
+									<MetricTooltipBody heading={t("logs.stats.tokenSplit")}>
+										<MetricTooltipRow name={t("logs.stats.input")} className="text-chart-token-input">
 											{`${formatCount(promptTokens)}${tokenTotal > 0 ? ` (${((promptTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Output" className="text-chart-token-output">
+										<MetricTooltipRow name={t("logs.stats.output")} className="text-chart-token-output">
 											{`${formatCount(completionTokens)}${tokenTotal > 0 ? ` (${((completionTokens / tokenTotal) * 100).toFixed(1)}%)` : ""}`}
 										</MetricTooltipRow>
-										<MetricTooltipRow name="Total">{formatCount(stats?.total_tokens ?? 0)}</MetricTooltipRow>
+										<MetricTooltipRow name={t("logs.stats.tooltipTotal")}>{formatCount(stats?.total_tokens ?? 0)}</MetricTooltipRow>
 									</MetricTooltipBody>
 								}
 							/>
@@ -468,14 +488,18 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 
 				<MetricSegment
 					state={state}
-					title="Total Cost"
+					title={t("logs.stats.totalCost")}
 					footer={
 						<>
 							<Sparkline
 								points={costPoints}
 								bucketSizeSeconds={costHistogram?.bucket_size_seconds}
 								className={costChange ? toneClass[costChange.tone] : muted}
-								rows={(point) => <MetricTooltipRow name="Cost">{averaged(point, formatCurrencyNumber(point.value))}</MetricTooltipRow>}
+								rows={(point) => (
+									<MetricTooltipRow name={t("logs.stats.tooltipCost")}>
+										{averaged(point, formatCurrencyNumber(point.value), t)}
+									</MetricTooltipRow>
+								)}
 							/>
 							{costChange?.text ? (
 								<MetricTrailing testId="logs-metric-trailing" className={toneClass[costChange.tone]}>

@@ -743,6 +743,28 @@ bifrost:
       #   # names are required. Values are collected and stored per-identity by Bifrost, not here.
       #   authType: "per_user_headers"
       #   perUserHeaderKeys: ["Authorization"]
+      #
+      # - name: "web_search"
+      #   # connectionType "openapi": Bifrost builds an in-process MCP server from an OpenAPI/Swagger
+      #   # document (Swagger 2.0, OpenAPI 3.0/3.1/3.2); each operation becomes a tool that calls the API.
+      #   # authType may only be none, headers or per_user_headers.
+      #   connectionType: "openapi"
+      #   openapiConfig:
+      #     # One of spec / specFile / specUrl is required (precedence: spec > specFile > specUrl).
+      #     specUrl: "https://searxng.internal/openapi.json"   # fetched at every connect
+      #     # spec: |                                         # inline JSON or YAML document
+      #     #   openapi: 3.0.3
+      #     #   ...
+      #     # specFile: "specs/searxng.yaml"                  # relative to bifrost.appDir; mount it via volumes/volumeMounts
+      #     baseUrl: "https://searxng.internal"   # optional; defaults to the document's first server entry
+      #     # Credentials keyed by the document's securitySchemes name: apiKey / http-bearer take value,
+      #     # http-basic takes username + password. Supports env.VAR and vault.path references.
+      #     securityCredentials:
+      #       apiKeyAuth:
+      #         value: "env.SEARXNG_API_KEY"
+      #     includeDeprecated: false   # true also exposes operations the document marks deprecated (skipped by default)
+      #     maxResponseBytes: 0        # cap on the upstream body returned to the model (0 = 64 KiB default)
+      #   toolsToExecute: ["*"]
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
     # maxProtocolVersion: "auto"   # Newest MCP protocol version offered to MCP servers ("auto", "2026-07-28", "2025-11-25", "2025-06-18"); unset keeps the stored value
     # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint

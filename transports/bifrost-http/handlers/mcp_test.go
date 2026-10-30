@@ -1076,6 +1076,79 @@ func TestUpdateMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
 	assert.Equal(t, "api://exchange", stored.TokenExchange.Audience, "the stored client keeps its settings")
 }
 
+// Moving an OAuth client to new endpoints needs the secret resent only when one is stored: a public
+// client has none to carry over, so it can follow its MCP server to a new authorization server.
+func TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent(t *testing.T) {
+	cases := []struct {
+		name         string
+		storedSecret string
+		sentSecret   string
+		wantStatus   int
+	}{
+		{name: "public client", wantStatus: fasthttp.StatusOK},
+		{name: "confidential client without the secret", storedSecret: "old-secret", wantStatus: fasthttp.StatusBadRequest},
+		{name: "confidential client resending the secret", storedSecret: "old-secret", sentSecret: "new-secret", wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			bg := context.Background()
+			oauthRow := &configtables.TableOauthConfig{
+				ID:           "oauth-1",
+				ClientID:     schemas.NewSecretVar("old-client"),
+				AuthorizeURL: "https://old-as.example.com/authorize",
+				TokenURL:     "https://old-as.example.com/token",
+				RedirectURI:  "http://localhost:8080/api/oauth/callback",
+				Status:       "authorized",
+				ServerURL:    "https://mcp.example.com/mcp",
+			}
+			if tc.storedSecret != "" {
+				oauthRow.ClientSecret = schemas.NewSecretVar(tc.storedSecret)
+			}
+			require.NoError(t, store.CreateOauthConfig(bg, oauthRow))
+			existing := &schemas.MCPClientConfig{
+				ID: "client-1", Name: "moved", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://mcp.example.com/mcp"),
+				AuthType:         schemas.MCPAuthTypeOauth,
+				OauthConfigID:    bifrost.Ptr(oauthRow.ID),
+			}
+			require.NoError(t, store.CreateMCPClientConfig(bg, existing))
+			cfg := &lib.Config{
+				MCPConfig:     &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+				ClientConfig:  &configstore.ClientConfig{},
+				ConfigStore:   store,
+				OAuthProvider: oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError)),
+			}
+			h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}, mcpCredentialCacheManager: &recordingCredentialCache{}}
+
+			secret := ""
+			if tc.sentSecret != "" {
+				secret = `,"client_secret":"` + tc.sentSecret + `"`
+			}
+			var req fasthttp.Request
+			req.SetBodyString(`{"oauth_config":{"client_id":"new-client","authorize_url":"https://new-as.example.com/authorize","token_url":"https://new-as.example.com/token"` + secret + `}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, nil, nil)
+			ctx.SetUserValue("id", existing.ID)
+			h.updateMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			stored, err := store.GetOauthConfigByID(bg, oauthRow.ID)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			if tc.wantStatus != fasthttp.StatusOK {
+				assert.Contains(t, string(ctx.Response.Body()), "client_secret must be resent")
+				assert.Equal(t, "https://old-as.example.com/token", stored.TokenURL, "a refused edit changes nothing")
+				return
+			}
+			assert.Equal(t, "https://new-as.example.com/token", stored.TokenURL)
+			assert.Equal(t, "new-client", stored.GetResolvedClientID())
+			assert.Equal(t, tc.sentSecret, stored.ClientSecret.GetValue(), "a public client stays without a secret")
+		})
+	}
+}
+
 // The resources and prompts lists are always arrays on the wire, empty when the server offers none, so clients
 // can iterate them like tools.
 func TestMCPClientResponse_ResourcesAndPromptsAreAlwaysArrays(t *testing.T) {

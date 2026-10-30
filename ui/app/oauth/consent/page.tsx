@@ -14,21 +14,27 @@ import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import { Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
 const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
 
 export default function OAuth2ConsentPage() {
+	const { t } = useTranslation("login");
 	const [flowId] = useQueryState("flow");
 
 	if (!flowId) {
 		return (
 			<Shell>
 				<div className="text-center">
-					<h1 className="text-xl font-semibold">Missing flow identifier</h1>
+					<h1 className="text-xl font-semibold">{t("consent.missingFlowTitle")}</h1>
 					<p className="text-muted-foreground mt-2 text-sm">
-						This URL is missing the <code className="bg-muted rounded px-1 py-0.5 text-xs">flow</code> query parameter. Restart the
-						connection from your MCP client.
+						<Trans
+							t={t}
+							i18nKey="consent.missingFlowBody"
+							components={{ code0: <code className="bg-muted rounded px-1 py-0.5 text-xs" /> }}
+						/>
 					</p>
 				</div>
 			</Shell>
@@ -51,6 +57,8 @@ function isSafeRedirect(url: string): boolean {
 }
 
 function ConsentView({ flowId }: { flowId: string }) {
+	const { t } = useTranslation("login");
+	const { t: tc } = useTranslation("common");
 	const { data: flow, isLoading, isError, error } = useGetOAuth2ConsentFlowQuery(flowId);
 	const { data: authState } = useIsAuthEnabledQuery();
 	const [submitFlow, { isLoading: submitting }] = useSubmitOAuth2ConsentFlowMutation();
@@ -82,13 +90,13 @@ function ConsentView({ flowId }: { flowId: string }) {
 			// schemes while still allowing http(s) and native custom-scheme
 			// redirects that clients may register.
 			if (!isSafeRedirect(res.redirect_url)) {
-				toast.error("Authentication failed", { description: "Invalid redirect URL" });
+				toast.error(t("consent.authFailed"), { description: t("consent.invalidRedirect") });
 				setSelectedMode(null);
 				return;
 			}
 			window.location.href = res.redirect_url;
 		} catch (err) {
-			toast.error("Authentication failed", { description: getErrorMessage(err) });
+			toast.error(t("consent.authFailed"), { description: getErrorMessage(err) });
 			setSelectedMode(null);
 		}
 	};
@@ -108,10 +116,8 @@ function ConsentView({ flowId }: { flowId: string }) {
 		return (
 			<Shell>
 				<div className="text-center">
-					<h1 className="text-xl font-semibold">Link unavailable</h1>
-					<p className="text-muted-foreground mt-2 text-sm">
-						This authorization link may have expired or already been used. Restart the connection from your MCP client to get a fresh link.
-					</p>
+					<h1 className="text-xl font-semibold">{t("consent.linkUnavailable")}</h1>
+					<p className="text-muted-foreground mt-2 text-sm">{t("consent.linkUnavailableBody")}</p>
 				</div>
 			</Shell>
 		);
@@ -121,7 +127,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 	const hasVK = flow.available_modes.includes("vk");
 	const hasSession = flow.available_modes.includes("session");
 	const hasAnyMode = hasUser || hasVK || hasSession;
-	const clientName = flow.client_name || "MCP Client";
+	const clientName = flow.client_name || t("consent.mcpClient");
 
 	return (
 		<Shell>
@@ -130,14 +136,19 @@ function ConsentView({ flowId }: { flowId: string }) {
 				<div className="bg-primary/10 mx-auto mb-4 flex size-14 items-center justify-center rounded-full">
 					<ShieldCheck className="text-primary size-7" />
 				</div>
-				<h1 className="text-xl font-semibold tracking-tight">{clientName} wants to connect</h1>
+				<h1 className="text-xl font-semibold tracking-tight">{t("consent.wantsToConnect", { name: clientName })}</h1>
 				{flow.client_host && (
 					<p className="text-muted-foreground mt-1 text-sm" data-testid="oauth-consent-client-host">
-						Published by <span className="text-foreground font-mono">{flow.client_host}</span>
+						<Trans
+							t={t}
+							i18nKey="consent.publishedBy"
+							values={{ host: flow.client_host }}
+							components={{ code0: <span className="text-foreground font-mono" /> }}
+						/>
 					</p>
 				)}
-				<p className="text-muted-foreground mt-1.5 text-sm">Choose how you'd like to identify yourself to Bifrost</p>
-				<p className="mt-4 text-sm">Continue only if you recognize this application and its callback destination:</p>
+				<p className="text-muted-foreground mt-1.5 text-sm">{t("consent.chooseIdentity")}</p>
+				<p className="mt-4 text-sm">{t("consent.recognizeApplication")}</p>
 				<p className="mt-2 text-sm font-semibold break-all" data-testid="oauth-consent-redirect-host">
 					{flow.redirect_host}
 				</p>
@@ -149,7 +160,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 						className="mt-3 rounded-sm border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400"
 						data-testid="oauth-consent-localhost-warning"
 					>
-						This application only returns to your own computer, so its name cannot be verified. Any app running locally could use it.
+						{t("consent.localhostWarning")}
 					</p>
 				)}
 			</div>
@@ -158,8 +169,8 @@ function ConsentView({ flowId }: { flowId: string }) {
 				{/* No mode available — nothing the user can act on here */}
 				{!hasAnyMode && (
 					<div className="rounded-sm border p-4 text-center" data-testid="oauth-consent-empty-state">
-						<p className="text-sm font-medium">No authentication options available</p>
-						<p className="text-muted-foreground mt-1 text-xs">Restart the connection from your MCP client.</p>
+						<p className="text-sm font-medium">{t("consent.noAuthOptions")}</p>
+						<p className="text-muted-foreground mt-1 text-xs">{t("consent.restartFromMcp")}</p>
 					</div>
 				)}
 
@@ -172,7 +183,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 							</div>
 							<div className="min-w-0 flex-1">
 								<p className="text-sm leading-tight font-medium">{flow.logged_in_user.name || flow.logged_in_user.id}</p>
-								<p className="text-muted-foreground text-xs">Signed-in account</p>
+								<p className="text-muted-foreground text-xs">{t("consent.signedInAccount")}</p>
 							</div>
 						</div>
 						<Button
@@ -184,10 +195,10 @@ function ConsentView({ flowId }: { flowId: string }) {
 							{submitting && selectedMode === "user" ? (
 								<>
 									<Loader2 className="mr-2 size-4 animate-spin" />
-									Connecting…
+									{t("consent.connecting")}
 								</>
 							) : (
-								<>Continue as {flow.logged_in_user.name || flow.logged_in_user.id}</>
+								<>{t("consent.continueAs", { name: flow.logged_in_user.name || flow.logged_in_user.id })}</>
 							)}
 						</Button>
 					</div>
@@ -201,14 +212,14 @@ function ConsentView({ flowId }: { flowId: string }) {
 								<UserRound className="text-muted-foreground size-4" />
 							</div>
 							<div>
-								<p className="text-sm font-medium">Sign in with your account</p>
-								<p className="text-muted-foreground text-xs">Requires a Bifrost dashboard account</p>
+								<p className="text-sm font-medium">{t("consent.signInWithAccount")}</p>
+								<p className="text-muted-foreground text-xs">{t("consent.requiresDashboard")}</p>
 							</div>
 						</div>
 						<Button asChild variant="outline" className="mt-4 w-full">
 							<a href={loginHref} data-testid="oauth-consent-signin-link">
 								<LogIn className="mr-2 size-4" />
-								Sign in to continue
+								{t("consent.signInToContinue")}
 							</a>
 						</Button>
 					</div>
@@ -219,7 +230,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 					<div className="relative">
 						<Separator />
 						<span className="bg-card text-muted-foreground absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 px-2 text-xs">
-							or
+							{tc("or")}
 						</span>
 					</div>
 				)}
@@ -232,15 +243,15 @@ function ConsentView({ flowId }: { flowId: string }) {
 								<KeyRound className="text-muted-foreground size-4" />
 							</div>
 							<div>
-								<p className="text-sm font-medium">Virtual Key</p>
-								<p className="text-muted-foreground text-xs">Use a Virtual Key from your Bifrost workspace</p>
+								<p className="text-sm font-medium">{t("consent.virtualKey")}</p>
+								<p className="text-muted-foreground text-xs">{t("consent.useVirtualKey")}</p>
 							</div>
 						</div>
 						<Input
 							id="vk-input"
 							data-testid="oauth-consent-vk-input"
 							type="password"
-							placeholder="sk-bf-…"
+							placeholder={t("consent.vkPlaceholder")}
 							value={vkValue}
 							onChange={(e) => setVkValue(e.target.value)}
 							onKeyDown={(e) => {
@@ -260,17 +271,13 @@ function ConsentView({ flowId }: { flowId: string }) {
 							{submitting && selectedMode === "vk" ? (
 								<>
 									<Loader2 className="mr-2 size-4 animate-spin" />
-									Connecting…
+									{t("consent.connecting")}
 								</>
 							) : (
-								"Connect with key"
+								t("consent.connectWithKey")
 							)}
 						</Button>
-						{hasUser && (
-							<p className="text-muted-foreground mt-2.5 text-xs">
-								If this key is linked to a user account, you'll be asked to sign in to confirm your identity.
-							</p>
-						)}
+						{hasUser && <p className="text-muted-foreground mt-2.5 text-xs">{t("consent.keyLinkedHint")}</p>}
 					</div>
 				)}
 
@@ -278,7 +285,7 @@ function ConsentView({ flowId }: { flowId: string }) {
 					<div className="relative">
 						<Separator />
 						<span className="bg-card text-muted-foreground absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 px-2 text-xs">
-							or
+							{tc("or")}
 						</span>
 					</div>
 				)}
@@ -295,32 +302,34 @@ function ConsentView({ flowId }: { flowId: string }) {
 						<Fingerprint className="size-4 shrink-0" />
 						<div className="text-left">
 							<span className="block text-sm font-normal">
-								{submitting && selectedMode === "session" ? "Connecting…" : "Continue without an identity"}
+								{submitting && selectedMode === "session" ? t("consent.connecting") : t("consent.continueWithoutIdentity")}
 							</span>
-							<span className="text-xs opacity-70">Anonymous session - no account required</span>
+							<span className="text-xs opacity-70">{t("consent.anonymousSession")}</span>
 						</div>
 					</Button>
 				)}
 			</div>
 
 			{/* Expiry */}
-			<p className="text-muted-foreground mt-6 text-center text-xs">This link expires {formatExpiry(flow.expires_at)}</p>
+			<p className="text-muted-foreground mt-6 text-center text-xs">
+				{t("consent.linkExpires", { when: formatExpiry(flow.expires_at, t) })}
+			</p>
 		</Shell>
 	);
 }
 
-function formatExpiry(iso: string): string {
+function formatExpiry(iso: string, t: TFunction<"login">): string {
 	const ts = new Date(iso).getTime();
-	if (Number.isNaN(ts)) return "soon";
+	if (Number.isNaN(ts)) return t("consent.soon");
 	try {
 		const diffMs = ts - Date.now();
-		if (diffMs < 0) return "soon";
+		if (diffMs < 0) return t("consent.soon");
 		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 1) return "in less than a minute";
-		if (mins === 1) return "in 1 minute";
-		return `in ${mins} minutes`;
+		if (mins < 1) return t("consent.inLessThanMinute");
+		if (mins === 1) return t("consent.inOneMinute");
+		return t("consent.inMinutes", { count: mins });
 	} catch {
-		return "soon";
+		return t("consent.soon");
 	}
 }
 
@@ -335,6 +344,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 // Bounces a signed-out visitor through /login and back via ?goto= (SSO stashes
 // it across the IdP hop). The card covers a blocked redirect.
 function RedirectToSignIn({ loginHref }: { loginHref: string }) {
+	const { t } = useTranslation("login");
 	useEffect(() => {
 		// replace(), so Back from /login doesn't re-enter the redirect.
 		window.location.replace(loginHref);
@@ -343,14 +353,12 @@ function RedirectToSignIn({ loginHref }: { loginHref: string }) {
 	return (
 		<Shell>
 			<div className="text-center">
-				<h1 className="text-xl font-semibold tracking-tight">Sign in to continue</h1>
-				<p className="text-muted-foreground mt-2 text-sm">
-					This authorization needs a signed-in Bifrost account. Taking you to sign in — you'll come straight back here.
-				</p>
+				<h1 className="text-xl font-semibold tracking-tight">{t("consent.signInToContinue")}</h1>
+				<p className="text-muted-foreground mt-2 text-sm">{t("consent.signInRedirectBody")}</p>
 				<Button asChild className="mt-6 w-full">
 					<a href={loginHref} data-testid="oauth-consent-signin-required-link">
 						<LogIn className="mr-2 size-4" />
-						Sign in to Bifrost
+						{t("consent.signInToBifrost")}
 					</a>
 				</Button>
 			</div>
@@ -359,14 +367,12 @@ function RedirectToSignIn({ loginHref }: { loginHref: string }) {
 }
 
 function InvalidLinkView() {
+	const { t } = useTranslation("login");
 	return (
 		<Shell>
 			<div className="text-center">
-				<h1 className="text-xl font-semibold tracking-tight">This link is no longer valid</h1>
-				<p className="text-muted-foreground mt-2 text-sm">
-					The authorization link has expired, been used already, or had its token stripped. Restart the connection from your MCP client to
-					get a fresh link.
-				</p>
+				<h1 className="text-xl font-semibold tracking-tight">{t("consent.invalidTitle")}</h1>
+				<p className="text-muted-foreground mt-2 text-sm">{t("consent.invalidBody")}</p>
 			</div>
 		</Shell>
 	);

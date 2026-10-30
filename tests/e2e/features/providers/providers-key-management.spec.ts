@@ -179,13 +179,15 @@ test.describe("Provider Key Management", () => {
         await expect(page.getByTestId("apikey-sagemaker-access-key-input")).toHaveValue(/.+/);
         await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).toHaveValue(/.+/);
         await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).not.toHaveValue("e2e-sagemaker-secret-key-0001");
-        await page.keyboard.press("Escape");
+        await providersPage.keyCancelBtn.click();
+        await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
       } finally {
         if (await providersPage.keyExists(keyName, 2000)) {
           await providersPage.deleteKey(keyName);
         }
         if (createdProvider && (await providersPage.providerExists("sagemaker"))) {
-          await providersPage.deleteProvider("sagemaker");
+          await providersPage.deleteProvider("sagemaker", { skipToastWait: true });
+          await expect(providersPage.getProviderItem("sagemaker")).toHaveCount(0, { timeout: 5000 });
         }
       }
     });

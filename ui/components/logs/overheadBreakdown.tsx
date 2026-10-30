@@ -1,8 +1,10 @@
 import BlockHeader from "@/app/workspace/logs/views/blockHeader";
 import type { OverheadBucket } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
+import type { TFunction } from "i18next";
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // formatMicros renders a microsecond overhead value, promoting to ms once it is
 // large enough that microseconds would just be noise.
@@ -32,77 +34,77 @@ type OverheadCategory = {
 const OVERHEAD_SERIALIZATION_PHASES = new Set(["request-unmarshal", "request-marshal", "response-parse", "response-marshal"]);
 
 // Top-level categories shown in the stacked bar + legend. Each has a distinct colour.
-const OVERHEAD_CATEGORY_META: Record<string, { label: string; colorClass: string }> = {
-	serialization: { label: "Serialization", colorClass: "bg-indigo-500/70" },
-	conversion: { label: "Conversion", colorClass: "bg-fuchsia-500/70" },
-	plugins: { label: "Plugins", colorClass: "bg-blue-500/70" },
-	middleware: { label: "Middleware", colorClass: "bg-cyan-500/70" },
-	routing: { label: "Key selection", colorClass: "bg-amber-500/70" },
-	processing: { label: "Processing", colorClass: "bg-teal-500/70" },
-	protocol_sdk: { label: "Protocol library", colorClass: "bg-orange-500/70" },
-	networking: { label: "Networking", colorClass: "bg-emerald-500/70" },
-	streaming: { label: "Client delivery", colorClass: "bg-red-500/70" },
-	miscellaneous: { label: "Miscellaneous", colorClass: "bg-slate-500/70" },
-	other: { label: "Other", colorClass: "bg-muted-foreground/50" },
-};
+const OVERHEAD_CATEGORY_META = {
+	serialization: { labelKey: "overhead.categories.serialization", colorClass: "bg-indigo-500/70" },
+	conversion: { labelKey: "overhead.categories.conversion", colorClass: "bg-fuchsia-500/70" },
+	plugins: { labelKey: "overhead.categories.plugins", colorClass: "bg-blue-500/70" },
+	middleware: { labelKey: "overhead.categories.middleware", colorClass: "bg-cyan-500/70" },
+	routing: { labelKey: "overhead.categories.routing", colorClass: "bg-amber-500/70" },
+	processing: { labelKey: "overhead.categories.processing", colorClass: "bg-teal-500/70" },
+	protocol_sdk: { labelKey: "overhead.categories.protocolSdk", colorClass: "bg-orange-500/70" },
+	networking: { labelKey: "overhead.categories.networking", colorClass: "bg-emerald-500/70" },
+	streaming: { labelKey: "overhead.categories.streaming", colorClass: "bg-red-500/70" },
+	miscellaneous: { labelKey: "overhead.categories.miscellaneous", colorClass: "bg-slate-500/70" },
+	other: { labelKey: "overhead.categories.other", colorClass: "bg-muted-foreground/50" },
+} as const;
 
-// Friendly drill-down labels for each raw bucket name (the technical span names the
+// i18n keys of the friendly drill-down label for each raw bucket name (the technical span names the
 // backend emits). Members without an entry fall back to the name with any "plugin."
 // prefix stripped.
-const OVERHEAD_LABELS: Record<string, string> = {
+const OVERHEAD_LABEL_KEYS = {
 	// Serialization (JSON parse / encode)
-	"request-unmarshal": "Request parse",
-	"request-marshal": "Request encode",
-	"response-parse": "Response parse",
-	"response-marshal": "Response encode",
+	"request-unmarshal": "overhead.members.requestUnmarshal",
+	"request-marshal": "overhead.members.requestMarshal",
+	"response-parse": "overhead.members.responseParse",
+	"response-marshal": "overhead.members.responseMarshal",
 	// Conversion (API schema translation)
-	convertor: "Schema conversion",
-	"convertor.stream-in": "Stream convert (inbound)",
-	"convertor.stream-out": "Stream convert (outbound)",
+	convertor: "overhead.members.convertor",
+	"convertor.stream-in": "overhead.members.convertorStreamIn",
+	"convertor.stream-out": "overhead.members.convertorStreamOut",
 	// Middleware (auth / access control)
-	"middleware.apikeys": "API",
-	"middleware.scim": "SCIM",
-	"middleware.auth": "Auth",
+	"middleware.apikeys": "overhead.members.middlewareApikeys",
+	"middleware.scim": "overhead.members.middlewareScim",
+	"middleware.auth": "overhead.members.middlewareAuth",
 	// Routing
-	"key-pool": "Key pool",
-	"key.selection": "Key selection",
+	"key-pool": "overhead.members.keyPool",
+	"key.selection": "overhead.members.keySelection",
 	// Processing (internal request pipeline)
-	"handle-setup": "Request setup",
-	"pipeline-pre": "Pre-hooks",
-	"pipeline-post": "Post-hooks",
-	"worker-setup": "Worker setup",
-	"worker-handoff": "Worker handoff",
-	"queue-wait": "Queue wait",
-	"attribute-population": "Attribute population",
-	miscellaneous: "Uncaptured glue",
+	"handle-setup": "overhead.members.handleSetup",
+	"pipeline-pre": "overhead.members.pipelinePre",
+	"pipeline-post": "overhead.members.pipelinePost",
+	"worker-setup": "overhead.members.workerSetup",
+	"worker-handoff": "overhead.members.workerHandoff",
+	"queue-wait": "overhead.members.queueWait",
+	"attribute-population": "overhead.members.attributePopulation",
+	miscellaneous: "overhead.members.miscellaneous",
 	// Networking (client<->gateway<->provider handling)
-	"provider-internal": "Provider processing",
-	"transport-context": "Request context building",
-	"transport-response-headers": "Response headers",
-	"response-finalize": "Response read",
-	"request-sign": "Request signing",
-	"credentials-fetch": "Credential fetch",
+	"provider-internal": "overhead.members.providerInternal",
+	"transport-context": "overhead.members.transportContext",
+	"transport-response-headers": "overhead.members.transportResponseHeaders",
+	"response-finalize": "overhead.members.responseFinalize",
+	"request-sign": "overhead.members.requestSign",
+	"credentials-fetch": "overhead.members.credentialsFetch",
 	// Streaming relay
-	"stream-backpressure": "Client backpressure",
-	"stream-client-write": "Client write",
-	scheduling: "Scheduling residual",
+	"stream-backpressure": "overhead.members.streamBackpressure",
+	"stream-client-write": "overhead.members.streamClientWrite",
+	scheduling: "overhead.members.scheduling",
 	// A2A agent gateway
-	"a2a.normalize": "Request normalization",
-	"a2a.auth": "Gateway auth",
-	"a2a.prepare": "Upstream client prep",
-	"a2a.encode": "Response encoding",
-	"a2a.dispatch": "A2A SDK handling",
-	"a2a.push.db.authenticate": "Push authentication lookup",
-	"a2a.push.db.bind": "Push task binding",
-	"a2a.push.db.enqueue": "Push enqueue",
-	"a2a.push.db.config": "Push configuration lookup",
-	"a2a.push.db.outcome": "Push outcome update",
-	"a2a.push.db.local": "Push configuration read",
-	"a2a.push.db.save": "Push configuration save",
-	"a2a.push.db.delete": "Push configuration delete",
-	"a2a.push.db.list-due": "Due push lookup",
-	"a2a.push.db.prune": "Push retention cleanup",
-};
+	"a2a.normalize": "overhead.members.a2aNormalize",
+	"a2a.auth": "overhead.members.a2aAuth",
+	"a2a.prepare": "overhead.members.a2aPrepare",
+	"a2a.encode": "overhead.members.a2aEncode",
+	"a2a.dispatch": "overhead.members.a2aDispatch",
+	"a2a.push.db.authenticate": "overhead.members.a2aPushDbAuthenticate",
+	"a2a.push.db.bind": "overhead.members.a2aPushDbBind",
+	"a2a.push.db.enqueue": "overhead.members.a2aPushDbEnqueue",
+	"a2a.push.db.config": "overhead.members.a2aPushDbConfig",
+	"a2a.push.db.outcome": "overhead.members.a2aPushDbOutcome",
+	"a2a.push.db.local": "overhead.members.a2aPushDbLocal",
+	"a2a.push.db.save": "overhead.members.a2aPushDbSave",
+	"a2a.push.db.delete": "overhead.members.a2aPushDbDelete",
+	"a2a.push.db.list-due": "overhead.members.a2aPushDbListDue",
+	"a2a.push.db.prune": "overhead.members.a2aPushDbPrune",
+} as const;
 
 // Category assignment for buckets that aren't matched by a prefix rule below. Every
 // backend bucket name should be either matched by a prefix rule (serialization phases,
@@ -198,9 +200,9 @@ function pluginDisplayName(id: string): string {
 		.join(" ");
 }
 
-function overheadMemberLabel(name: string): string {
-	const friendly = OVERHEAD_LABELS[name];
-	if (friendly) return friendly;
+function overheadMemberLabel(name: string, t: TFunction<"observability">): string {
+	const friendlyKey = OVERHEAD_LABEL_KEYS[name as keyof typeof OVERHEAD_LABEL_KEYS];
+	if (friendlyKey) return t(friendlyKey);
 	if (name.startsWith("plugin.")) return pluginDisplayName(name.slice("plugin.".length));
 	if (name.startsWith("middleware.")) return name.slice("middleware.".length);
 	return name;
@@ -208,7 +210,7 @@ function overheadMemberLabel(name: string): string {
 
 // buildOverheadCategories groups the raw buckets into the top-level categories,
 // ordered largest-first so the bar and legend read like the numbers.
-function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] {
+function buildOverheadCategories(buckets: OverheadBucket[], t: TFunction<"observability">): OverheadCategory[] {
 	const grouped = new Map<string, OverheadBucket[]>();
 	for (const b of buckets) {
 		const key = overheadCategoryKey(b);
@@ -229,10 +231,11 @@ function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] 
 		}
 		const members = Array.from(byName.values());
 		members.sort((a, b) => b.duration_us - a.duration_us);
+		const meta = OVERHEAD_CATEGORY_META[key as keyof typeof OVERHEAD_CATEGORY_META];
 		cats.push({
 			key,
-			label: OVERHEAD_CATEGORY_META[key]?.label ?? key,
-			colorClass: OVERHEAD_CATEGORY_META[key]?.colorClass ?? "bg-muted-foreground/50",
+			label: meta ? t(meta.labelKey) : key,
+			colorClass: meta?.colorClass ?? "bg-muted-foreground/50",
 			totalUs: members.reduce((acc, m) => acc + m.duration_us, 0),
 			members,
 		});
@@ -247,10 +250,11 @@ function buildOverheadCategories(buckets: OverheadBucket[]): OverheadCategory[] 
 // overhead number. "View details" expands every category into its individual members
 // so a specific phase or plugin can be inspected.
 export function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBucket[]; overheadMs?: number }) {
+	const { t } = useTranslation("observability");
 	const [showDetails, setShowDetails] = useState(false);
 	if (!buckets || buckets.length === 0) return null;
 
-	const categories = buildOverheadCategories(buckets);
+	const categories = buildOverheadCategories(buckets, t);
 	const sumUs = buckets.reduce((acc, b) => acc + b.duration_us, 0);
 	const overheadUs = overheadMs != null && !isNaN(overheadMs) ? overheadMs * 1000 : undefined;
 
@@ -265,7 +269,7 @@ export function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBu
 	return (
 		<div className="space-y-3">
 			<div className="flex items-center justify-between gap-2">
-				<BlockHeader title="Overhead Breakdown" />
+				<BlockHeader title={t("logs.detail.overheadBreakdown")} />
 				<div className="font-mono text-xs tabular-nums">{formatMicros(overheadUs ?? sumUs)}</div>
 			</div>
 
@@ -296,7 +300,7 @@ export function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBu
 					onClick={() => setShowDetails((v) => !v)}
 					className="text-muted-foreground hover:text-foreground flex items-center gap-1 font-mono text-[11px] transition"
 				>
-					View details
+					{t("logs.detail.viewDetails")}
 					<ChevronDown className={cn("h-3 w-3 transition-transform", showDetails ? "rotate-180" : "rotate-0")} />
 				</button>
 			) : null}
@@ -315,7 +319,7 @@ export function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBu
 								{c.members.map((m) => (
 									<div key={m.name} className="flex items-center justify-between gap-3 font-mono text-[11px]">
 										<span className="truncate" title={m.name}>
-											{overheadMemberLabel(m.name)}
+											{overheadMemberLabel(m.name, t)}
 										</span>
 										<span className="text-muted-foreground shrink-0 tabular-nums">{formatMicros(m.duration_us)}</span>
 									</div>
@@ -328,8 +332,7 @@ export function OverheadBreakdown({ buckets, overheadMs }: { buckets: OverheadBu
 
 			{overCounted ? (
 				<div className="text-muted-foreground text-[11px]">
-					Measured spans ({formatMicros(sumUs)}) exceed the computed overhead ({formatMicros(overheadUs!)}); the upstream accumulator may be
-					over-counting.
+					{t("overhead.overCounted", { measured: formatMicros(sumUs), overhead: formatMicros(overheadUs!) })}
 				</div>
 			) : null}
 		</div>

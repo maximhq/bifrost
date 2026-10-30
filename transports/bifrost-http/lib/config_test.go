@@ -23903,6 +23903,58 @@ func TestLoadMCPConfig_FileReloadKeepsSavedExposeLists(t *testing.T) {
 	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, stored.ResourcesToExpose)
 }
 
+// staleMCPReadStore answers GetMCPConfig with what a node read before a peer's insert committed.
+type staleMCPReadStore struct {
+	configstore.ConfigStore
+	stale *schemas.MCPConfig
+}
+
+func (s *staleMCPReadStore) GetMCPConfig(context.Context) (*schemas.MCPConfig, error) {
+	return s.stale, nil
+}
+
+// TestLoadMCPConfig_PeerStoredFileClientFirst: nodes booting together all find no row for a config.json
+// client without client_id. The one whose insert loses must run the client under the stored row's ID and
+// slug, or the dashboard shows it as errored there and reconnect answers "not found".
+func TestLoadMCPConfig_PeerStoredFileClientFirst(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func() *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "docs_server",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+			ToolsToExecute:   schemas.WhiteList{"*"},
+		}}}
+	}
+	cases := []struct {
+		name  string
+		sot   string
+		stale *schemas.MCPConfig
+	}{
+		{name: "no MCP rows yet", stale: nil},
+		{name: "default mode", stale: &schemas.MCPConfig{}},
+		{name: "config.json source of truth", sot: SourceOfTruthConfigJSON, stale: &schemas.MCPConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+			peer := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, peer, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP()})
+			stored, err := store.GetMCPClientByName(ctx, "docs_server")
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+
+			node := &Config{ConfigStore: &staleMCPReadStore{ConfigStore: store, stale: tc.stale}, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, node, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP()})
+			require.Len(t, node.MCPConfig.ClientConfigs, 1)
+			running := node.MCPConfig.ClientConfigs[0]
+			assert.Equal(t, stored.ClientID, running.ID, "the node must run the client under the stored ID")
+			assert.Equal(t, stored.EndpointSlug, running.EndpointSlug, "the node must serve the stored endpoint slug")
+		})
+	}
+}
+
 // TestMCPClientConfigToTable_RejectsInvalidExposeLists: a list the store would refuse is refused before it
 // reaches the runtime.
 func TestMCPClientConfigToTable_RejectsInvalidExposeLists(t *testing.T) {
@@ -26302,6 +26354,37 @@ func TestRelayGrantsFromConfigFile_NewKeyUnknownRelay(t *testing.T) {
 		`"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}}],`,
 		`[{"id": "vk-new", "name": "vk-new", "value": "sk-bf-new", "relay_grants": [{"relay_name": "tavily"}, {"relay_name": "tavi1y"}]}]`)
 	assert.Equal(t, map[string][]string{"vk-new": {"tavily"}}, got)
+}
+
+// A relay edited in the dashboard keeps the edit across a restart in split mode when config.json is
+// unchanged, even if the env var behind its credential was rotated in between: the hash records the
+// credential's reference, not the resolved value, so the rotation is not read as a file change.
+func TestRelayFromConfigFile_DashboardEditSurvivesCredentialRotation(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	relays := `"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "env.RELAY_ROTATION_TOKEN"}}],`
+	t.Setenv("RELAY_ROTATION_TOKEN", "tvly-first")
+	loadRelayGrantsConfig(t, dir, "", relays, `[]`)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	edited, err := config.ConfigStore.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	edited.Description = "edited in the dashboard"
+	// An API edit leaves the stored hash in place, as the relays handler does.
+	require.NoError(t, config.ConfigStore.UpdateRelay(ctx, edited, ""))
+	config.Close(ctx)
+
+	t.Setenv("RELAY_ROTATION_TOKEN", "tvly-rotated")
+	loadRelayGrantsConfig(t, dir, "", relays, `[]`)
+	config, err = LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	got, err := config.ConfigStore.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	assert.Equal(t, "edited in the dashboard", got.Description, "an unchanged file does not re-sync the relay over its dashboard edit")
+	assert.Equal(t, "tvly-rotated", got.Credential.Value.GetValue(), "the stored reference resolves to the rotated value")
 }
 
 // A new key's agent_grants naming an agent that is not stored yet (agents are reconciled after

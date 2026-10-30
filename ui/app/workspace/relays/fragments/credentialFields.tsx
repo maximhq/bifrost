@@ -8,12 +8,15 @@ import type { RelayFormValues } from "@/lib/types/schemas";
 import { useEffect, useState } from "react";
 import type { UseFormReturn } from "react-hook-form";
 import { InfoLabel } from "../fragments/infoLabel";
+import { useTranslation } from "react-i18next";
 
 /**
  * How the endpoint signs in to the upstream: the auth type and its one credential. Laid out like the
  * provider key form; the AWS fields follow the Bedrock key's authentication tabs.
  */
 export function CredentialFields({ form, disabled }: { form: UseFormReturn<RelayFormValues>; disabled?: boolean }) {
+	const { t } = useTranslation("config");
+
 	const authType = form.watch("auth.type");
 	const hasExplicitAWS = !!(form.getValues("aws.access_key")?.value || form.getValues("aws.access_key")?.ref);
 	const [awsMode, setAwsMode] = useState<"iam_role" | "explicit">(hasExplicitAWS ? "explicit" : "iam_role");
@@ -29,8 +32,8 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 				render={({ field }) => (
 					<FormItem>
 						<InfoLabel
-							label="Authentication"
-							info="How the gateway authenticates to the upstream. Callers never send this credential; they authenticate to Bifrost with a virtual key."
+							label={t("relays.credentials.authLabel")}
+							info={t("relays.credentials.authInfo")}
 						/>
 						<Select onValueChange={field.onChange} value={field.value} disabled={disabled}>
 							<FormControl>
@@ -39,9 +42,9 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 								</SelectTrigger>
 							</FormControl>
 							<SelectContent>
-								{RelayAuthTypes.map((t) => (
-									<SelectItem key={t} value={t}>
-										{RelayAuthTypeLabels[t]}
+								{RelayAuthTypes.map((authKind) => (
+										<SelectItem key={authKind} value={authKind}>
+											{RelayAuthTypeLabels[authKind]}
 									</SelectItem>
 								))}
 							</SelectContent>
@@ -58,7 +61,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						name="auth.header_name"
 						render={({ field }) => (
 							<FormItem>
-								<InfoLabel label="Header Name (Required)" info="The request header that carries the credential, such as X-API-Key." />
+								<InfoLabel label={t("relays.credentials.headerNameLabel")} info={t("relays.credentials.headerNameInfo")} />
 								<FormControl>
 									<Input placeholder="x-api-key" data-testid="relay-header-name" disabled={disabled} {...field} value={field.value ?? ""} />
 								</FormControl>
@@ -72,10 +75,11 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						render={({ field }) => (
 							<FormItem>
 								<InfoLabel
-									label="Value Prefix (Optional)"
-									info="Text put before the credential in the header, such as Token followed by a space."
+									label={t("relays.credentials.valuePrefixLabel")}
+									info={t("relays.credentials.valuePrefixInfo")}
 								/>
 								<FormControl>
+									{/* i18n-ignore: sample prefix */}
 									<Input placeholder="Token " disabled={disabled} {...field} value={field.value ?? ""} />
 								</FormControl>
 								<FormMessage />
@@ -90,7 +94,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 					name="auth.query_param"
 					render={({ field }) => (
 						<FormItem>
-							<InfoLabel label="Query Parameter (Required)" info="The query parameter that carries the credential, such as api_key." />
+							<InfoLabel label={t("relays.credentials.queryParamLabel")} info={t("relays.credentials.queryParamInfo")} />
 							<FormControl>
 								<Input placeholder="api_key" data-testid="relay-query-param" disabled={disabled} {...field} value={field.value ?? ""} />
 							</FormControl>
@@ -107,12 +111,12 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 					render={({ field }) => (
 						<FormItem>
 							<InfoLabel
-								label={authType === "basic" ? "Credentials (Required)" : "API Key (Required)"}
-								info="Stored encrypted and never sent by callers; the gateway adds it to every relayed request."
+								label={authType === "basic" ? t("relays.credentials.credentialsLabel") : t("relays.credentials.apiKeyLabel")}
+								info={t("relays.credentials.credentialInfo")}
 							/>
 							<FormControl>
 								<SecretVarInput
-									placeholder={authType === "basic" ? "user:password or env.API_CREDENTIALS" : "API Key or env.API_KEY"}
+									placeholder={authType === "basic" ? t("relays.credentials.basicPlaceholder") : t("relays.credentials.apiKeyPlaceholder")}
 									data-testid="relay-credential"
 									disabled={disabled}
 									{...field}
@@ -132,7 +136,7 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						name="auth.aws.service"
 						render={({ field }) => (
 							<FormItem>
-								<InfoLabel label="AWS Service (Required)" info="The SigV4 signing name, such as textract, translate or s3." />
+								<InfoLabel label={t("relays.credentials.awsServiceLabel")} info={t("relays.credentials.awsServiceInfo")} />
 								<FormControl>
 									<Input placeholder="textract" data-testid="relay-aws-service" disabled={disabled} {...field} value={field.value ?? ""} />
 								</FormControl>
@@ -142,8 +146,8 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 					/>
 					<div className="space-y-2">
 						<InfoLabel
-							label="Authentication Method"
-							info="IAM Role uses the credentials of the environment Bifrost runs in (instance role, IRSA, env vars). Explicit uses the keys entered here."
+							label={t("relays.credentials.awsMethodLabel")}
+							info={t("relays.credentials.awsMethodInfo")}
 						/>
 						<Tabs
 							value={awsMode}
@@ -158,23 +162,27 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						>
 							<TabsList className="flex w-full justify-start">
 								<TabsTrigger value="iam_role" data-testid="relay-aws-iam-role-tab">
-									IAM Role (Inherited)
+									
+										{t("relays.credentials.iamRoleTab")}
+
 								</TabsTrigger>
 								<TabsTrigger value="explicit" data-testid="relay-aws-explicit-tab">
-									Explicit Credentials
+									
+										{t("relays.credentials.explicitTab")}
+
 								</TabsTrigger>
 							</TabsList>
 						</Tabs>
 						{awsMode === "iam_role" && (
-							<p className="text-muted-foreground text-sm">Uses IAM roles attached to your environment (EC2, Lambda, ECS, EKS).</p>
+							<p className="text-muted-foreground text-sm">{t("relays.credentials.iamRoleInfo")}</p>
 						)}
 					</div>
 					{awsMode === "explicit" &&
 						(
 							[
-								["access_key", "Access Key (Required)", "your-aws-access-key or env.AWS_ACCESS_KEY_ID"],
-								["secret_key", "Secret Key (Required)", "your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY"],
-								["session_token", "Session Token (Optional)", "your-aws-session-token or env.AWS_SESSION_TOKEN"],
+								["access_key", t("relays.credentials.accessKeyLabel"), t("relays.credentials.accessKeyPlaceholder")],
+								["secret_key", t("relays.credentials.secretKeyLabel"), t("relays.credentials.secretKeyPlaceholder")],
+								["session_token", t("relays.credentials.sessionTokenLabel"), t("relays.credentials.sessionTokenPlaceholder")],
 							] as const
 						).map(([key, label, placeholder]) => (
 							<FormField
@@ -203,10 +211,10 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						name="aws.region"
 						render={({ field }) => (
 							<FormItem>
-								<InfoLabel label="Region (Required)" info="The AWS region requests are signed for, such as us-east-1." />
+								<InfoLabel label={t("relays.credentials.regionLabel")} info={t("relays.credentials.regionInfo")} />
 								<FormControl>
 									<SecretVarInput
-										placeholder="us-east-1 or env.AWS_REGION"
+										placeholder={t("relays.credentials.regionPlaceholder")}
 										data-testid="relay-aws-region"
 										disabled={disabled}
 										{...field}
@@ -223,12 +231,12 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						render={({ field }) => (
 							<FormItem>
 								<InfoLabel
-									label="Assume Role ARN (Optional)"
-									info="Assume an IAM role before requests. Works with both explicit credentials and inherited IAM (EC2, ECS, EKS)."
+									label={t("relays.credentials.roleArnLabel")}
+									info={t("relays.credentials.roleArnInfo")}
 								/>
 								<FormControl>
 									<SecretVarInput
-										placeholder="arn:aws:iam::123456789:role/MyRole or env.AWS_ROLE_ARN"
+										placeholder={t("relays.credentials.roleArnPlaceholder")}
 										disabled={disabled}
 										{...field}
 										value={field.value}
@@ -244,11 +252,11 @@ export function CredentialFields({ form, disabled }: { form: UseFormReturn<Relay
 						render={({ field }) => (
 							<FormItem>
 								<InfoLabel
-									label="External ID (Optional)"
-									info={<>Required by the role&apos;s trust policy when using cross-account access</>}
+									label={t("relays.credentials.externalIdLabel")}
+									info={t("relays.credentials.externalIdInfo")}
 								/>
 								<FormControl>
-									<SecretVarInput placeholder="external-id or env.AWS_EXTERNAL_ID" disabled={disabled} {...field} value={field.value} />
+									<SecretVarInput placeholder={t("relays.credentials.externalIdPlaceholder")} disabled={disabled} {...field} value={field.value} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

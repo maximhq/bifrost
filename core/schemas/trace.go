@@ -131,6 +131,24 @@ func TraceDimensions(attrs map[string]any) map[string]string {
 	return nil
 }
 
+// MergeDimensions adds dims to the trace's dimensions, overwriting a name already there. It stores
+// a new map, so an exporter holding the previous one never sees it change.
+func (t *Trace) MergeDimensions(dims map[string]string) {
+	if t == nil || len(dims) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	existing := TraceDimensions(t.Attributes)
+	merged := make(map[string]string, len(existing)+len(dims))
+	maps.Copy(merged, existing)
+	maps.Copy(merged, dims)
+	if t.Attributes == nil {
+		t.Attributes = make(map[string]any)
+	}
+	t.Attributes[TraceAttrDimensions] = merged
+}
+
 // AddSpan adds a span to the trace in a thread-safe manner
 func (t *Trace) AddSpan(span *Span) {
 	if t == nil || span == nil {
@@ -621,6 +639,30 @@ func (s *Span) SetAttribute(key string, value any) {
 		s.Attributes = make(map[string]any)
 	}
 	s.Attributes[key] = value
+}
+
+// SetStartTime moves the span's start, for work measured before its span was opened.
+func (s *Span) SetStartTime(start time.Time) {
+	if s == nil || start.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StartTime = start
+}
+
+// SetStartTimeIfMatch is SetStartTime guarded like EndIfMatch against a recycled span.
+func (s *Span) SetStartTimeIfMatch(id string, start time.Time) bool {
+	if s == nil || start.IsZero() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.StartTime = start
+	return true
 }
 
 // GetAttribute reads one attribute under the span's lock.
@@ -1264,6 +1306,11 @@ const (
 	// no span; the breakdown carves it into its own "worker-handoff" bucket. The
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
+
+	// AttrBifrostBackground marks a span as work the request did not wait for (e.g. a
+	// guardrail evaluating the response after it was delivered). The overhead breakdown
+	// leaves it out; the span is still exported.
+	AttrBifrostBackground = "bifrost.background"
 
 	// AttrBifrostTimeToFirstTokenMs is request receipt to first streamed chunk, so
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.

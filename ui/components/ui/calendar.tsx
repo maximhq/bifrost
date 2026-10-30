@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import * as React from "react";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { DayButton, DayPicker, getDefaultClassNames } from "react-day-picker";
@@ -12,15 +14,19 @@ function Calendar({
 	captionLayout = "label",
 	buttonVariant = "ghost",
 	formatters,
+	locale,
 	components,
 	...props
 }: React.ComponentProps<typeof DayPicker> & {
 	buttonVariant?: React.ComponentProps<typeof Button>["variant"];
 }) {
+	const { i18n } = useTranslation();
+	const calendarLocale = locale ?? dateFnsLocale(i18n.resolvedLanguage);
 	const defaultClassNames = getDefaultClassNames();
 
 	return (
 		<DayPicker
+			locale={calendarLocale}
 			showOutsideDays={showOutsideDays}
 			className={cn(
 				"bg-background group/calendar p-3 [--cell-size:--spacing(8)] [[data-slot=card-content]_&]:bg-transparent [[data-slot=popover-content]_&]:bg-transparent",
@@ -30,7 +36,7 @@ function Calendar({
 			)}
 			captionLayout={captionLayout}
 			formatters={{
-				formatMonthDropdown: (date) => date.toLocaleString("default", { month: "short" }),
+				formatMonthDropdown: (date) => date.toLocaleString(calendarLocale?.code ?? i18n.resolvedLanguage ?? "en", { month: "short" }),
 				...formatters,
 			}}
 			classNames={{

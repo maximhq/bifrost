@@ -1,21 +1,26 @@
+import { useTranslation } from "react-i18next";
 import { CappedBarStack } from "@/app/workspace/dashboard/components/charts/barShape";
 import { CHART_COLORS } from "@/app/workspace/dashboard/utils/chartUtils";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
+import { getLocale } from "@/lib/i18n";
 import type { HistogramBucket, LogsHistogramResponse, MCPHistogramResponse } from "@/lib/types/logs";
 import { getUnixRangeForPeriod } from "@/lib/utils/timeRange";
 import { ChevronDown, RotateCcw } from "lucide-react";
 import { Component, type ErrorInfo, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-const requestFormatter = new Intl.NumberFormat("en-US", {
-	notation: "compact",
-	maximumFractionDigits: 1,
-});
+const requestFormatters = new Map<string, Intl.NumberFormat>();
 
 function formatRequest(requests: number): string {
-	return requestFormatter.format(requests);
+	const locale = getLocale();
+	let formatter = requestFormatters.get(locale);
+	if (!formatter) {
+		formatter = new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 });
+		requestFormatters.set(locale, formatter);
+	}
+	return formatter.format(requests);
 }
 
 // Empty chart placeholder when data fails to render
@@ -81,22 +86,22 @@ interface LogsVolumeChartProps {
 }
 
 // Format timestamp based on bucket size
-function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
+function formatTimestamp(timestamp: string, bucketSizeSeconds: number, locale: string): string {
 	const date = new Date(timestamp);
 
 	if (bucketSizeSeconds >= 86400) {
 		// Daily buckets: "Jan 20"
-		return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+		return date.toLocaleDateString(locale, { month: "short", day: "numeric" });
 	} else if (bucketSizeSeconds >= 3600) {
 		// Hourly buckets: "10:00"
-		return date.toLocaleTimeString("en-US", {
+		return date.toLocaleTimeString(locale, {
 			hour: "2-digit",
 			minute: "2-digit",
 			hour12: false,
 		});
 	} else {
 		// Sub-hourly: "10:15"
-		return date.toLocaleTimeString("en-US", {
+		return date.toLocaleTimeString(locale, {
 			hour: "2-digit",
 			minute: "2-digit",
 			hour12: false,
@@ -107,7 +112,7 @@ function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
 // Format full timestamp for tooltip
 function formatFullTimestamp(timestamp: string): string {
 	const date = new Date(timestamp);
-	return date.toLocaleString("en-US", {
+	return date.toLocaleString(getLocale(), {
 		month: "short",
 		day: "numeric",
 		hour: "2-digit",
@@ -130,6 +135,7 @@ type ChartMouseEvent = { activeTooltipIndex?: number | string | null };
 
 // Custom tooltip component
 function CustomTooltip({ active, payload }: CustomTooltipProps) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -142,30 +148,30 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 				<div className="mt-2 flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-seq-1 h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Total</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("logs.stats.tooltipTotal")}</span>
 					</span>
-					<span className="font-medium">{data.count.toLocaleString()}</span>
+					<span className="font-medium">{data.count.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-success h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 					</span>
-					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString()}</span>
+					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-error h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 					</span>
-					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString()}</span>
+					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-neutral h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cancelled")}</span>
 					</span>
-					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString()}</span>
+					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString(getLocale())}</span>
 				</div>
 			</div>
 		</div>
@@ -184,6 +190,8 @@ export function LogsVolumeChart({
 	period,
 	onOpenChange,
 }: LogsVolumeChartProps) {
+	const { t } = useTranslation("observability");
+	const locale = getLocale();
 	// State for drag selection
 	const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
 	const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
@@ -229,7 +237,7 @@ export function LogsVolumeChart({
 				...bucket,
 				cancelled: bucket.cancelled ?? 0,
 				index,
-				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
+				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds, locale),
 			}));
 			// Ensure at least 2 data points for Recharts
 			if (result.length === 1) {
@@ -241,7 +249,7 @@ export function LogsVolumeChart({
 					error: 0,
 					cancelled: 0,
 					index: 1,
-					formattedTime: formatTimestamp(nextTimestamp, data.bucket_size_seconds),
+					formattedTime: formatTimestamp(nextTimestamp, data.bucket_size_seconds, locale),
 				});
 			}
 			return result;
@@ -258,7 +266,7 @@ export function LogsVolumeChart({
 				error: 0,
 				cancelled: 0,
 				index: idx,
-				formattedTime: formatTimestamp(timestamp, data.bucket_size_seconds),
+				formattedTime: formatTimestamp(timestamp, data.bucket_size_seconds, locale),
 			});
 		}
 
@@ -274,7 +282,7 @@ export function LogsVolumeChart({
 					...bucket,
 					cancelled: bucket.cancelled ?? 0,
 					index: bucketIndex,
-					formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
+					formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds, locale),
 				};
 			}
 		}
@@ -289,12 +297,12 @@ export function LogsVolumeChart({
 				error: 0,
 				cancelled: 0,
 				index: 1,
-				formattedTime: formatTimestamp(nextTimestamp, data.bucket_size_seconds),
+				formattedTime: formatTimestamp(nextTimestamp, data.bucket_size_seconds, locale),
 			});
 		}
 
 		return filledBuckets;
-	}, [data, effectingTimeRange.startTime, effectingTimeRange.endTime]);
+	}, [data, effectingTimeRange.startTime, effectingTimeRange.endTime, locale]);
 
 	// Handle mouse down on chart (start selection)
 	const handleMouseDown = useCallback((e: ChartMouseEvent) => {
@@ -375,22 +383,22 @@ export function LogsVolumeChart({
 				<div className="flex items-center justify-between">
 					<CollapsibleTrigger data-testid="logs-volume-chart-trigger" className="flex items-center gap-2 hover:opacity-80">
 						<ChevronDown className={`text-muted-foreground h-4 w-4 transition-transform duration-200 ${isOpen ? "" : "-rotate-90"}`} />
-						<span className="text-muted-foreground text-sm font-medium">Request Volume</span>
+						<span className="text-muted-foreground text-sm font-medium">{t("dashboard.charts.requestVolume")}</span>
 					</CollapsibleTrigger>
 					<div className="mr-2 flex items-center gap-4">
 						{isOpen && (
 							<div className="flex items-center gap-3 text-xs">
 								<span className="flex items-center gap-1.5">
 									<span className="bg-chart-success h-2 w-2 rounded-full" />
-									<span className="text-muted-foreground">Success</span>
+									<span className="text-muted-foreground">{t("labels.success")}</span>
 								</span>
 								<span className="flex items-center gap-1.5">
 									<span className="bg-chart-error h-2 w-2 rounded-full" />
-									<span className="text-muted-foreground">Error</span>
+									<span className="text-muted-foreground">{t("labels.error")}</span>
 								</span>
 								<span className="flex items-center gap-1.5">
 									<span className="bg-chart-neutral h-2 w-2 rounded-full" />
-									<span className="text-muted-foreground">Cancelled</span>
+									<span className="text-muted-foreground">{t("labels.cancelled")}</span>
 								</span>
 							</div>
 						)}
@@ -401,7 +409,7 @@ export function LogsVolumeChart({
 								className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs transition-colors"
 							>
 								<RotateCcw className="h-3 w-3" />
-								Reset zoom
+								{t("logs.resetZoom")}
 							</button>
 						)}
 					</div>

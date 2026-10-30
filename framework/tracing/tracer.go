@@ -298,6 +298,14 @@ func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
 	t.store.SetTraceAttribute(traceID, key, value)
 }
 
+// MergeTraceDimensions adds dims to the trace's dimensions, overwriting a name already there.
+func (t *Tracer) MergeTraceDimensions(traceID string, dims map[string]string) {
+	if len(dims) == 0 {
+		return
+	}
+	t.store.GetTrace(traceID).MergeDimensions(dims)
+}
+
 // SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
 func (t *Tracer) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
 	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
@@ -433,6 +441,22 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	if span != nil {
 		span.SetAttribute(key, value)
 	}
+}
+
+// SetSpanStartTime moves the start time of the span identified by the handle.
+func (t *Tracer) SetSpanStartTime(handle schemas.SpanHandle, start time.Time) {
+	h, ok := handle.(*spanHandle)
+	if !ok || h == nil {
+		return
+	}
+	if h.span != nil && h.span.SetStartTimeIfMatch(h.spanID, start) {
+		return
+	}
+	trace := t.store.GetTrace(h.traceID)
+	if trace == nil {
+		return
+	}
+	trace.GetSpan(h.spanID).SetStartTimeIfMatch(h.spanID, start)
 }
 
 // SpanFromHandle resolves the *Span for a handle once. Callers writing many

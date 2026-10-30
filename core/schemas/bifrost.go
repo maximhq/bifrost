@@ -374,6 +374,7 @@ const (
 	BifrostContextKeyDropRawResponseFromClient           BifrostContextKey = "bifrost-drop-raw-response-from-client"            // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw response should be stripped from the client-facing response
 	BifrostContextKeyShouldStoreRawInLogs                BifrostContextKey = "bifrost-should-store-raw-in-logs"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request/response should be persisted in log records
 	BifrostContextKeyRelayContentLoggingEnabledByDefault BifrostContextKey = "bifrost-relay-content-logging-enabled-by-default" // bool (set by the logging plugin's PreRelayHook - DO NOT SET THIS MANUALLY) — the plugin's own static content-logging setting only, absent governance's and the per-request override, which are not yet on ctx when PreRelayHook runs; core/relay resolves the final capture decision from this plus BifrostContextKeyGovernanceDisableContentLogging and BifrostContextKeyDisableContentLogging once all pre-hooks have completed, right before opening the stream
+	BifrostContextKeyRelayContentRetainedWhenDisabled    BifrostContextKey = "bifrost-relay-content-retained-when-disabled"     // bool (set by the logging plugin's PreRelayHook - DO NOT SET THIS MANUALLY) — true when content that logging turns off is still retained, hidden, in object storage (retain_content_in_object_storage with an object-storage log store), so core/relay captures the streamed reply for offload
 	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyBaseProviderType                    BifrostContextKey = "bifrost-base-provider-type"                       // ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY) — built-in provider backing this attempt (custom providers resolve to their BaseProviderType)
@@ -398,6 +399,7 @@ const (
 	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)
 	BifrostContextKeyA2AUpstreamTransport                BifrostContextKey = "bifrost-a2a-upstream-transport"                   // string (A2A binding selected for the upstream agent)
 	BifrostContextKeyRealtimeVoice                       BifrostContextKey = "bifrost-realtime-voice"                           // string
+	BifrostContextKeyRealtimePricingSurface              BifrostContextKey = "bifrost-realtime-pricing-surface"                 // PricingSurface (set by the provider when it opens the realtime session)
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
 	BifrostContextKeyRequestQuery                        BifrostContextKey = "bifrost-request-query"                            // map[string]string (request query params with lowercased keys; consumed by governance routing CEL rules)
@@ -2033,6 +2035,12 @@ func (r *BifrostMCPResponse) PopulateExtraFields(mcpRequestType MCPRequestType, 
 	}
 }
 
+// PricingSurface names the product surface whose price list applies to a request.
+type PricingSurface string
+
+// PricingSurfaceVoiceLive prices an Azure Voice Live turn at the model's _voice_live rates.
+const PricingSurfaceVoiceLive PricingSurface = "voice_live"
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType RequestType `json:"request_type"`
@@ -2040,6 +2048,9 @@ type BifrostResponseExtraFields struct {
 	// exposed to plugins and logs.
 	PricingRequestType RequestType `json:"pricing_request_type,omitempty"`
 	RoutingInfo        RoutingInfo `json:"routing_info"`
+	// PricingSurface selects a model's rates for the product that served the request, without
+	// changing the request type or service tier exposed to plugins and logs.
+	PricingSurface PricingSurface `json:"pricing_surface,omitempty"`
 	// Deprecated: use RoutingInfo.Provider. Still populated for backward
 	// compatibility; new consumers should read from RoutingInfo.
 	Provider ModelProvider `json:"provider,omitempty"`

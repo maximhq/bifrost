@@ -1308,7 +1308,7 @@
                       }
                     },
                     {
-                      "name": "openai/gpt-4.1-nano",
+                      "name": "openai/gpt-5.4-nano",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -1319,7 +1319,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"openai/gpt-4.1-nano\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                          "raw": "{\n  \"model\": \"openai/gpt-5.4-nano\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/v1/chat/completions",
@@ -1416,7 +1416,7 @@
                       }
                     },
                     {
-                      "name": "openai/o3-mini",
+                      "name": "openai/gpt-5.4-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -1427,7 +1427,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                          "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/v1/chat/completions",
@@ -7556,7 +7556,7 @@
               "description": "Image generation endpoint with model strings from all providers. OpenAI request shape; Bifrost translates to backend-specific format internally.",
               "item": [
                 {
-                  "name": "openai/gpt-image-1",
+                  "name": "openai/gpt-image-2",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7567,7 +7567,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/gpt-image-1\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-image-2\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/images/generations",
@@ -8802,7 +8802,7 @@
               "description": "Reasoning/thinking activation via the request field appropriate for the model's native provider:\n- OpenAI o-series: `reasoning_effort: \"low\"`\n- Anthropic: `thinking: {type: \"enabled\", budget_tokens: 1024}`\n- Gemini 2.5+: `thinkingConfig: {thinkingBudget: 1024}` (or via Bifrost's OpenAI-shape `reasoning_effort` translation)\n\nBifrost's converter maps each field to the backend's native reasoning parameter.",
               "item": [
                 {
-                  "name": "8.6.4.A native chat → openai/o3-mini (reasoning_effort)",
+                  "name": "8.6.4.A native chat → openai/gpt-5.4-mini (reasoning_effort)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8813,7 +8813,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"low\"\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"What is 17 * 23? Think step by step.\" }],\n  \"reasoning_effort\": \"low\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/chat/completions",
@@ -15809,7 +15809,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"o3-mini\",\n  \"input\": \"What's 17*23?\",\n  \"reasoning\": {\"summary\": \"auto\"}\n}"
+                  "raw": "{\n  \"model\": \"gpt-5.4-mini\",\n  \"input\": \"What's 17*23?\",\n  \"reasoning\": {\"summary\": \"auto\"}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/openai/v1/responses",
@@ -15836,7 +15836,7 @@
                       "pm.test('summary_index and obfuscation survive stream', function () {",
                       "  var body = pm.response.text() || '';",
                       "  pm.expect(body, 'expected obfuscation in SSE body').to.include('\"obfuscation\"');",
-                      "  // reasoning.summary is model-discretionary: o3-mini may emit no summary on simple prompts.",
+                      "  // reasoning.summary is model-discretionary: gpt-5.4-mini may emit no summary on simple prompts.",
                       "  // Only assert summary_index preservation when a reasoning summary was actually emitted.",
                       "  if (body.indexOf('response.reasoning_summary') !== -1) {",
                       "    pm.expect(body, 'reasoning summary emitted but summary_index stripped').to.include('\"summary_index\"');",
@@ -15860,7 +15860,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"o3-mini\",\n  \"input\": \"Prove that the square root of 2 is irrational, step by step.\",\n  \"reasoning\": {\"summary\": \"detailed\"},\n  \"stream\": true,\n  \"stream_options\": {\"include_obfuscation\": true}\n}"
+                  "raw": "{\n  \"model\": \"gpt-5.4-mini\",\n  \"input\": \"Prove that the square root of 2 is irrational, step by step.\",\n  \"reasoning\": {\"summary\": \"detailed\"},\n  \"stream\": true,\n  \"stream_options\": {\"include_obfuscation\": true}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/openai/v1/responses",
@@ -26106,7 +26106,7 @@
               }
             },
             {
-              "name": "Cross-cut: openai/o3-mini (json_schema)",
+              "name": "Cross-cut: openai/gpt-5.4-mini (json_schema)",
               "event": [
                 {
                   "listen": "test",
@@ -26128,7 +26128,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Extract city/country/pop for Paris.\"}],\n  \"response_format\": {\"type\":\"json_schema\",\"json_schema\":{\"name\":\"city\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"},\"pop\":{\"type\":\"number\"}},\"required\":[\"city\",\"country\",\"pop\"],\"additionalProperties\":false}}}\n}"
+                  "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Extract city/country/pop for Paris.\"}],\n  \"response_format\": {\"type\":\"json_schema\",\"json_schema\":{\"name\":\"city\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"country\":{\"type\":\"string\"},\"pop\":{\"type\":\"number\"}},\"required\":[\"city\",\"country\",\"pop\"],\"additionalProperties\":false}}}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -26795,7 +26795,7 @@
               }
             },
             {
-              "name": "Cross-cut: openai/o3-mini function calling",
+              "name": "Cross-cut: openai/gpt-5.4-mini function calling",
               "event": [
                 {
                   "listen": "test",
@@ -26817,7 +26817,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"
+                  "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Weather in Lagos, Nigeria?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -27674,7 +27674,7 @@
               }
             },
             {
-              "name": "Cross-cut: openai/o3-mini streaming",
+              "name": "Cross-cut: openai/gpt-5.4-mini streaming",
               "event": [
                 {
                   "listen": "test",
@@ -27696,7 +27696,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"
+                  "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Count 1-5.\"}],\n  \"stream\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -38402,7 +38402,7 @@
                   }
                 },
                 {
-                  "name": "pc gpt-4.1-nano nativeresp streaming [write]",
+                  "name": "pc gpt-5.4-nano nativeresp streaming [write]",
                   "event": [
                     {
                       "listen": "test",
@@ -38435,7 +38435,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/gpt-4.1-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-4.1-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-4.1-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-5.4-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-5.4-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/responses",
@@ -38450,7 +38450,7 @@
                   }
                 },
                 {
-                  "name": "pc gpt-4.1-nano nativeresp streaming [read]",
+                  "name": "pc gpt-5.4-nano nativeresp streaming [read]",
                   "event": [
                     {
                       "listen": "prerequest",
@@ -38490,7 +38490,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/gpt-4.1-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-4.1-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-4.1-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-nano\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-nativeresp-gpt-5.4-nano-s-{{pcNonce}}\",\n  \"input\": \"{{cachePrefix}} [pc-session {{pcNonce}} nativeresp-gpt-5.4-nano-s] Answer in one short word: is the sky blue?\",\n  \"stream\": true\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/responses?_chain={{cacheChain_pc_gpt_4_1_nano_nativeresp_streaming_write}}",
@@ -44698,6 +44698,76 @@
                   "});",
                   "pm.test('deepseek native responses: reasoning.effort none reached the wire as thinking disabled (#7610)', function () {",
                   "  pm.expect(rr && rr.thinking && rr.thinking.type, 'thinking not disabled on the wire - a reasoning-on turn spends max_tokens on reasoning and yields no message item: ' + wire).to.eql('disabled');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] deepseek/deepseek-v4-flash-anthropic rejects document content before egress (#6741)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarise the attached document in one sentence.\"\n        },\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"base64\",\n            \"media_type\": \"application/pdf\",\n            \"data\": \"JVBERi0xLjQKJcOkw7zDtsOfCjIgMCBvYmoKPDwvTGVuZ3RoIDMgMCBSL0ZpbHRlci9GbGF0ZURlY29kZT4+\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// DeepSeek documents document blocks as unsupported on its Anthropic-compatible",
+                  "// endpoint, but accepts the request and silently drops them: the upstream returns",
+                  "// success, so no fallback can ever trigger and the caller gets a confident answer",
+                  "// computed without the document they supplied. Bifrost refuses before egress instead.",
+                  "// The collection-level [EXPECT-400] tag already asserts the status; these rows pin",
+                  "// that the refusal is typed (so a fallback can act on it) and that it is local.",
+                  "pm.test('the refusal is typed invalid_request_error so a fallback can act on it', function () {",
+                  "  var err = body.error || {};",
+                  "  pm.expect(err.type, 'error.type: ' + txt.slice(0, 400)).to.eql('invalid_request_error');",
+                  "  pm.expect(err.message, 'error.message: ' + txt.slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('the refusal names document content, not some unrelated validation error', function () {",
+                  "  var msg = ((body.error || {}).message) || '';",
+                  "  pm.expect(/document/i.test(msg), 'message does not mention document content: ' + txt.slice(0, 400)).to.be.true;",
+                  "});",
+                  "",
+                  "// The row asks for raw_request capture, so an upstream rejection would carry the",
+              "// attempted payload here. Its absence is therefore evidence of a local refusal",
+              "// rather than an artefact of capture being switched off.",
+              "pm.test('nothing was sent upstream (no raw_request recorded for a pre-egress refusal)', function () {",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  var shown = rr === undefined ? 'undefined' : JSON.stringify(rr).slice(0, 300);",
+                  "  pm.expect(!rr, 'raw_request present, so the request reached DeepSeek: ' + shown).to.be.true;",
                   "});"
                 ]
               }
@@ -63589,7 +63659,7 @@
               "name": "47.5.A native /v1/chat/completions",
               "item": [
                 {
-                  "name": "47.5.A native /v1/chat/completions -> openai/o3-mini",
+                  "name": "47.5.A native /v1/chat/completions -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -63600,7 +63670,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"low\"\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"low\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/chat/completions",
@@ -64035,7 +64105,7 @@
               "name": "47.5.B native /v1/responses",
               "item": [
                 {
-                  "name": "47.5.B native /v1/responses -> openai/o3-mini",
+                  "name": "47.5.B native /v1/responses -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -64046,7 +64116,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"input\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\",\n  \"max_output_tokens\": 2048,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"input\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\",\n  \"max_output_tokens\": 2048,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/responses",
@@ -65240,7 +65310,7 @@
               "name": "47.5.E /anthropic/v1/messages",
               "item": [
                 {
-                  "name": "47.5.E /anthropic/v1/messages -> openai/o3-mini",
+                  "name": "47.5.E /anthropic/v1/messages -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -65251,7 +65321,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -65621,7 +65691,7 @@
               "name": "47.5.F /genai :generateContent",
               "item": [
                 {
-                  "name": "47.5.F /genai :generateContent -> openai/o3-mini",
+                  "name": "47.5.F /genai :generateContent -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -65635,7 +65705,7 @@
                       "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 1024,\n      \"includeThoughts\": true\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/genai/v1beta/models/openai/o3-mini:generateContent",
+                      "raw": "{{baseUrl}}/genai/v1beta/models/openai/gpt-5.4-mini:generateContent",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -65644,7 +65714,7 @@
                         "v1beta",
                         "models",
                         "openai",
-                        "o3-mini:generateContent"
+                        "gpt-5.4-mini:generateContent"
                       ]
                     }
                   },
@@ -66026,7 +66096,7 @@
               "name": "47.5.G /bedrock converse",
               "item": [
                 {
-                  "name": "47.5.G /bedrock converse -> openai/o3-mini",
+                  "name": "47.5.G /bedrock converse -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -66040,14 +66110,14 @@
                       "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1024\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fo3-mini/converse",
+                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-5.4-mini/converse",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "bedrock",
                         "model",
-                        "openai%2Fo3-mini",
+                        "openai%2Fgpt-5.4-mini",
                         "converse"
                       ]
                     }
@@ -68970,7 +69040,7 @@
                   "name": "47.6.2.A native /v1/chat/completions",
                   "item": [
                     {
-                      "name": "47.6.2.A native /v1/chat/completions -> openai/o3-mini",
+                      "name": "47.6.2.A native /v1/chat/completions -> openai/gpt-5.4-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -68981,7 +69051,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"low\",\n  \"stream\": true\n}"
+                          "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 2048,\n  \"reasoning_effort\": \"low\",\n  \"stream\": true\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/v1/chat/completions",
@@ -69353,7 +69423,7 @@
                   "name": "47.6.2.B native /v1/responses",
                   "item": [
                     {
-                      "name": "47.6.2.B native /v1/responses -> openai/o3-mini",
+                      "name": "47.6.2.B native /v1/responses -> openai/gpt-5.4-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -69364,7 +69434,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"input\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\",\n  \"max_output_tokens\": 2048,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"stream\": true\n}"
+                          "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"input\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\",\n  \"max_output_tokens\": 2048,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  },\n  \"stream\": true\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/v1/responses",
@@ -70417,7 +70487,7 @@
                   "name": "47.6.2.E /anthropic/v1/messages",
                   "item": [
                     {
-                      "name": "47.6.2.E /anthropic/v1/messages -> openai/o3-mini",
+                      "name": "47.6.2.E /anthropic/v1/messages -> openai/gpt-5.4-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -70428,7 +70498,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"stream\": true\n}"
+                          "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"stream\": true\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -70758,7 +70828,7 @@
                   "name": "47.6.2.F /genai :generateContent",
                   "item": [
                     {
-                      "name": "47.6.2.F /genai :generateContent -> openai/o3-mini",
+                      "name": "47.6.2.F /genai :generateContent -> openai/gpt-5.4-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -70772,7 +70842,7 @@
                           "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 1024,\n      \"includeThoughts\": true\n    }\n  }\n}"
                         },
                         "url": {
-                          "raw": "{{baseUrl}}/genai/v1beta/models/openai/o3-mini:streamGenerateContent?alt=sse",
+                          "raw": "{{baseUrl}}/genai/v1beta/models/openai/gpt-5.4-mini:streamGenerateContent?alt=sse",
                           "host": [
                             "{{baseUrl}}"
                           ],
@@ -70781,7 +70851,7 @@
                             "v1beta",
                             "models",
                             "openai",
-                            "o3-mini:streamGenerateContent"
+                            "gpt-5.4-mini:streamGenerateContent"
                           ],
                           "query": [
                             {
@@ -71163,7 +71233,7 @@
                   "name": "47.6.2.G /bedrock converse",
                   "item": [
                     {
-                      "name": "47.6.2.G /bedrock converse -> openai/o3-mini",
+                      "name": "47.6.2.G /bedrock converse -> openai/gpt-5.4-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -71177,14 +71247,14 @@
                           "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1024\n    }\n  }\n}"
                         },
                         "url": {
-                          "raw": "{{baseUrl}}/bedrock/model/openai%2Fo3-mini/converse-stream",
+                          "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-5.4-mini/converse-stream",
                           "host": [
                             "{{baseUrl}}"
                           ],
                           "path": [
                             "bedrock",
                             "model",
-                            "openai%2Fo3-mini",
+                            "openai%2Fgpt-5.4-mini",
                             "converse-stream"
                           ]
                         }
@@ -71195,11 +71265,11 @@
                           "script": {
                             "type": "text/javascript",
                             "exec": [
-                              "// o3-mini returns hidden reasoning; this request does not request a summary.",
+                              "// gpt-5.4-mini returns hidden reasoning; this request does not request a summary.",
                               "// Converse usage has no reasoning-token counter. Do not infer reasoning from prose",
                               "// or outputTokens. Keep completion checks and report the observability gap explicitly.",
                               "// https://developers.openai.com/api/docs/guides/reasoning",
-                              "pm.test.skip('reasoning visibility: unavailable for o3-mini on Converse');",
+                              "pm.test.skip('reasoning visibility: unavailable for gpt-5.4-mini on Converse');",
                               "pm.test('Converse stream returns an answer, completion and usage', function () {",
                               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                               "  var buf = Buffer.isBuffer(pm.response.stream) ? pm.response.stream : Buffer.from(pm.response.stream || []);",
@@ -93196,7 +93266,7 @@
                   ]
                 },
                 {
-                  "name": "48.1.A /langchain reasoning -> openai/o3-mini",
+                  "name": "48.1.A /langchain reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -93207,7 +93277,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/langchain/v1/messages",
@@ -95361,7 +95431,7 @@
                   ]
                 },
                 {
-                  "name": "48.1.G /langchain reasoning -> openai/o3-mini",
+                  "name": "48.1.G /langchain reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -95375,7 +95445,7 @@
                       "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 1024,\n      \"includeThoughts\": true\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/langchain/v1beta/models/openai/o3-mini:generateContent",
+                      "raw": "{{baseUrl}}/langchain/v1beta/models/openai/gpt-5.4-mini:generateContent",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -95384,7 +95454,7 @@
                         "v1beta",
                         "models",
                         "openai",
-                        "o3-mini:generateContent"
+                        "gpt-5.4-mini:generateContent"
                       ]
                     }
                   },
@@ -97614,7 +97684,7 @@
                   ]
                 },
                 {
-                  "name": "48.1.B /langchain reasoning -> openai/o3-mini",
+                  "name": "48.1.B /langchain reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -97628,14 +97698,14 @@
                       "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1024\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/langchain/model/openai%2Fo3-mini/converse",
+                      "raw": "{{baseUrl}}/langchain/model/openai%2Fgpt-5.4-mini/converse",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "langchain",
                         "model",
-                        "openai%2Fo3-mini",
+                        "openai%2Fgpt-5.4-mini",
                         "converse"
                       ]
                     }
@@ -99911,7 +99981,7 @@
                   ]
                 },
                 {
-                  "name": "48.1.C /langchain reasoning -> openai/o3-mini",
+                  "name": "48.1.C /langchain reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -99922,7 +99992,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/langchain/v2/chat",
@@ -106313,7 +106383,7 @@
                   ]
                 },
                 {
-                  "name": "48.2.A /litellm reasoning -> openai/o3-mini",
+                  "name": "48.2.A /litellm reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -106324,7 +106394,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/litellm/v1/messages",
@@ -108478,7 +108548,7 @@
                   ]
                 },
                 {
-                  "name": "48.2.G /litellm reasoning -> openai/o3-mini",
+                  "name": "48.2.G /litellm reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -108492,7 +108562,7 @@
                       "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 1024,\n      \"includeThoughts\": true\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/litellm/v1beta/models/openai/o3-mini:generateContent",
+                      "raw": "{{baseUrl}}/litellm/v1beta/models/openai/gpt-5.4-mini:generateContent",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -108501,7 +108571,7 @@
                         "v1beta",
                         "models",
                         "openai",
-                        "o3-mini:generateContent"
+                        "gpt-5.4-mini:generateContent"
                       ]
                     }
                   },
@@ -110731,7 +110801,7 @@
                   ]
                 },
                 {
-                  "name": "48.2.B /litellm reasoning -> openai/o3-mini",
+                  "name": "48.2.B /litellm reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -110745,14 +110815,14 @@
                       "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1024\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/litellm/model/openai%2Fo3-mini/converse",
+                      "raw": "{{baseUrl}}/litellm/model/openai%2Fgpt-5.4-mini/converse",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "litellm",
                         "model",
-                        "openai%2Fo3-mini",
+                        "openai%2Fgpt-5.4-mini",
                         "converse"
                       ]
                     }
@@ -113028,7 +113098,7 @@
                   ]
                 },
                 {
-                  "name": "48.2.C /litellm reasoning -> openai/o3-mini",
+                  "name": "48.2.C /litellm reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -113039,7 +113109,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/litellm/v2/chat",
@@ -119430,7 +119500,7 @@
                   ]
                 },
                 {
-                  "name": "48.3.A /pydanticai reasoning -> openai/o3-mini",
+                  "name": "48.3.A /pydanticai reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -119441,7 +119511,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/pydanticai/v1/messages",
@@ -121595,7 +121665,7 @@
                   ]
                 },
                 {
-                  "name": "48.3.G /pydanticai reasoning -> openai/o3-mini",
+                  "name": "48.3.G /pydanticai reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -121609,7 +121679,7 @@
                       "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 2048,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 1024,\n      \"includeThoughts\": true\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/pydanticai/v1beta/models/openai/o3-mini:generateContent",
+                      "raw": "{{baseUrl}}/pydanticai/v1beta/models/openai/gpt-5.4-mini:generateContent",
                       "host": [
                         "{{baseUrl}}"
                       ],
@@ -121618,7 +121688,7 @@
                         "v1beta",
                         "models",
                         "openai",
-                        "o3-mini:generateContent"
+                        "gpt-5.4-mini:generateContent"
                       ]
                     }
                   },
@@ -123848,7 +123918,7 @@
                   ]
                 },
                 {
-                  "name": "48.3.B /pydanticai reasoning -> openai/o3-mini",
+                  "name": "48.3.B /pydanticai reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -123862,14 +123932,14 @@
                       "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 4096\n  },\n  \"additionalModelRequestFields\": {\n    \"reasoning_config\": {\n      \"type\": \"enabled\",\n      \"budget_tokens\": 1024\n    }\n  }\n}"
                     },
                     "url": {
-                      "raw": "{{baseUrl}}/pydanticai/model/openai%2Fo3-mini/converse",
+                      "raw": "{{baseUrl}}/pydanticai/model/openai%2Fgpt-5.4-mini/converse",
                       "host": [
                         "{{baseUrl}}"
                       ],
                       "path": [
                         "pydanticai",
                         "model",
-                        "openai%2Fo3-mini",
+                        "openai%2Fgpt-5.4-mini",
                         "converse"
                       ]
                     }
@@ -126145,7 +126215,7 @@
                   ]
                 },
                 {
-                  "name": "48.3.C /pydanticai reasoning -> openai/o3-mini",
+                  "name": "48.3.C /pydanticai reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -126156,7 +126226,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/pydanticai/v2/chat",
@@ -128558,7 +128628,7 @@
                   ]
                 },
                 {
-                  "name": "48.5.C /cohere/v2/chat reasoning -> openai/o3-mini",
+                  "name": "48.5.C /cohere/v2/chat reasoning -> openai/gpt-5.4-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -128569,7 +128639,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"openai/o3-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
+                      "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"A farmer has 47 sheep. Each night, one third of the flock (rounded down) escapes, and each morning he recovers 5 plus the number that escaped two nights prior. Starting from night 1, how many sheep does he have after the 4th morning? Show your working.\"\n    }\n  ],\n  \"max_tokens\": 4096,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"token_budget\": 1024\n  }\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/cohere/v2/chat",
@@ -136733,6 +136803,358 @@
                   }
                 }
               ]
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (agy request, typed path)",
+          "description": "The exact thinkingConfig agy 1.4.9 sends in gateway mode ({includeThoughts:true, thinkingBudget:4096}) on an unprefixed model, which takes the typed conversion path. Source: https://ai.google.dev/gemini-api/docs/thinking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word OK.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024,\n    \"thinkingConfig\": {\n      \"includeThoughts\": true,\n      \"thinkingBudget\": 4096\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-4-argon:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-4-argon:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (agy request, typed path): 2xx (gemini-4 used to 400 with \"Thinking budget is not supported for this model\")', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('gemini gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (agy request, typed path): stream carries candidates', function () {",
+                  "  pm.expect(text, 'no candidates in stream: ' + text.slice(0, 500)).to.include('candidates');",
+                  "});",
+                  "pm.test('gemini gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (agy request, typed path): no in-stream error', function () {",
+                  "  pm.expect(text, 'error in stream: ' + text.slice(0, 500)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (raw passthrough)",
+          "description": "The same agy thinkingConfig on a gemini/-prefixed model, which takes the raw passthrough path and is rewritten at byte level. Source: https://ai.google.dev/gemini-api/docs/thinking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word OK.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024,\n    \"thinkingConfig\": {\n      \"includeThoughts\": true,\n      \"thinkingBudget\": 4096\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (raw passthrough): 2xx (gemini-4 used to 400 with \"Thinking budget is not supported for this model\")', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var text = pm.response.text();",
+                  "pm.test('gemini gemini/gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (raw passthrough): stream carries candidates', function () {",
+                  "  pm.expect(text, 'no candidates in stream: ' + text.slice(0, 500)).to.include('candidates');",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-argon /genai streamGenerateContent thinkingBudget sent as thinkingLevel (raw passthrough): no in-stream error', function () {",
+                  "  pm.expect(text, 'error in stream: ' + text.slice(0, 500)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-argon /v1/chat/completions reasoning.max_tokens sent as thinkingLevel",
+          "description": "A reasoning budget routed to gemini-4 must leave Bifrost as thinkingConfig.thinkingLevel, because Gemini 4 rejects thinkingBudget. 4096 tokens maps to medium. Asserts the outbound payload via x-bf-send-back-raw-request. Source: https://ai.google.dev/gemini-api/docs/thinking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-argon\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 4096\n  },\n  \"max_completion_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning.max_tokens sent as thinkingLevel: 2xx (gemini-4 used to 400 with \"Thinking budget is not supported for this model\")', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning.max_tokens sent as thinkingLevel: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning.max_tokens sent as thinkingLevel: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/chat/completions reasoning.max_tokens sent as thinkingLevel: 4096-token budget sent as thinkingLevel medium', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('medium');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex vertex/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel",
+          "description": "A reasoning budget routed to gemini-4 must leave Bifrost as thinkingConfig.thinkingLevel, because Gemini 4 rejects thinkingBudget. 4096 tokens maps to medium. Asserts the outbound payload via x-bf-send-back-raw-request. Source: https://ai.google.dev/gemini-api/docs/thinking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-4-argon\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 4096\n  },\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex vertex/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: 2xx (gemini-4 used to 400 with \"Thinking budget is not supported for this model\")', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('vertex vertex/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('vertex vertex/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "pm.test('vertex vertex/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: 4096-token budget sent as thinkingLevel medium', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('medium');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel",
+          "description": "A reasoning budget routed to gemini-4 must leave Bifrost as thinkingConfig.thinkingLevel, because Gemini 4 rejects thinkingBudget. 4096 tokens maps to medium. Asserts the outbound payload via x-bf-send-back-raw-request. Source: https://ai.google.dev/gemini-api/docs/thinking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-argon\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 4096\n  },\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini gemini/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: 2xx (gemini-4 used to 400 with \"Thinking budget is not supported for this model\")', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var tc = (rr.generationConfig || {}).thinkingConfig || {};",
+                  "var tcs = JSON.stringify(tc);",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: thinkingBudget never reaches the wire', function () {",
+                  "  pm.expect(tc.thinkingBudget === undefined || tc.thinkingBudget === null, 'thinkingConfig: ' + tcs).to.be.true;",
+                  "});",
+                  "pm.test('gemini gemini/gemini-4-argon /v1/responses reasoning.max_tokens sent as thinkingLevel: 4096-token budget sent as thinkingLevel medium', function () {",
+                  "  pm.expect(tc.thinkingLevel, 'thinkingConfig: ' + tcs).to.eql('medium');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini gemini/gemini-4-argon /anthropic/v1/messages thinking.budget_tokens sent as thinkingLevel",
+          "description": "thinking.budget_tokens from an Anthropic SDK client routed to gemini-4 used to reach Google as thinkingBudget and 400. Source: https://ai.google.dev/gemini-api/docs/thinking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-4-argon\",\n  \"max_tokens\": 8192,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 4096\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini-4 /anthropic budget_tokens: 2xx (gemini-4 used to 400 with \"Thinking budget is not supported for this model\")', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('gemini-4 /anthropic budget_tokens: message content returned', function () {",
+                  "  pm.expect(body.content, 'no content: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
             }
           ]
         }
@@ -163213,7 +163635,7 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - input_image reaches the decider - openrouter/perplexity/pplx-decider-v1.1-27b",
+          "name": "/v1/decisions - input_image reaches the decider - openrouter/typesafe/jev-router",
           "event": [
             {
               "listen": "test",
@@ -163240,7 +163662,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openrouter/perplexity/pplx-decider-v1.1-27b\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openrouter/typesafe/jev-router\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/decisions",
@@ -163349,7 +163771,7 @@
                   "pm.test('decision models come from OpenRouter\\'s decisions listing, next to chat models', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "  var ids = pm.response.json().data.map(function (m) { return m.id; });",
-                  "  ['openrouter/microsoft/microsoft-decision-1', 'openrouter/perplexity/pplx-decider-v1.1-27b', 'openrouter/openai/gpt-6-luna-decisions', 'openrouter/openai/gpt-4.1'].forEach(function (id) {",
+                  "  ['openrouter/microsoft/microsoft-decision-1', 'openrouter/typesafe/jev-router', 'openrouter/openai/gpt-6-luna-decisions', 'openrouter/openai/gpt-4.1'].forEach(function (id) {",
                   "    pm.expect(ids, id + ' missing').to.include(id);",
                   "  });",
                   "});"
@@ -165514,7 +165936,7 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - matches jev anchors - mistral/mistral-large-latest",
+          "name": "/v1/decisions - matches jev anchors - mistral/mistral-medium-latest",
           "event": [
             {
               "listen": "test",
@@ -165584,7 +166006,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"mistral/mistral-large-latest\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
+              "raw": "{\n  \"model\": \"mistral/mistral-medium-latest\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
             }
           },
           "response": []
@@ -187524,7 +187946,7 @@
     },
     {
       "name": "131. Warp runs on one of several exposed models (warp-models) [SERIAL]",
-      "description": "Warp ran on exactly one provider and model, set in its config and used for every question. An administrator can now expose several: provider and model stay the default, additional_models lists the others, and POST /api/warp/chat may name any of them with provider and model. The pair is a selection among what the config exposes and nothing else: a pair that is not listed is refused with 400 before any model is called, and the provider key is always the configured entry's own, never something the request can name. These cases save a default (openai/gpt-4o-mini) with one additional model (openai/gpt-4.1-nano), ask one cheap question on the additional model, and read the log row back to pin that the call really went to it. Red before the change: the config write dropped additional_models, the chat body's provider and model were ignored so the turn ran on the default and was logged as gpt-4o-mini, and an unlisted model answered 200 on the default instead of 400. Writing the list is a config write, so it sits behind the existing admin gate on PUT /api/warp/config (local admin in OSS, Warp Update in enterprise); the handler tests pin that. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
+      "description": "Warp ran on exactly one provider and model, set in its config and used for every question. An administrator can now expose several: provider and model stay the default, additional_models lists the others, and POST /api/warp/chat may name any of them with provider and model. The pair is a selection among what the config exposes and nothing else: a pair that is not listed is refused with 400 before any model is called, and the provider key is always the configured entry's own, never something the request can name. These cases save a default (openai/gpt-4o-mini) with one additional model (openai/gpt-5.4-nano), ask one cheap question on the additional model, and read the log row back to pin that the call really went to it. Red before the change: the config write dropped additional_models, the chat body's provider and model were ignored so the turn ran on the default and was logged as gpt-4o-mini, and an unlisted model answered 200 on the default instead of 400. Writing the list is a config write, so it sits behind the existing admin gate on PUT /api/warp/config (local admin in OSS, Warp Update in enterprise); the handler tests pin that. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
       "item": [
         {
           "name": "openai warp-models setup: read warp feature flag",
@@ -187625,7 +188047,7 @@
                   "  provider: 'openai',",
                   "  model: 'gpt-4o-mini',",
                   "  api_key_id: '',",
-                  "  additional_models: [{ provider: 'openai', model: 'gpt-4.1-nano' }],",
+                  "  additional_models: [{ provider: 'openai', model: 'gpt-5.4-nano' }],",
                   "  embedding_provider: was.embedding_provider || 'openai',",
                   "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
                   "  embedding_dimension: was.embedding_dimension || 1536,",
@@ -187650,7 +188072,7 @@
                   "  pm.expect(saved.model, pm.response.text()).to.equal('gpt-4o-mini');",
                   "});",
                   "pm.test('warp-models: the additional model round-trips', function () {",
-                  "  pm.expect(saved.additional_models, 'additional_models missing: ' + pm.response.text()).to.eql([{ provider: 'openai', model: 'gpt-4.1-nano' }]);",
+                  "  pm.expect(saved.additional_models, 'additional_models missing: ' + pm.response.text()).to.eql([{ provider: 'openai', model: 'gpt-5.4-nano' }]);",
                   "});"
                 ]
               }
@@ -187677,7 +188099,7 @@
           }
         },
         {
-          "name": "openai gpt-4.1-nano warp-models: chat runs on the additional model it names",
+          "name": "openai gpt-5.4-nano warp-models: chat runs on the additional model it names",
           "event": [
             {
               "listen": "test",
@@ -187709,7 +188131,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"provider\":\"openai\",\"model\":\"gpt-4.1-nano\",\"stream\":false}",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"provider\":\"openai\",\"model\":\"gpt-5.4-nano\",\"stream\":false}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -187720,7 +188142,7 @@
           }
         },
         {
-          "name": "openai gpt-4.1-nano warp-models: the model call is logged on the named model",
+          "name": "openai gpt-5.4-nano warp-models: the model call is logged on the named model",
           "event": [
             {
               "listen": "test",
@@ -187746,7 +188168,7 @@
                   "  logs.forEach(function (l) {",
                   "    pm.expect(l.app, 'row not labelled Warp: ' + JSON.stringify([l.app, l.user_agent])).to.equal('Warp');",
                   "    pm.expect(l.provider, 'row not on the named provider: ' + l.provider).to.equal('openai');",
-                  "    pm.expect(String(l.model), 'row ran on ' + l.model + ', not the model the request named').to.include('gpt-4.1-nano');",
+                  "    pm.expect(String(l.model), 'row ran on ' + l.model + ', not the model the request named').to.include('gpt-5.4-nano');",
                   "  });",
                   "});"
                 ]
@@ -194330,7 +194752,7 @@
       "description": "Backlog gaps that need no new fixtures beyond tests/e2e/api/fixtures/sample.png: OpenAI image edit and variation (multipart), audio output, Azure Responses web_search_preview, Bedrock Cohere embed-v4 truncate (valid RIGHT with max_tokens; v3 value END as [EXPECT-4XX]), DeepSeek on Vertex. [PREVIEW] marks rows gated on model access or region quota: dall-e-2 availability, gpt-4o-audio-preview on the key, an Azure web-search deployment, and the exact DeepSeek MaaS model id (unpinned until a live run).",
       "item": [
         {
-          "name": "150.1 openai/gpt-image-1 image edit multipart returns image data (image edit)",
+          "name": "150.1 openai/gpt-image-2 image edit multipart returns image data (image edit)",
           "event": [
             {
               "listen": "test",
@@ -194351,7 +194773,7 @@
               "formdata": [
                 {
                   "key": "model",
-                  "value": "openai/gpt-image-1",
+                  "value": "openai/gpt-image-2",
                   "type": "text"
                 },
                 {
@@ -271192,7 +271614,7 @@
           }
         },
         {
-          "name": "242.3 openai/gpt-image-1 /openai_passthrough/v1/images/generations logs parsed image input and output (passthrough parsed logs)",
+          "name": "242.3 openai/gpt-image-2 /openai_passthrough/v1/images/generations logs parsed image input and output (passthrough parsed logs)",
           "event": [
             {
               "listen": "test",
@@ -271234,7 +271656,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gpt-image-1\",\n  \"prompt\": \"a small red square\",\n  \"size\": \"1024x1024\",\n  \"quality\": \"low\",\n  \"n\": 1\n}"
+              "raw": "{\n  \"model\": \"gpt-image-2\",\n  \"prompt\": \"a small red square\",\n  \"size\": \"1024x1024\",\n  \"quality\": \"low\",\n  \"n\": 1\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/openai_passthrough/v1/images/generations",
@@ -271632,7 +272054,7 @@
           }
         },
         {
-          "name": "243.2 openai/gpt-image-1 /openai_passthrough/v1/images/edits multipart upload logged as a form summary and parsed (passthrough parsed logs)",
+          "name": "243.2 openai/gpt-image-2 /openai_passthrough/v1/images/edits multipart upload logged as a form summary and parsed (passthrough parsed logs)",
           "event": [
             {
               "listen": "test",
@@ -271649,7 +272071,7 @@
                   "      pm.test('openai image edit multipart parsed: parsed as image edit', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_edit'); });",
                   "      pm.test('openai image edit multipart parsed: stored as image_edit and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('image_edit'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai image edit multipart parsed: image_edit_input records the prompt and the image', function () { pm.expect(j.image_edit_input && j.image_edit_input.prompt, JSON.stringify(j)).to.eql('add a small red square'); pm.expect(j.image_edit_input.images, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
-                  "      pm.test('openai image edit multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('gpt-image-1'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
+                  "      pm.test('openai image edit multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('gpt-image-2'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
                   "      pm.test('openai image edit multipart parsed: image bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
                   "      pm.test('openai image edit multipart parsed: image_generation_output parsed from the response body', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      return;",
@@ -271670,7 +272092,7 @@
               "formdata": [
                 {
                   "key": "model",
-                  "value": "gpt-image-1",
+                  "value": "gpt-image-2",
                   "type": "text"
                 },
                 {
@@ -276062,7 +276484,7 @@
               },
               {
                 "key": "Authorization",
-                "value": "Bearer {{openaiKey}}"
+                "value": "Bearer {{chatgptAccessToken}}"
               },
               {
                 "key": "x-bf-direct-key",
@@ -276097,6 +276519,18 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs a ChatGPT sign-in token (CHATGPT_ACCESS_TOKEN); the Codex backend rejects OpenAI API keys with 401 before validating the body.",
+                  "if (!pm.variables.get('chatgptAccessToken')) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -276124,7 +276558,7 @@
               },
               {
                 "key": "Authorization",
-                "value": "Bearer {{openaiKey}}"
+                "value": "Bearer {{chatgptAccessToken}}"
               },
               {
                 "key": "x-bf-direct-key",
@@ -276158,6 +276592,18 @@
             }
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs a ChatGPT sign-in token (CHATGPT_ACCESS_TOKEN); the Codex backend rejects OpenAI API keys with 401 before validating the body.",
+                  "if (!pm.variables.get('chatgptAccessToken')) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -297161,7 +297607,884 @@
       ]
     },
     {
-      "name": "293. Mid-conversation system messages on the Responses to Chat fallback (#8145 / PR #8279)",
+      "name": "293. MCP OAuth public client moves to new endpoints without a client secret (mcp-oauth-public-client-endpoints)",
+      "description": "An OAuth MCP client whose client_id has no secret (a public PKCE client) can change its authorize_url and token_url through PUT /api/mcp/client/{id} without sending a client_secret. The rule that a changed endpoint needs the secret resent exists so a stored secret is never posted to an endpoint the admin did not pair it with; a public client stores none, so pre-fix the edit was refused with 400 \"client_secret must be resent explicitly when authorize_url or token_url changes\" and a public client could not follow its MCP server to a new authorization server, which is the recovery the authorization server change docs prescribe. A confidential client that changes an endpoint without its secret is still refused; that and the resend case are covered by the Go test TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Its dynamic client registration issues no client_secret, and its /authorize approves without a login page when called with user=..., so the rows complete a real sign-in. Nothing in the harness runners starts it, so the rows are [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp-oauth-public-client-endpoints\" INCLUDE_PREVIEW=1 once it is up. Like folder 207 the registration needs localhost on mcp_oauth_private_allowlist (the harness profile has it). The edit points the client at the same demo server through 127.0.0.1, so the endpoints differ as strings. The last row deletes the client. No provider credentials are used.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints registering an OAuth MCP server starts a sign-in for a public client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('registration starts the OAuth flow against the demo server', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, pm.response.text()).to.equal('pending_oauth');",
+                  "  pm.expect(String(body.authorize_url || ''), pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  pm.expect(body.mcp_client_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.complete_url, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('publicClientAuthorizeUrl', body.authorize_url);",
+                  "  pm.collectionVariables.set('publicClientId', body.mcp_client_id);",
+                  "  pm.collectionVariables.set('publicClientCompleteUrl', body.complete_url);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_public_client_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the demo authorization server approves and redirects back with a code",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the authorization server redirects to the Bifrost callback with a code', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientAuthorizeUrl'), 'the registration row did not capture an authorize URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = String(pm.response.headers.get('Location') || '');",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/api/oauth/callback?');",
+                  "  pm.expect(location, 'Location: ' + location).to.match(/[?&]code=/);",
+                  "  pm.collectionVariables.set('publicClientCallbackUrl', location);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientAuthorizeUrl}}&user=harness"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] mcp-oauth-public-client-endpoints the callback exchanges the code and reports success",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the OAuth callback completes the sign-in', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCallbackUrl'), 'the authorize row did not capture a callback URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 302, got: ' + pm.response.text()).to.equal(302);",
+                  "  var location = decodeURIComponent(String(pm.response.headers.get('Location') || '').replace(/\\+/g, ' '));",
+                  "  pm.expect(location, 'Location: ' + location).to.include('/workspace/mcp-registry/oauth-callback?status=success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{publicClientCallbackUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints completing the sign-in creates the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('complete-oauth creates and connects the client', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientCompleteUrl'), 'the registration row did not capture a complete URL').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}{{publicClientCompleteUrl}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints a public client changes its authorize_url and token_url without a client_secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the endpoint change is accepted with no secret to resend', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.text(), 'pre-fix a public client was asked for a secret it never had').to.not.include('client_secret must be resent');",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"oauth_config\": {\n    \"authorize_url\": \"http://127.0.0.1:3003/authorize\",\n    \"token_url\": \"http://127.0.0.1:3003/token\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] mcp-oauth-public-client-endpoints cleanup deletes the MCP client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the client is removed', function () {",
+                  "  pm.expect(pm.collectionVariables.get('publicClientId'), 'the registration row did not capture an MCP client id').to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{publicClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{publicClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "294. Azure Voice Live rates on pricing overrides (azure voice live pricing) [SERIAL]",
+      "description": "Pins the nine Azure Voice Live _voice_live pricing fields on the pricing-override API: a create keeps every rate in pricing_patch, the list returns them, and the override is deleted. Before the fields existed the patch type had no _voice_live keys, so the create dropped them. The Voice Live turns these rates price run over the realtime WebSocket, which this collection does not drive; the cost engine and relay are covered by Go tests (TestCalculateCost_VoiceLiveRates, TestFinalizeRealtimeTurnHooksMarksVoiceLiveTurns).",
+      "item": [
+        {
+          "name": "Setup - pricing override with the _voice_live rates [EXPECT-201] - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'e2e-voice-live-rates-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+                  "  // Matches a model no other case calls, so the override cannot reprice anything else in the suite.",
+                  "  scope_kind: 'global',",
+                  "  match_type: 'exact',",
+                  "  pattern: 'voice-live-rates-probe',",
+                  "  request_types: ['responses'],",
+                  "  patch: {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055}",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override with the _voice_live rates is created', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var ov = body && body.pricing_override;",
+                  "pm.test('Override exposes an id', function () {",
+                  "  pm.expect(ov && ov.id, 'body: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+                  "});",
+                  "if (ov && ov.id) { pm.collectionVariables.set('voiceLiveRatesOverrideId', ov.id); }",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('create response', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "pricing override list returns the _voice_live rates - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override list is returned', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "});",
+                  "var id = pm.collectionVariables.get('voiceLiveRatesOverrideId');",
+                  "var overrides = (pm.response.json().pricing_overrides || []);",
+                  "var ov = overrides.filter(function (o) { return o.id === id; })[0];",
+                  "pm.test('The created override is listed', function () {",
+                  "  pm.expect(ov, 'override ' + id + ' among ' + overrides.length).to.be.an('object');",
+                  "});",
+                  "function assertVoiceLivePatch(label, patchJSON) {",
+                  "  var want = {\"input_cost_per_token_voice_live\":0.000004,\"output_cost_per_token_voice_live\":0.000016,\"cache_read_input_token_cost_voice_live\":4e-7,\"input_cost_per_audio_token_voice_live\":0.000032,\"output_cost_per_audio_token_voice_live\":0.000064,\"input_cost_per_standard_speech_audio_token_voice_live\":0.000017,\"output_cost_per_standard_speech_audio_token_voice_live\":0.000031,\"input_cost_per_custom_speech_audio_token_voice_live\":0.00004,\"output_cost_per_custom_speech_audio_token_voice_live\":0.000055};",
+                  "  var patch = null;",
+                  "  try { patch = typeof patchJSON === 'string' ? JSON.parse(patchJSON) : patchJSON; } catch (e) { patch = null; }",
+                  "  pm.test(label + ': every _voice_live rate is stored', function () {",
+                  "    pm.expect(patch, 'pricing_patch: ' + JSON.stringify(patchJSON)).to.be.an('object');",
+                  "    Object.keys(want).forEach(function (k) {",
+                  "      pm.expect(patch[k], k + ' in ' + JSON.stringify(patch)).to.be.closeTo(want[k], 1e-12);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "assertVoiceLivePatch('listed override', ov && ov.pricing_patch);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=global&limit=500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides"
+              ],
+              "query": [
+                {
+                  "key": "scope_kind",
+                  "value": "global"
+                },
+                {
+                  "key": "limit",
+                  "value": "500"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Teardown - delete the _voice_live rates override - azure/voice-live-rates-probe",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['voiceLiveRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Override deleted', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+                  "});",
+                  "pm.collectionVariables.unset('voiceLiveRatesOverrideId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{voiceLiveRatesOverrideId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "pricing-overrides",
+                "{{voiceLiveRatesOverrideId}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "295. Tool-output image detail default (tool-output-image-detail) (#5649 / PR #9209)",
+      "description": "Regression: Bifrost defaulted \"detail\": \"auto\" onto input_image blocks in a message's own content when sending to an OpenAI Responses provider (OpenAI's schema requires the field; strict upstreams such as vLLM, which validate against the official OpenAI types, reject requests without it), but not onto an input_image nested in a tool result (function_call_output.output). vLLM answered 400 \"1 validation error for ResponseInputImageParam ... detail: Field required\", and because the image stays in history every later turn failed the same way.\n\nFix: defaultImageDetail in core/providers/openai/responses.go now also defaults ResponsesToolMessage.Output blocks, cloning on write.\n\nOpenAI itself accepts a missing detail, so a 200 alone proves nothing; every case sends x-bf-send-back-raw-request and asserts on the input_image Bifrost put on the wire (extra_fields.raw_request). Red before the fix: the nested input_image carries no detail.\n  1. /anthropic/v1/messages: the reporter's request, a tool_result whose content is an Anthropic image block.\n  2. /v1/responses: a native function_call_output with an output array; also pins that an explicit detail (\"low\") is preserved and that the top-level image keeps its \"auto\" default.\n  3. /v1/chat/completions with x-bf-compat [\"convert_chat_to_responses\"]: a role:tool message carrying an image_url block, which the chat->Responses bridge turns into function_call_output.output. The compat plugin converts only models the catalog lists as Responses-only, so this case uses gpt-5.3-codex (image input, Responses only); gpt-4o-mini would stay on /chat/completions.\n\nStreaming uses the same request converter (ToOpenAIResponsesRequest), so it is not repeated. Every OpenAI-compatible Responses host that calls the converter (vLLM, Azure, OpenRouter, xAI, Fireworks, Databricks, Bedrock Mantle, ...) inherits the fix; the profile has no vLLM provider, so OpenAI stands in and the raw-request assertion pins the wire shape vLLM validates.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini anthropic messages: tool_result image gets detail auto on the Responses wire - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /anthropic/v1/messages: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /anthropic/v1/messages: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read /tmp/img.png and name its color in one word.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_img_detail_1\",\n          \"name\": \"read_file\",\n          \"input\": {\n            \"path\": \"/tmp/img.png\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_img_detail_1\",\n          \"content\": [\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"base64\",\n                \"media_type\": \"image/png\",\n                \"data\": \"iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses: function_call_output image gets detail auto, explicit detail kept, top-level image unchanged - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /v1/responses: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /v1/responses: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});",
+                  "pm.test('openai via /v1/responses: explicit tool image detail is preserved', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs.length, 'expected both tool images: ' + JSON.stringify(imgs)).to.equal(2);",
+                  "  pm.expect(imgs[1].detail, 'explicit detail overwritten: ' + JSON.stringify(imgs[1])).to.equal('low');",
+                  "});",
+                  "pm.test('openai via /v1/responses: top-level and tool images behave the same', function () {",
+                  "  var raw = rawRequest();",
+                  "  var user = (raw.input || []).filter(function (i) { return i.role === 'user' && Array.isArray(i.content); })[0];",
+                  "  pm.expect(user, 'user message with content blocks missing: ' + JSON.stringify(raw.input)).to.be.an('object');",
+                  "  var top = user.content.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(top.length, 'top-level image missing: ' + JSON.stringify(user)).to.equal(1);",
+                  "  pm.expect(top[0].detail, 'top-level image detail: ' + JSON.stringify(top[0])).to.equal('auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read_file\",\n      \"description\": \"Read a file from disk.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"path\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"path\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is a reference image. Read /tmp/img.png and say whether the colors match, in one word.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_img_detail_1\",\n      \"name\": \"read_file\",\n      \"arguments\": \"{\\\"path\\\":\\\"/tmp/img.png\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_img_detail_1\",\n      \"output\": [\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\",\n          \"detail\": \"low\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.3-codex compat chat->responses: tool message image gets detail auto - tool-output-image-detail - #5649",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "function rawRequest() {",
+                  "  var raw = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + text.slice(0, 300)).to.be.an('object');",
+                  "  return raw;",
+                  "}",
+                  "function toolOutputImages(raw) {",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output on the wire: ' + JSON.stringify(raw.input)).to.equal(1);",
+                  "  pm.expect(Array.isArray(outs[0].output), 'tool output must stay a block array (it carries an image): ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "  var imgs = outs[0].output.filter(function (b) { return b.type === 'input_image'; });",
+                  "  pm.expect(imgs.length, 'expected the tool image as input_image: ' + JSON.stringify(outs[0])).to.be.above(0);",
+                  "  return imgs;",
+                  "}",
+                  "pm.test('openai via /v1/chat/completions: request accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai via /v1/chat/completions: input_image inside function_call_output.output carries detail', function () {",
+                  "  var imgs = toolOutputImages(rawRequest());",
+                  "  pm.expect(imgs[0].detail, 'tool image left without detail (vLLM: \"detail: Field required\"): ' + JSON.stringify(imgs[0])).to.equal('auto');",
+                  "});",
+                  "pm.test('openai via /v1/chat/completions: chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"description\": \"Read a file from disk.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read /tmp/img.png and name its color in one word.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_img_detail_2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"/tmp/img.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_img_detail_2\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "296. Gemini image models are priced on /genai with or without the IMAGE modality (genai image pricing) (PR #9263)",
+      "description": "A /genai generateContent call to an image model without responseModalities [\"IMAGE\"] (how Antigravity calls it) is typed as a Responses request. gemini-3.1-flash-image only has an image_generation pricing row, so the lookup missed and the log showed $0 even though usage reported image tokens. Gemini CLI sends [\"IMAGE\"], is typed as image generation, and was priced, but its thinking tokens were dropped. The first case pins the Responses-typed call: it must be priced from the image_generation row with image tokens at output_cost_per_image_token. The second pins the image-generation-typed call: thinking and other non-image output tokens bill at the text rate. The third sends thinkingLevel high on /genai_passthrough, the route where Gemini returns thoughtsTokenCount: there candidatesTokenCount can fall below the IMAGE detail, and the thinking tokens must still bill at the text rate. Every case asserts the logged total against the datasheet rates and the usageMetadata the client sees, and checks that prompt + candidates + thoughts equals totalTokenCount, so thinking tokens dropped by a converter show up as a gap. None requires a positive live thoughtsTokenCount; the converter round trip is pinned by TestGeminiImageUsage_ThoughtsTokenCountRoundTrip and the passthrough extractor tests.",
+      "item": [
+        {
+          "name": "/genai generateContent without responseModalities is priced from the image row - gemini/gemini-3.1-flash-image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'genai image pricing (no modality)';",
+                  "// gemini-3.1-flash-image datasheet rates: text input, text/thinking output, image output token",
+                  "var RATES = { input: 5e-7, output: 3e-6, imageOutput: 6e-5 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "pm.test(LABEL + ': an image came back', function () {",
+                  "  pm.expect(parts.some(function (p) { return p && p.inlineData && p.inlineData.data; }), 'parts: ' + JSON.stringify(parts).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "var u = body.usageMetadata || {};",
+                  "var imageTokens = 0;",
+                  "(u.candidatesTokensDetails || []).forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens += d.tokenCount || 0; } });",
+                  "pm.test(LABEL + ': usage reports image output tokens', function () { pm.expect(imageTokens, 'usageMetadata: ' + JSON.stringify(u)).to.be.above(0); });",
+                  "// totalTokenCount comes straight from Gemini, so thinking tokens a converter drops show up as a gap here",
+                  "pm.test(LABEL + ': prompt + candidates + thoughts add up to totalTokenCount', function () {",
+                  "  pm.expect((u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 'usageMetadata: ' + JSON.stringify(u)).to.eql(u.totalTokenCount);",
+                  "});",
+                  "// thoughtsTokenCount sits outside candidatesTokenCount and can exceed what is left after the IMAGE detail; it bills at the text rate",
+                  "var otherOutput = Math.max((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) - imageTokens, u.thoughtsTokenCount || 0, 0);",
+                  "var expected = (u.promptTokenCount || 0) * RATES.input + imageTokens * RATES.imageOutput + otherOutput * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': routed as responses', function () { pm.expect(j.object, 'log: ' + res.text().slice(0, 500)).to.eql('responses'); });",
+                  "      pm.test(LABEL + ': logged cost bills image tokens at the image rate and the rest at the text rate', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usageMetadata ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      pm.test(LABEL + ': breakdown carries the image cost', function () { pm.expect((cb.output_cost_details || {}).image_cost, 'cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(imageTokens * RATES.imageOutput, 1e-9); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Draw a small red circle on a white background.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.1-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/genai generateContent with responseModalities IMAGE bills non-image output tokens - gemini/gemini-3.1-flash-image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'genai image pricing (IMAGE modality)';",
+                  "// gemini-3.1-flash-image datasheet rates: text input, text/thinking output, image output token",
+                  "var RATES = { input: 5e-7, output: 3e-6, imageOutput: 6e-5 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "pm.test(LABEL + ': an image came back', function () {",
+                  "  pm.expect(parts.some(function (p) { return p && p.inlineData && p.inlineData.data; }), 'parts: ' + JSON.stringify(parts).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "var u = body.usageMetadata || {};",
+                  "var imageTokens = 0;",
+                  "(u.candidatesTokensDetails || []).forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens += d.tokenCount || 0; } });",
+                  "pm.test(LABEL + ': usage reports image output tokens', function () { pm.expect(imageTokens, 'usageMetadata: ' + JSON.stringify(u)).to.be.above(0); });",
+                  "// totalTokenCount comes straight from Gemini, so thinking tokens a converter drops show up as a gap here",
+                  "pm.test(LABEL + ': prompt + candidates + thoughts add up to totalTokenCount', function () {",
+                  "  pm.expect((u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 'usageMetadata: ' + JSON.stringify(u)).to.eql(u.totalTokenCount);",
+                  "});",
+                  "// thoughtsTokenCount sits outside candidatesTokenCount and can exceed what is left after the IMAGE detail; it bills at the text rate",
+                  "var otherOutput = Math.max((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) - imageTokens, u.thoughtsTokenCount || 0, 0);",
+                  "var expected = (u.promptTokenCount || 0) * RATES.input + imageTokens * RATES.imageOutput + otherOutput * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': routed as image_generation', function () { pm.expect(j.object, 'log: ' + res.text().slice(0, 500)).to.eql('image_generation'); });",
+                  "      pm.test(LABEL + ': logged cost bills image tokens at the image rate and the rest at the text rate', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usageMetadata ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Draw a small red circle on a white background.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"IMAGE\"\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.1-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "/genai_passthrough generateContent with thinkingLevel high bills thinking tokens - gemini/gemini-3.1-flash-image",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var LABEL = 'genai image pricing (passthrough thinking)';",
+                  "// gemini-3.1-flash-image datasheet rates: text input, text/thinking output, image output token",
+                  "var RATES = { input: 5e-7, output: 3e-6, imageOutput: 6e-5 };",
+                  "pm.test(LABEL + ': request succeeds', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "var parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];",
+                  "pm.test(LABEL + ': an image came back', function () {",
+                  "  pm.expect(parts.some(function (p) { return p && p.inlineData && p.inlineData.data; }), 'parts: ' + JSON.stringify(parts).slice(0, 500)).to.eql(true);",
+                  "});",
+                  "var u = body.usageMetadata || {};",
+                  "var imageTokens = 0;",
+                  "(u.candidatesTokensDetails || []).forEach(function (d) { if (d.modality === 'IMAGE') { imageTokens += d.tokenCount || 0; } });",
+                  "pm.test(LABEL + ': usage reports image output tokens', function () { pm.expect(imageTokens, 'usageMetadata: ' + JSON.stringify(u)).to.be.above(0); });",
+                  "// totalTokenCount comes straight from Gemini, so thinking tokens a converter drops show up as a gap here",
+                  "pm.test(LABEL + ': prompt + candidates + thoughts add up to totalTokenCount', function () {",
+                  "  pm.expect((u.promptTokenCount || 0) + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 'usageMetadata: ' + JSON.stringify(u)).to.eql(u.totalTokenCount);",
+                  "});",
+                  "// thoughtsTokenCount sits outside candidatesTokenCount and can exceed what is left after the IMAGE detail; it bills at the text rate",
+                  "var otherOutput = Math.max((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0) - imageTokens, u.thoughtsTokenCount || 0, 0);",
+                  "var expected = (u.promptTokenCount || 0) * RATES.input + imageTokens * RATES.imageOutput + otherOutput * RATES.output;",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test(LABEL + ': x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// /api is locked behind the setup token on the harness profile; pm.sendRequest does not inherit the collection header.",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "var logHeaders = setupToken ? [{ key: 'X-Bifrost-Setup-Token', value: setupToken }] : [];",
+                  "// The log row is written by the batching writer, so poll the logs API. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET', header: logHeaders }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      var cb = j.cost_breakdown;",
+                  "      pm.test(LABEL + ': logged cost bills image tokens at the image rate and the rest at the text rate', function () {",
+                  "        pm.expect(cb, 'cost_breakdown: ' + res.text().slice(0, 1000)).to.be.an('object');",
+                  "        pm.expect(cb.total_cost, 'expected ' + expected + ' for usageMetadata ' + JSON.stringify(u) + ', cost_breakdown: ' + JSON.stringify(cb)).to.be.closeTo(expected, expected * 1e-6);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test(LABEL + ': log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Draw a small red circle on a white background.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseModalities\": [\n      \"TEXT\",\n      \"IMAGE\"\n    ],\n    \"thinkingConfig\": {\n      \"includeThoughts\": true,\n      \"thinkingLevel\": \"high\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-3.1-flash-image:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-3.1-flash-image:generateContent"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "297. Mid-conversation system messages on the Responses to Chat fallback (#8145 / PR #8279)",
       "description": "Issue #8145: when a provider has no Responses endpoint, Bifrost converts the request to Chat Completions (ToChatRequest -> ToChatMessages in core/schemas/mux.go). A role:system or role:developer message inside the conversation was forwarded in place, and chat templates that require the system message to come first (the official Qwen3.5 and Qwen3.8 templates raise 'System message must be at the beginning.') rejected the request with 400. Claude Code sends such a message on every request through /anthropic/v1/messages, so every request to these models failed. After the fix only the leading run of system and developer messages keeps its role; a later one becomes a user turn wrapped in <system-reminder>, as the Bedrock provider already does. Groq serves Responses through this fallback and hosts qwen3.8-27b. The non-streaming cases pin the chat wire via x-bf-send-back-raw-request, so they fail before the fix even if the upstream template tolerated the message; the streaming case pins that Claude Code's streaming shape completes. Bedrock, Anthropic and Gemini are not covered here: they inline mid-conversation system messages in their own converters, not through ToChatMessages.",
       "item": [
         {

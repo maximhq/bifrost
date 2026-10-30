@@ -19,6 +19,8 @@ import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { passthroughRoutePrefix } from "../fragments/passthroughForm.utils";
 
 interface Props {
@@ -41,70 +43,72 @@ const availableTabs = (
 	openAIConfigTabLabel: string | undefined,
 	hasBetaHeaders: boolean,
 	hasPassthrough: boolean,
+	t: TFunction<"models">,
 ) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
-			label: "API Structure",
+			label: t("providers.apiStructure"),
 		});
 	}
 	tabs.push({
 		id: "network",
-		label: "Network",
+		label: t("providers.networkTab"),
 	});
 	tabs.push({
 		id: "proxy",
-		label: "Proxy",
+		label: t("providers.proxy"),
 	});
 	tabs.push({
 		id: "performance",
-		label: "Performance",
+		label: t("providers.performance"),
 	});
 	if (hasGovernanceAccess) {
 		tabs.push({
 			id: "governance",
-			label: "Governance",
+			label: t("providers.governance"),
 		});
 	}
 	if (hasBetaHeaders) {
 		tabs.push({
 			id: "beta-headers",
-			label: "Beta Headers",
+			label: t("providers.betaHeadersTab"),
 		});
 	}
 	tabs.push({
 		id: "prompt-cache",
-		label: "Prompt Caching",
+		label: t("providers.promptCaching"),
 	});
 	tabs.push({
 		id: "pricing",
-		label: "Pricing",
+		label: t("modelCatalog.pricing"),
 	});
 	tabs.push({
 		id: "tools",
-		label: "Tools",
+		label: t("providers.tools"),
 	});
 	if (hasPassthrough) {
 		tabs.push({
 			id: "passthrough",
-			label: "Passthrough",
+			label: t("providers.allowedRequests.types.passthrough"),
 		});
 	}
 	tabs.push({
 		id: "debugging",
-		label: "Debugging",
+		label: t("providers.debuggingTab"),
 	});
 	if (openAIConfigTabLabel) {
 		tabs.push({
 			id: "openai-config",
-			label: openAIConfigTabLabel,
+			label: t("providers.openaiConfig"),
 		});
 	}
 	return tabs;
 };
 
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
+	const { t } = useTranslation("models");
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
@@ -113,8 +117,8 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasPassthrough = passthroughRoutePrefix(provider) !== undefined;
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough, t);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough, t]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -140,7 +144,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							<div className="flex items-center">
 								<Provider provider={provider.name} size={24} className="mt-0" />
 							</div>
-							Provider configuration
+							{t("providers.configurationTitle")}
 						</div>
 					</SheetTitle>
 				</SheetHeader>
