@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"sync"
@@ -78,6 +79,22 @@ type Store struct {
 	overridesMu   sync.RWMutex
 	rawOverrides  []Override
 	customPricing *customPricingData
+
+	// Datasheet entry overrides (entryoverrides.go): user edits merged over
+	// pricingData and the model-parameters rows on every load. Lock order is
+	// mu → entryOverridesMu.
+	entryOverridesMu      sync.RWMutex
+	entryOverridesWriteMu sync.Mutex // serializes read-modify-install of the set; taken before mu
+	entryOverrides        []EntryOverride
+	paramsPatches         map[string]paramsPatch     // provider|model → params patches in apply order
+	paramsUpstream        map[string]json.RawMessage // provider|model → upstream blob a patch replaced
+
+	// Undo log for entry overrides, under mu.
+	pricingUpstream    map[string]configstoreTables.TableModelPricing // upstream rows an override replaced
+	customPricingKeys  map[string]struct{}                            // rows synthesized for custom entries
+	pricingRows        []configstoreTables.TableModelPricing          // upstream rows of the last load, every spelling
+	paramsSheet        map[string]json.RawMessage                     // upstream params sheet, kept only without a config store
+	paramsOverrideOnly map[string]struct{}                            // models in the params indexes only because a params override adds them
 
 	// Providers whose self-reported usage.cost is ignored in favour of catalog pricing.
 	ignoreProviderCostMu sync.RWMutex
@@ -481,7 +498,9 @@ func (s *Store) SetPricingRowsForTest(rows []configstoreTables.TableModelPricing
 // already spelled in lowercase, then the byte-wise smallest, which keeps every
 // reload on the same row whatever order rows arrive in. The view is
 // built from all rows, so listings and base-model lookups still see every
-// spelling. Caller MUST hold s.mu write-lock.
+// spelling. Entry overrides are merged in before the view is built, and rows
+// is kept so an override change can rebuild the view without a reload.
+// Caller MUST hold s.mu write-lock.
 func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing) {
 	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(rows))
 	for _, row := range rows {
@@ -491,7 +510,9 @@ func (s *Store) setPricingRowsUnsafe(rows []configstoreTables.TableModelPricing)
 		}
 		s.pricingData[key] = row
 	}
-	s.rebuildDatasheetViewUnsafe(rows)
+	s.pricingRows = rows
+	s.applyPricingEntryOverridesUnsafe()
+	s.rebuildDatasheetViewUnsafe(s.datasheetViewRowsUnsafe())
 }
 
 // pricingRowBeats reports whether row should replace current as the row for
