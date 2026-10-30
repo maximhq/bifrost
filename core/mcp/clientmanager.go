@@ -25,6 +25,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// OutboundMCPTokenProvider is an alias of schemas.OutboundMCPTokenProvider; see it for the contract.
+type OutboundMCPTokenProvider = schemas.OutboundMCPTokenProvider
+
 // mcpDialTimeout bounds each dial attempted by the SSRF-safe HTTP client MCP
 // client connections use, matching the timeout convention used by the other
 // SSRF-guarded outbound clients in this codebase (image/document fetch, skill
@@ -127,7 +130,7 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		perUserOpts := []transport.StreamableHTTPCOption{
 			transport.WithHTTPHeaders(finalHeaders),
 			transport.WithHTTPHeaderFunc(func(reqCtx context.Context) map[string]string {
-				return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
+				return utils.PerRequestHeaders(reqCtx, config)
 			}),
 		}
 		shared, tlsErr := m.perCallConnFor(config)
@@ -3717,7 +3720,7 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	opts := []transport.StreamableHTTPCOption{
 		transport.WithHTTPHeaders(headers),
 		transport.WithHTTPHeaderFunc(func(reqCtx context.Context) map[string]string {
-			return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
+			return utils.PerRequestHeaders(reqCtx, config)
 		}),
 	}
 	httpClient, err := m.buildTLSHTTPClient(config)
@@ -3827,7 +3830,7 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MC
 	sseOpts := []transport.ClientOption{
 		transport.WithHeaders(headers),
 		transport.WithHeaderFunc(func(reqCtx context.Context) map[string]string {
-			return utils.FlattenHeaders(utils.ExtractFilteredExtras(reqCtx, config))
+			return utils.PerRequestHeaders(reqCtx, config)
 		}),
 	}
 	sseHTTPClient, err := m.buildTLSHTTPClient(config)
@@ -3954,6 +3957,7 @@ func (m *MCPManager) openAPIHeaderResolver(config *schemas.MCPClientConfig, stat
 			for k, vals := range utils.ExtractFilteredExtras(ctx, config) {
 				headers[http.CanonicalHeaderKey(k)] = append([]string(nil), vals...)
 			}
+			utils.ApplyOutboundToken(ctx, headers)
 		}
 		return headers, nil
 	}

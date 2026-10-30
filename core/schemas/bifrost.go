@@ -1356,6 +1356,10 @@ type BifrostMCPRequest struct {
 	RequestType MCPRequestType
 	ClientName  string // MCP client this request targets (always set, regardless of request type)
 
+	// OutboundToken, set by a PreMCPHook on a tool call, is sent as "Authorization: Bearer <token>"
+	// on that call only; MCPConfig.OutboundTokenProvider takes precedence when it returns a token.
+	OutboundToken string `json:"-"`
+
 	*BifrostMCPPingRequest
 	*BifrostMCPListToolsRequest
 	*BifrostMCPListResourcesRequest

@@ -73,6 +73,9 @@ type CodeModeDependencies struct {
 	// CredentialStore resolves per-call credentials (Bearer tokens, headers)
 	// and signals whether a client requires an ephemeral upstream connection.
 	CredentialStore schemas.MCPCredentialStore
+
+	// OutboundTokenProvider loads the current per-call token provider (optional, may return nil)
+	OutboundTokenProvider func() schemas.OutboundMCPTokenProvider
 }
 
 // DefaultCodeModeConfig returns the default configuration for CodeMode.

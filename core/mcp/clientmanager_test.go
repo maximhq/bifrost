@@ -2224,6 +2224,43 @@ func BenchmarkExecuteChatTool_HTTPUpstream(b *testing.B) {
 	}
 }
 
+type staticTokenProvider string
+
+func (p staticTokenProvider) GetTokenForUpstream(context.Context, string) (string, error) {
+	return string(p), nil
+}
+
+// BenchmarkExecuteChatTool_HTTPUpstreamWithToken is BenchmarkExecuteChatTool_HTTPUpstream with an
+// OutboundTokenProvider returning a token, the cost of the feature when it is in use.
+func BenchmarkExecuteChatTool_HTTPUpstreamWithToken(b *testing.B) {
+	for _, version := range []string{mcpgo.ProtocolVersion20251125, mcpgo.ProtocolVersion20260728} {
+		b.Run(version, func(b *testing.B) {
+			url := startHTTPUpstreamProcess(b, version)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{OutboundTokenProvider: staticTokenProvider("bench-token")}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID:               "bench-token-" + version,
+				Name:             "matrix",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(url),
+				ToolsToExecute:   []string{"*"},
+			}
+			require.NoError(b, m.connectToMCPClient(context.Background(), config))
+			b.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+			call := &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-1"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("matrix-echo"), Arguments: `{"message":"hi"}`},
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), call); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkExecuteChatTool_PerCallHTTPUpstream measures one tool call on a per-call client (a fresh
 // MCP connection per call) to a Streamable HTTP upstream in another process, per revision.
 func BenchmarkExecuteChatTool_PerCallHTTPUpstream(b *testing.B) {

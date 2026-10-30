@@ -222,6 +222,8 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	manager.releasePluginPipeline = releasePluginPipeline
 	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, credStore, logger)
 
+	manager.toolsManager.SetOutboundTokenProvider(config.OutboundTokenProvider)
+
 	// Set up CodeMode if provided - inject dependencies after manager is created
 	if codeMode != nil {
 		deps := manager.toolsManager.GetCodeModeDependencies()

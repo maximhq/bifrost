@@ -417,7 +417,7 @@ func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testi
 				delete(m.clientMap, "codey-id")
 				m.mu.Unlock()
 			}
-			_, _, release, err := m.prepareToolExecution(ctx, request)
+			_, _, _, release, err := m.prepareToolExecution(ctx, request)
 			if tc.wantErr {
 				assert.ErrorContains(t, err, "not permitted")
 				return
@@ -629,4 +629,12 @@ func BenchmarkDescribeUnservableInput(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestReleaseMCPRequestClearsOutboundToken proves a pooled request never carries a hook's token
+// into the next call that reuses it.
+func TestReleaseMCPRequestClearsOutboundToken(t *testing.T) {
+	req := &schemas.BifrostMCPRequest{ClientName: "c", OutboundToken: "tok"}
+	resetMCPRequest(req)
+	assert.Equal(t, schemas.BifrostMCPRequest{}, *req)
 }

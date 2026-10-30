@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -339,15 +340,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 
-	// Acquire a connection through the shared ClientManager abstraction outside
-	// the gate, mirroring the gateway's exec.go:prepareToolExecution → gate
-	// ordering. Connection lifecycle is the caller's concern; the gate's op
-	// closure only performs the wire CallTool.
-	conn, release, err := s.clientManager.AcquireClientConn(nestedCtx, client)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
+	sendsHeaders := client.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()
 
@@ -392,8 +385,34 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			}
 		}
 
+		// Resolve and acquire after PreMCPHook, as the direct-call path does, so the
+		// provider sees what the hooks set and a per-call dial carries the hook's token.
+		var token string
+		if sendsHeaders {
+			var provider schemas.OutboundMCPTokenProvider
+			if s.outboundTokenProvider != nil {
+				provider = s.outboundTokenProvider()
+			}
+			var hookToken string
+			if preReq != nil {
+				hookToken = preReq.OutboundToken
+			}
+			var tokenErr error
+			token, tokenErr = mcputils.ResolveOutboundToken(nestedCtx, provider, clientName, hookToken, s.logger)
+			if tokenErr != nil {
+				return nil, tokenErr
+			}
+		}
+		callCtx, releaseCallToken := mcputils.WithCallToken(nestedCtx, token)
+		defer releaseCallToken()
+		conn, release, err := s.clientManager.AcquireClientConn(callCtx, client)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+
 		startTime := time.Now()
-		toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
+		toolCtx, cancel := context.WithTimeout(callCtx, toolExecutionTimeout)
 		defer cancel()
 
 		// Per-request extra headers (BifrostContextKeyMCPExtraHeaders) are injected
