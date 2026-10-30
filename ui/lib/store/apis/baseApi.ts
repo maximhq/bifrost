@@ -1,4 +1,5 @@
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import i18n from "@/lib/i18n";
 import { BifrostErrorResponse } from "@/lib/types/config";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
@@ -109,7 +110,7 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 					...error,
 					data: {
 						error: {
-							message: "Network error: Unable to connect to the server",
+							message: i18n.t("apiErrors.networkUnreachable"),
 						},
 					},
 				},
@@ -131,7 +132,7 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 				...error,
 				data: {
 					error: {
-						message: "An unexpected error occurred",
+						message: i18n.t("apiErrors.unexpected"),
 					},
 				},
 			},
