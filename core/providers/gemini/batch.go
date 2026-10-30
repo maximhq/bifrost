@@ -493,7 +493,10 @@ func geminiInlineResponseToBatchResultItem(inlineResp GeminiInlinedResponse, cus
 	} else if inlineResp.Response != nil && inlineResp.Response.Embedding != nil {
 		resultItem.Response = &schemas.BatchResultResponse{
 			StatusCode: 200,
-			Body:       geminiEmbeddingToBatchResultBody(&GeminiEmbeddingResponse{Embedding: inlineResp.Response.Embedding}),
+			Body: geminiEmbeddingToBatchResultBody(&GeminiEmbeddingResponse{
+				Embedding:     inlineResp.Response.Embedding,
+				UsageMetadata: inlineResp.Response.UsageMetadata,
+			}),
 		}
 	} else if inlineResp.Response != nil {
 		resultItem.Response = &schemas.BatchResultResponse{
@@ -673,7 +676,7 @@ func buildGeminiEmbeddingBatchBody(request *schemas.BifrostBatchCreateRequest, m
 			if embedReq.Model == "" {
 				embedReq.Model = modelName
 			} else if embedReq.Model != modelName {
-				return nil, providerUtils.NewBifrostOperationError("embedding request model does not match the batch model", nil)
+				return nil, providerUtils.NewBifrostBadRequestError("embedding request model does not match the batch model")
 			}
 			items[i] = GeminiBatchEmbedRequestItem{Request: embedReq}
 			if bifrostItem.CustomID != "" {

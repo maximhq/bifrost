@@ -579,6 +579,7 @@ func TestGeminiBatchCreateEmbeddingsRequiresModel(t *testing.T) {
 	})
 	require.NotNil(t, err)
 	assert.Contains(t, err.Error.Message, "model is required")
+	assert.Equal(t, http.StatusBadRequest, err.EffectiveHTTPStatus())
 	assert.Empty(t, *gotPath, "no request should reach Gemini")
 }
 
@@ -626,6 +627,17 @@ func TestGeminiEmbeddingBatchResults(t *testing.T) {
 		data, ok := item.Response.Body["data"].([]map[string]interface{})
 		require.True(t, ok)
 		assert.Equal(t, []float64{1, 2}, data[0]["embedding"])
+	})
+
+	t.Run("InlineResponseKeepsUsage", func(t *testing.T) {
+		var inline GeminiInlinedResponse
+		require.NoError(t, sonic.Unmarshal([]byte(`{"metadata":{"key":"p3"},"response":{"embedding":{"values":[1]},"usageMetadata":{"promptTokenCount":5}}}`), &inline))
+		item := geminiInlineResponseToBatchResultItem(inline, "fallback")
+		require.NotNil(t, item.Response)
+		usage, ok := item.Response.Body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, 5, usage["prompt_tokens"])
+		assert.Equal(t, 5, usage["total_tokens"])
 	})
 
 	t.Run("InlineGenerateContentUnchanged", func(t *testing.T) {

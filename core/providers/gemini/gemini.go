@@ -2657,7 +2657,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	isEmbeddings := isGeminiEmbeddingBatch(request, model)
 	if isEmbeddings && model == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for embedding batches (e.g. gemini-embedding-2)", nil)
+		return nil, providerUtils.NewBifrostBadRequestError("model is required for embedding batches (e.g. gemini-embedding-2)")
 	}
 	if len(jsonData) == 0 && isEmbeddings {
 		var bodyErr *schemas.BifrostError
