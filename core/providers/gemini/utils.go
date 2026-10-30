@@ -647,7 +647,8 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters(p
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}
-		budgetRange := getThinkingBudgetRange(schemas.ResolveModelCaps(provider, capModel), maxTokens)
+		caps := schemas.ResolveModelCaps(provider, capModel)
+		budgetRange := getThinkingBudgetRange(caps, maxTokens)
 
 		// Priority: Budget first (if present), then Level
 		if config.ThinkingConfig.ThinkingBudget != nil {
@@ -655,16 +656,21 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters(p
 			budget := int(*config.ThinkingConfig.ThinkingBudget)
 			params.Reasoning.MaxTokens = schemas.Ptr(budget)
 
-			// Also provide effort for compatibility
-			effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, budgetRange.Min, budgetRange.Max)
-			params.Reasoning.Effort = schemas.Ptr(effort)
-
-			// Handle special cases
+			// Handle special cases; only synthesize effort on budget-based models so
+			// an explicit ThinkingBudget on Gemini 3+ is not overwritten by ThinkingLevel.
+			supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(capModel))
 			switch budget {
 			case 0:
 				params.Reasoning.Effort = schemas.Ptr("none")
 			case DynamicReasoningBudget:
-				params.Reasoning.Effort = schemas.Ptr("medium") // dynamic
+				if !supportsLevel {
+					params.Reasoning.Effort = schemas.Ptr("medium") // dynamic
+				}
+			default:
+				if !supportsLevel {
+					effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, budgetRange.Min, budgetRange.Max)
+					params.Reasoning.Effort = schemas.Ptr(effort)
+				}
 			}
 		} else if config.ThinkingConfig.ThinkingLevel != nil && *config.ThinkingConfig.ThinkingLevel != "" {
 			// Level is set (only on 3.0+) - convert to effort and budget
@@ -1602,48 +1608,51 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	// Only set ThinkingConfig if the model actually supports thinking
 	caps := schemas.ResolveModelCaps(provider, model)
 	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(model)) {
+		includeThoughts := true
+		if params.Reasoning.Display != nil && (*params.Reasoning.Display == "omitted" || *params.Reasoning.Display == "none") {
+			includeThoughts = false
+		}
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
-			IncludeThoughts: true,
+			IncludeThoughts: includeThoughts,
 		}
 
 		hasMaxTokens := params.Reasoning.MaxTokens != nil
-		hasEffort := params.Reasoning.Effort != nil
+		hasEffort := params.Reasoning.Effort != nil && *params.Reasoning.Effort != "none"
+		isDisabled := (params.Reasoning.Effort != nil && *params.Reasoning.Effort == "none") ||
+			(params.Reasoning.Enabled != nil && !*params.Reasoning.Enabled) ||
+			(hasMaxTokens && *params.Reasoning.MaxTokens == 0)
 		supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(model)) // thinkingLevel vs thinkingBudget
+		supportsBudget := caps.SupportsReasoningBudget(defaultSupportsReasoningBudget(model))
 
-		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
-		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
-
-		// Handle "none" effort explicitly (only if max_tokens not present)
-		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
+		if isDisabled {
 			setThinkingBudgetZeroIfSupported(&config, caps)
+		} else if hasMaxTokens && !supportsBudget {
+			if err := applyThinkingBudget(&config, caps, *params.Reasoning.MaxTokens); err != nil {
+				return config, err
+			}
+		} else if supportsLevel && hasEffort && effortToThinkingLevel(caps, *params.Reasoning.Effort) != "" {
+			// Gemini 3.0+ - use thinkingLevel (more native), including when cross-provider
+			// converters populate both Effort and MaxTokens.
+			config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(caps, *params.Reasoning.Effort))
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget, or the nearest level on models without one
-			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			if err := applyThinkingBudget(&config, caps, *params.Reasoning.MaxTokens); err != nil {
 				return config, err
 			}
 		} else if hasEffort {
-			// User provided effort only (no max_tokens)
-			if supportsLevel {
-				// Gemini 3.0+ - use thinkingLevel (more native)
-				if level := effortToThinkingLevel(caps, *params.Reasoning.Effort); level != "" {
-					config.ThinkingConfig.ThinkingLevel = &level
-				}
-			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, model, DefaultCompletionMaxTokens)
-				if config.MaxOutputTokens > 0 {
-					maxTokens = int(config.MaxOutputTokens)
-				}
-				budgetRange := getThinkingBudgetRange(caps, maxTokens)
-				// Gemini < 3.0 - must convert effort to budget
-				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
-					*params.Reasoning.Effort,
-					budgetRange.Min,
-					budgetRange.Max,
-				)
-				if err == nil {
-					config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
-				}
+			maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, model, DefaultCompletionMaxTokens)
+			if config.MaxOutputTokens > 0 {
+				maxTokens = int(config.MaxOutputTokens)
+			}
+			budgetRange := getThinkingBudgetRange(caps, maxTokens)
+			// Gemini < 3.0 - must convert effort to budget
+			budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
+				*params.Reasoning.Effort,
+				budgetRange.Min,
+				budgetRange.Max,
+			)
+			if err == nil {
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
 			}
 		}
 	}
@@ -3010,7 +3019,26 @@ func NormalizeModelName(model string) string {
 	if len(model) >= len("google/") && strings.EqualFold(model[:len("google/")], "google/") {
 		strippedModel := model[len("google/"):]
 		if schemas.IsGeminiModel(strippedModel) || schemas.IsVeoModel(strippedModel) || schemas.IsImagenModel(strippedModel) || schemas.IsGemmaModel(strippedModel) {
-			return strippedModel
+			model = strippedModel
+		}
+	}
+	if dotIdx := strings.IndexByte(model, '.'); dotIdx > 0 && dotIdx < len(model)-1 {
+		prefix := model[:dotIdx]
+		rest := model[dotIdx+1:]
+		isRegionalPrefix := len(prefix) == 2 || strings.EqualFold(prefix, "global")
+		if isRegionalPrefix {
+			for i := 0; i < len(prefix); i++ {
+				c := prefix[i]
+				if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+					isRegionalPrefix = false
+					break
+				}
+			}
+		}
+		restLower := strings.ToLower(rest)
+		hasFamilyPrefix := strings.HasPrefix(restLower, "gemini-") || strings.HasPrefix(restLower, "veo-") || strings.HasPrefix(restLower, "imagen-") || strings.HasPrefix(restLower, "gemma-")
+		if isRegionalPrefix && hasFamilyPrefix {
+			return rest
 		}
 	}
 	return model
