@@ -754,6 +754,153 @@ const EP33 = folder("EP-33 Unsupported HTTP methods", "Setup: none; DELETE and P
   request("EP-33", "DELETE /mcp/alpha", "DELETE", "/mcp/alpha", { noAuth: true, asserts: method405() }),
 ]);
 
+// ================================================================ ADM tests on the fleet
+
+const createExpect = (id, title, cfg, asserts) => request(id, title, "POST", "/api/mcp/client", { body: cfg, asserts });
+const clientField = (path, v) => A.custom(`${path} is ${lit(v)}`, [`pm.expect(pm.response.json().clients[0].${path}, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+const ALPHA = `${CHAOS}/s/alpha/mcp`;
+
+const ADM07 = folder("ADM-07 Endpoint slug derivation and override", "Setup: admin credentials; alpha (echo_tool, add_tool) for the clients that are created.", [
+  ...freshServer("ADM-07", "alpha", ["echo_tool", "add_tool"]),
+  createExpect("ADM-07", "name \"_\" with no endpoint_slug is rejected", { name: "_", connection_type: "http", connection_string: ALPHA, auth_type: "none" },
+    [A.status(400), A.msgEquals("Could not derive an endpoint slug from the name; provide an endpoint_slug")]),
+  createExpect("ADM-07", "create \"My_Srv_1\"", httpClient("adm07-a", "My_Srv_1", "alpha"), [A.status(200)]),
+  getClient("ADM-07", "adm07-a", "\"My_Srv_1\" stores endpoint_slug \"my-srv-1\"", [clientField("config.endpoint_slug", "my-srv-1")]),
+  createExpect("ADM-07", "create with endpoint_slug \"Custom Slug!\"", httpClient("adm07-b", "adm07_custom", "alpha", { endpoint_slug: "Custom Slug!" }), [A.status(200)]),
+  getClient("ADM-07", "adm07-b", "endpoint_slug \"Custom Slug!\" stores \"custom-slug\"", [clientField("config.endpoint_slug", "custom-slug")]),
+  deleteClient("ADM-07", "adm07-a"),
+  deleteClient("ADM-07", "adm07-b"),
+]);
+
+const ADM08 = folder("ADM-08 Tool and header allow-lists", "Setup: admin credentials; alpha (echo_tool, add_tool) for the client that is created.", [
+  ...freshServer("ADM-08", "alpha", ["echo_tool", "add_tool"]),
+  createExpect("ADM-08", "tools_to_execute [\"*\",\"echo_tool\"] is rejected", httpClient("adm08-x", "adm08_x", "alpha", { tools_to_execute: ["*", "echo_tool"] }), [A.status(400), A.msgContains("wildcard '*' cannot be used with other values")]),
+  createExpect("ADM-08", "tools_to_execute [\"a\",\"A\"] is rejected", httpClient("adm08-x", "adm08_x", "alpha", { tools_to_execute: ["a", "A"] }), [A.status(400), A.msgContains("duplicate value")]),
+  createExpect("ADM-08", "auto [\"b\"] with execute [\"a\"] is rejected", httpClient("adm08-x", "adm08_x", "alpha", { tools_to_execute: ["a"], tools_to_auto_execute: ["b"] }), [A.status(400), A.msgContains("tool 'b' in tools_to_auto_execute is not in tools_to_execute")]),
+  createExpect("ADM-08", "allowed_extra_headers [\"*\",\"x\"] is rejected", httpClient("adm08-x", "adm08_x", "alpha", { allowed_extra_headers: ["*", "x"] }), [A.status(400)]),
+  createExpect("ADM-08", "execute [] with auto [\"x\"] is accepted", httpClient("adm08-empty", "adm08_empty", "alpha", { tools_to_execute: [], tools_to_auto_execute: ["x"] }), [A.status(200)]),
+  getClient("ADM-08", "adm08-empty", "auto is stored empty", [A.custom("tools_to_auto_execute is empty", [
+    "var auto = pm.response.json().clients[0].config.tools_to_auto_execute;",
+    "pm.expect(!auto || auto.length === 0, 'tools_to_auto_execute: ' + JSON.stringify(auto)).to.equal(true);",
+  ])]),
+  deleteClient("ADM-08", "adm08-empty"),
+]);
+
+const ADM10 = folder("ADM-10 Per-call connections only for HTTP", "Setup: admin credentials; alpha (echo_tool, add_tool).", [
+  ...freshServer("ADM-10", "alpha", ["echo_tool", "add_tool"]),
+  createExpect("ADM-10", "sse with needs_session_stickiness false is rejected",
+    { name: "adm10_sse", connection_type: "sse", connection_string: `${CHAOS}/s/alpha/sse`, auth_type: "none", needs_session_stickiness: false },
+    [A.status(400), A.msgContains("cannot be false for connection_type \"sse\": only 'http' supports a per-call connection")]),
+  createExpect("ADM-10", "stdio with needs_session_stickiness false is rejected",
+    { name: "adm10_stdio", connection_type: "stdio", auth_type: "none", needs_session_stickiness: false, stdio_config: { command: "{{chaos_bin}}", args: ["-stdio", "-fleet", CHAOS, "-server", "alpha"], envs: [] } },
+    [A.status(400), A.msgContains("cannot be false for connection_type \"stdio\": only 'http' supports a per-call connection")]),
+  createExpect("ADM-10", "http with needs_session_stickiness false is accepted", httpClient("adm10-http", "adm10_http", "alpha", { needs_session_stickiness: false }), [A.status(200)]),
+  deleteClient("ADM-10", "adm10-http"),
+]);
+
+const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentials; client dup_a on alpha; a virtual MCP with slug \"vm-slug\".", [
+  ...freshServer("ADM-11", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-11", httpClient("adm11-dup-a", "dup_a", "alpha"), "setup: create client dup_a"),
+  request("ADM-11", "setup: create a virtual MCP with slug \"vm-slug\"", "POST", "/api/mcp/virtual-mcps", {
+    body: { name: "ADM-11 virtual MCP", endpoint_slug: "vm-slug", tools: [] }, asserts: [A.status(201)],
+    extraTests: ["pm.collectionVariables.set('adm11_vmcp_id', pm.response.json().virtual_mcp.id);"],
+  }),
+  createExpect("ADM-11", "the same name is rejected", httpClient("adm11-x", "dup_a", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  createExpect("ADM-11", "the same name with another slug is rejected", httpClient("adm11-x", "dup_a", "alpha", { endpoint_slug: "other" }), [A.status(409), A.msgEquals("An MCP client with this name already exists")]),
+  createExpect("ADM-11", "\"DUP_A\" is rejected", httpClient("adm11-x", "DUP_A", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  createExpect("ADM-11", "\"vm_slug\" is rejected", httpClient("adm11-x", "vm_slug", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  request("ADM-11", "one dup_a is listed", "GET", "/api/mcp/clients?search=dup_a", {
+    asserts: [A.status(200), A.custom("exactly one client is named dup_a", [
+      "var n = pm.response.json().clients.filter(function (c) { return c.config.name === 'dup_a'; }).length;",
+      "pm.expect(n, 'body: ' + pm.response.text()).to.equal(1);",
+    ])],
+  }),
+  deleteClient("ADM-11", "adm11-dup-a"),
+  request("ADM-11", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{adm11_vmcp_id}}", { asserts: [A.status(200)] }),
+]);
+
+const ADM12 = folder("ADM-12 Reused explicit client_id", "Setup: admin credentials; a client with client_id \"fixed-id\" on alpha.", [
+  ...freshServer("ADM-12", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-12", httpClient("fixed-id", "adm12_original", "alpha"), "setup: create the client with client_id \"fixed-id\""),
+  request("ADM-12", "setup: read the original client", "GET", "/api/mcp/clients?server=fixed-id", {
+    asserts: [A.status(200)],
+    extraTests: ["var c = pm.response.json().clients[0].config;", "pm.collectionVariables.set('adm12_original', JSON.stringify({ endpoint_slug: c.endpoint_slug, connection_string: c.connection_string }));"],
+  }),
+  createExpect("ADM-12", "a new name and slug with the same client_id is rejected", httpClient("fixed-id", "adm12_other", "alpha", { endpoint_slug: "adm12-other" }), [A.status(409)]),
+  getClient("ADM-12", "fixed-id", "the original client is unchanged", [clientField("config.name", "adm12_original"), A.custom("endpoint_slug and connection_string are unchanged", [
+    "var c = pm.response.json().clients[0].config, before = JSON.parse(pm.collectionVariables.get('adm12_original'));",
+    "pm.expect(c.endpoint_slug, 'body: ' + pm.response.text()).to.equal(before.endpoint_slug);",
+    "pm.expect(c.connection_string).to.eql(before.connection_string);",
+  ])]),
+  deleteClient("ADM-12", "fixed-id"),
+]);
+
+const ADM16 = folder("ADM-16 Missing connection target is rolled back", "Setup: admin credentials; alpha (echo_tool, add_tool) for the reuse checks (an HTTP client and a STDIO bridge).", [
+  ...freshServer("ADM-16", "alpha", ["echo_tool", "add_tool"]),
+  createExpect("ADM-16", "http without connection_string", { client_id: "adm16-http", name: "adm16_http", connection_type: "http", auth_type: "none" },
+    [A.status(500), A.msgContains("ConnectionString is required for HTTP connection type")]),
+  createExpect("ADM-16", "stdio without stdio_config", { client_id: "adm16-stdio", name: "adm16_stdio", connection_type: "stdio", auth_type: "none" },
+    [A.status(500), A.msgContains("StdioConfig is required")]),
+  request("ADM-16", "no client was kept", "GET", "/api/mcp/clients?search=adm16", {
+    asserts: [A.status(200), A.custom("neither client is listed", [
+      "var names = pm.response.json().clients.map(function (c) { return c.config.name; });",
+      "pm.expect(names, 'body: ' + pm.response.text()).to.not.include('adm16_http');",
+      "pm.expect(names).to.not.include('adm16_stdio');",
+    ])],
+  }),
+  createExpect("ADM-16", "the http name is reusable", httpClient("adm16-http", "adm16_http", "alpha"), [A.status(200)]),
+  createExpect("ADM-16", "the stdio name is reusable", { client_id: "adm16-stdio", name: "adm16_stdio", connection_type: "stdio", auth_type: "none", stdio_config: { command: "{{chaos_bin}}", args: ["-stdio", "-fleet", CHAOS, "-server", "alpha"], envs: [] } }, [A.status(200)]),
+  request("ADM-16", "control: the same search lists both names now", "GET", "/api/mcp/clients?search=adm16", {
+    asserts: [A.status(200), A.custom("both clients are listed", [
+      "var names = pm.response.json().clients.map(function (c) { return c.config.name; }).sort();",
+      "pm.expect(names, 'body: ' + pm.response.text()).to.eql(['adm16_http', 'adm16_stdio']);",
+    ])],
+  }),
+  deleteClient("ADM-16", "adm16-http"),
+  deleteClient("ADM-16", "adm16-stdio"),
+]);
+
+const ADM46 = folder("ADM-46 PUT with an unknown id or bad body", "Setup: admin credentials; a client on alpha.", [
+  ...freshServer("ADM-46", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-46", httpClient("adm46-c", "adm46_c", "alpha"), "setup: create the client"),
+  request("ADM-46", "an unknown id", "PUT", "/api/mcp/client/adm46-no-such-client", { body: {}, asserts: [A.status(404), A.msgEquals("MCP client not found")] }),
+  request("ADM-46", "a malformed body on the client", "PUT", "/api/mcp/client/adm46-c", { raw: "{", asserts: [A.status(400), A.msgEquals("Invalid request payload")] }),
+  deleteClient("ADM-46", "adm46-c"),
+]);
+
+const ADM51 = folder("ADM-51 Disable and enable", "Setup: a client on alpha.", [
+  ...freshServer("ADM-51", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-51", httpClient("adm51-c", "adm51_c", "alpha"), "setup: create the client"),
+  request("ADM-51", "disable the client", "PUT", "/api/mcp/client/adm51-c", { body: { disabled: true }, asserts: [A.status(200)] }),
+  getClient("ADM-51", "adm51-c", "the client is disabled", [clientState("disabled")]),
+  request("ADM-51", "enable the client", "PUT", "/api/mcp/client/adm51-c", { body: { disabled: false }, asserts: [A.status(200)] }),
+  getClient("ADM-51", "adm51-c", "the client is healthy with tools", [clientState("healthy"), A.custom("tools are listed", [
+    "pm.expect(pm.response.json().clients[0].tools.length, 'body: ' + pm.response.text()).to.be.above(0);",
+  ])]),
+  deleteClient("ADM-51", "adm51-c"),
+]);
+
+const ADM59 = folder("ADM-59 Delete unknown or twice", "Setup: admin credentials; two clients on alpha.", [
+  ...freshServer("ADM-59", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-59", httpClient("adm59-other", "adm59_other", "alpha"), "setup: create another client"),
+  createClient("ADM-59", httpClient("adm59-c", "adm59_c", "alpha"), "setup: create the client to delete"),
+  request("ADM-59", "setup: delete the client", "DELETE", "/api/mcp/client/adm59-c", { asserts: [A.status(200)] }),
+  request("ADM-59", "delete the same client again", "DELETE", "/api/mcp/client/adm59-c", { asserts: [A.status(404), A.msgContains("not found")] }),
+  request("ADM-59", "delete an unknown id", "DELETE", "/api/mcp/client/adm59-no-such-client", { asserts: [A.status(404), A.msgContains("not found")] }),
+  getClient("ADM-59", "adm59-other", "the other client is unaffected", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"])]),
+  deleteClient("ADM-59", "adm59-other"),
+]);
+
+const ADM83 = folder("ADM-83 token_exchange is unavailable", "Setup: admin credentials; an auth none client on alpha.", [
+  ...freshServer("ADM-83", "alpha", ["echo_tool", "add_tool"]),
+  createExpect("ADM-83", "create a token_exchange client", httpClient("adm83-te", "adm83_te", "alpha", { auth_type: "token_exchange", token_exchange: { audience: "api://mcp-harness" } }),
+    [A.status(400), A.msgEquals("auth_type 'token_exchange' is not supported")]),
+  createClient("ADM-83", httpClient("adm83-n", "adm83_n", "alpha"), "setup: create the auth none client"),
+  request("ADM-83", "verify-exchange on the auth none client", "POST", "/api/mcp/client/adm83-n/verify-exchange", { body: {}, asserts: [A.status(400), A.msgContains("verify-exchange only applies to auth_type='token_exchange' clients")] }),
+  request("ADM-83", "verify-exchange on an unknown id", "POST", "/api/mcp/client/adm83-no-such-client/verify-exchange", { body: {}, asserts: [A.status(404)] }),
+  deleteClient("ADM-83", "adm83-n"),
+]);
+
 // ================================================================ INF direct execute and code mode
 
 // execBody posts a JSON body (or raw text) to /v1/mcp/tool/execute with no admin credentials; query is appended as is.
@@ -786,7 +933,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM05, ADM06, ADM13, ADM17, ADM42, ADM44, ADM62, ADM73]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM42, ADM44, ADM46, ADM51, ADM59, ADM62, ADM73, ADM83]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP09, EP18, EP23, EP27, EP28, EP29, EP31, EP32, EP33]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS31, OAS36]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
