@@ -1,4 +1,5 @@
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
+import i18n from "@/lib/i18n";
 import type { WarpLogIndexStatus, WarpStoredMessage } from "@/lib/types/warp";
 /** SSE frame parsing for Warp, kept out of the hook so it is testable without a DOM or network. */
 
@@ -119,33 +120,35 @@ export function isUsableWarpEvent(event: WarpEvent | null | undefined): event is
 }
 
 export function warpToolLabel(name: string, isRunning = false): string {
-	const label = WARP_TOOL_LABELS[name];
 	// Unknown tools show their raw name, so a new server-side tool stays legible instead of mislabelled.
-	if (!label) return name;
-	return isRunning ? label.running : label.done;
+	if (!WARP_TOOLS.includes(name)) return name;
+	return i18n.t(`warp.tools.${name}.${isRunning ? "running" : "done"}`, { ns: "shell" });
 }
 
 /** Screen-reader text for a tool row's status, which the icons convey only by shape and color. */
 export function warpToolStatusLabel(call: { durationMs?: number; failed?: boolean }): string {
-	if (call.durationMs === undefined) return "In progress";
-	return call.failed ? "Failed" : "Completed";
+	if (call.durationMs === undefined) return i18n.t("warp.toolStatus.inProgress", { ns: "shell" });
+	return call.failed ? i18n.t("warp.toolStatus.failed", { ns: "shell" }) : i18n.t("warp.toolStatus.completed", { ns: "shell" });
 }
 
-const WARP_TOOL_LABELS: Record<string, { running: string; done: string }> = {
-	semantic_search_logs: { running: "Performing vector search", done: "Performed vector search" },
-	count_logs: { running: "Checking log volume", done: "Checked log volume" },
-	query_logs: { running: "Searching request logs", done: "Searched request logs" },
-	get_log_detail: { running: "Opening a request", done: "Opened a request" },
-	get_request_trace: { running: "Tracing what happened", done: "Traced what happened" },
-	query_metrics: { running: "Querying metrics", done: "Queried metrics" },
-	query_usage_by: { running: "Ranking usage", done: "Ranked usage" },
-	query_model_performance: { running: "Comparing models and providers", done: "Compared models and providers" },
-	render_chart: { running: "Drawing a chart", done: "Drew a chart" },
-	describe_filter_space: { running: "Checking available values", done: "Checked available values" },
-	describe_virtual_key: { running: "Checking virtual key limits", done: "Checked virtual key limits" },
-	list_topics: { running: "Listing topics", done: "Listed topics" },
-	ask_user: { running: "Asking a question", done: "Asked a question" },
-};
+const WARP_TOOLS = [
+	"semantic_search_logs",
+	"count_logs",
+	"query_logs",
+	"get_log_detail",
+	"get_request_trace",
+	"query_metrics",
+	"query_usage_by",
+	"query_user_usage",
+	"query_virtual_key_usage",
+	"query_model_performance",
+	"render_chart",
+	"describe_filter_space",
+	"describe_virtual_key",
+	"describe_scope",
+	"list_topics",
+	"ask_user",
+];
 
 /** Whether a link in an answer is a root-relative dashboard path to follow with the router. */
 export function isInternalWarpLink(href: string | undefined): boolean {
@@ -179,7 +182,10 @@ export function turnsFromStoredMessages(messages: WarpStoredMessage[]): WarpTurn
 			if (message.question) {
 				turn.question = {
 					question: message.question.question || message.content,
-					options: (message.question.options ?? []).map((option) => ({ label: option.label, hint: option.hint })),
+					options: (message.question.options ?? []).map((option) => ({
+						label: option.label,
+						hint: option.hint,
+					})),
 					allow_other: message.question.allow_other,
 					kind: message.question.kind as WarpQuestion["kind"],
 				};
@@ -243,29 +249,48 @@ export function indexStatusLabel(status: WarpLogIndexStatus): IndexStatusLabel {
 	const backfill = status.backfill?.status === "idle" ? undefined : status.backfill;
 	switch (status.state) {
 		case "unavailable":
-			return { label: "No vector store", tone: "error" };
+			return { label: i18n.t("warp.index.noVectorStore", { ns: "shell" }), tone: "error" };
 		case "not_configured":
-			return { label: "Search not set up", tone: "muted" };
+			return { label: i18n.t("warp.index.searchNotSetUp", { ns: "shell" }), tone: "muted" };
 		case "failed": {
 			const detail = backfill?.last_error;
-			return detail ? { label: "Indexing failed", tone: "error", detail } : { label: "Indexing failed", tone: "error" };
+			const label = i18n.t("warp.index.failed", { ns: "shell" });
+			return detail ? { label, tone: "error", detail } : { label, tone: "error" };
 		}
 		case "indexing": {
 			const total = backfill?.total ?? 0;
 			const scanned = backfill?.scanned ?? 0;
 			if (total > 0) {
-				return { label: `Indexing ${Math.min(100, Math.floor((scanned / total) * 100))}%`, tone: "busy" };
+				return {
+					label: i18n.t("warp.index.indexingPercent", {
+						ns: "shell",
+						percent: Math.min(100, Math.floor((scanned / total) * 100)),
+					}),
+					tone: "busy",
+				};
 			}
-			return { label: "Indexing", tone: "busy" };
+			return { label: i18n.t("warp.index.indexing", { ns: "shell" }), tone: "busy" };
 		}
 		default:
-			return { label: "Index ready", shortLabel: "Ready", tone: "ok" };
+			return {
+				label: i18n.t("warp.index.ready", { ns: "shell" }),
+				shortLabel: i18n.t("warp.index.readyShort", { ns: "shell" }),
+				tone: "ok",
+			};
 	}
 }
 
 /** Whether a key event is typing; an empty Warp composer is not, so question shortcuts still apply there. */
 export function isTypingInto(
-	target: { tagName: string; value?: string; isContentEditable?: boolean; dataset?: { testid?: string } } | null | undefined,
+	target:
+		| {
+				tagName: string;
+				value?: string;
+				isContentEditable?: boolean;
+				dataset?: { testid?: string };
+		  }
+		| null
+		| undefined,
 ): boolean {
 	if (!target) return false;
 	if (target.isContentEditable) return true;
@@ -329,110 +354,36 @@ export function warpErrorDetail(code: string | undefined, message: string | unde
 
 	switch (code) {
 		case "not_configured":
-			return {
-				summary: "Warp is not configured yet.",
-				cause: "No provider and model are set, or Warp is switched off in settings.",
-				suggestions: ["Open Warp settings and choose a provider and model.", "Make sure Enable Warp is switched on."],
-				raw,
-			};
 		case "max_iterations":
-			return {
-				summary: "Warp could not settle on an answer.",
-				cause:
-					"Warp ran its full budget of research steps without reaching a conclusion. That usually means the question was broad enough that each query raised another, so it kept looking instead of answering.",
-				suggestions: [
-					"Ask for one thing at a time: a single metric, one time range, one scope.",
-					"Name the window explicitly, for example 'in the last 24 hours'.",
-					"Name whose traffic you mean - a team, a customer, or all of them.",
-					"Raise Max Iterations in Warp settings if the question genuinely needs more steps.",
-				],
-				raw,
-			};
 		case "timeout":
-			return {
-				summary: "That took too long.",
-				cause:
-					"The whole request passed its time budget before Warp finished. Long time ranges and wide scopes make every query slower, and Warp runs several.",
-				suggestions: [
-					"Try a shorter time range.",
-					"Narrow to one team, customer or virtual key.",
-					"Raise Request Timeout in Warp settings if your model is simply slow.",
-				],
-				raw,
-			};
 		case "upstream_error":
-			return {
-				summary: "Warp's model could not be reached.",
-				cause: "The provider rejected the request or was unreachable. This is about Warp's own model, not the traffic you asked about.",
-				suggestions: [
-					"Check the provider, model and key in Warp settings.",
-					"Try the same model from the playground to see whether it answers at all.",
-				],
-				raw,
-			};
 		case "access_denied":
-			return {
-				summary: "Your account doesn't have access to Warp's model.",
-				cause:
-					"This deployment's governance rules refused the request before it reached the provider. Warp's model calls count as yours, so they need the same access any of your requests would.",
-				suggestions: [
-					"Ask an administrator to give your account model access, such as an access profile that allows Warp's model.",
-					"If you do have access, the details below say which rule refused it.",
-				],
-				raw,
-			};
 		case "budget_exceeded":
-			return {
-				summary: "You've used up your budget.",
-				cause:
-					"A budget that covers your account is spent for this cycle, so governance refused Warp's model call. Warp's model calls count as yours, so they spend the same budget as any of your requests.",
-				suggestions: [
-					"Wait for the budget to reset at the start of the next cycle.",
-					"Ask an administrator to raise the limit if you need more this cycle.",
-					"The details below say which budget refused it.",
-				],
-				raw,
-			};
 		case "rate_limited":
-			return {
-				summary: "You've hit a rate limit.",
-				cause:
-					"Your account sent more requests or tokens than a rate limit allows in its window, so governance refused Warp's model call. Warp's model calls count as yours, so they share the same limits.",
-				suggestions: [
-					"Wait a moment and ask again.",
-					"Ask an administrator to raise the limit if it keeps happening.",
-					"The details below say which limit refused it.",
-				],
-				raw,
-			};
 		case "model_blocked":
-			return {
-				summary: "Warp's model isn't allowed for your account.",
-				cause:
-					"This deployment's governance rules block the model or provider Warp is set to use for your account, so the request was refused before it reached the provider.",
-				suggestions: [
-					"Ask an administrator to allow Warp's model for your account.",
-					"Or set Warp to a model your account is allowed to use in Warp settings.",
-				],
-				raw,
-			};
 		case "tool_error":
-			return {
-				summary: "A query failed.",
-				cause: "One of Warp's data queries returned an error, and it could not recover within its remaining steps.",
-				suggestions: ["Try a narrower time range.", "Check that the model, key or team you named actually exists."],
-				raw,
-			};
 		case "cancelled":
-			return { summary: "Stopped.", cause: "The request was cancelled before it finished.", suggestions: [], raw };
+			return warpErrorCopy(code, raw);
 		default:
 			return {
-				summary: raw ?? "Something went wrong.",
-				cause: "Warp returned an error without a recognised code.",
-				suggestions: ["Try the question again.", "If it keeps happening, report it with the details below."],
+				summary: raw ?? i18n.t("warp.errors.unknown.summary", { ns: "shell" }),
+				cause: i18n.t("warp.errors.unknown.cause", { ns: "shell" }),
+				suggestions: i18n.t("warp.errors.unknown.suggestions", {
+					ns: "shell",
+					returnObjects: true,
+				}) as string[],
 				raw,
 			};
 	}
+}
+
+function warpErrorCopy(code: string, raw: string | undefined): WarpErrorDetail {
+	return {
+		summary: i18n.t(`warp.errors.${code}.summary`, { ns: "shell" }),
+		cause: i18n.t(`warp.errors.${code}.cause`, { ns: "shell" }),
+		suggestions: i18n.t(`warp.errors.${code}.suggestions`, { ns: "shell", returnObjects: true }) as string[],
+		raw,
+	};
 }
 /** Encodes as `code:message`; the leading colon on a code-less error stops the decoder reading it as a code. */
 export function encodeTurnError(code: string | undefined, message: string): string {

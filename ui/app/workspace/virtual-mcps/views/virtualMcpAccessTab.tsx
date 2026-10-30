@@ -16,6 +16,7 @@ import { useGetVirtualKeysQuery, useLazyGetVirtualKeyQuery } from "@/lib/store";
 import VirtualMcpAccessProfiles from "@enterprise/components/virtual-mcps/virtualMcpAccessProfiles";
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { type PickedVirtualKey, type VirtualKeyOwner, resolvePickedVirtualKey } from "./virtualMcpAccessTab.utils";
 
@@ -32,6 +33,7 @@ interface VirtualMCPAccessTabProps {
 }
 
 export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate, active, stagedCreate = false }: VirtualMCPAccessTabProps) {
+	const { t } = useTranslation("mcp");
 	// A user's access-profile managed key derives its MCP access from that profile, so it cannot be
 	// assigned directly here (the API rejects it too). A key a team, business unit or customer owns can
 	// be, and so can one assigned to a user, after a confirmation that names who it belongs to.
@@ -55,7 +57,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 	if (isCreate && !stagedCreate) {
 		return (
 			<div className="text-muted-foreground rounded-md border border-dashed p-6 text-center text-sm">
-				Create this Virtual MCP first, then assign it to virtual keys here.
+				{t("virtualMcps.access.createFirst")}
 			</div>
 		);
 	}
@@ -63,9 +65,9 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 	if (isError) {
 		return (
 			<div className="text-destructive flex flex-col items-center gap-3 rounded-md border border-dashed p-6 text-center text-sm">
-				Could not load virtual keys.
+				{t("virtualMcps.access.loadFailed")}
 				<Button variant="outline" size="sm" onClick={() => refetch()}>
-					Retry
+					{t("common.retry")}
 				</Button>
 			</div>
 		);
@@ -115,8 +117,8 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 		<div className="flex flex-col gap-4">
 			<div className="flex items-center justify-between">
 				<div className="flex flex-col gap-0.5">
-					<Label>Virtual keys</Label>
-					<p className="text-muted-foreground text-xs">Keys assigned here can reach this Virtual MCP at its endpoint.</p>
+					<Label>{t("virtualMcps.access.virtualKeys")}</Label>
+					<p className="text-muted-foreground text-xs">{t("virtualMcps.access.virtualKeysHelp")}</p>
 				</div>
 				<VirtualKeySelector
 					mode="add"
@@ -127,18 +129,18 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 					trigger={
 						<Button variant="outline" size="sm" disabled={checkingOwner} data-testid="virtual-mcp-assign-vk-btn">
 							<Plus className="h-4 w-4" />
-							Assign virtual key
+							{t("virtualMcps.access.assign")}
 						</Button>
 					}
 				/>
 			</div>
 
 			{isLoading ? (
-				<div className="text-muted-foreground rounded-md border border-dashed p-6 text-center text-sm">Loading virtual keys…</div>
-			) : value.length === 0 ? (
 				<div className="text-muted-foreground rounded-md border border-dashed p-6 text-center text-sm">
-					No virtual keys assigned yet. Assign one so callers can reach this Virtual MCP.
+					{t("virtualMcps.access.loading")}
 				</div>
+			) : value.length === 0 ? (
+				<div className="text-muted-foreground rounded-md border border-dashed p-6 text-center text-sm">{t("virtualMcps.access.empty")}</div>
 			) : (
 				<div className="divide-y overflow-hidden rounded-md border">
 					{value.map((vkId) => {
@@ -150,7 +152,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 								secret={vk?.value}
 								fallbackLabel={vkId}
 								onRemove={() => removeVk(vkId)}
-								removeAriaLabel="Unassign virtual key"
+								removeAriaLabel={t("virtualMcps.access.unassignAria")}
 								data-testid={`virtual-mcp-detach-vk-${vkId}`}
 							/>
 						);

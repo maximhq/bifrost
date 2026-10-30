@@ -8,12 +8,14 @@ import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function GovernanceCustomersPage() {
+	const { t } = useTranslation("governance");
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 	// Background refetches replace the rows behind an open edit sheet, which is
@@ -70,7 +72,7 @@ export default function GovernanceCustomersPage() {
 		const errorKey = "customers";
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
-		toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
+		toast.error(t("customers.loadFailed", { message: getErrorMessage(customersError) }));
 	}, [customersError]);
 
 	if (isLoading) {

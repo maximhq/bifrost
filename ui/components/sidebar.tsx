@@ -90,6 +90,7 @@ import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
@@ -101,7 +102,7 @@ const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
 const ONBOARDING_CARD_DISMISSED_COOKIE = "bifrost_onboarding_card_dismissed";
 
 // Custom MCP Icon Component
-const MCPIcon = ({ className }: { className?: string }) => (
+const MCPIcon = ({ className, label = "MCP clients icon" }: { className?: string; label?: string }) => (
 	<svg
 		className={className}
 		fill="currentColor"
@@ -111,9 +112,9 @@ const MCPIcon = ({ className }: { className?: string }) => (
 		viewBox="0 0 24 24"
 		width="1em"
 		xmlns="http://www.w3.org/2000/svg"
-		aria-label="MCP clients icon"
+		aria-label={label}
 	>
-		<title>MCP clients icon</title>
+		<title>{label}</title>
 		<path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z" />
 		<path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z" />
 	</svg>
@@ -121,38 +122,16 @@ const MCPIcon = ({ className }: { className?: string }) => (
 
 // Main navigation items
 
-// Base promotional card (memoized outside component to prevent recreation)
-const productionSetupHelpCard = {
-	id: "production-setup",
-	title: "Need help with production setup?",
-	description: (
-		<>
-			We offer help with production setup including custom integrations and dedicated support.
-			<br />
-			<br />
-			<a
-				href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr"
-				target="_blank"
-				className="text-primary font-medium underline"
-				rel="noopener noreferrer"
-			>
-				Book a demo with our team
-			</a>
-			.
-		</>
-	),
-	dismissible: true,
-};
-
 const newBadgeClassName =
 	"relative overflow-hidden px-1.5 py-0 text-[10px] leading-4 group-data-[collapsible=icon]:hidden after:pointer-events-none after:absolute after:inset-y-0 after:-left-full after:w-full after:skew-x-[-18deg] after:bg-gradient-to-r after:from-transparent after:via-primary/25 after:to-transparent after:opacity-0 after:content-[''] after:animate-[sidebar-new-badge-shine_1200ms_cubic-bezier(0.22,1,0.36,1)_260ms_both]";
 
 // Sidebar item interface
 interface SidebarItem {
+	id: string;
 	title: string;
 	url: string;
 	icon: React.ComponentType<{ className?: string }>;
-	description: string;
+	description?: string;
 	isAllowed?: boolean;
 	hasAccess: boolean;
 	subItems?: SidebarItem[];
@@ -220,6 +199,7 @@ const SidebarItemView = ({
 	expandSidebar: () => void;
 	highlightedUrl?: string;
 }) => {
+	const { t } = useTranslation("shell");
 	const [flyoutOpen, setFlyoutOpen] = useState(false);
 	const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const openFlyout = () => {
@@ -293,7 +273,7 @@ const SidebarItemView = ({
 				</span>
 				{item.new && (
 					<Badge data-new-badge="true" className={`${newBadgeClassName} ml-auto ${hasSubItems ? "mr-2" : ""}`}>
-						New
+						{t("sidebar.newBadge")}
 					</Badge>
 				)}
 				{item.tag && (
@@ -376,7 +356,7 @@ const SidebarItemView = ({
 	}
 
 	return (
-		<SidebarMenuItem key={item.title}>
+		<SidebarMenuItem key={item.id}>
 			{isSidebarCollapsed && hasSubItems ? (
 				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
 					<div data-testid={`sidebar-flyout-trigger-${item.testId ?? slug(item.title)}`}>
@@ -475,7 +455,7 @@ const SidebarItemView = ({
 							</div>
 						);
 						return (
-							<SidebarMenuSubItem key={subItem.title}>
+							<SidebarMenuSubItem key={subItem.id}>
 								{subItem.hasAccess === false ? (
 									<SidebarMenuSubButton
 										data-nav-url={subItemHref}
@@ -565,6 +545,7 @@ function WarpNavIcon({ className, ...props }: React.SVGProps<SVGSVGElement>) {
 }
 
 export default function AppSidebar() {
+	const { t, i18n } = useTranslation("shell");
 	const pathname = useLocation({ select: (l) => l.pathname });
 	const search = useLocation({ select: (l) => l.searchStr ?? "" });
 	const tsNavigate = useNavigate();
@@ -678,19 +659,21 @@ export default function AppSidebar() {
 			...(IS_ENTERPRISE
 				? [
 						{
-							title: "Home",
+							id: "home",
+							title: t("nav.home"),
 							url: "/workspace/home",
 							icon: House,
-							description: "Your usage, keys, budgets and access",
+							description: t("navDesc.home"),
 							hasAccess: true,
 						},
 					]
 				: []),
 			{
-				title: "Observability",
+				id: "observability",
+				title: t("nav.observability"),
 				url: "/workspace/logs",
 				icon: Telescope,
-				description: "Request logs & monitoring",
+				description: t("navDesc.observability"),
 				hasAccess:
 					hasLogsAccess ||
 					hasDashboardAccess ||
@@ -701,467 +684,486 @@ export default function AppSidebar() {
 					hasSettingsAccess,
 				subItems: [
 					{
-						title: "Dashboard",
+						id: "observability.dashboard",
+						title: t("nav.dashboard"),
 						url: "/workspace/dashboard",
 						icon: ChartColumnBig,
-						description: "Dashboard",
 						hasAccess: hasDashboardAccess,
 					},
 					{
-						title: "LLM Logs",
+						id: "observability.llm-logs",
+						title: t("nav.llmLogs"),
 						url: "/workspace/logs",
 						icon: Logs,
-						description: "LLM request logs & monitoring",
 						hasAccess: hasLogsAccess,
 					},
 					{
-						title: "MCP Logs",
+						id: "observability.mcp-logs",
+						title: t("nav.mcpLogs"),
 						url: "/workspace/mcp-logs",
-						icon: MCPIcon,
-						description: "MCP tool execution logs",
+						icon: (props: { className?: string }) => <MCPIcon {...props} label={t("sidebar.mcpIconTitle")} />,
 						hasAccess: hasMCPLogsAccess,
 					},
 					{
-						title: "Agent Logs",
+						id: "observability.agent-logs",
+						title: t("nav.agentLogs"),
 						url: "/workspace/agent-logs",
 						icon: Bot,
-						description: "Agent request logs",
+						description: t("navDesc.agentLogs"),
 						hasAccess: hasAgentLogsAccess,
 					},
 					{
-						title: "Relay Logs",
+						id: "observability.relay-logs",
+						title: t("nav.relayLogs"),
 						url: "/workspace/relay-logs",
 						icon: Waypoints,
-						description: "Relay calls and their cost",
+						description: t("navDesc.relayLogs"),
 						hasAccess: hasRelayLogsAccess,
 					},
 					{
-						title: "Connectors",
+						id: "observability.connectors",
+						title: t("nav.connectors"),
 						url: "/workspace/observability",
 						icon: ChevronsLeftRightEllipsis,
-						description: "Log connectors",
 						hasAccess: hasObservabilityAccess,
 					},
 					{
-						title: "Logs Settings",
+						id: "observability.logs-settings",
+						title: t("nav.logsSettings"),
 						url: "/workspace/config/logging",
 						icon: Settings,
-						description: "Logs configuration",
 						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
 			{
-				title: "Models",
+				id: "models",
+				title: t("nav.models"),
 				url: "/workspace/providers",
 				icon: BoxIcon,
-				description: "Configure models",
 				hasAccess: true,
 				subItems: [
 					{
-						title: "Model Catalog",
+						id: "models.catalog",
+						testId: "model-catalog",
+						title: t("nav.modelCatalog"),
 						url: "/workspace/model-catalog",
 						icon: LayoutGrid,
-						description: "Overview of providers, keys, and usage",
 						hasAccess: hasModelProvidersAccess,
 					},
 					{
-						title: "Model Providers",
+						id: "models.providers",
+						title: t("nav.modelProviders"),
 						url: "/workspace/providers",
 						icon: Boxes,
-						description: "Configure models",
 						hasAccess: hasModelProvidersAccess,
 					},
 					{
-						title: "Budgets & Limits",
+						id: "models.budgets",
+						title: t("nav.budgetsLimits"),
 						url: "/workspace/model-limits",
 						icon: Wallet,
-						description: "Budgets and rate limits",
 						hasAccess: hasGovernanceLegacyAccess,
 					},
 					{
-						title: "Routing Rules",
+						id: "models.routing-rules",
+						title: t("nav.routingRules"),
 						url: "/workspace/routing-rules",
 						icon: Network,
-						description: "Intelligent routing rules",
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Complexity Router",
+						id: "models.complexity-router",
+						title: t("nav.complexityRouter"),
 						url: "/workspace/complexity-router",
 						icon: GitCompareArrows,
-						description: "Complexity tier routing",
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Circuit Breaker",
+						id: "models.circuit-breaker",
+						title: t("nav.circuitBreaker"),
 						url: "/workspace/circuit-breaker",
 						icon: CircuitBoard,
-						description: "Automatic fallback when primary endpoints fail",
 						hasAccess: hasCircuitBreakerAccess,
 					},
 					{
-						title: "Pricing Overrides",
+						id: "models.pricing-overrides",
+						title: t("nav.pricingOverrides"),
 						url: "/workspace/custom-pricing/overrides",
 						icon: SlidersHorizontal,
-						description: "Scoped pricing overrides",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Model Settings",
+						id: "models.settings",
+						title: t("nav.modelSettings"),
 						url: "/workspace/custom-pricing",
 						icon: Settings,
-						description: "Model and routing configuration",
 						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
 			{
-				title: "MCP Servers",
+				id: "mcp",
+				title: t("nav.mcpGateway"),
 				testId: "mcp-gateway", // keep the pre-rename E2E selector stable
 				icon: MCPIcon,
-				description: "MCP configuration",
+				description: t("navDesc.mcpGateway"),
 				url: "/workspace/mcp-gateway",
 				hasAccess: hasMCPGatewayAccess || hasVirtualMCPsAccess,
 				subItems: [
 					{
-						title: "MCP Catalog",
+						id: "mcp.catalog",
+						title: t("nav.mcpCatalog"),
 						url: "/workspace/mcp-registry",
 						icon: LayoutGrid,
-						description: "MCP tool catalog",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "MCP Library",
+						id: "mcp.library",
+						title: t("nav.mcpLibrary"),
 						url: "/workspace/mcp-registry/library",
 						icon: Boxes,
-						description: "Install curated MCP servers",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "Virtual MCPs",
+						id: "mcp.virtual-mcps",
+						title: t("nav.virtualMcps"),
 						url: "/workspace/virtual-mcps",
 						icon: ToolCase,
-						description: "Virtual MCPs",
+						description: t("navDesc.virtualMcps"),
 						hasAccess: hasVirtualMCPsAccess,
 						testId: "tool-groups", // keep the pre-rename E2E selector stable
 					},
 					{
-						title: "Auth Sessions",
+						id: "mcp.auth-sessions",
+						title: t("nav.authSessions"),
 						url: "/workspace/mcp-sessions",
 						icon: KeyRound,
-						description: "Per-user OAuth sessions",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "OAuth Grants",
+						id: "mcp.oauth-grants",
+						title: t("nav.oauthGrants"),
 						url: "/workspace/oauth-grants",
 						icon: ShieldCheck,
-						description: "Downstream OAuth grants",
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
-						title: "MCP Settings",
+						id: "mcp.settings",
+						title: t("nav.mcpSettings"),
 						url: "/workspace/mcp-settings",
 						icon: Settings,
-						description: "MCP configuration",
 						hasAccess: hasMCPGatewayAccess,
 					},
 				],
 			},
 			{
-				title: "Agents",
+				id: "agents",
+				title: t("nav.agents"),
 				url: "/workspace/agent-gateway",
 				icon: Bot,
-				description: "Register and manage A2A agents",
+				description: t("navDesc.agents"),
 				hasAccess: hasAgentGatewayAccess,
 				subItems: [
 					{
-						title: "Agent Catalog",
+						id: "agents.catalog",
+						title: t("nav.agentCatalog"),
 						url: "/workspace/agent-gateway",
 						icon: LayoutGrid,
-						description: "Registered A2A agents",
+						description: t("navDesc.agentCatalog"),
 						hasAccess: hasAgentGatewayAccess,
 					},
 					{
-						title: "Push Configurations",
+						id: "agents.push-configurations",
+						title: t("nav.pushConfigurations"),
 						url: "/workspace/agent-gateway/push-configs",
 						icon: Webhook,
-						description: "Stored A2A push callbacks",
+						description: t("navDesc.pushConfigurations"),
 						hasAccess: hasAgentGatewayAccess,
 					},
 					{
-						title: "Agent Settings",
+						id: "agents.settings",
+						title: t("nav.agentSettings"),
 						url: "/workspace/config/agent-gateway",
 						icon: Settings,
-						description: "Agent Gateway configuration",
+						description: t("navDesc.agentSettings"),
 						hasAccess: hasSettingsAccess,
 					},
 				],
 			},
 			{
-				title: "Relays",
+				id: "relays",
+				title: t("nav.relays"),
 				url: "/workspace/relays",
 				icon: Waypoints,
-				description: "Relay non-LLM APIs with per-route pricing",
+				description: t("navDesc.relays"),
 				hasAccess: hasRelaysAccess,
 			},
 			{
-				title: "Plugins",
+				id: "plugins",
+				title: t("nav.plugins"),
 				url: "/workspace/plugins",
 				icon: Puzzle,
-				description: "Manage custom plugins",
 				hasAccess: hasPluginsAccess,
 			},
 			{
-				title: "Alerting",
+				id: "alerting",
+				title: t("nav.alerting"),
 				url: "/workspace/alerting",
 				icon: Siren,
-				description: "Manage alert channels, rules, and history",
 				hasAccess: hasAlertingAccess,
 				subItems: [
 					{
-						title: "Channels",
+						id: "alerting.channels",
+						title: t("nav.channels"),
 						url: "/workspace/alerting/channels",
 						icon: Megaphone,
-						description: "Configure notification channels",
 						hasAccess: hasAlertingAccess,
 					},
 					{
-						title: "Rules",
+						id: "alerting.rules",
+						title: t("nav.rules"),
 						url: "/workspace/alerting/rules",
 						icon: Gavel,
-						description: "Define alerting rules",
 						hasAccess: hasAlertingAccess,
 					},
 					{
-						title: "History",
+						id: "alerting.history",
+						title: t("nav.history"),
 						url: "/workspace/alerting/history",
 						icon: History,
-						description: "Review alert delivery history",
 						hasAccess: hasAlertingAccess,
 					},
 				],
 			},
 			{
-				title: "Governance",
+				id: "governance",
+				title: t("nav.governance"),
 				url: "/workspace/governance",
 				icon: Landmark,
-				description: "Virtual keys, users, teams, customers & roles",
 				hasAccess: hasAnyGovernanceAccess,
 				subItems: [
 					{
-						title: "Virtual Keys",
+						id: "governance.virtual-keys",
+						title: t("nav.virtualKeys"),
 						url: "/workspace/governance/virtual-keys",
 						icon: KeyRound,
-						description: "Manage virtual keys & access",
 						hasAccess: hasVirtualKeysAccess,
 					},
 					{
-						title: "Org Chart",
+						id: "governance.org-chart",
+						title: t("nav.orgChart"),
 						url: "/workspace/governance/org-chart",
 						icon: Network,
-						description: "Budgets and usage across business units, teams and users",
+						description: t("navDesc.orgChart"),
 						// The chart is read from business units down, so it follows the Business Units entry.
 						hasAccess: hasBusinessUnitsAccess,
 						new: true,
 					},
 					{
-						title: "Users",
+						id: "governance.users",
+						title: t("nav.users"),
 						url: "/workspace/governance/users",
 						icon: Users,
-						description: "Manage users",
 						hasAccess: hasUsersAccess,
 					},
 					{
-						title: "Teams",
+						id: "governance.teams",
+						title: t("nav.teams"),
 						url: "/workspace/governance/teams",
 						icon: Building,
-						description: "Manage teams",
 						hasAccess: hasTeamsAccess,
 					},
 					{
-						title: "Business Units",
+						id: "governance.business-units",
+						title: t("nav.businessUnits"),
 						url: "/workspace/governance/business-units",
 						icon: Building2,
-						description: "Manage business units",
 						hasAccess: hasBusinessUnitsAccess,
 					},
 					{
-						title: "Customers",
+						id: "governance.customers",
+						title: t("nav.customers"),
 						url: "/workspace/governance/customers",
 						icon: WalletCards,
-						description: "Manage customers",
 						hasAccess: hasCustomersAccess,
 					},
 					{
-						title: "User Provisioning",
+						id: "governance.user-provisioning",
+						title: t("nav.userProvisioning"),
 						url: "/workspace/scim",
 						icon: BookUser,
-						description: "User management and provisioning",
 						hasAccess: hasUserProvisioningAccess,
 					},
 					{
-						title: "Roles & Permissions",
+						id: "governance.rbac",
+						title: t("nav.rolesPermissions"),
 						url: "/workspace/governance/rbac",
 						icon: UserRoundCheck,
-						description: "User roles and permissions",
 						hasAccess: hasRbacAccess,
 					},
 					{
-						title: "Access Profiles",
+						id: "governance.access-profiles",
+						title: t("nav.accessProfiles"),
 						url: "/workspace/governance/access-profiles",
 						icon: ShieldCheck,
-						description: "Manage access profiles for roles",
 						hasAccess: hasAccessProfilesAccess,
 					},
 					{
-						title: "Projects",
+						id: "governance.projects",
+						title: t("nav.projects"),
 						url: "/workspace/governance/projects",
 						icon: SquareKanban,
-						description: "Scope requests to a project's access and budget",
+						description: t("navDesc.projects"),
 						hasAccess: hasProjectsAccess,
 					},
 					{
-						title: "Audit Logs",
+						id: "governance.audit-logs",
+						title: t("nav.auditLogs"),
 						url: "/workspace/audit-logs",
 						icon: ScrollText,
-						description: "Audit logs and compliance",
 						hasAccess: hasAuditLogsAccess,
 					},
 				],
 			},
 			{
-				title: "Guardrails",
+				id: "guardrails",
+				title: t("nav.guardrails"),
 				url: "/workspace/guardrails",
 				icon: Construction,
-				description: "Guardrails configuration",
 				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 				subItems: [
 					{
-						title: "Rules",
+						id: "guardrails.rules",
+						title: t("nav.guardrailRules"),
 						url: "/workspace/guardrails/configuration",
 						icon: SearchCheck,
-						description: "Guardrail rules",
 						hasAccess: hasGuardrailsConfigAccess,
 					},
 					{
-						title: "Providers",
+						id: "guardrails.providers",
+						title: t("nav.guardrailProviders"),
 						url: "/workspace/guardrails/providers",
 						icon: Boxes,
-						description: "Guardrail providers configuration",
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
 					{
-						title: "Incidents",
+						id: "guardrails.incidents",
+						title: t("nav.incidents"),
 						url: "/workspace/guardrails/incidents",
 						icon: TriangleAlert,
-						description: "Requests blocked or flagged by guardrails",
+						description: t("navDesc.guardrailIncidents"),
 						hasAccess: hasGuardrailsConfigAccess && hasLogsAccess,
 					},
 				],
 			},
 			{
-				title: "Webhooks",
+				id: "webhooks",
+				title: t("nav.webhooks"),
 				url: "/workspace/webhooks",
 				icon: Webhook,
-				description: "Async job webhook endpoints",
 				hasAccess: hasGovernanceLegacyAccess,
 			},
 			{
-				title: "Edge Control",
+				id: "edge-control",
+				title: t("nav.edgeControl"),
 				icon: Hexagon,
-				description: "Edge device management",
 				url: "/workspace/edge-control",
 				hasAccess: hasAnyEdgeControlAccess,
 				subItems: [
 					{
-						title: "Devices",
+						id: "edge.devices",
+						title: t("nav.devices"),
 						url: "/workspace/edge-control/devices",
 						icon: LaptopMinimalCheck,
-						description: "Manage edge devices",
 						hasAccess: hasDevicesAccess,
 					},
 					{
-						title: "Approvals",
+						id: "edge.approvals",
+						title: t("nav.approvals"),
 						url: "/workspace/edge-control/inventory",
 						icon: BadgeCheck,
-						description: "Approve apps and MCP servers",
 						hasAccess: hasInventoryAccess,
 					},
 					{
-						title: "Edge Settings",
+						id: "edge.settings",
+						title: t("nav.edgeSettings"),
 						url: "/workspace/edge-control/config",
 						icon: Settings,
-						description: "Edge settings",
 						hasAccess: hasEdgeConfigAccess,
 					},
 				],
 			},
 			{
-				title: "Cluster",
+				id: "cluster",
+				title: t("nav.cluster"),
 				url: "/workspace/cluster",
 				icon: Network,
-				description: "Monitor the Bifrost cluster",
+				description: t("navDesc.cluster"),
 				hasAccess: hasClusterConfigAccess,
 				subItems: [
 					{
-						title: "Nodes",
+						id: "cluster.nodes",
+						title: t("nav.clusterNodes"),
 						url: "/workspace/cluster/overview",
 						icon: Server,
-						description: "Node health, CPU, memory and request rate",
+						description: t("navDesc.clusterNodes"),
 						hasAccess: hasClusterConfigAccess,
 					},
 					{
-						title: "Storage",
+						id: "cluster.storage",
+						title: t("nav.clusterStorage"),
 						url: "/workspace/cluster/storage",
 						icon: Database,
-						description: "Config and logs store databases, pools and slow queries",
+						description: t("navDesc.clusterStorage"),
 						hasAccess: hasClusterConfigAccess,
 					},
 					{
-						title: "Incidents",
+						id: "cluster.incidents",
+						title: t("nav.incidents"),
 						url: "/workspace/cluster/incidents",
 						icon: TriangleAlert,
-						description: "Memory, message delivery and database incidents",
+						description: t("navDesc.clusterIncidents"),
 						hasAccess: hasClusterConfigAccess,
 					},
 					{
-						title: "Settings",
+						id: "cluster.settings",
+						title: t("nav.settings"),
 						url: "/workspace/cluster/settings",
 						icon: Settings,
-						description: "Monitoring, sample retention and memory threshold",
+						description: t("navDesc.clusterSettings"),
 						// The settings API sits under the Settings resource; saving also needs Settings update.
 						hasAccess: hasClusterConfigAccess && hasSettingsAccess,
 					},
 				],
 			},
 			{
-				title: "Adaptive Routing",
+				id: "adaptive-routing",
+				title: t("nav.adaptiveRouting"),
 				url: "/workspace/adaptive-routing",
 				icon: Shuffle,
-				description: "Manage adaptive routing",
 				hasAccess: isAdaptiveRoutingAllowed,
 				subItems: [
 					{
-						title: "Dashboard",
+						id: "adaptive.dashboard",
+						title: t("nav.adaptiveRoutingDashboard"),
 						url: "/workspace/adaptive-routing",
 						icon: ChartColumnBig,
-						description: "Adaptive routing metrics",
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
-						title: "Incidents",
+						id: "adaptive.incidents",
+						title: t("nav.incidents"),
 						url: "/workspace/adaptive-routing/incidents",
 						icon: TriangleAlert,
-						description: "Adaptive routing incidents",
+						description: t("navDesc.adaptiveRoutingIncidents"),
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 					{
-						title: "Settings",
+						id: "adaptive.settings",
+						title: t("nav.adaptiveRoutingSettings"),
 						url: "/workspace/adaptive-routing/settings",
 						icon: Settings,
-						description: "Adaptive routing settings",
 						hasAccess: isAdaptiveRoutingAllowed,
 					},
 				],
@@ -1169,31 +1171,35 @@ export default function AppSidebar() {
 			...(isDbConnected
 				? [
 						{
-							title: "Prompt Repository",
+							id: "prompt-repository",
+							title: t("nav.promptRepository"),
 							url: "/workspace/prompt-repo",
 							icon: FolderGit,
-							description: "Prompt repository",
+							description: t("navDesc.promptRepository"),
 							hasAccess: hasPromptRepositoryAccess,
 						},
 						{
-							title: "Skills",
+							id: "skills",
+							title: t("nav.skills"),
 							url: "/workspace/skills-repo",
 							icon: BookOpenText,
-							description: "Manage skills and marketplace settings",
+							description: t("navDesc.skills"),
 							hasAccess: hasSkillsRepositoryAccess || hasSettingsAccess,
 							subItems: [
 								{
-									title: "Skills Repository",
+									id: "skills.repository",
+									title: t("nav.skillsRepository"),
 									url: "/workspace/skills-repo",
 									icon: BookOpenText,
-									description: "Skills repository",
+									description: t("navDesc.skillsRepository"),
 									hasAccess: hasSkillsRepositoryAccess,
 								},
 								{
-									title: "Skills Settings",
+									id: "skills.settings",
+									title: t("nav.skillsSettings"),
 									url: "/workspace/config/skills",
 									icon: Settings,
-									description: "Skills marketplace configuration",
+									description: t("navDesc.skillsSettings"),
 									hasAccess: hasSettingsAccess,
 								},
 							],
@@ -1201,93 +1207,98 @@ export default function AppSidebar() {
 					]
 				: []),
 			{
-				title: "Settings",
+				id: "settings",
+				title: t("nav.settings"),
 				url: "/workspace/config",
 				icon: Settings2Icon,
-				description: "Bifrost settings",
+				description: t("navDesc.settings"),
 				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess || (hasWarpAccess && isWarpEnabled),
 				subItems: [
 					{
-						title: "Client Settings",
+						id: "settings.client",
+						title: t("nav.clientSettings"),
 						url: "/workspace/config/client-settings",
 						icon: Settings,
-						description: "Client configuration settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Compatibility",
+						id: "settings.compatibility",
+						title: t("nav.compatibility"),
 						url: "/workspace/config/compatibility",
 						icon: Plug,
-						description: "Compatibility conversion settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Caching",
+						id: "settings.caching",
+						title: t("nav.caching"),
 						url: "/workspace/config/caching",
 						icon: DatabaseZap,
-						description: "Caching configuration",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Security",
+						id: "settings.security",
+						title: t("nav.security"),
 						url: "/workspace/config/security",
 						icon: ShieldCheck,
-						description: "Security settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Warp",
+						id: "settings.warp",
+						title: t("nav.warp"),
 						url: "/workspace/config/warp",
 						icon: WarpNavIcon,
-						description: "Warp agent configuration",
+						description: t("navDesc.warp"),
 						hasAccess: hasWarpAccess && isWarpEnabled,
 					},
 					...(IS_ENTERPRISE
 						? [
 								{
-									title: "Proxy",
+									id: "settings.proxy",
+									title: t("nav.proxy"),
 									url: "/workspace/config/proxy",
 									icon: Globe,
-									description: "Proxy configuration",
+									description: t("navDesc.proxy"),
 									hasAccess: hasSettingsAccess,
 								},
 							]
 						: []),
 					{
-						title: "API Keys",
+						id: "settings.api-keys",
+						title: t("nav.apiKeys"),
 						url: "/workspace/config/api-keys",
 						icon: KeyRound,
-						description: "API keys management",
 						hasAccess: hasAPIKeyAccess,
 					},
 					{
-						title: "Performance Tuning",
+						id: "settings.performance",
+						title: t("nav.performanceTuning"),
 						url: "/workspace/config/performance-tuning",
 						icon: TrendingUp,
-						description: "Performance tuning settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "Feature Flags",
+						id: "settings.feature-flags",
+						title: t("nav.featureFlags"),
 						url: "/workspace/config/feature-flags",
 						icon: Flag,
-						description: "Toggle feature flags",
 						hasAccess: hasFeatureFlagsAccess,
 					},
 					...(IS_ENTERPRISE
 						? [
 								{
-									title: "Branding",
+									id: "settings.branding",
+									title: t("nav.branding"),
 									url: "/workspace/config/branding",
 									icon: Palette,
-									description: "Custom logo and icon",
+									description: t("navDesc.branding"),
 									hasAccess: hasSettingsAccess,
 								},
 								{
-									title: "License Info",
+									id: "settings.license",
+									title: t("nav.licenseInfo"),
 									url: "/workspace/config/license",
 									icon: BadgeInfo,
-									description: "Enterprise license information",
+									description: t("navDesc.licenseInfo"),
 									hasAccess: hasSettingsAccess,
 								},
 							]
@@ -1296,6 +1307,8 @@ export default function AppSidebar() {
 			},
 		],
 		[
+			t,
+			i18n.language,
 			hasLogsAccess,
 			hasAPIKeyAccess,
 			hasObservabilityAccess,
@@ -1401,7 +1414,7 @@ export default function AppSidebar() {
 		};
 		items.forEach((item) => {
 			if (item.subItems?.some((subItem) => isRouteMatch(subItem.url))) {
-				newExpandedItems.add(item.title);
+				newExpandedItems.add(item.id ?? slug(item.title));
 			}
 		});
 		if (newExpandedItems.size > 0) {
@@ -1420,7 +1433,7 @@ export default function AppSidebar() {
 			if (parentMatches) return;
 			const hasMatchingChild = item.subItems.some((sub) => sub.title.toLowerCase().includes(query));
 			if (hasMatchingChild) {
-				toExpand.add(item.title);
+				toExpand.add(item.id ?? slug(item.title));
 			}
 		});
 		if (toExpand.size > 0) {
@@ -1460,7 +1473,7 @@ export default function AppSidebar() {
 			const hasSubItems = item.subItems && item.subItems.length > 0;
 			if (hasSubItems) {
 				// When search is active or parent is expanded, include visible subItems
-				if (searchQuery.trim() || expandedItems.has(item.title)) {
+				if (searchQuery.trim() || expandedItems.has(item.id)) {
 					for (const sub of item.subItems!) {
 						if (sub.hasAccess === false) continue;
 						result.push({
@@ -1565,16 +1578,15 @@ export default function AppSidebar() {
 		if (setupRequired) {
 			cards.push({
 				id: "setup-required",
-				title: "Dashboard auth not configured",
+				title: t("promo.setupRequired.title"),
 				description: (
 					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80" data-testid="setup-required-banner">
 						<p>
-							All management APIs accept the setup token in the <code className="font-semibold">X-Bifrost-Setup-Token</code> header until
-							you create an admin account.
+							<Trans t={t} i18nKey="promo.setupRequired.body" components={{ code: <code className="font-semibold" /> }} />
 						</p>
 						<div className="mt-auto flex items-center gap-3 pb-1">
 							<Link to="/workspace/config/security" className="text-primary font-medium underline" data-testid="setup-required-banner-link">
-								Create admin
+								{t("promo.setupRequired.createAdmin")}
 							</Link>
 							<a
 								href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth"
@@ -1583,7 +1595,7 @@ export default function AppSidebar() {
 								className="text-primary font-medium underline"
 								data-testid="setup-required-banner-docs-link"
 							>
-								Docs
+								{t("promo.setupRequired.docs")}
 							</a>
 						</div>
 					</div>
@@ -1596,10 +1608,10 @@ export default function AppSidebar() {
 		if (coreConfig?.restart_required?.required) {
 			cards.push({
 				id: "restart-required",
-				title: "Restart Required",
+				title: t("promo.restartRequired.title"),
 				description: (
 					<div className="text-xs text-amber-700 dark:text-amber-300/80">
-						{coreConfig.restart_required.reason || "Configuration changes require a server restart to take effect."}
+						{coreConfig.restart_required.reason || t("promo.restartRequired.defaultReason")}
 					</div>
 				),
 				dismissible: false,
@@ -1612,20 +1624,17 @@ export default function AppSidebar() {
 			const remainingSteps = onboardingSteps.length - onboardingDoneCount;
 			cards.push({
 				id: "onboarding-incomplete",
-				title: "Setup checklist incomplete",
+				title: t("promo.onboarding.title"),
 				description: (
 					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80">
-						<p>
-							{remainingSteps} setup step{remainingSteps === 1 ? "" : "s"} left. Not completing these steps keeps your Bifrost setup
-							vulnerable.
-						</p>
+						<p>{t("promo.onboarding.stepsLeft", { count: remainingSteps })}</p>
 						<button
 							type="button"
 							onClick={handleResumeOnboarding}
 							data-testid="onboarding-resume-btn"
 							className="text-primary mt-auto self-start pb-1 font-medium underline"
 						>
-							Resume setup
+							{t("promo.onboarding.resume")}
 						</button>
 					</div>
 				),
@@ -1636,17 +1645,17 @@ export default function AppSidebar() {
 		if (showNewReleaseBanner && latestRelease) {
 			cards.push({
 				id: "new-release",
-				title: `${latestRelease.name} is now available.`,
+				title: t("promo.newRelease.available", { name: latestRelease.name }),
 				description: (
 					<div className="flex h-full flex-col gap-2">
-						<img src={newReleaseImage} alt="Bifrost" className="h-[95px] rounded-md object-cover" />
+						<img src={newReleaseImage} alt={t("promo.newRelease.imageAlt")} className="h-[95px] rounded-md object-cover" />
 						<a
 							href={`https://docs.getbifrost.ai/changelogs/${latestRelease.name}`}
 							target="_blank"
 							rel="noopener noreferrer"
 							className="text-primary mt-auto pb-1 font-medium underline"
 						>
-							View release notes
+							{t("promo.newRelease.viewNotes")}
 						</a>
 					</div>
 				),
@@ -1655,7 +1664,28 @@ export default function AppSidebar() {
 		}
 		// Only show after mounted to ensure cookie is properly hydrated and avoid flash
 		if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
-			cards.push(productionSetupHelpCard);
+			cards.push({
+				id: "production-setup",
+				title: t("promo.productionSetup.title"),
+				description: (
+					<>
+						{t("promo.productionSetup.body")}
+						<br />
+						<br />
+						{t("promo.productionSetup.bookPrefix")}{" "}
+						<a
+							href="https://calendly.com/maximai/bifrost-demo?utm_source=bfd_sdbr"
+							target="_blank"
+							className="text-primary font-medium underline"
+							rel="noopener noreferrer"
+						>
+							{t("promo.productionSetup.here")}
+						</a>
+						.
+					</>
+				),
+				dismissible: true,
+			});
 		}
 		return cards;
 	}, [
@@ -1670,6 +1700,7 @@ export default function AppSidebar() {
 		onboardingSteps.length,
 		onboardingDoneCount,
 		handleResumeOnboarding,
+		t,
 	]);
 
 	const handlePromoDismiss = useCallback(
@@ -1719,7 +1750,7 @@ export default function AppSidebar() {
 						type="button"
 						data-testid="sidebar-collapse-btn"
 						className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex h-7 w-7 items-center justify-center rounded-md transition-colors"
-						aria-label="Collapse sidebar"
+						aria-label={t("sidebar.collapse")}
 					>
 						<PanelLeftClose className="h-4 w-4" />
 					</button>
@@ -1728,7 +1759,7 @@ export default function AppSidebar() {
 				<button
 					type="button"
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-1 group-data-[collapsible=icon]:flex"
-					aria-label="Expand sidebar"
+					aria-label={t("sidebar.expand")}
 					onClick={toggleSidebar}
 				>
 					<img className="size-[22px] object-contain" src={iconSrc} alt="" width={22} height={22} />
@@ -1757,8 +1788,8 @@ export default function AppSidebar() {
 					<input
 						ref={searchInputRef}
 						type="text"
-						aria-label="Search sidebar navigation"
-						placeholder="Search..."
+						aria-label={t("search.ariaLabel")}
+						placeholder={t("search.placeholder")}
 						value={searchQuery}
 						onChange={(e) => {
 							setSearchQuery(e.target.value);
@@ -1783,13 +1814,13 @@ export default function AppSidebar() {
 								const highlightedUrl = focusedIndex >= 0 ? navigableItems[focusedIndex]?.url : undefined;
 								return (
 									<SidebarItemView
-										key={item.title}
+										key={item.id}
 										item={item}
 										isActive={isActive}
 										isExternal={item.isExternal ?? false}
 										isWebSocketConnected={isWebSocketConnected}
-										isExpanded={expandedItems.has(item.title)}
-										onToggle={() => toggleItem(item.title)}
+										isExpanded={expandedItems.has(item.id)}
+										onToggle={() => toggleItem(item.id)}
 										pathname={pathname}
 										search={search}
 										isSidebarCollapsed={!isMobile && sidebarState === "collapsed"}
@@ -1815,7 +1846,7 @@ export default function AppSidebar() {
 							type="button"
 							data-testid="sidebar-expand-btn"
 							className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex cursor-pointer items-center justify-center rounded-md transition-colors"
-							aria-label="Expand sidebar"
+							aria-label={t("sidebar.expand")}
 						>
 							<PanelLeftOpen className="h-4 w-4" />
 						</button>

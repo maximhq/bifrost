@@ -13,6 +13,7 @@ import { Link } from "@tanstack/react-router";
 import { Check, Fingerprint, Globe2, KeyRound, Server, ShieldCheck, SquareTerminal } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { HARNESSES } from "./harnesses";
 import { PlatformSelect } from "./platformSelect";
 import type { AuthMethod, HarnessID, HarnessPlatform, ServerScope, VirtualKeyOption } from "./types";
@@ -24,27 +25,14 @@ const HARNESS_PLATFORMS: HarnessPlatform[] = ["macos", "windows", "linux"];
 const SERVER_SCOPES: ServerScope[] = ["all", "selected"];
 const AUTH_METHODS: AuthMethod[] = ["virtual_key", "oauth", "idp_token"];
 
-const AUTH_METHOD_COPY: Record<AuthMethod, { label: string; icon: typeof KeyRound; description: string }> = {
-	virtual_key: {
-		label: "Virtual key",
-		icon: KeyRound,
-		description: "The client sends a virtual key header. Governance, budgets and tool access follow the key you pick below.",
-	},
-	oauth: {
-		label: "OAuth",
-		icon: ShieldCheck,
-		description:
-			"No credential in the config. The client discovers the gateway, opens Bifrost's consent page in a browser, and holds a short-lived token of its own.",
-	},
-	idp_token: {
-		label: "Identity provider",
-		icon: Fingerprint,
-		description:
-			"The client sends its caller's own SSO access token. Replace the placeholder with a token from your identity provider; the request is attributed to that user.",
-	},
+const AUTH_METHOD_ICONS: Record<AuthMethod, typeof KeyRound> = {
+	virtual_key: KeyRound,
+	oauth: ShieldCheck,
+	idp_token: Fingerprint,
 };
 
 export function MCPUsageGuideSheet() {
+	const { t } = useTranslation("mcp");
 	// ── URL-persisted settings (survive refresh) ─────────────────────────
 	// All user-facing selections live in query params so the install wizard
 	// can be reconstructed exactly after a reload or shared via the URL.
@@ -157,8 +145,14 @@ export function MCPUsageGuideSheet() {
 		[authMethod, selectedServers, serverScope, selectedVirtualKey],
 	);
 
+	const authMethodCopy: Record<AuthMethod, { label: string; description: string }> = {
+		virtual_key: { label: t("usageGuide.virtualKey"), description: t("usageGuide.virtualKeyDesc") },
+		oauth: { label: "OAuth", description: t("usageGuide.oauthDesc") },
+		idp_token: { label: t("usageGuide.idp"), description: t("usageGuide.idpDesc") },
+	};
+
 	const canGenerateCommand = usesVirtualKey ? !!selectedVirtualKey && (serverScope === "all" || selectedServers.length > 0) : true;
-	const emptyMessage = selectedVirtualKey ? "Select servers or use Gateway root." : "Select a virtual key to continue.";
+	const emptyMessage = selectedVirtualKey ? t("usageGuide.selectServersOrRoot") : t("usageGuide.selectVirtualKey");
 
 	// ── Effects ──────────────────────────────────────────────────────────
 	// Keep the URL honest when the stored method is not one the gateway accepts
@@ -209,7 +203,7 @@ export function MCPUsageGuideSheet() {
 		<>
 			<Button type="button" onClick={() => setOpen(true)} data-testid="mcp-usage-guide-trigger" variant="outline" className="h-8">
 				<SquareTerminal />
-				<span className="hidden sm:inline">Connect agent</span>
+				<span className="hidden sm:inline">{t("usageGuide.connectAgent")}</span>
 			</Button>
 
 			<Sheet open={open} onOpenChange={setOpen}>
@@ -217,8 +211,8 @@ export function MCPUsageGuideSheet() {
 					<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 						<div className="flex items-center gap-2">
 							<div>
-								<SheetTitle>Install Bifrost MCP</SheetTitle>
-								<SheetDescription>Build a copy-ready command or config for your agent harness.</SheetDescription>
+								<SheetTitle>{t("usageGuide.title")}</SheetTitle>
+								<SheetDescription>{t("usageGuide.description")}</SheetDescription>
 							</div>
 						</div>
 					</SheetHeader>
@@ -227,7 +221,7 @@ export function MCPUsageGuideSheet() {
 						{/* ── Harness selector tabs ───────────────────────── */}
 						<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 							<div className="flex items-center gap-2 text-sm font-medium">
-								<span>Harness</span>
+								<span>{t("usageGuide.harness")}</span>
 							</div>
 							<Tabs value={harness} onValueChange={(value) => setUrlState({ harness: value as HarnessID })}>
 								{/* No overflow-x-auto: TabsList now collapses whatever does not fit
@@ -248,11 +242,12 @@ export function MCPUsageGuideSheet() {
 						{/* ── Authentication method ──────────────────────── */}
 						<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 							<div className="flex items-center gap-2 text-sm font-medium">
-								<span>Authentication</span>
+								<span>{t("usageGuide.authentication")}</span>
 							</div>
 							<div className={cn("grid gap-2", visibleAuthMethods.length > 2 ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
 								{visibleAuthMethods.map((method) => {
-									const { label, icon: Icon } = AUTH_METHOD_COPY[method];
+									const { label } = authMethodCopy[method];
+									const Icon = AUTH_METHOD_ICONS[method];
 									const disabled = !availableAuthMethods.includes(method);
 									return (
 										<button
@@ -274,27 +269,28 @@ export function MCPUsageGuideSheet() {
 									);
 								})}
 							</div>
-							<p className="text-muted-foreground text-xs">{AUTH_METHOD_COPY[authMethod].description}</p>
+							<p className="text-muted-foreground text-xs">{authMethodCopy[authMethod].description}</p>
 							{!availableAuthMethods.includes("oauth") && (
 								<p className="text-muted-foreground text-xs">
-									OAuth is off for this gateway. Switch the MCP server auth mode to <span className="font-medium">both</span> or{" "}
-									<span className="font-medium">oauth</span> under{" "}
-									<Link to="/workspace/config/mcp-gateway" className="text-primary underline">
-										MCP settings
-									</Link>{" "}
-									to offer it.
+									<Trans
+										t={t}
+										i18nKey="usageGuide.oauthOff"
+										components={{
+											both: <span className="font-medium" />,
+											oauth: <span className="font-medium" />,
+											settings: <Link to="/workspace/config/mcp-gateway" className="text-primary underline" />,
+										}}
+									/>
 								</p>
 							)}
-							{IS_ENTERPRISE && !idpConfigured && (
-								<p className="text-muted-foreground text-xs">Identity provider login needs an enabled SSO/SCIM provider.</p>
-							)}
+							{IS_ENTERPRISE && !idpConfigured && <p className="text-muted-foreground text-xs">{t("usageGuide.idpNeedsProvider")}</p>}
 						</section>
 
 						{/* ── Virtual key picker ─────────────────────────── */}
 						{usesVirtualKey && (
 							<section className="flex flex-col gap-2 transition-[border-color,background-color] duration-150 ease-out">
 								<div className="flex items-center gap-2 text-sm font-medium">
-									<span>Virtual key</span>
+									<span>{t("usageGuide.virtualKey")}</span>
 								</div>
 								<SearchSelect<VirtualKeyOption>
 									async
@@ -318,7 +314,7 @@ export function MCPUsageGuideSheet() {
 											data-testid="mcp-usage-guide-vk-select"
 										>
 											<KeyRound className="text-muted-foreground size-4" />
-											<span className="truncate">{selectedVirtualKey?.name ?? "Search virtual keys"}</span>
+											<span className="truncate">{selectedVirtualKey?.name ?? t("usageGuide.searchVirtualKeys")}</span>
 											{selectedVirtualKey && (
 												<span className="text-muted-foreground ml-auto hidden font-mono text-xs sm:inline">
 													{maskSecret(selectedVirtualKey.value)}
@@ -335,8 +331,8 @@ export function MCPUsageGuideSheet() {
 											{selectedVirtualKey?.id === option.virtualKey.id && <Check className="ml-auto size-4 text-green-600" />}
 										</div>
 									)}
-									searchPlaceholder="Search virtual keys..."
-									emptyMessage="No active virtual keys found."
+									searchPlaceholder={t("usageGuide.searchVirtualKeysPlaceholder")}
+									emptyMessage={t("usageGuide.noActiveVirtualKeys")}
 									align="start"
 									className="w-full"
 									contentClassName="w-[var(--radix-popover-trigger-width)]"
@@ -348,7 +344,7 @@ export function MCPUsageGuideSheet() {
 						{usesVirtualKey && selectedVirtualKey && (
 							<section className="flex flex-col gap-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none">
 								<div className="flex items-center gap-2 text-sm font-medium">
-									<span>Server access</span>
+									<span>{t("usageGuide.serverAccess")}</span>
 								</div>
 								<div className="grid gap-2 sm:grid-cols-2">
 									<button
@@ -361,7 +357,7 @@ export function MCPUsageGuideSheet() {
 										data-testid="mcp-usage-guide-server-scope-all"
 									>
 										<Globe2 className="text-muted-foreground size-4" />
-										<span className="font-medium">All servers</span>
+										<span className="font-medium">{t("usageGuide.allServers")}</span>
 										{serverScope === "all" && <Check className="ml-auto size-4 text-green-600" />}
 									</button>
 									<button
@@ -374,7 +370,7 @@ export function MCPUsageGuideSheet() {
 										data-testid="mcp-usage-guide-server-scope-selected"
 									>
 										<Server className="text-muted-foreground size-4" />
-										<span className="font-medium">Selected servers</span>
+										<span className="font-medium">{t("usageGuide.selectedServers")}</span>
 										{serverScope === "selected" && <Check className="ml-auto size-4 text-green-600" />}
 									</button>
 								</div>
@@ -386,8 +382,8 @@ export function MCPUsageGuideSheet() {
 											defaultValue={urlState.servers}
 											resetOnDefaultValueChange
 											onValueChange={(ids) => setUrlState({ servers: ids })}
-											placeholder={isFetchingMCPClients ? "Loading allowed servers..." : "Select allowed MCP servers"}
-											emptyIndicator="No allowed MCP servers found."
+											placeholder={isFetchingMCPClients ? t("usageGuide.loadingAllowedServers") : t("usageGuide.selectAllowedServers")}
+											emptyIndicator={t("usageGuide.noAllowedServers")}
 											maxCount={3}
 											className="border-input text-foreground hover:bg-accent hover:text-accent-foreground h-8 rounded-sm bg-transparent font-normal"
 											popoverClassName="w-[var(--radix-popover-trigger-width)]"
@@ -402,7 +398,7 @@ export function MCPUsageGuideSheet() {
 						{canGenerateCommand && activeHarness.usesPlatform && (
 							<section className="flex flex-col gap-2 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none">
 								<div className="flex items-center gap-2 text-sm font-medium">
-									<span>Platform</span>
+									<span>{t("usageGuide.platform")}</span>
 								</div>
 								<PlatformSelect platform={platform} onPlatformChange={(value) => setUrlState({ platform: value })} />
 							</section>
