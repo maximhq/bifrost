@@ -223,6 +223,7 @@
               },
               "mcp/sessions",
               "mcp/tool-execution",
+              "mcp/resources-and-prompts",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
