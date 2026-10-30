@@ -298482,6 +298482,228 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Log detail lookup takes the row timestamp (#9316 / PR #9342)",
+      "description": "With a ClickHouse logs_store, opening one log (GET /api/logs/{id}) filtered on id alone, which uses neither the monthly partitions nor the (timestamp, id) sort key, so ClickHouse read every granule of logs and the detail drawer never loaded (#9316). The route now takes an optional RFC 3339 timestamp query parameter, the row timestamp from the list response, which the ClickHouse store uses to bound the lookup; the UI sends it. The hint is only a hint: a timestamp that misses the row falls back to the id alone, and other stores ignore it. A malformed value is rejected with 400 (red before the change, which ignored the parameter and answered 200). The seed is one cheap openai request in a fresh session. The pruning itself is not visible over HTTP (and the harness profile logs to SQLite); it is pinned by the Go test TestClickHouseIDLookupsPruneParts.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini log-detail-timestamp seed: chat request - #9316",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh session per run: collection variables outlive a run in Postman.",
+                  "pm.collectionVariables.set('logDetailTsSession', 'harness-log-detail-ts-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.unset('logDetailTsId');",
+                  "pm.collectionVariables.unset('logDetailTsTimestamp');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The log row id is the request id.",
+                  "pm.collectionVariables.set('logDetailTsId', pm.response.headers.get('x-bifrost-request-id') || '');",
+                  "pm.test('log-detail-timestamp seed: chat request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('logDetailTsId'), 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logDetailTsSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-detail-timestamp: list reports the row timestamp - #9316",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-detail-timestamp list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logDetailTsTries'); return; }",
+                  "var id = pm.collectionVariables.get('logDetailTsId');",
+                  "var row = (pm.response.json().logs || []).filter(function (l) { return l.id === id; })[0];",
+                  "var tries = Number(pm.collectionVariables.get('logDetailTsTries') || 0);",
+                  "if (!row && tries < 10) {",
+                  "  // The seed row is written by the async log writer (1s batches).",
+                  "  pm.collectionVariables.set('logDetailTsTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logDetailTsTries');",
+                  "pm.test('log-detail-timestamp list: the seeded row carries a timestamp', function () {",
+                  "  pm.expect(row, 'seeded row ' + id + ' in: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(isNaN(Date.parse(row.timestamp)), 'timestamp: ' + row.timestamp).to.equal(false);",
+                  "});",
+                  "if (row) { pm.collectionVariables.set('logDetailTsTimestamp', row.timestamp); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logDetailTsSession}}&limit=10"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-detail-timestamp: detail with the row timestamp returns the row - #9316",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('logDetailTsQuery', encodeURIComponent(pm.collectionVariables.get('logDetailTsTimestamp') || ''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-detail-timestamp hinted detail: the row comes back', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.id).to.equal(pm.collectionVariables.get('logDetailTsId'));",
+                  "  pm.expect(Date.parse(body.timestamp), 'timestamp: ' + body.timestamp).to.equal(Date.parse(pm.collectionVariables.get('logDetailTsTimestamp')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/{{logDetailTsId}}?timestamp={{logDetailTsQuery}}"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-detail-timestamp: detail with a stale timestamp still finds the row - #9316",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Forty days off lands in another monthly partition, so a store that trusted the hint alone would miss.",
+                  "var ts = Date.parse(pm.collectionVariables.get('logDetailTsTimestamp') || '');",
+                  "pm.variables.set('logDetailTsStaleQuery', encodeURIComponent(new Date((isNaN(ts) ? Date.now() : ts) - 40 * 86400000).toISOString()));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-detail-timestamp stale hint: falls back to the id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().id).to.equal(pm.collectionVariables.get('logDetailTsId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/{{logDetailTsId}}?timestamp={{logDetailTsStaleQuery}}"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai gpt-4o-mini log-detail-timestamp: detail rejects a malformed timestamp - #9316",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-detail-timestamp malformed hint: 400 naming the parameter', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('invalid timestamp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/{{logDetailTsId}}?timestamp=yesterday"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-detail-timestamp cleanup: delete the seeded log - #9316",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Persistent log stores and reused gateways would otherwise keep the seeded row.",
+                  "pm.test('log-detail-timestamp cleanup succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[\"{{logDetailTsId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/logs"
+          }
+        }
+      ]
     }
   ]
 }

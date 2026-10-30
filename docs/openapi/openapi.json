@@ -89339,6 +89339,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "timestamp",
+            "in": "query",
+            "required": false,
+            "description": "The log entry's `timestamp` as returned by `GET /api/logs`, in RFC 3339 format. Optional:\nthe ClickHouse log store uses it to look the entry up without scanning every partition,\nand still finds the entry by ID alone when the timestamp does not match. Other log stores ignore it.\n",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
           }
         ],
         "security": [
@@ -89356,6 +89366,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LogEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }

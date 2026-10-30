@@ -102,9 +102,12 @@ function reasonClass(entry: LogEntry): string {
 // The list endpoint leaves out error_details, so each attempt loads its full
 // row (cached by RTK, and shared with opening that attempt).
 function WithDetails({ entry, children }: { entry: LogEntry; children: (full: LogEntry) => ReactNode }) {
-	const { currentData } = useGetLogByIdQuery(entry.id, {
-		skip: entry.status !== "error",
-	});
+	const { currentData } = useGetLogByIdQuery(
+		{ id: entry.id, timestamp: entry.timestamp },
+		{
+			skip: entry.status !== "error",
+		},
+	);
 	return <>{children(currentData ?? entry)}</>;
 }
 

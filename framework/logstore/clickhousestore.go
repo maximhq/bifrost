@@ -10,9 +10,11 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
@@ -54,7 +56,9 @@ type ClickHouseLogStore struct {
 	// instances; rmwLocks only covers this process. Nil means single-instance
 	// behaviour. Set once at startup, before any such write, so it is read
 	// without synchronization.
-	locker DistributedLocker
+	locker                 DistributedLocker
+	idLookupIgnoredIndexes string // non-id skip indexes on the id-read tables; see idLookupContext
+	idLookupSkipIndexes    bool   // false when that list could not be read, so id reads never use skip indexes under FINAL
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -610,6 +614,86 @@ func (s *ClickHouseLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Conte
 	})
 }
 
+// --- Point lookups by id ---
+
+// chLogTimestampWindow is how far either side of a FindByID timestamp hint the
+// lookup searches. The hint is a JSON round trip of the row's DateTime64(3), so
+// it is normally exact; the slack absorbs a client that rounded it to seconds.
+const chLogTimestampWindow = time.Second
+
+// chIDLookupTables are the tables whose rows are read back by id under FINAL.
+var chIDLookupTables = []string{"logs", "agent_logs", "relay_logs", "mcp_tool_logs"}
+
+// chMutableSkipIndexes lists, as an ignore_data_skipping_indices value, every
+// skip index on chIDLookupTables except those on id. Names that do not exist on
+// the queried table are ignored by ClickHouse, so one list serves all of them.
+func chMutableSkipIndexes(ctx context.Context, db *gorm.DB) (string, error) {
+	var names []string
+	if err := db.WithContext(ctx).
+		Raw("SELECT DISTINCT name FROM system.data_skipping_indices WHERE database = currentDatabase() AND table IN ? AND expr != 'id' ORDER BY name", chIDLookupTables).
+		Scan(&names).Error; err != nil {
+		return "", fmt.Errorf("clickhouse: read skip indexes: %w", err)
+	}
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "`" + chEscapeIdentifier(n) + "`"
+	}
+	return strings.Join(quoted, ","), nil
+}
+
+// idLookupContext lets a read whose selective predicate is the row id use the
+// id bloom filters under the connection-level FINAL. Before 25.x ClickHouse
+// ignores skip indexes under FINAL, because an index on a mutable column can
+// prune the granule holding a row's newest version while keeping an older one.
+// id is in every versioned table's dedup key and never rewritten
+// (chImmutableColumns), so all versions of a row match its id together. Every
+// other index stays off: the access scope and hidden-type predicates on these
+// reads filter on columns an update can change (user_id, team_id, ...).
+//
+// WithSettings replaces any settings already on ctx rather than merging them,
+// and the driver writes max_execution_time into the map, so it is built per call.
+func (s *ClickHouseLogStore) idLookupContext(ctx context.Context) context.Context {
+	if !s.idLookupSkipIndexes {
+		return ctx
+	}
+	settings := clickhouse.Settings{"use_skip_indexes_if_final": 1}
+	if s.idLookupIgnoredIndexes != "" {
+		settings["ignore_data_skipping_indices"] = s.idLookupIgnoredIndexes
+	}
+	return clickhouse.Context(ctx, clickhouse.WithSettings(settings))
+}
+
+// FindByID overrides the RDB lookup. A bare `WHERE id = ?` cannot use the
+// monthly partitions or the (timestamp, id) sort key, so without help
+// ClickHouse reads every granule of logs under FINAL. A timestamp hint on ctx
+// (LogTimestampContextKey) bounds the lookup to the granules around it; with no
+// hint, or one that matches nothing, the id bloom filter does the pruning.
+func (s *ClickHouseLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	idCtx := s.idLookupContext(ctx)
+	var log Log
+	if ts, ok := logTimestampFromContext(ctx); ok {
+		err := s.scopedLogsDB(idCtx).
+			Where("id = ?", id).
+			// Epoch millis, not time.Time: the driver binds time args at second precision (see chFilterMissing).
+			Where("timestamp BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)",
+				ts.Add(-chLogTimestampWindow).UnixMilli(), ts.Add(chLogTimestampWindow).UnixMilli()).
+			First(&log).Error
+		if err == nil {
+			return s.withChildAggregates(ctx, log), nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+	}
+	if err := s.scopedLogsDB(idCtx).Where("id = ?", id).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return s.withChildAggregates(ctx, log), nil
+}
+
 // --- Updates (read-modify-write + re-insert) ---
 
 // Update applies an update (a column->value map, or a *Log/Log whose non-zero
@@ -621,7 +705,7 @@ func (s *ClickHouseLogStore) Update(ctx context.Context, id string, entry any) e
 	}
 	defer s.lockRMW("logs", id)()
 	var existing Log
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -676,7 +760,7 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 		if err := func() error {
 			defer s.lockRMWBatch("logs", chunk)()
 			var rows []*Log
-			if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 				return err
 			}
 			if len(rows) == 0 {
@@ -727,7 +811,7 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 	return forEachRMWChunk(ids, func(chunk []string) error {
 		defer s.lockRMWBatch("logs", chunk)()
 		var rows []*Log
-		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 			return err
 		}
 		if len(rows) == 0 {
@@ -761,7 +845,7 @@ func (s *ClickHouseLogStore) UpdateAgentLog(ctx context.Context, id string, entr
 	}
 	defer s.lockRMW("agent_logs", id)()
 	var existing AgentLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -787,7 +871,7 @@ func (s *ClickHouseLogStore) UpdateRelayLog(ctx context.Context, id string, upda
 	}
 	defer s.lockRMW("relay_logs", id)()
 	var existing RelayLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -807,7 +891,7 @@ func (s *ClickHouseLogStore) UpdateMCPToolLog(ctx context.Context, id string, en
 	}
 	defer s.lockRMW("mcp_tool_logs", id)()
 	var existing MCPToolLog
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+	if err := s.db.WithContext(s.idLookupContext(ctx)).Where("id = ?", id).First(&existing).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}

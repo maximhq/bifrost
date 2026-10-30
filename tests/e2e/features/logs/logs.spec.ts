@@ -1219,6 +1219,16 @@ test.describe("LLM Logs", () => {
       await expect(rows.filter({ hasText: 'Key B' })).toContainText('cancelled · 499')
       await expect(rows.filter({ hasText: 'Key B' })).not.toContainText('success')
     })
+
+    // The detail fetch carries the row's timestamp, which a ClickHouse log store needs to look the
+    // row up without scanning every partition (#9316).
+    test('should send the row timestamp with the detail lookup', async ({ logsPage, page }) => {
+      await page.goto('/workspace/logs')
+      await expect(logsPage.tableRows).toHaveCount(1)
+      const detail = page.waitForRequest((req) => new URL(req.url()).pathname === `/api/logs/${log.id}`)
+      await logsPage.viewLogDetails(0)
+      expect(new URL((await detail).url()).searchParams.get('timestamp')).toBe(log.timestamp)
+    })
   })
 
   test.describe("URL State Persistence", () => {
