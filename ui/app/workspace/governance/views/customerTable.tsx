@@ -34,6 +34,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { CustomersEmptyState } from "./customersEmptyState";
 import CustomerSheet from "./customerSheet";
+import { useActionParam } from "@/hooks/useActionParam";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -179,6 +180,7 @@ export default function CustomersTable({
 		setEditingCustomer(null);
 		setShowCustomerSheet(true);
 	};
+	useActionParam("create", handleAddCustomer, { isOpen: showCustomerSheet, enabled: hasCreateAccess });
 
 	const handleEditCustomer = (customer: Customer) => {
 		setEditingCustomer(customer);

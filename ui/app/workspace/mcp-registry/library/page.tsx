@@ -19,6 +19,7 @@ import { MCPLibraryInstallSheet } from "./views/mcpLibraryInstallSheet";
 import { MCPLibraryServerCard, MCPLibraryServerCardSkeleton } from "./views/mcpLibraryServerCard";
 import { MCPLibraryServersTable, MCPLibraryServersTableSkeleton } from "./views/mcpLibraryServersTable";
 import { MCPLibrarySettingsSheet } from "./views/mcpLibrarySettingsSheet";
+import { useActionParam } from "@/hooks/useActionParam";
 
 const PAGE_SIZE = 24;
 const VIEW_MODE_STORAGE_KEY = "mcp-library-view-mode";
@@ -43,6 +44,7 @@ export default function MCPLibraryPage() {
 	const [selectedServer, setSelectedServer] = useState<MCPLibraryEntry | null>(null);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [addServerOpen, setAddServerOpen] = useState(false);
+	useActionParam("create", () => setAddServerOpen(true), { isOpen: addServerOpen, enabled: hasCreateMCPClientAccess });
 	const [viewMode, setViewMode] = useState<MCPLibraryViewMode>(getInitialViewMode);
 	const { toast } = useToast();
 

@@ -173,6 +173,74 @@
 		"unlockTitle": "Unlock your personal Home page",
 		"unlockDescription": "This feature is a part of the Bifrost enterprise license. Home shows each user their own usage, keys, budgets and access."
 	},
+	"commandPalette": {
+		"title": "Command menu",
+		"placeholder": "Search pages or jump to…",
+		"empty": "No results for “{{query}}”",
+		"groups": {
+			"general": "General",
+			"results": "Results",
+			"actions": "Actions",
+			"thisPage": "On this page"
+		},
+		"current": "Current",
+		"footer": {
+			"navigate": "Navigate",
+			"open": "Open",
+			"newTab": "New tab",
+			"back": "Back"
+		},
+		"openHint": "Open command menu",
+		"actions": {
+			"create": "Create…",
+			"copyLink": "Copy link to this page",
+			"changeTheme": "Change theme…",
+			"changeLanguage": "Change language…"
+		},
+		"pages": {
+			"create": {
+				"title": "Create",
+				"placeholder": "Search what to create…"
+			},
+			"theme": {
+				"title": "Theme",
+				"placeholder": "Search themes…"
+			},
+			"language": {
+				"title": "Language",
+				"placeholder": "Search languages…"
+			}
+		},
+		"create": {
+			"virtualKey": "Create virtual key",
+			"team": "Create team",
+			"customer": "Create customer",
+			"user": "Create user",
+			"routingRule": "Create routing rule",
+			"mcpServer": "Add MCP server",
+			"modelLimit": "Create model limit",
+			"webhook": "Create webhook",
+			"mcpLibraryServer": "Add server to MCP library",
+			"virtualMcp": "Create virtual MCP",
+			"agent": "Create agent",
+			"relay": "Add relay endpoint",
+			"plugin": "Add plugin",
+			"alertChannel": "Add alert channel",
+			"alertRule": "Create alert rule",
+			"businessUnit": "Create business unit",
+			"role": "Create role",
+			"accessProfile": "Create access profile",
+			"project": "Create project",
+			"prompt": "Create prompt",
+			"promptFolder": "Create prompt folder",
+			"skill": "Create skill",
+			"apiKey": "Create API key"
+		},
+		"toast": {
+			"linkCopied": "Link copied",
+			"linkCopyFailed": "Could not copy the link"
+		}
+	},
 	"search": {
 		"placeholder": "Search...",
 		"ariaLabel": "Search sidebar navigation"
