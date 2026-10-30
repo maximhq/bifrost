@@ -22,7 +22,11 @@
 		"toTime": "終了時刻",
 		"timezone": "タイムゾーン",
 		"selectTimezone": "タイムゾーンを選択",
-		"time": "時刻"
+		"time": "時刻",
+		"am": "午前",
+		"pm": "午後",
+		"hourPlaceholder": "時",
+		"minutePlaceholder": "分"
 	},
 	"timePeriods": {
 		"1h": "直近 1 時間",
@@ -70,7 +74,10 @@
 		"agents": "エージェント",
 		"providers": "プロバイダー",
 		"webhookEndpoints": "Webhook エンドポイント",
-		"modelLimits": "モデル制限"
+		"modelLimits": "モデル制限",
+		"agent": "エージェント",
+		"relay": "リレー",
+		"relays": "リレー"
 	},
 	"aboutField": "{{field}}について",
 	"thisField": "このフィールド",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}、選択済み{{disabled}}",
 		"optionNotSelectedAria": "{{label}}、未選択{{disabled}}",
 		"disabledSuffix": "、無効",
-		"clear": "クリア"
+		"clear": "クリア",
+		"moreCount": "他 {{count}} 件"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "会計年度の開始",
@@ -195,7 +203,8 @@
 		"failedToLoad": "読み込みに失敗しました。"
 	},
 	"numberAndSelect": {
-		"resetPeriod": "リセット期間"
+		"resetPeriod": "リセット期間",
+		"noLimit": "制限なし"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "解決後の値は保存後に表示されます"
@@ -204,7 +213,9 @@
 		"label": "エージェントアクセス",
 		"tooltip": "このキーに登録済みエージェントへのアクセスを付与します。キーは各エージェントを <path0>{{path}}</path0> で呼び出せるようになります。すべてのキーに公開されているエージェントには付与は不要です。",
 		"selectPlaceholder": "追加するエージェントを選択",
-		"removeAria": "{{name}} を削除"
+		"removeAria": "{{name}} を削除",
+		"openToAll": "すべてのキーに公開",
+		"disabled": "無効"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} は全期間にわたってローリングウィンドウを使用します。カレンダー整列は 1d、1w、1M、1Q、1Y にのみ適用されます。"
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "{{label}}は {{min}} から {{max}} の間で指定してください。",
 		"addString": "文字列を追加",
-		"select": "選択"
+		"select": "選択",
+		"clear": "{{label}}をクリア"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "有効な URL にしてください",
 		"validEmail": "有効なメールアドレスにしてください",
 		"grpcHostPortFormat": "gRPC では <host>:<port> の形式にしてください (例: {{example}})",
-		"invalidInput": "入力が無効です"
+		"invalidInput": "入力が無効です",
+		"vertexEndpointId": "Vertex エンドポイント ID を入力するか、対応するエンドポイント URL を貼り付けてください",
+		"mcp": {
+			"privateKeyRequired": "private_key_jwt には秘密鍵が必要です",
+			"secretRequiredForMethod": "送信方法を選択するにはクライアントシークレットが必要です",
+			"credentialResend": "再入力してください。オーディエンス、アップストリームのトークンエンドポイント、またはアサーションオーディエンスが変更されたため、保存済みの値は新しい宛先に送信されません"
+		},
+		"relays": {
+			"costPerRequestNegative": "リクエストあたりのコストは負の値にできません",
+			"costPerUnitNegative": "単位あたりのコストは負の値にできません",
+			"blockSizePositive": "ブロックサイズは 0 より大きくする必要があります",
+			"minimumUnitsNegative": "最小単位数は負の値にできません",
+			"unitsPathRequiredRoute": "単位パスが必要です。このルートは単位ごとに課金されますが、ルートにもリレーにもパスが指定されていません",
+			"unitsPathRequired": "測定がボディ全体を読む場合を除き、単位パスが必要です",
+			"unitsPathRequiredInherited": "単位パスが必要です。ルート {{method}} {{path}} は単位ごとに課金され、パスをリレーから継承します",
+			"absoluteUrl": "絶対 http(s) URL を入力してください",
+			"pathRequired": "パスは必須です",
+			"pathMustStartWithSlash": "パスは / で始まる必要があります",
+			"doubleStarLast": "** は最後のセグメントでのみ使用できます",
+			"headerNameRequired": "ヘッダー認証にはヘッダー名が必要です",
+			"queryParamRequired": "クエリ認証にはクエリパラメーターが必要です",
+			"awsServiceRequired": "SigV4 認証には AWS サービスが必要です",
+			"awsServiceFormat": "AWS サービスは [a-z0-9-]+ に一致する必要があります",
+			"headerNameNoSpecial": "ヘッダー名にスペース、コロン、スラッシュは使用できません",
+			"matcherNeedsValue": "ヘッダーマッチャーには値のグロブが必要です",
+			"matcherNeedsName": "ヘッダーマッチャーにはヘッダー名が必要です",
+			"jobIdPath": "開始応答でジョブ ID を返す場所を入力してください",
+			"pollPathRequired": "ポーリングパスを入力してください",
+			"pollPathRooted": "{{example}} のようなルートパスを入力してください",
+			"statusPathRequired": "ポーリング応答でステータスを返す場所を入力してください",
+			"succeededRequired": "成功ステータスを 1 つ以上入力してください",
+			"atLeastOneSecond": "1 秒以上にしてください",
+			"headerMatchedDup": "このヘッダーはこのルートで既にマッチ対象です",
+			"relayNameFormat": "1〜64 文字の英数字、ドット、ハイフン、アンダースコアを使用してください",
+			"relayNameDots": "リレー名に . や .. は使用できません",
+			"baseUrlFormat": "クエリ、フラグメント、ユーザー情報を含まない絶対 http(s) URL を入力してください",
+			"headerValueRequired": "このヘッダーの値を入力してください",
+			"headerNameEnter": "ヘッダー名を入力してください",
+			"headerAlreadySet": "このヘッダーは既に設定されています",
+			"lineError": "{{line}} 行目: {{message}}",
+			"invalidPath": "無効なパス",
+			"regionSigV4": "SigV4 にはリージョンが必要です",
+			"credentialRequired": "この認証タイプには認証情報が必要です",
+			"proxyUrlRequired": "プロキシ URL は必須です",
+			"rootedPathSearch": "/v1/search のようなルートパスを入力してください",
+			"statusRange": "ステータスは 100〜599 の範囲で指定してください"
+		}
 	},
 	"permissionDenied": {
 		"create": "{{entity}}を作成する権限がありません。",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}} 四半期",
 		"year_one": "{{count}} 年",
 		"year_other": "{{count}} 年"
+	},
+	"viewToggle": {
+		"more": "もっと見る",
+		"less": "表示を減らす"
+	},
+	"baseProviderSelector": {
+		"placeholder": "ベース形式を選択",
+		"searchPlaceholder": "形式を検索..."
+	},
+	"commandDialog": {
+		"title": "コマンドパレット",
+		"description": "実行するコマンドを検索..."
+	},
+	"copyToClipboard": {
+		"success": "クリップボードにコピーしました",
+		"failed": "コピーに失敗しました"
+	},
+	"agentCard": {
+		"unnamedSkill": "名前のないスキル",
+		"unknown": "不明"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} 他 {{count}} 件"
+	},
+	"badges": {
+		"beta": "ベータ"
 	}
 }

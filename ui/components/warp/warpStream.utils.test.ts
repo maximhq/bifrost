@@ -989,7 +989,7 @@ describe("weekly and rate charts", () => {
 	});
 
 	it("labels weekly points and time bars by date, not as category names", () => {
-		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Wk of Sep 14");
+		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Week of Sep 14");
 		expect(formatWarpChartX({ kind: "bar", interval: "day" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Sep 14");
 	});
 });

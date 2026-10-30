@@ -59,7 +59,8 @@
 			"name": "이름",
 			"noBudgets": "구성된 예산이 없어요"
 		},
-		"actionsAria": "고객 작업 {{name}}"
+		"actionsAria": "고객 작업 {{name}}",
+		"teamCount_other": "팀 {{count}}개"
 	},
 	"teams": {
 		"title": "팀",
@@ -531,7 +532,13 @@
 			"custom pricing": "맞춤 가격",
 			"configuration": "구성",
 			"complexity router": "복잡성 라우터",
-			"routing rules": "라우팅 규칙"
+			"routing rules": "라우팅 규칙",
+			"relays": "릴레이",
+			"Agent gateway configuration": "에이전트 게이트웨이 구성",
+			"guardrail incidents": "가드레일 인시던트",
+			"relay logs": "릴레이 로그",
+			"agent logs": "에이전트 로그",
+			"Warp": "Warp"
 		}
 	},
 	"loggingDisabled": {

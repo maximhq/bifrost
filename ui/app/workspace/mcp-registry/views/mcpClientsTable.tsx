@@ -623,15 +623,15 @@ export default function MCPClientsTable({
 			case "none":
 			case undefined:
 			case "":
-				return "None";
+				return t("registry.filter.none");
 			case "headers":
 			case "per_user_headers":
-				return "Headers";
+				return t("registry.filter.headers");
 			case "oauth":
 			case "per_user_oauth":
 				return "OAuth";
 			case "token_exchange":
-				return "Token Exchange";
+				return t("registry.filter.tokenExchange");
 			default:
 				return type;
 		}
@@ -643,9 +643,9 @@ export default function MCPClientsTable({
 	// table agrees with the form.
 	const getAuthScopeDisplay = (type: MCPAuthType | undefined) => {
 		if (type === "token_exchange") {
-			return "Per-User";
+			return t("registry.form.perUser");
 		}
-		return authScopeOf(type) === "per_user" ? "Per-User" : "Shared";
+		return authScopeOf(type) === "per_user" ? t("registry.form.perUser") : t("registry.form.shared");
 	};
 
 	const handleRowClick = (mcpClient: MCPClient) => {
@@ -776,8 +776,8 @@ export default function MCPClientsTable({
 						toast({
 							title: t("common.success"),
 							description: bootstrapAuthorize.isPerUserOauth
-								? "OAuth setup verified successfully. Each user will authenticate individually."
-								: "MCP client connected successfully",
+								? t("registry.toast.oauthVerifiedPerUser")
+								: t("registry.toast.clientConnected"),
 						});
 						setBootstrapAuthorize(null);
 						if (refetch) {

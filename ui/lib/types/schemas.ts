@@ -81,10 +81,10 @@ export function isSecretVarSet(v: { value?: string; ref?: string } | undefined):
 }
 
 // Message for private_key_jwt settings saved without the key they configure.
-export const PRIVATE_KEY_REQUIRED_MESSAGE = "A private key is required for private_key_jwt";
+export const privateKeyRequiredMessage = () => i18n.t("validation.mcp.privateKeyRequired");
 
 // Message for a send method chosen without the secret it sends.
-export const SECRET_REQUIRED_FOR_METHOD_MESSAGE = "A client secret is required to choose how it is sent";
+export const secretRequiredForMethodMessage = () => i18n.t("validation.mcp.secretRequiredForMethod");
 
 // The id_jag upstream-authentication fields the form checks below read.
 interface IDJAGUpstreamAuthFields {
@@ -344,7 +344,7 @@ export const sageMakerKeyConfigSchema = z
 		endpoints: z.object({ runtime: secretVarSchema.optional() }).optional(),
 	})
 	.refine((data) => isSecretVarSet(data.region), {
-		message: "Region is required",
+		...msg("validation.regionIsRequired"),
 		path: ["region"],
 	})
 	.refine(
@@ -359,7 +359,7 @@ export const sageMakerKeyConfigSchema = z
 			return hasAccessKey && hasSecretKey;
 		},
 		{
-			message: "Both Access Key and Secret Key are required for explicit credentials",
+			...msg("validation.bothAccessKeyAndSecretKeyAreRequiredForExplicit"),
 			path: ["access_key"],
 		},
 	);
@@ -408,9 +408,8 @@ interface IDJAGResourceTarget {
 	resource_private_key?: { value?: string; ref?: string; type?: string };
 }
 
-// RESOURCE_CREDENTIAL_RESEND_MESSAGE explains why a saved secret or key must be typed again.
-export const RESOURCE_CREDENTIAL_RESEND_MESSAGE =
-	"Re-enter it: the audience, upstream token endpoint or assertion audience changed, so the saved value is not sent to the new target";
+// resourceCredentialResendMessage explains why a saved secret or key must be typed again.
+export const resourceCredentialResendMessage = () => i18n.t("validation.mcp.credentialResend");
 
 // resourceCredentialResendRequired mirrors the server's rule: an edit that changes where the
 // upstream credential is sent (the audience it is discovered from, the token endpoint, or the
@@ -707,7 +706,7 @@ const aliasConfigObjectSchema = z.object({
 	force_single_region: z.boolean().optional(),
 	vertex_endpoint: z
 		.object({
-			endpoint_id: z.string().regex(/^[A-Za-z0-9_-]+$/, "Enter a Vertex endpoint ID or paste a supported endpoint URL"),
+			endpoint_id: z.string().regex(/^[A-Za-z0-9_-]+$/, msg("validation.vertexEndpointId")),
 			format: z.enum(["openai_chat"]),
 			method: z.enum(["raw_predict", "chat_completions"]).optional(),
 		})
@@ -1963,23 +1962,23 @@ export const mcpClientUpdateSchema = z
 				if (te.profile !== "id_jag") return;
 				const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
 				if (!isSecretVarSet(te.resource_client_id)) {
-					issue("resource_client_id", "Client ID at the upstream server is required for Cross App Access");
+					issue("resource_client_id", i18n.t("registry.form.resourceClientIdRequired", { ns: "mcp" }));
 				}
 				if (te.resource_token_endpoint && !isHTTPSOrLoopbackURL(te.resource_token_endpoint)) {
-					issue("resource_token_endpoint", "Token endpoint must be an https URL (http is allowed only for localhost)");
+					issue("resource_token_endpoint", i18n.t("registry.form.resourceTokenEndpointHttps", { ns: "mcp" }));
 				}
 				const audience = te.resource_assertion_audience?.trim();
 				if (audience && !isHTTPSOrLoopbackURL(audience)) {
-					issue("resource_assertion_audience", "Assertion audience must be an https URL (http is allowed only for localhost)");
+					issue("resource_assertion_audience", i18n.t("registry.form.assertionAudienceHttps", { ns: "mcp" }));
 				}
 				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
-					issue("resource_private_key", "Use either a client secret or a private key at the upstream server, not both");
+					issue("resource_private_key", i18n.t("registry.form.resourceBothAuth", { ns: "mcp" }));
 				}
 				if (hasPrivateKeySettingsWithoutKey(te)) {
-					issue("resource_private_key", PRIVATE_KEY_REQUIRED_MESSAGE);
+					issue("resource_private_key", privateKeyRequiredMessage());
 				}
 				if (hasSendMethodWithoutSecret(te)) {
-					issue("resource_client_secret", SECRET_REQUIRED_FOR_METHOD_MESSAGE);
+					issue("resource_client_secret", secretRequiredForMethodMessage());
 				}
 			})
 			.optional(),
@@ -2197,13 +2196,13 @@ export const relayUsageBaseSchema = z.object({
 	cost_path: endpointGjsonPath,
 	// Cleared fields hold null, not undefined: react-hook-form shows a field's loaded value again when
 	// it is set to undefined, so an emptied price would snap back. null and "" are dropped on save.
-	cost_per_request: z.number().min(0, "Cost per request must not be negative").nullish(),
+	cost_per_request: z.number().min(0, msg("validation.relays.costPerRequestNegative")).nullish(),
 	units_path: endpointGjsonPath,
 	units_source: z.enum(["response", "request"]).nullish(),
 	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).nullish(),
-	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").nullish(),
-	units_block_size: z.number().positive("Block size must be above zero").nullish(),
-	units_minimum: z.number().min(0, "Minimum units must not be negative").nullish(),
+	cost_per_unit: z.number().min(0, msg("validation.relays.costPerUnitNegative")).nullish(),
+	units_block_size: z.number().positive(msg("validation.relays.blockSizePositive")).nullish(),
+	units_minimum: z.number().min(0, msg("validation.relays.minimumUnitsNegative")).nullish(),
 });
 
 /** A route is billable by default only for POST, so the flag is stored only when it differs. */
@@ -2233,9 +2232,7 @@ export function relayUsageUnitsPathError(usage: UsageRule | undefined, base?: Us
 	const measure = pick("units_measure");
 	const path = (pick("units_path") ?? "").toString().trim();
 	if (typeof rate === "number" && rate > 0 && measure !== "body_bytes" && measure !== "body_chars" && !path) {
-		return base
-			? "Units path is required: this route charges per unit and neither it nor the relay names a path"
-			: "Units path is required unless the measure reads the whole body";
+		return base ? i18n.t("validation.relays.unitsPathRequiredRoute") : i18n.t("validation.relays.unitsPathRequired");
 	}
 	return undefined;
 }
@@ -2247,15 +2244,15 @@ export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) =>
 
 // The relay route import's URL source. The gateway fetches it, so only an absolute http(s) URL is sent;
 // anything else is refused on the field rather than as a fetch error.
-export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, "Enter an absolute http(s) URL");
+export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, msg("validation.relays.absoluteUrl"));
 
 // Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
 const relayGlob = z
 	.string()
 	.trim()
-	.min(1, "Path is required")
-	.refine((p) => p.startsWith("/"), "Path must start with /")
-	.refine((p) => !p.slice(1).split("/").slice(0, -1).includes("**"), "** is only allowed as the last segment");
+	.min(1, msg("validation.relays.pathRequired"))
+	.refine((p) => p.startsWith("/"), msg("validation.relays.pathMustStartWithSlash"))
+	.refine((p) => !p.slice(1).split("/").slice(0, -1).includes("**"), msg("validation.relays.doubleStarLast"));
 
 export const relayAuthSchema = z
 	.object({
@@ -2267,16 +2264,16 @@ export const relayAuthSchema = z
 	})
 	.superRefine((auth, ctx) => {
 		if (auth.type === "header" && !auth.header_name) {
-			ctx.addIssue({ code: "custom", message: "Header name is required for header auth", path: ["header_name"] });
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerNameRequired"), path: ["header_name"] });
 		}
 		if (auth.type === "query" && !auth.query_param) {
-			ctx.addIssue({ code: "custom", message: "Query parameter is required for query auth", path: ["query_param"] });
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.queryParamRequired"), path: ["query_param"] });
 		}
 		if (auth.type === "aws_sigv4") {
 			const service = auth.aws?.service ?? "";
-			if (!service) ctx.addIssue({ code: "custom", message: "AWS service is required for SigV4 auth", path: ["aws", "service"] });
+			if (!service) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.awsServiceRequired"), path: ["aws", "service"] });
 			else if (!/^[a-z0-9-]+$/.test(service))
-				ctx.addIssue({ code: "custom", message: "AWS service must match [a-z0-9-]+", path: ["aws", "service"] });
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.awsServiceFormat"), path: ["aws", "service"] });
 		}
 	});
 
@@ -2287,33 +2284,33 @@ export const relayHeaderPairSchema = z
 		name: z
 			.string()
 			.trim()
-			.refine((n) => !/[\s:/]/.test(n), "Header name must not contain spaces, colons or slashes"),
+			.refine((n) => !/[\s:/]/.test(n), msg("validation.relays.headerNameNoSpecial")),
 		value: z.string().trim(),
 	})
 	.superRefine((pair, ctx) => {
-		if (pair.name && !pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a value glob", path: ["value"] });
-		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a header name", path: ["name"] });
+		if (pair.name && !pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsValue"), path: ["value"] });
+		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsName"), path: ["name"] });
 	});
 
 // A route's async job block is set through config.json or the API; the form carries it untouched.
 export const relayJobSchema = z.object({
-	id_path: z.string().trim().min(1, "Enter where the start reply carries the job id"),
+	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
 	poll: z.object({
 		method: z.string().optional(),
 		path: z
 			.string()
 			.trim()
-			.min(1, "Enter the poll path")
-			.refine((p) => p.startsWith("/"), "Enter a rooted path such as /jobs/{{job.id}}"),
+			.min(1, msg("validation.relays.pollPathRequired"))
+			.refine((p) => p.startsWith("/"), { error: () => i18n.t("validation.relays.pollPathRooted", { example: "/jobs/{{job.id}}" }) }),
 		headers: z.record(z.string(), z.string()).optional(),
 		body: z.string().optional(),
 		content_type: z.string().optional(),
 	}),
-	status_path: z.string().trim().min(1, "Enter where the poll reply carries the status"),
-	succeeded: z.array(z.string()).min(1, "Enter at least one succeeded status"),
+	status_path: z.string().trim().min(1, msg("validation.relays.statusPathRequired")),
+	succeeded: z.array(z.string()).min(1, msg("validation.relays.succeededRequired")),
 	failed: z.array(z.string()).optional(),
-	interval_seconds: z.number().int().min(1, "At least 1 second").optional(),
-	timeout_seconds: z.number().int().min(1, "At least 1 second").optional(),
+	interval_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
+	timeout_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
 	usage: relayUsageBaseSchema.optional(),
 });
 
@@ -2325,7 +2322,7 @@ export const relayRouteFormSchema = z.object({
 		pairs.forEach((pair, i) => {
 			const name = pair.name.trim().toLowerCase();
 			if (!name) return;
-			if (seen.has(name)) ctx.addIssue({ code: "custom", message: "This header is already matched on this route", path: [i, "name"] });
+			if (seen.has(name)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerMatchedDup"), path: [i, "name"] });
 			seen.add(name);
 		});
 	}),
@@ -2351,8 +2348,8 @@ export const relayFormSchema = z
 		name: z
 			.string()
 			.trim()
-			.regex(/^[A-Za-z0-9._-]{1,64}$/, "Use 1-64 letters, digits, dots, dashes or underscores")
-			.refine((n) => n !== "." && n !== "..", "A relay cannot be named . or .."),
+			.regex(/^[A-Za-z0-9._-]{1,64}$/, msg("validation.relays.relayNameFormat"))
+			.refine((n) => n !== "." && n !== "..", msg("validation.relays.relayNameDots")),
 		description: z.string().optional(),
 		base_url: z
 			.string()
@@ -2370,7 +2367,7 @@ export const relayFormSchema = z
 				} catch {
 					return false;
 				}
-			}, "Enter an absolute http(s) URL without a query, fragment or user info"),
+			}, msg("validation.relays.baseUrlFormat")),
 		auth: relayAuthSchema,
 		credential_value: _secretVarBase.optional(),
 		aws: z
@@ -2391,10 +2388,11 @@ export const relayFormSchema = z
 			pairs.forEach((pair, i) => {
 				const name = pair.name.trim().toLowerCase();
 				const hasValue = isSecretVarSet(pair.value);
-				if (name && !hasValue) ctx.addIssue({ code: "custom", message: "Enter a value for this header", path: [i, "value"] });
-				if (!name && hasValue) ctx.addIssue({ code: "custom", message: "Enter a header name", path: [i, "name"] });
+				if (name && !hasValue)
+					ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerValueRequired"), path: [i, "value"] });
+				if (!name && hasValue) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerNameEnter"), path: [i, "name"] });
 				if (!name) return;
-				if (seen.has(name)) ctx.addIssue({ code: "custom", message: "This header is already set", path: [i, "name"] });
+				if (seen.has(name)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.headerAlreadySet"), path: [i, "name"] });
 				seen.add(name);
 			});
 		}),
@@ -2416,7 +2414,13 @@ export const relayFormSchema = z
 					if (!p.trim()) return;
 					const parsed = relayGlob.safeParse(p);
 					if (!parsed.success)
-						ctx.addIssue({ code: "custom", message: `Line ${i + 1}: ${parsed.error.issues[0]?.message ?? "invalid path"}` });
+						ctx.addIssue({
+							code: "custom",
+							message: i18n.t("validation.relays.lineError", {
+								line: i + 1,
+								message: parsed.error.issues[0]?.message ?? i18n.t("validation.relays.invalidPath"),
+							}),
+						});
 				});
 			}),
 		}),
@@ -2428,12 +2432,12 @@ export const relayFormSchema = z
 		const type = form.auth.type;
 		if (type === "aws_sigv4") {
 			if (!isSecretVarSet(form.aws?.region))
-				ctx.addIssue({ code: "custom", message: "Region is required for SigV4", path: ["aws", "region"] });
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.regionSigV4"), path: ["aws", "region"] });
 		} else if (type !== "none" && !isSecretVarSet(form.credential_value)) {
-			ctx.addIssue({ code: "custom", message: "The credential is required for this auth type", path: ["credential_value"] });
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.credentialRequired"), path: ["credential_value"] });
 		}
 		if ((form.proxy.type === "http" || form.proxy.type === "socks5") && !isSecretVarSet(form.proxy.url)) {
-			ctx.addIssue({ code: "custom", message: "Proxy URL is required", path: ["proxy", "url"] });
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.proxyUrlRequired"), path: ["proxy", "url"] });
 		}
 		// The backend checks every route against the relay pricing it inherits, so a relay edit that
 		// leaves a per-unit route without a units path is refused; say which route on the relay field.
@@ -2444,7 +2448,7 @@ export const relayFormSchema = z
 		if (broken && !relayUsageUnitsPathError(form.usage)) {
 			ctx.addIssue({
 				code: "custom",
-				message: `Units path is required: route ${broken.method} ${broken.path} charges per unit and inherits it from the relay`,
+				message: i18n.t("validation.relays.unitsPathRequiredInherited", { method: broken.method, path: broken.path }),
 				path: ["usage", "units_path"],
 			});
 		}
@@ -2458,10 +2462,10 @@ export const relayPreviewSampleSchema = z.object({
 	path: z
 		.string()
 		.trim()
-		.min(1, "Path is required")
+		.min(1, msg("validation.relays.pathRequired"))
 		.refine(
 			(p) => p.startsWith("/") && !p.startsWith("//") && !p.includes("://") && !p.includes("\\"),
-			"Enter a rooted path such as /v1/search",
+			msg("validation.relays.rootedPathSearch"),
 		),
-	status_code: z.number().int().min(100, "Status must be between 100 and 599").max(599, "Status must be between 100 and 599"),
+	status_code: z.number().int().min(100, msg("validation.relays.statusRange")).max(599, msg("validation.relays.statusRange")),
 });

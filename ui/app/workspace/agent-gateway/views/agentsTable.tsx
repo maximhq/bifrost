@@ -25,6 +25,7 @@ import { useDeleteAgentMutation, useUpdateAgentMutation } from "@/lib/store/apis
 import type { AgentRegistrationView } from "@/lib/types/agents";
 import AgentAccessSummary from "@enterprise/components/agent-gateway/agentAccessSummary";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { format, formatDistanceToNow } from "date-fns";
 import type { TFunction } from "i18next";
 import { Check, ChevronLeft, ChevronRight, Copy, Info, MoreHorizontal, PencilIcon, Plus, Search, Trash2 } from "lucide-react";
@@ -207,7 +208,7 @@ export default function AgentsTable({
 	const [deleteAgent] = useDeleteAgentMutation();
 	const [updateAgent] = useUpdateAgentMutation();
 	const { toast } = useToast();
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const { t: tCommon } = useTranslation("common");
 
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
@@ -398,9 +399,13 @@ export default function AgentsTable({
 										<TableCell className="text-muted-foreground pr-6 text-sm">
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<span>{formatDistanceToNow(new Date(agent.updated_at), { addSuffix: true })}</span>
+													<span>
+														{formatDistanceToNow(new Date(agent.updated_at), { addSuffix: true, locale: dateFnsLocale(i18n.language) })}
+													</span>
 												</TooltipTrigger>
-												<TooltipContent>{format(new Date(agent.updated_at), "MMM dd, yyyy HH:mm:ss OOOO")}</TooltipContent>
+												<TooltipContent>
+													{format(new Date(agent.updated_at), "MMM dd, yyyy HH:mm:ss OOOO", { locale: dateFnsLocale(i18n.language) })}
+												</TooltipContent>
 											</Tooltip>
 										</TableCell>
 										<TableCell data-testid={`agent-status-${agent.name}`} onClick={(e) => e.stopPropagation()}>

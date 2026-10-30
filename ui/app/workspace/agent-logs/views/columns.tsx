@@ -154,7 +154,10 @@ export const createAgentColumns = (
 		maxSize: 8,
 		cell: ({ row }) => {
 			const status = getValidatedStatus(row.original.status);
-			return <div title={status} aria-label={status} className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
+			const statusLabel = t(`logs.statuses.${status}`);
+			return (
+				<div title={statusLabel} aria-label={statusLabel} className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />
+			);
 		},
 	},
 	{

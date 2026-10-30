@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "再認可は完了しませんでした",
 			"toolsRefreshed": "ツールを更新しました",
 			"toolsRefreshedDesc_one": "クライアント {{name}} は現在 {{count}} 件のツールを提供しています。",
-			"toolsRefreshedDesc_other": "クライアント {{name}} は現在 {{count}} 件のツールを提供しています。"
+			"toolsRefreshedDesc_other": "クライアント {{name}} は現在 {{count}} 件のツールを提供しています。",
+			"oauthVerifiedPerUser": "OAuth の設定を確認しました。各ユーザーが個別に認証します。",
+			"clientConnected": "MCP クライアントに接続しました"
 		},
 		"filter": {
 			"connectionType": "接続タイプ",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "ベース URL は必須です",
 			"invalidAllowedExtraHeadersTitle": "許可する追加ヘッダーが無効です",
 			"invalidAllowedExtraHeadersDesc": "ワイルドカード「*」は特定のヘッダー名と組み合わせられません。",
-			"allowedExtraHeadersPlaceholder": "*、または：authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "*、または：authorization, x-user-id",
+			"useGlobalSetting": "グローバル設定を使用",
+			"useGlobalSettingWithValue": "グローバル設定を使用（{{value}}）",
+			"maxProtocolAuto": "自動（最新）"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "このサーバーは一度限りの認証が必要です：Bifrostはサインイン済みのIDトークンを交換し、接続をテストし、ツールを検出します。その後、呼び出し者は各ツール呼び出し時に自動的に自身のIDトークンが交換されます。",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "クライアントの接続状態（正常、不安定、再認可が必要など）。「不安定」は、サーバーに対する Bifrost 自身の接続チェックを反映したもので、サーバー経由のツール呼び出しの結果ではありません。自動的に回復し、ツール呼び出しをブロックすることはありません。ユーザーごとのクライアント（OAuth、ヘッダー、トークン交換）では、Bifrost が保持する管理者の認証情報（ツール一覧を定期的に更新する目的でのみ使用）の状態を反映しており、個々のユーザー自身のセッションには影響しません。",
 		"columnGuidanceAria": "{{label}}列のガイダンス",
 		"vkCount_one": "VK {{count}} 件",
-		"vkCount_other": "VK {{count}} 件"
+		"vkCount_other": "VK {{count}} 件",
+		"failure": {
+			"stageConnect": "接続中",
+			"stagePing": "Ping",
+			"stageListTools": "ツールを一覧表示中",
+			"stageToolDiscovery": "ツールを検出中",
+			"stageTransportLost": "接続が切断されました",
+			"stageCredential": "認証情報",
+			"titleDegraded": "インスタンス間でこのサーバーの状態が一致していません",
+			"titleUnstableAll": "直近の接続確認がすべてのインスタンスで失敗しました",
+			"titleUnstable": "直近の接続確認に失敗しました",
+			"titleNeedsReauth": "再認可が必要です",
+			"titleError": "ランタイムに登録されていません",
+			"titleDefault": "接続状態",
+			"lastFailedAgo": "最終失敗: {{age}}前",
+			"lastFailedRun": "最終失敗: {{age}}前 · {{state}}の継続時間 {{duration}}",
+			"stateNeedsReauth": "再認証が必要",
+			"stateUnstable": "不安定"
+		}
 	},
 	"library": {
 		"title": "MCP サーバーライブラリ",

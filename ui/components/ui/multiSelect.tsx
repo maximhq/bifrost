@@ -792,7 +792,7 @@ export const MultiSelect = React.forwardRef<MultiSelectRef, MultiSelectProps>(
 													"[&>svg]:pointer-events-auto",
 												)}
 											>
-												{`+ ${selectedValues.length - responsiveSettings.maxCount} more`}
+												{t("multiSelect.moreCount", { count: selectedValues.length - responsiveSettings.maxCount })}
 												<XCircle
 													className={cn("ml-2 h-4 w-4 cursor-pointer", responsiveSettings.compactMode && "ml-1 h-3 w-3")}
 													onClick={(event) => {
@@ -1011,6 +1011,7 @@ MultiSelect.displayName = "MultiSelect";
 // Option descriptions can run long; clamp to 3 lines with a toggle so a verbose
 // description doesn't dominate the list. The toggle shows only when the text overflows.
 function OptionDescription({ text }: { text: string }) {
+	const { t } = useTranslation("common");
 	const ref = React.useRef<HTMLParagraphElement>(null);
 	const [expanded, setExpanded] = React.useState(false);
 	const [overflowing, setOverflowing] = React.useState(false);
@@ -1041,7 +1042,7 @@ function OptionDescription({ text }: { text: string }) {
 							setExpanded((v) => !v);
 						}}
 					>
-						{expanded ? "View less" : "View more"}
+						{expanded ? t("viewToggle.less") : t("viewToggle.more")}
 					</button>
 				</div>
 			)}

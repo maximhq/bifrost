@@ -913,7 +913,8 @@
 				"unsupportedMethod": "不支援的方法：{{method}}",
 				"addRule": "請新增規則，或選擇「關閉」以不轉送任何內容"
 			}
-		}
+		},
+		"customBaseUrlRequired": "必須填寫基礎 URL"
 	},
 	"modelCatalog": {
 		"title": "模型目錄",
@@ -1020,7 +1021,10 @@
 			"5": "五",
 			"6": "六"
 		},
-		"aboutModelsColumn": "關於模型欄"
+		"aboutModelsColumn": "關於模型欄",
+		"attributeKeyPlaceholder": "鍵",
+		"attributeValuePlaceholder": "值",
+		"filterProviderAria": "依供應商篩選"
 	},
 	"virtualKeys": {
 		"emptyTitle": "虛擬金鑰用於控制存取、預算與速率限制",
@@ -1327,7 +1331,9 @@
 			"copyAria": "複製虛擬金鑰",
 			"removeAria": "移除虛擬金鑰"
 		},
-		"ownerProfileNoticeUnnamed": "由此 {{owner}} 的存取設定檔管理。其預算、速率限制和供應商設定會套用至此金鑰。"
+		"ownerProfileNoticeUnnamed": "由此 {{owner}} 的存取設定檔管理。其預算、速率限制和供應商設定會套用至此金鑰。",
+		"managedByProfileToggleHint": "此虛擬金鑰由存取設定檔管理。請在設定檔中啟用或停用。",
+		"noUpdatePermission": "您沒有更新虛擬金鑰的權限。"
 	},
 	"modelLimits": {
 		"title": "預算與限額",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "必須大於 0 且不超過 1",
 		"actionsAria": "定價覆蓋 {{name}} 的操作",
-		"deleteDescriptionNamed": "確定要刪除「{{name}}」嗎？此操作無法復原。"
+		"deleteDescriptionNamed": "確定要刪除「{{name}}」嗎？此操作無法復原。",
+		"noChangePermission": "您無權變更定價覆寫"
 	},
 	"routing": {
 		"rulesTitle": "路由規則",
@@ -1917,7 +1924,17 @@
 			"statusWarming": "預熱中",
 			"statusReady": "就緒",
 			"statusFailed": "失敗",
-			"fallbackDecisionDesc": "當語義比對沒有結果時，由決策模型指定層級，所用的層級指引與其作為主要分類器時相同。"
+			"fallbackDecisionDesc": "當語義比對沒有結果時，由決策模型指定層級，所用的層級指引與其作為主要分類器時相同。",
+			"criteriaSignalItemMax": "每個訊號最多 {{max}} 個字元",
+			"criteriaExampleItemMax": "每個範例最多 {{max}} 個字元",
+			"criteriaSignalMin": "至少新增一個訊號",
+			"criteriaExampleMin": "至少新增一個範例",
+			"criteriaSignalMax_other": "最多 {{count}} 個訊號",
+			"criteriaExampleMax_other": "最多 {{count}} 個範例",
+			"enterDefinition": "請輸入定義",
+			"selectDecisionProvider": "請選擇提供決策模型的供應商",
+			"selectDecisionModel": "請選擇決策模型",
+			"enterDecisionTimeout": "請輸入決策模型逾時時間"
 		},
 		"editDescription": "更新路由規則配置",
 		"createDescription": "建立基於 CEL 的新路由規則，實現智慧請求路由",
@@ -2119,5 +2136,10 @@
 		"searchOrTypeJev": "搜尋或輸入 Jev 模型…",
 		"searchOrType": "搜尋或輸入模型…",
 		"selectModel": "選擇模型"
+	},
+	"pricing": {
+		"notAvailable": "無法使用",
+		"perMillionTokens": "{{price}} / 100 萬 token",
+		"perMillionCharacters": "{{price}} / 100 萬字元"
 	}
 }

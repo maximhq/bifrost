@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "Die erneute Autorisierung wurde nicht abgeschlossen",
 			"toolsRefreshed": "Werkzeuge aktualisiert",
 			"toolsRefreshedDesc_one": "Client {{name}} stellt jetzt {{count}} Werkzeug bereit.",
-			"toolsRefreshedDesc_other": "Client {{name}} stellt jetzt {{count}} Werkzeuge bereit."
+			"toolsRefreshedDesc_other": "Client {{name}} stellt jetzt {{count}} Werkzeuge bereit.",
+			"oauthVerifiedPerUser": "OAuth-Einrichtung erfolgreich überprüft. Jeder Benutzer authentifiziert sich einzeln.",
+			"clientConnected": "MCP-Client erfolgreich verbunden"
 		},
 		"filter": {
 			"connectionType": "Verbindungstyp",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "Basis-URL ist erforderlich",
 			"invalidAllowedExtraHeadersTitle": "Ungültige erlaubte zusätzliche Header",
 			"invalidAllowedExtraHeadersDesc": "Der Platzhalter „*“ kann nicht mit bestimmten Header-Namen kombiniert werden.",
-			"allowedExtraHeadersPlaceholder": "*, oder: authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "*, oder: authorization, x-user-id",
+			"useGlobalSetting": "Globale Einstellung verwenden",
+			"useGlobalSettingWithValue": "Globale Einstellung verwenden ({{value}})",
+			"maxProtocolAuto": "Automatisch (neueste)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Dieser Server erfordert eine einmalige Verifizierung: Bifrost tauscht dein angemeldetes Identity-Token aus, testet die Verbindung und erkennt Tools. Bei Aufrufern werden die eigenen Identity-Tokens dann bei jedem Tool-Aufruf automatisch ausgetauscht.",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "Der Verbindungsstatus des Clients (fehlerfrei, instabil, erneute Autorisierung erforderlich usw.). „Instabil“ spiegelt die eigenen Verbindungsprüfungen von Bifrost zum Server wider, nicht die Ergebnisse darüber ausgeführter Tool-Aufrufe: Der Status heilt sich selbst und blockiert nie Tool-Aufrufe. Bei Clients pro Benutzer (OAuth, Header, Token-Austausch) spiegelt er die von Bifrost beibehaltenen Administrator-Zugangsdaten wider (die nur zum regelmäßigen Aktualisieren der Tool-Liste dienen), nicht die Sitzung eines einzelnen Benutzers, die in beiden Fällen unberührt bleibt.",
 		"columnGuidanceAria": "Hinweise zur Spalte {{label}}",
 		"vkCount_one": "{{count}} VK",
-		"vkCount_other": "{{count}} VKs"
+		"vkCount_other": "{{count}} VKs",
+		"failure": {
+			"stageConnect": "Verbinden",
+			"stagePing": "Ping",
+			"stageListTools": "Tools auflisten",
+			"stageToolDiscovery": "Tools erkennen",
+			"stageTransportLost": "Verbindung getrennt",
+			"stageCredential": "Anmeldedaten",
+			"titleDegraded": "Die Instanzen sind sich über den Status dieses Servers uneinig",
+			"titleUnstableAll": "Die letzte Verbindungsprüfung ist auf allen Instanzen fehlgeschlagen",
+			"titleUnstable": "Die letzte Verbindungsprüfung ist fehlgeschlagen",
+			"titleNeedsReauth": "Erneute Autorisierung erforderlich",
+			"titleError": "Nicht in der Runtime registriert",
+			"titleDefault": "Verbindungsstatus",
+			"lastFailedAgo": "Zuletzt fehlgeschlagen vor {{age}}",
+			"lastFailedRun": "Zuletzt fehlgeschlagen vor {{age}} · {{state}} seit {{duration}}",
+			"stateNeedsReauth": "erneute Autorisierung nötig",
+			"stateUnstable": "instabil"
+		}
 	},
 	"library": {
 		"title": "MCP-Server-Bibliothek",

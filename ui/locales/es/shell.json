@@ -379,7 +379,8 @@
 			"Security": "Seguridad",
 			"Provider Setup": "Configuración del proveedor",
 			"Everything Else": "Todo lo demás"
-		}
+		},
+		"completedSr": "Completado:"
 	},
 	"warp": {
 		"ask": "Preguntar a Warp",
@@ -443,7 +444,8 @@
 		"question": {
 			"label": "Pregunta",
 			"skip": "Omitir",
-			"orType": "O escribe tu propia respuesta abajo."
+			"orType": "O escribe tu propia respuesta abajo.",
+			"skipAnswer": "Usa tu mejor criterio e indica qué has supuesto."
 		},
 		"message": {
 			"whatThisCovers": "Qué cubre esto",
@@ -618,7 +620,11 @@
 					"Pide a un administrador que permita el modelo de Warp para tu cuenta.",
 					"También puedes configurar Warp para usar un modelo permitido para tu cuenta en los ajustes de Warp."
 				]
-			}
+			},
+			"requestFailedStatus": "La solicitud a Warp falló ({{status}})",
+			"noResponseBody": "Warp no devolvió cuerpo de respuesta",
+			"connectionClosed": "La conexión se cerró antes de que Warp terminara de responder.",
+			"requestFailed": "La solicitud a Warp falló"
 		},
 		"dock": {
 			"resize": "Cambiar el tamaño del panel de Warp",
@@ -626,7 +632,12 @@
 		},
 		"chart": {
 			"openInLogs": "Abrir en Registros",
-			"empty": "No hay datos en este período."
+			"empty": "No hay datos en este período.",
+			"weekOf": "Semana del {{date}}"
+		},
+		"usage": {
+			"tokens_one": "{{formattedCount}} token",
+			"tokens_other": "{{formattedCount}} tokens"
 		}
 	},
 	"rssSources": {
@@ -668,5 +679,11 @@
 		"upload": "Subir",
 		"logoHelp": "Una URL de imagen o un archivo PNG, JPEG, GIF, WebP, SVG o ICO de hasta 96 KB. Por defecto se usa el favicon del sitio.",
 		"addFeed": "Añadir feed"
+	},
+	"agentHandover": {
+		"completeTitle": "Inicio de sesión de Bifrost Agent completado",
+		"title": "Inicio de sesión de Bifrost Agent",
+		"completeBody": "Puedes cerrar esta ventana y volver a Bifrost Agent.",
+		"status": "Estado del inicio de sesión: {{status}}"
 	}
 }

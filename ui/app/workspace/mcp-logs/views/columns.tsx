@@ -10,6 +10,8 @@ import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, formatDistanceToNow, isValid } from "date-fns";
 import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
 import type { TFunction } from "i18next";
+import { getLocale } from "@/lib/i18n";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 // Helper function to validate status and return a safe Status value
 const getValidatedStatus = (status: string): Status => {
@@ -62,8 +64,10 @@ export const createMCPColumns = (
 			}
 			return (
 				<div className="flex flex-col leading-tight">
-					<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
-					<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
+					<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss", { locale: dateFnsLocale(getLocale()) })}</span>
+					<span className="text-muted-foreground text-[10.5px] tabular-nums">
+						{formatDistanceToNow(date, { addSuffix: true, locale: dateFnsLocale(getLocale()) })}
+					</span>
 				</div>
 			);
 		},
@@ -82,7 +86,7 @@ export const createMCPColumns = (
 					<div className="flex min-w-0 items-center gap-1.5">
 						{readKind && (
 							<Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]" data-testid="mcp-log-read-kind">
-								{readKind}
+								{readKind === "Prompt" ? t("mcpLogs.detail.readKindPrompt") : t("mcpLogs.detail.readKindResource")}
 							</Badge>
 						)}
 						<span className="truncate font-mono text-xs">{toolName}</span>
@@ -156,7 +160,7 @@ export const createMCPColumns = (
 							? `${latency.toLocaleString()}ms`
 							: presentation.inspectionDuration != null
 								? `${presentation.inspectionDuration}ms`
-								: "Not recorded"}
+								: t("mcpLogs.notRecorded")}
 					</TruncatedLabel>
 					<TruncatedLabel className="text-muted-foreground text-[10.5px]">{presentation.durationLabel}</TruncatedLabel>{" "}
 				</div>

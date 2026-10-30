@@ -379,7 +379,8 @@
 			"Security": "セキュリティ",
 			"Provider Setup": "プロバイダー設定",
 			"Everything Else": "その他"
-		}
+		},
+		"completedSr": "完了:"
 	},
 	"warp": {
 		"ask": "Warp に質問",
@@ -443,7 +444,8 @@
 		"question": {
 			"label": "質問",
 			"skip": "スキップ",
-			"orType": "または下に自分の回答を入力してください。"
+			"orType": "または下に自分の回答を入力してください。",
+			"skipAnswer": "最善の判断で進め、どのような前提を置いたか説明してください。"
 		},
 		"message": {
 			"whatThisCovers": "この内容の範囲",
@@ -624,7 +626,11 @@
 					"管理者に依頼して、アカウントで Warp のモデルを許可してもらってください。",
 					"または、Warp の設定でアカウントから使用できるモデルを選択してください。"
 				]
-			}
+			},
+			"requestFailedStatus": "Warp リクエストに失敗しました（{{status}}）",
+			"noResponseBody": "Warp が応答本文を返しませんでした",
+			"connectionClosed": "Warp の回答が完了する前に接続が閉じられました。",
+			"requestFailed": "Warp リクエストに失敗しました"
 		},
 		"dock": {
 			"resize": "Warp パネルのサイズを変更",
@@ -632,7 +638,11 @@
 		},
 		"chart": {
 			"openInLogs": "ログで開く",
-			"empty": "この期間のデータはありません。"
+			"empty": "この期間のデータはありません。",
+			"weekOf": "{{date}} の週"
+		},
+		"usage": {
+			"tokens_other": "{{formattedCount}} トークン"
 		}
 	},
 	"rssSources": {
@@ -674,5 +684,11 @@
 		"upload": "アップロード",
 		"logoHelp": "画像の URL、または 96 KB までの PNG、JPEG、GIF、WebP、SVG、ICO。デフォルトはサイトのファビコンです。",
 		"addFeed": "フィードを追加"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent のサインインが完了しました",
+		"title": "Bifrost Agent のサインイン",
+		"completeBody": "このウィンドウを閉じて Bifrost Agent に戻ってください。",
+		"status": "サインイン状態: {{status}}"
 	}
 }

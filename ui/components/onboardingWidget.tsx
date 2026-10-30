@@ -326,7 +326,7 @@ export default function OnboardingWidget() {
 										>
 											<Checkbox checked={step.complete} disabled tabIndex={-1} className="pointer-events-none" />
 										</span>
-										{step.complete && <span className="sr-only">Completed:</span>}
+										{step.complete && <span className="sr-only">{t("onboarding.completedSr")}</span>}
 										<span
 											className={cn(
 												"flex-1 text-sm",

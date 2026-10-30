@@ -915,7 +915,8 @@
 				"unsupportedMethod": "Unsupported method {{method}}",
 				"addRule": "Add a rule, or choose Off to forward nothing"
 			}
-		}
+		},
+		"customBaseUrlRequired": "Base URL is required"
 	},
 	"modelCatalog": {
 		"title": "Model Catalog",
@@ -1022,7 +1023,10 @@
 			"5": "Fri",
 			"6": "Sat"
 		},
-		"aboutModelsColumn": "About the models column"
+		"aboutModelsColumn": "About the models column",
+		"attributeKeyPlaceholder": "key",
+		"attributeValuePlaceholder": "value",
+		"filterProviderAria": "Filter by provider"
 	},
 	"virtualKeys": {
 		"emptyTitle": "Virtual keys control access, budgets, and rate limits",
@@ -1329,7 +1333,9 @@
 			"copyAria": "Copy virtual key",
 			"removeAria": "Remove virtual key"
 		},
-		"ownerProfileNoticeUnnamed": "Governed by the access profile of this {{owner}}. Its budgets, rate limits and providers apply to this key."
+		"ownerProfileNoticeUnnamed": "Governed by the access profile of this {{owner}}. Its budgets, rate limits and providers apply to this key.",
+		"managedByProfileToggleHint": "This virtual key is managed by an access profile. Enable or disable it from the profile.",
+		"noUpdatePermission": "You don't have permission to update virtual keys."
 	},
 	"modelLimits": {
 		"title": "Budgets & Limits",
@@ -1644,7 +1650,8 @@
 		},
 		"offPeakRange": "Must be greater than 0 and at most 1",
 		"actionsAria": "Actions for pricing override {{name}}",
-		"deleteDescriptionNamed": "Are you sure you want to delete \"{{name}}\"? This action cannot be undone."
+		"deleteDescriptionNamed": "Are you sure you want to delete \"{{name}}\"? This action cannot be undone.",
+		"noChangePermission": "You do not have permission to change pricing overrides"
 	},
 	"routing": {
 		"rulesTitle": "Routing Rules",
@@ -1919,7 +1926,19 @@
 			"statusWarming": "Warming up",
 			"statusReady": "Ready",
 			"statusFailed": "Failed",
-			"fallbackDecisionDesc": "A decision model names the tier when semantic matching has no result, using the same tier guidance as when it is the primary classifier."
+			"fallbackDecisionDesc": "A decision model names the tier when semantic matching has no result, using the same tier guidance as when it is the primary classifier.",
+			"criteriaSignalItemMax": "Each signal must be at most {{max}} characters",
+			"criteriaExampleItemMax": "Each example must be at most {{max}} characters",
+			"criteriaSignalMin": "Add at least one signal",
+			"criteriaExampleMin": "Add at least one example",
+			"criteriaSignalMax_one": "At most {{count}} signal",
+			"criteriaSignalMax_other": "At most {{count}} signals",
+			"criteriaExampleMax_one": "At most {{count}} example",
+			"criteriaExampleMax_other": "At most {{count}} examples",
+			"enterDefinition": "Enter a definition",
+			"selectDecisionProvider": "Select the provider serving the decision model",
+			"selectDecisionModel": "Select the decision model",
+			"enterDecisionTimeout": "Enter a decision-model timeout"
 		},
 		"editDescription": "Update the routing rule configuration",
 		"createDescription": "Create a new CEL-based routing rule for intelligent request routing",
@@ -2121,5 +2140,10 @@
 		"searchOrTypeJev": "Search or type a Jev model…",
 		"searchOrType": "Search or type a model…",
 		"selectModel": "Select a model"
+	},
+	"pricing": {
+		"notAvailable": "Not available",
+		"perMillionTokens": "{{price}} / 1M tokens",
+		"perMillionCharacters": "{{price}} / 1M characters"
 	}
 }

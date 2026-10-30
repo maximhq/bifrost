@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WEBHOOK_EVENTS } from "@/lib/types/webhooks";
 import { ColumnDef } from "@tanstack/react-table";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import i18n from "@/lib/i18n";
 import type { TFunction } from "i18next";
 import { format, formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, ChevronDown, ChevronRight, Loader2, RefreshCcw } from "lucide-react";
@@ -96,8 +98,12 @@ export function createColumns({
 				if (!date || date.toString() === "Invalid Date") return <span className="text-muted-foreground">-</span>;
 				return (
 					<div className="flex flex-col leading-tight">
-						<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
-						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
+						<span className="font-mono text-xs tabular-nums">
+							{format(date, "MMM dd  HH:mm:ss", { locale: dateFnsLocale(i18n.language) })}
+						</span>
+						<span className="text-muted-foreground text-[10.5px] tabular-nums">
+							{formatDistanceToNow(date, { addSuffix: true, locale: dateFnsLocale(i18n.language) })}
+						</span>
 					</div>
 				);
 			},

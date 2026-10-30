@@ -3,6 +3,7 @@ import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 interface FieldLabelProps {
 	label: string;
@@ -14,6 +15,7 @@ interface FieldLabelProps {
 }
 
 export default function FieldLabel({ label, helpText, htmlFor, onClear, children }: FieldLabelProps) {
+	const { t } = useTranslation("common");
 	return (
 		<div className="group/label flex flex-row items-center overflow-hidden">
 			<div className="flex h-4 grow flex-row items-center gap-1 pr-1">
@@ -36,7 +38,7 @@ export default function FieldLabel({ label, helpText, htmlFor, onClear, children
 						size="icon"
 						onClick={onClear}
 						className="text-muted-foreground hover:text-foreground h-4 w-4 opacity-0 transition-opacity group-hover/label:opacity-100"
-						title={`Clear ${label}`}
+						title={t("modelParameters.clear", { label })}
 					>
 						<X className="h-4 w-4" />
 					</Button>

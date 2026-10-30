@@ -913,7 +913,8 @@
 				"unsupportedMethod": "不支持方法 {{method}}",
 				"addRule": "添加规则，或选择“关闭”以不转发任何内容"
 			}
-		}
+		},
+		"customBaseUrlRequired": "必须填写基础 URL"
 	},
 	"modelCatalog": {
 		"title": "模型目录",
@@ -1020,7 +1021,10 @@
 			"5": "五",
 			"6": "六"
 		},
-		"aboutModelsColumn": "关于“模型”列"
+		"aboutModelsColumn": "关于“模型”列",
+		"attributeKeyPlaceholder": "键",
+		"attributeValuePlaceholder": "值",
+		"filterProviderAria": "按提供商筛选"
 	},
 	"virtualKeys": {
 		"emptyTitle": "虚拟密钥用于控制访问、预算与速率限制",
@@ -1327,7 +1331,9 @@
 		"leavesGoverningOwner": "此密钥的供应商、预算和速率限制来自所有者的访问配置文件，且自身没有这些设置。",
 		"leavesGoverningOwnerUser": "如果分配给此密钥的用户有访问配置文件，该配置文件将接管此密钥，密钥会继续正常工作；否则请在下方配置，否则密钥将拒绝请求。",
 		"leavesGoverningOwnerUnassigned": "请在下方配置，否则取消分配后密钥将拒绝请求。",
-		"ownerProfileNoticeUnnamed": "由此{{owner}}的访问配置文件进行治理。其预算、速率限制和供应商设置适用于此密钥。"
+		"ownerProfileNoticeUnnamed": "由此{{owner}}的访问配置文件进行治理。其预算、速率限制和供应商设置适用于此密钥。",
+		"managedByProfileToggleHint": "此虚拟密钥由访问配置文件管理。请在配置文件中启用或停用。",
+		"noUpdatePermission": "您没有更新虚拟密钥的权限。"
 	},
 	"modelLimits": {
 		"title": "预算与限额",
@@ -1642,7 +1648,8 @@
 		},
 		"offPeakRange": "必须大于 0 且不超过 1",
 		"actionsAria": "定价覆盖 {{name}} 的操作",
-		"deleteDescriptionNamed": "确定要删除“{{name}}”吗？此操作无法撤销。"
+		"deleteDescriptionNamed": "确定要删除“{{name}}”吗？此操作无法撤销。",
+		"noChangePermission": "您无权更改定价覆盖"
 	},
 	"routing": {
 		"rulesTitle": "路由规则",
@@ -1917,7 +1924,17 @@
 			"statusWarming": "预热中",
 			"statusReady": "就绪",
 			"statusFailed": "失败",
-			"fallbackDecisionDesc": "当语义匹配没有结果时，由决策模型指定层级，所用的层级指引与其作为主分类器时相同。"
+			"fallbackDecisionDesc": "当语义匹配没有结果时，由决策模型指定层级，所用的层级指引与其作为主分类器时相同。",
+			"criteriaSignalItemMax": "每个信号最多 {{max}} 个字符",
+			"criteriaExampleItemMax": "每个示例最多 {{max}} 个字符",
+			"criteriaSignalMin": "至少添加一个信号",
+			"criteriaExampleMin": "至少添加一个示例",
+			"criteriaSignalMax_other": "最多 {{count}} 个信号",
+			"criteriaExampleMax_other": "最多 {{count}} 个示例",
+			"enterDefinition": "请输入定义",
+			"selectDecisionProvider": "请选择提供决策模型的提供商",
+			"selectDecisionModel": "请选择决策模型",
+			"enterDecisionTimeout": "请输入决策模型超时时间"
 		},
 		"editDescription": "更新路由规则配置",
 		"createDescription": "创建基于 CEL 的新路由规则，实现智能请求路由",
@@ -2119,5 +2136,10 @@
 		"searchOrTypeJev": "搜索或输入 Jev 模型…",
 		"searchOrType": "搜索或输入模型…",
 		"selectModel": "选择模型"
+	},
+	"pricing": {
+		"notAvailable": "不可用",
+		"perMillionTokens": "{{price}} / 100 万 token",
+		"perMillionCharacters": "{{price}} / 100 万字符"
 	}
 }

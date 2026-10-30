@@ -6,23 +6,21 @@ import { MultiSelect } from "@/components/ui/multiSelect";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { RequestTypeLabels, RequestTypes } from "@/lib/constants/logs";
+import { getRequestTypeLabel, RequestTypes } from "@/lib/constants/logs";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import type { TFunction } from "i18next";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-const requestTypeLabel = (requestType: string): string =>
-	Object.hasOwn(RequestTypeLabels, requestType) ? RequestTypeLabels[requestType as keyof typeof RequestTypeLabels] : requestType;
-
 // Every known request type, plus any stored value the UI does not know about yet
 // (for example a type set from config.json on a newer server) so it stays selectable.
-const hiddenRequestTypeOptions = (selected: string[]) => {
+const hiddenRequestTypeOptions = (selected: string[], tObs: TFunction<"observability">) => {
 	const known = new Set<string>(RequestTypes);
 	const extra = selected.filter((requestType) => !known.has(requestType));
-	return [...RequestTypes, ...extra].map((requestType) => ({ value: requestType, label: requestTypeLabel(requestType) }));
+	return [...RequestTypes, ...extra].map((requestType) => ({ value: requestType, label: getRequestTypeLabel(requestType, tObs) }));
 };
 
 // Order-independent equality; the multi-select emits values in selection order.
@@ -34,6 +32,7 @@ const sameRequestTypes = (a: string[] | undefined, b: string[] | undefined): boo
 
 export default function LoggingView() {
 	const { t } = useTranslation("config");
+	const { t: tObs } = useTranslation("observability");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig, isLoading: isConfigLoading, isError: isConfigError } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
@@ -146,7 +145,7 @@ export default function LoggingView() {
 						<MultiSelect
 							id="hidden-request-types"
 							data-testid="hidden-request-types-select"
-							options={hiddenRequestTypeOptions(localConfig.hidden_request_types || [])}
+							options={hiddenRequestTypeOptions(localConfig.hidden_request_types || [], tObs)}
 							defaultValue={localConfig.hidden_request_types || []}
 							resetOnDefaultValueChange
 							onValueChange={(values) => handleConfigChange("hidden_request_types", values)}

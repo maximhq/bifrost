@@ -425,7 +425,7 @@ export default function WarpPanel() {
 									question={question}
 									onAnswer={ask}
 									onSkip={() => {
-										ask("Use your best judgement and say what you assumed.");
+										ask(t("warp.question.skipAnswer"));
 									}}
 								/>
 							</div>

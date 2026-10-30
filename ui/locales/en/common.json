@@ -22,7 +22,11 @@
 		"toTime": "To Time",
 		"timezone": "Timezone",
 		"selectTimezone": "Select timezone",
-		"time": "Time"
+		"time": "Time",
+		"am": "AM",
+		"pm": "PM",
+		"hourPlaceholder": "HH",
+		"minutePlaceholder": "MM"
 	},
 	"timePeriods": {
 		"1h": "Last hour",
@@ -70,7 +74,10 @@
 		"modelLimits": "model limits",
 		"agents": "agents",
 		"providers": "providers",
-		"webhookEndpoints": "webhook endpoints"
+		"webhookEndpoints": "webhook endpoints",
+		"agent": "agent",
+		"relay": "relay",
+		"relays": "relays"
 	},
 	"aboutField": "About {{field}}",
 	"thisField": "this field",
@@ -287,7 +294,53 @@
 		"validUrl": "Must be a valid URL",
 		"validEmail": "Must be a valid email",
 		"grpcHostPortFormat": "Must be in the format <host>:<port> for gRPC (e.g. {{example}})",
-		"invalidInput": "Invalid input"
+		"invalidInput": "Invalid input",
+		"vertexEndpointId": "Enter a Vertex endpoint ID or paste a supported endpoint URL",
+		"mcp": {
+			"privateKeyRequired": "A private key is required for private_key_jwt",
+			"secretRequiredForMethod": "A client secret is required to choose how it is sent",
+			"credentialResend": "Re-enter it: the audience, upstream token endpoint or assertion audience changed, so the saved value is not sent to the new target"
+		},
+		"relays": {
+			"costPerRequestNegative": "Cost per request must not be negative",
+			"costPerUnitNegative": "Cost per unit must not be negative",
+			"blockSizePositive": "Block size must be above zero",
+			"minimumUnitsNegative": "Minimum units must not be negative",
+			"unitsPathRequiredRoute": "Units path is required: this route charges per unit and neither it nor the relay names a path",
+			"unitsPathRequired": "Units path is required unless the measure reads the whole body",
+			"unitsPathRequiredInherited": "Units path is required: route {{method}} {{path}} charges per unit and inherits it from the relay",
+			"absoluteUrl": "Enter an absolute http(s) URL",
+			"pathRequired": "Path is required",
+			"pathMustStartWithSlash": "Path must start with /",
+			"doubleStarLast": "** is only allowed as the last segment",
+			"headerNameRequired": "Header name is required for header auth",
+			"queryParamRequired": "Query parameter is required for query auth",
+			"awsServiceRequired": "AWS service is required for SigV4 auth",
+			"awsServiceFormat": "AWS service must match [a-z0-9-]+",
+			"headerNameNoSpecial": "Header name must not contain spaces, colons or slashes",
+			"matcherNeedsValue": "A header matcher needs a value glob",
+			"matcherNeedsName": "A header matcher needs a header name",
+			"jobIdPath": "Enter where the start reply carries the job id",
+			"pollPathRequired": "Enter the poll path",
+			"pollPathRooted": "Enter a rooted path such as {{example}}",
+			"statusPathRequired": "Enter where the poll reply carries the status",
+			"succeededRequired": "Enter at least one succeeded status",
+			"atLeastOneSecond": "At least 1 second",
+			"headerMatchedDup": "This header is already matched on this route",
+			"relayNameFormat": "Use 1-64 letters, digits, dots, dashes or underscores",
+			"relayNameDots": "A relay cannot be named . or ..",
+			"baseUrlFormat": "Enter an absolute http(s) URL without a query, fragment or user info",
+			"headerValueRequired": "Enter a value for this header",
+			"headerNameEnter": "Enter a header name",
+			"headerAlreadySet": "This header is already set",
+			"lineError": "Line {{line}}: {{message}}",
+			"invalidPath": "invalid path",
+			"regionSigV4": "Region is required for SigV4",
+			"credentialRequired": "The credential is required for this auth type",
+			"proxyUrlRequired": "Proxy URL is required",
+			"rootedPathSearch": "Enter a rooted path such as /v1/search",
+			"statusRange": "Status must be between 100 and 599"
+		}
 	},
 	"permissionDenied": {
 		"create": "You don't have permission to create {{entity}}.",
@@ -318,7 +371,9 @@
 		"label": "Agent access",
 		"tooltip": "Grant this key access to registered agents. The key can then call each agent at <path0>{{path}}</path0>. Agents marked open to all keys need no grant.",
 		"selectPlaceholder": "Select an agent to add",
-		"removeAria": "Remove {{name}}"
+		"removeAria": "Remove {{name}}",
+		"openToAll": "Open to all keys",
+		"disabled": "Disabled"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} will use rolling windows for their full duration. Calendar alignment only applies to 1d, 1w, 1M, 1Q and 1Y."
@@ -411,7 +466,8 @@
 	"modelParameters": {
 		"keepBetween": "Please keep {{label}} between {{min}} to {{max}}.",
 		"addString": "Add string",
-		"select": "Select"
+		"select": "Select",
+		"clear": "Clear {{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -474,7 +530,8 @@
 		"optionSelectedAria": "{{label}}, selected{{disabled}}",
 		"optionNotSelectedAria": "{{label}}, not selected{{disabled}}",
 		"disabledSuffix": ", disabled",
-		"clear": "Clear"
+		"clear": "Clear",
+		"moreCount": "+ {{count}} more"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "Fiscal year starts",
@@ -508,9 +565,36 @@
 		"failedToLoad": "Failed to load."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "Reset Period"
+		"resetPeriod": "Reset Period",
+		"noLimit": "No limit"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "The resolved value will appear after saving"
+	},
+	"viewToggle": {
+		"more": "View more",
+		"less": "View less"
+	},
+	"baseProviderSelector": {
+		"placeholder": "Select base format",
+		"searchPlaceholder": "Search formats..."
+	},
+	"commandDialog": {
+		"title": "Command Palette",
+		"description": "Search for a command to run..."
+	},
+	"copyToClipboard": {
+		"success": "Copied to clipboard",
+		"failed": "Failed to copy"
+	},
+	"agentCard": {
+		"unnamedSkill": "Unnamed skill",
+		"unknown": "Unknown"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} +{{count}} more"
+	},
+	"badges": {
+		"beta": "BETA"
 	}
 }
