@@ -381,6 +381,17 @@ const withMode = (id, mode, items, issuer) => [readConfig(id), setMode(id, mode,
 // Host instead of issuer_url cannot match it.
 const OTHER_ISS = "https://issuer.mcp-harness.example";
 
+// authMode sets mcp_server_auth_mode (H, B or O) and enforce_auth_on_inference; B and O also set
+// issuer_url (the base URL unless issuer is given) and temp-token auth to tt.
+const MODE_NAMES = { H: "headers", B: "both", O: "oauth" };
+// modePrefix names a request's mode in a test that repeats requests per mode; headers, the boot mode, adds nothing.
+const modePrefix = (m) => (m === "B" || m === "O" ? `${MODE_NAMES[m]}: ` : "");
+const authMode = (id, m, enforce, tt = true, issuer) => putConfig(id, `setup: mcp_server_auth_mode ${MODE_NAMES[m]}, enforce_auth_on_inference ${enforce ? "on" : "off"}${m === "H" ? "" : `, issuer_url set to ${issuer || "the base URL"}, temp-token auth ${tt ? "on" : "off"}`}`, [
+  `cc.mcp_server_auth_mode = ${lit(MODE_NAMES[m])};`,
+  `cc.enforce_auth_on_inference = ${enforce};`,
+  ...(m === "H" ? [] : [`cc.oauth2_server_config = { issuer_url: ${issuer ? lit(issuer) : "pm.variables.get('base_url')"} };`, `cc.mcp_enable_temp_token_auth = ${tt};`]),
+], [A.status(200)]);
+
 const BOTH = "mcp_server_auth_mode both with issuer_url set to the base URL";
 const LOOPBACK_CB = "http://127.0.0.1:9999/cb";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
@@ -901,6 +912,210 @@ const ADM83 = folder("ADM-83 token_exchange is unavailable", "Setup: admin crede
   deleteClient("ADM-83", "adm83-n"),
 ]);
 
+// ================================================================ EP tests with VKs, include headers and tool names
+
+// fleetSetupWith is the two-server fleet with alpha's tools or client settings changed for one test.
+const fleetSetupWith = (id, { alphaTools = ["echo", "add"], alphaClient = {} } = {}) => {
+  const p = id.toLowerCase();
+  return [
+    ...freshServer(id, "alpha", alphaTools),
+    ...freshServer(id, "beta", ["echo"]),
+    createClient(id, httpClient(`${p}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false, ...alphaClient }), "setup: register client alpha"),
+    createClient(id, httpClient(`${p}-beta`, "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta"),
+  ];
+};
+// VKS are the virtual keys the EP tests use, keyed by a short name that also names their collection variables.
+const VKS = {
+  full: { label: "the full-access VK", text: "every tool of alpha and beta", configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }, { mcp_client_name: "beta", tools_to_execute: ["*"] }] },
+  echo: { label: "the echo-only VK", text: "only alpha's echo", configs: [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }] },
+  none: { label: "the no-grant VK", text: "no MCP configs" },
+};
+const VK_TEXT = `the full-access VK (${VKS.full.text}), the echo-only VK (${VKS.echo.text}) and the no-grant VK (${VKS.none.text})`;
+const createVK = (id, label) => request(id, `setup: create ${VKS[label].label}`, "POST", "/api/governance/virtual-keys", {
+  body: { name: `${id} ${VKS[label].label.replace(/^the /, "")}`, ...(VKS[label].configs ? { mcp_configs: VKS[label].configs } : {}) },
+  asserts: [A.status(200)],
+  extraTests: [
+    `pm.collectionVariables.set(${lit(id.toLowerCase() + "_" + label.toLowerCase() + "_id")}, pm.response.json().virtual_key.id);`,
+    `pm.collectionVariables.set(${lit(id.toLowerCase() + "_" + label.toLowerCase())}, pm.response.json().virtual_key.value);`,
+  ],
+});
+const deleteVK = (id, label) => request(id, `teardown: delete ${VKS[label].label}`, "DELETE", `/api/governance/virtual-keys/{{${id.toLowerCase()}_${label.toLowerCase()}_id}}`, { asserts: [A.status(200)] });
+const vkHeader = (id, label) => ({ key: "x-bf-vk", value: `{{${id.toLowerCase()}_${label.toLowerCase()}}}` });
+
+const toolNamesInList = (names) => A.custom(`tools/list names are exactly ${lit(names)}`, [
+  "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
+  `pm.expect(names, 'body: ' + pm.response.text()).to.eql(${lit(names)});`,
+]);
+const toolResultError = (startsWith, contains) => A.custom(`isError true${startsWith ? ", text starts " + lit(startsWith) : ""}${contains ? ", text contains " + lit(contains) : ""}`, [
+  "var r = pm.response.json().result;",
+  "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+  "var text = r.content[0].text;",
+  ...(startsWith ? [`pm.expect(text.indexOf(${lit(startsWith)}), 'text: ' + text).to.equal(0);`] : []),
+  ...(contains ? [`pm.expect(text, 'text: ' + text).to.include(${lit(contains)});`] : []),
+]);
+const mockCalls = (id, server, tool, n) => mockGet(id, server, `${server} calls[${tool}] is ${n}`, [A.custom(`calls[${tool}] is ${n}`, [
+  `pm.expect(pm.response.json().counters.calls[${lit(tool)}] || 0, 'body: ' + pm.response.text()).to.equal(${n});`,
+])]);
+const call = (name, args = {}) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+const init = (version) => ({ jsonrpc: "2.0", id: 1, method: "initialize", params: { ...(version ? { protocolVersion: version } : {}), capabilities: {}, clientInfo: { name: "mcp-harness", version: "1.0.0" } } });
+
+// noCredControl shows enforce_auth_on_inference is in force: tools/list with no credential is refused.
+const noCredControl = (id, label) => rpc(id, `control: ${label}no credential is refused`, listMsg, { headers: [MCP_ACCEPT], asserts: [A.status(401), A.msgContains("virtual key required to access mcp server")] });
+const EP01 = folder("EP-01 initialize (2025-03-26)", `Setup: ${FLEET}; mcp_server_auth_mode headers, enforce_auth_on_inference off.`, [
+  readConfig("EP-01"), authMode("EP-01", "H", false),
+  ...fleetSetup("EP-01"),
+  request("EP-01", "setup: read GET /api/version", "GET", "/api/version", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('ep01_version', JSON.stringify(pm.response.json()));"] }),
+  rpc("EP-01", "initialize with 2025-03-26", init("2025-03-26"), {
+    asserts: [A.status(200), A.custom("JSON reply; serverInfo bifrost at the server version; capabilities exactly tools.listChanged; no Mcp-Session-Id", [
+      "pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+      "var r = pm.response.json().result;",
+      "pm.expect(r.serverInfo.name, 'body: ' + pm.response.text()).to.equal('bifrost');",
+      "pm.expect(r.serverInfo.version).to.equal(JSON.parse(pm.collectionVariables.get('ep01_version')));",
+      "pm.expect(r.capabilities).to.eql({ tools: { listChanged: true } });",
+      "pm.expect(pm.response.headers.has('Mcp-Session-Id')).to.equal(false);",
+    ])],
+  }),
+  ...fleetTeardown("EP-01"),
+  restoreConfig("EP-01"),
+]);
+
+const EP02 = folder("EP-02 Protocol version negotiation", `Setup: ${FLEET}.`, [
+  ...fleetSetup("EP-02"),
+  ...[["2024-11-05", "2024-11-05"], ["2025-06-18", "2025-06-18"], ["1999-01-01", "2025-06-18"], [null, "2025-03-26"]].map(([asked, got]) =>
+    rpc("EP-02", `initialize asking ${asked || "no version"}`, init(asked), {
+      asserts: [A.status(200), A.custom(`protocolVersion is ${got}`, [`pm.expect(pm.response.json().result.protocolVersion, 'body: ' + pm.response.text()).to.equal(${lit(got)});`])],
+    })),
+  ...fleetTeardown("EP-02"),
+]);
+
+const EP04 = folder("EP-04 No upstream instructions", `Setup: ${FLEET}; the mock servers send no instructions.`, [
+  ...fleetSetup("EP-04"),
+  rpc("EP-04", "initialize", init("2025-03-26"), { asserts: [A.status(200), A.custom("result has no instructions key", ["pm.expect(pm.response.json().result, 'body: ' + pm.response.text()).to.not.have.property('instructions');"])] }),
+  ...fleetTeardown("EP-04"),
+]);
+
+const EP13 = folder("EP-13 Client tools_to_execute narrows /mcp", `Setup: ${FLEET}, except client alpha has tools_to_execute ["echo"]; the full-access VK (${VKS.full.text}).`, [
+  ...fleetSetupWith("EP-13", { alphaClient: { tools_to_execute: ["echo"] } }),
+  createVK("EP-13", "full"),
+  rpc("EP-13", "tools/list with the full-access VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-13", "full")], asserts: [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"]), A.custom("alpha-add is not listed", [
+    "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.not.include('alpha-add');",
+  ])] }),
+  rpc("EP-13", "tools/call alpha-add with the full-access VK", call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, vkHeader("EP-13", "full")], asserts: [A.status(200), rpcError(-32602, "tool 'alpha-add' not found: tool not found")] }),
+  mockCalls("EP-13", "alpha", "add", 0),
+  deleteVK("EP-13", "full"),
+  ...fleetTeardown("EP-13"),
+]);
+
+const inc = (key, value) => ({ key: `x-bf-mcp-include-${key}`, value });
+const EP15 = folder("EP-15 Hyphenated upstream tool name", `Setup: ${FLEET}; alpha also serves "web-search".`, [
+  ...fleetSetupWith("EP-15", { alphaTools: ["echo", "add", "web-search"] }),
+  rpc("EP-15", "tools/list", listMsg, { asserts: [A.status(200), A.custom("alpha-web-search is listed", [
+    "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('alpha-web-search');",
+  ])] }),
+  rpc("EP-15", "tools/call alpha-web-search", call("alpha-web-search", { q: "x" }), { asserts: [A.status(200)] }),
+  mockCalls("EP-15", "alpha", "web-search", 1),
+  ...fleetTeardown("EP-15"),
+]);
+
+const EP17 = folder("EP-17 Names with \"/\" or \"..\" are not served", `Setup: ${FLEET}; alpha also serves "x/y" and "a..b".`, [
+  ...fleetSetupWith("EP-17", { alphaTools: ["echo", "add", "x/y", "a..b"] }),
+  rpc("EP-17", "tools/list", listMsg, { asserts: [A.status(200), toolNamesInList(["alpha-add", "alpha-echo", "beta-echo"]), A.custom("neither name is listed", [
+    "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.not.include('alpha-x/y');",
+    "pm.expect(names).to.not.include('alpha-a..b');",
+  ])] }),
+  rpc("EP-17", "tools/call alpha-x/y", call("alpha-x/y"), { asserts: [A.status(200), rpcError(-32602)] }),
+  ...fleetTeardown("EP-17"),
+]);
+
+const EP20 = folder("EP-20 Upstream fails the exchange", `Setup: ${FLEET}; alpha fault err_rate 1, err_kind protocol.`, [
+  ...fleetSetup("EP-20"),
+  mockPost("EP-20", "alpha", "faults", "setup: alpha fails every call with a protocol error", { faults: { err_rate: 1, err_kind: "protocol" } }),
+  rpc("EP-20", "tools/call alpha-echo", call("alpha-echo", { text: "hi" }), { asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool call failed for alpha-echo:", null)] }),
+  ...fleetTeardown("EP-20"),
+]);
+
+const EP25 = folder("EP-25 Tool hidden by include headers", `Setup: ${FLEET}; an anonymous caller with include-clients beta calls alpha-echo.`, [
+  ...fleetSetup("EP-25"),
+  rpc("EP-25", "tools/call alpha-echo with include-clients beta", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, inc("clients", "beta")], asserts: [A.status(200), toolResultError(null, "is not permitted (client alpha is not in request-context include list)")] }),
+  mockGet("EP-25", "alpha", "alpha received no tool call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
+  ...fleetTeardown("EP-25"),
+]);
+
+const EP26 = folder("EP-26 Argument handling", `Setup: ${FLEET}; alpha's add declares numeric a and b.`, [
+  request("EP-26", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  request("EP-26", "setup: alpha's add takes numeric a and b", "POST", "/control/alpha/tools/set", { base: CHAOS, noAuth: true,
+    body: { tools: [{ name: "echo" }, { name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } }] }, asserts: [A.status(200)] }),
+  ...freshServer("EP-26", "beta", ["echo"]),
+  createClient("EP-26", httpClient("ep-26-alpha", "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha"),
+  createClient("EP-26", httpClient("ep-26-beta", "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta"),
+  rpc("EP-26", "schema-violating arguments are forwarded unchanged", call("alpha-add", { a: "x", b: "y" }), { asserts: [A.status(200), A.custom("the mock echoes the arguments as sent", [
+    "var r = pm.response.json().result;",
+    "pm.expect(r.content[0].text, 'body: ' + pm.response.text()).to.equal('add:{\"a\":\"x\",\"b\":\"y\"}');",
+  ])] }),
+  mockCalls("EP-26", "alpha", "add", 1),
+  rpc("EP-26", "params \"x\"", { jsonrpc: "2.0", id: 1, method: "tools/call", params: "x" }, { asserts: [A.status(200), A.custom("error.code -32600, message starts \"unparsable tools/call request\"", [
+    "var b = pm.response.json();",
+    "pm.expect(b.error && b.error.code, 'body: ' + pm.response.text()).to.equal(-32600);",
+    "pm.expect(b.error.message.indexOf('unparsable tools/call request'), 'message: ' + b.error.message).to.equal(0);",
+  ])] }),
+  rpc("EP-26", "no tool name", { jsonrpc: "2.0", id: 1, method: "tools/call", params: {} }, { asserts: [A.status(200), A.custom("error.code -32602, message contains \"tool '' not found\"", [
+    "var b = pm.response.json();",
+    "pm.expect(b.error && b.error.code, 'body: ' + pm.response.text()).to.equal(-32602);",
+    "pm.expect(b.error.message).to.include(\"tool '' not found\");",
+  ])] }),
+  ...fleetTeardown("EP-26"),
+]);
+
+// ================================================================ EP slugs, credentials and auth modes
+
+const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
+// list sends tools/list to path with the given extra headers and no admin credentials.
+const list = (id, title, path, headers, asserts) => rpc(id, title, listMsg, { path, headers: [MCP_ACCEPT, ...headers], asserts });
+
+const NO_VK_401 = [A.status(401), A.msgContains("virtual key required to access mcp server"), wwwPresent()];
+
+// EP-12, EP-14 and EP-24 sit below the OAuth helpers because their both and oauth passes use them.
+// EP-12 runs once per mode that accepts header credentials; both adds WWW-Authenticate to the no-credential refusal.
+const EP12 = folder("EP-12 tools/list per VK", `Setup: ${FLEET}; mcp_server_auth_mode headers, enforce_auth_on_inference on; ${VK_TEXT}.`, [
+  ...fleetSetup("EP-12"),
+  createVK("EP-12", "full"), createVK("EP-12", "echo"), createVK("EP-12", "none"),
+  readConfig("EP-12"),
+  authMode("EP-12", "H", true),
+  noCredControl("EP-12", ""),
+  rpc("EP-12", "tools/list with the full-access VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "full")], asserts: [A.status(200), toolNamesInList(["alpha-add", "alpha-echo", "beta-echo"])] }),
+  rpc("EP-12", "tools/list with the echo-only VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
+  rpc("EP-12", "tools/list with the no-grant VK", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-12", "none")], asserts: [A.status(200), toolNamesInList([])] }),
+  restoreConfig("EP-12"),
+  deleteVK("EP-12", "full"), deleteVK("EP-12", "echo"), deleteVK("EP-12", "none"),
+  ...fleetTeardown("EP-12"),
+]);
+
+const EP14 = folder("EP-14 Include headers on /mcp", `Setup: ${FLEET}; an anonymous caller, and the echo-only VK (${VKS.echo.text}).`, [
+  ...fleetSetup("EP-14"),
+  createVK("EP-14", "echo"),
+  rpc("EP-14", "include-clients beta", listMsg, { headers: [MCP_ACCEPT, inc("clients", "beta")], asserts: [A.status(200), toolNamesInList(["beta-echo"])] }),
+  rpc("EP-14", "include-tools alpha-echo", listMsg, { headers: [MCP_ACCEPT, inc("tools", "alpha-echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
+  rpc("EP-14", "include-clients empty", listMsg, { headers: [MCP_ACCEPT, inc("clients", "")], asserts: [A.status(200), toolNamesInList([])] }),
+  rpc("EP-14", "control: the echo-only VK with include-tools alpha-echo", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-14", "echo"), inc("tools", "alpha-echo")], asserts: [A.status(200), toolNamesInList(["alpha-echo"])] }),
+  rpc("EP-14", "the echo-only VK with include-tools beta-echo", listMsg, { headers: [MCP_ACCEPT, vkHeader("EP-14", "echo"), inc("tools", "beta-echo")], asserts: [A.status(200), toolNamesInList([])] }),
+  deleteVK("EP-14", "echo"),
+  ...fleetTeardown("EP-14"),
+]);
+
+const EP24 = folder("EP-24 Listed but not granted", `Setup: ${FLEET}; the echo-only VK (${VKS.echo.text}) calls alpha-add, the no-grant VK (${VKS.none.text}) calls alpha-echo.`, [
+  ...fleetSetup("EP-24"),
+  createVK("EP-24", "echo"), createVK("EP-24", "none"),
+  rpc("EP-24", "control: the echo-only VK calls alpha-echo", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "echo")], asserts: [A.status(200), A.custom("isError is not set and the content is the echo", ["var r = pm.response.json().result;", "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);", "pm.expect(r.content).to.eql([{ type: 'text', text: 'echo:{\"text\":\"hi\"}' }]);"])] }),
+  rpc("EP-24", "the echo-only VK calls alpha-add", call("alpha-add", { a: 1, b: 2 }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "echo")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-add' is not allowed", null)] }),
+  rpc("EP-24", "the no-grant VK calls alpha-echo", call("alpha-echo", { text: "hi" }), { headers: [MCP_ACCEPT, vkHeader("EP-24", "none")], asserts: [A.status(200), toolResultError("Tool execution failed: MCP tool 'alpha-echo' is not allowed", null)] }),
+  mockGet("EP-24", "alpha", "alpha ran only the control call", [A.custom("calls is {echo: 1}", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({ echo: 1 });"])]),
+  deleteVK("EP-24", "echo"), deleteVK("EP-24", "none"),
+  ...fleetTeardown("EP-24"),
+]);
+
 // ================================================================ INF direct execute and code mode
 
 // execBody posts a JSON body (or raw text) to /v1/mcp/tool/execute with no admin credentials; query is appended as is.
@@ -912,6 +1127,10 @@ const toolCall = (name, args) => ({ id: "c1", type: "function", function: { name
 
 const meta = (id, title, tool, args, asserts) => execBody(id, title, toolCall(tool, args), asserts);
 const code = (id, title, src, asserts) => meta(id, title, "executeToolCode", { code: src }, asserts);
+
+// ================================================================ MCP tools inside model requests, on the mock LLM
+
+const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
 
 // ================================================================ provider-injected tools on the mock LLM
 
@@ -934,7 +1153,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM42, ADM44, ADM46, ADM51, ADM59, ADM62, ADM73, ADM83]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP09, EP18, EP23, EP27, EP28, EP29, EP31, EP32, EP33]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS31, OAS36]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
