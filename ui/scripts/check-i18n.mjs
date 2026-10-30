@@ -446,6 +446,7 @@ export function analyzeTranslationCalls(sourceFile) {
 			...location,
 			endLine: sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1,
 			namespace: translationNamespace(optionsNode, namespace),
+			namespaceExplicit: hasOption(optionsNode, "ns") || optionOverrides.namespaceExplicit === true,
 			kind,
 			behaviorAnchors: behaviorAnchorsForNode(node, sourceFile),
 			options: { ...translationOptions(optionsNode), ...optionOverrides },
@@ -525,6 +526,7 @@ export function analyzeTranslationCalls(sourceFile) {
 			if (node.tagName.getText(sourceFile) === "Trans") {
 				let keyExpression = null;
 				let namespaceNode = null;
+				let translationFunctionNode = null;
 				const optionOverrides = {};
 				for (const attribute of node.attributes.properties) {
 					if (!ts.isJsxAttribute(attribute)) {
@@ -539,19 +541,28 @@ export function analyzeTranslationCalls(sourceFile) {
 						}
 					}
 					if (name === "ns" && attribute.initializer) {
+						optionOverrides.namespaceExplicit = true;
 						if (ts.isStringLiteral(attribute.initializer)) {
 							namespaceNode = attribute.initializer;
 						} else if (ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression) {
 							namespaceNode = attribute.initializer.expression;
 						}
 					}
+					if (name === "t" && attribute.initializer && ts.isJsxExpression(attribute.initializer) && attribute.initializer.expression) {
+						translationFunctionNode = attribute.initializer.expression;
+					}
 					if (name === "count" && attribute.initializer) {
 						optionOverrides.count = true;
 					}
 				}
 				if (keyExpression) {
+					const inheritedNamespace = translationFunctionNode
+						? ts.isIdentifier(translationFunctionNode)
+							? (lookupAlias(scope, translationFunctionNode.text) ?? null)
+							: null
+						: scope.namespace;
 					const namespace = !namespaceNode
-						? scope.namespace
+						? inheritedNamespace
 						: ts.isStringLiteral(namespaceNode) || ts.isNoSubstitutionTemplateLiteral(namespaceNode)
 							? namespaceNode.text
 							: null;
@@ -608,18 +619,8 @@ export function validateCall(entry, englishResources) {
 	if (entry.dynamic) {
 		return [callFinding("unresolved-dynamic", entry, `Dynamic translation family ${entry.prefix || "<unknown>"} requires review`)];
 	}
-	const namespacePrefix = new RegExp(`^(${NAMESPACES.join("|")})\\.`).exec(entry.key);
-	if (namespacePrefix && namespacePrefix[1] !== entry.namespace) {
-		return [
-			callFinding(
-				"wrong-namespace",
-				entry,
-				`Translation key ${entry.key} uses namespace ${namespacePrefix[1]} inside ${entry.namespace} scope`,
-			),
-		];
-	}
-	const namespace = namespacePrefix?.[1] ?? entry.namespace;
-	const key = namespacePrefix ? entry.key.slice(namespacePrefix[0].length) : entry.key;
+	const namespace = entry.namespace;
+	const key = entry.key;
 	const resource = resources?.[namespace];
 	const findings = [];
 	if (entry.options.returnObjects) {
@@ -716,9 +717,59 @@ export function validateDynamicFamilies(entries, englishResources, dynamicFamili
 			);
 			continue;
 		}
+		const heterogeneous = new Set(producers.map((producer) => JSON.stringify(producer.options))).size > 1;
+		const candidateProducers =
+			review.candidateProducers && typeof review.candidateProducers === "object" && !Array.isArray(review.candidateProducers)
+				? review.candidateProducers
+				: null;
+		if ((review.candidateProducers !== undefined && !candidateProducers) || (heterogeneous && !candidateProducers)) {
+			findings.push(
+				callFinding(
+					"incomplete-dynamic-review",
+					producers[0],
+					`Heterogeneous dynamic family ${prefix} requires candidate-producer mappings`,
+				),
+			);
+			continue;
+		}
+		const mappedProducers = new Set();
+		if (candidateProducers) {
+			for (const candidate of candidates) {
+				if (!Object.hasOwn(candidateProducers, candidate)) {
+					continue;
+				}
+				const mappedIdentities = candidateProducers[candidate];
+				if (Array.isArray(mappedIdentities) && mappedIdentities.every((identity) => expectedProducers.includes(identity))) {
+					for (const identity of mappedIdentities) {
+						mappedProducers.add(identity);
+					}
+				}
+			}
+			if (expectedProducers.some((producer) => !mappedProducers.has(producer))) {
+				findings.push(callFinding("incomplete-dynamic-review", producers[0], `Dynamic family ${prefix} does not cover every producer`));
+				continue;
+			}
+		}
 		for (const candidate of candidates) {
 			const result = recordedEnglishResult(review.englishResults, candidate);
-			for (const producer of producers) {
+			const hasMapping = candidateProducers && Object.hasOwn(candidateProducers, candidate);
+			const mappedIdentities = hasMapping ? candidateProducers[candidate] : null;
+			if (
+				(heterogeneous && !hasMapping) ||
+				(hasMapping &&
+					(!Array.isArray(mappedIdentities) ||
+						mappedIdentities.length === 0 ||
+						mappedIdentities.some((identity) => !expectedProducers.includes(identity))))
+			) {
+				findings.push(
+					callFinding("incomplete-dynamic-review", producers[0], `Dynamic candidate ${candidate} lacks a valid producer mapping`),
+				);
+				continue;
+			}
+			const candidateProducerSet = hasMapping
+				? producers.filter((producer) => mappedIdentities.includes(producerIdentity(producer)))
+				: producers;
+			for (const producer of candidateProducerSet) {
 				const candidateEntry = { ...producer, key: candidate, dynamic: false };
 				if (!resultIsResolved(result) || validateCall(candidateEntry, englishResources).length > 0) {
 					findings.push(
@@ -731,12 +782,16 @@ export function validateDynamicFamilies(entries, englishResources, dynamicFamili
 	return findings;
 }
 
-function findingIdentity(finding) {
-	return [finding.type, finding.file, finding.line, finding.column, finding.namespace, finding.key].join("\0");
+function findingBaselineIdentity(finding) {
+	return [finding.type, finding.file, finding.namespace, finding.key].join("\0");
 }
 
 export function diffCallFindings(currentFindings, baselineFindings, conflictedFiles = []) {
-	const baselineIdentities = new Set(baselineFindings.map(findingIdentity));
+	const baselineCounts = new Map();
+	for (const finding of baselineFindings) {
+		const identity = findingBaselineIdentity(finding);
+		baselineCounts.set(identity, (baselineCounts.get(identity) ?? 0) + 1);
+	}
 	const conflicts = new Set(conflictedFiles);
 	const newFindings = [];
 	const mergeTouchedFindings = [];
@@ -744,10 +799,15 @@ export function diffCallFindings(currentFindings, baselineFindings, conflictedFi
 	for (const finding of currentFindings) {
 		if (conflicts.has(finding.file)) {
 			mergeTouchedFindings.push(finding);
-		} else if (!baselineIdentities.has(findingIdentity(finding))) {
-			newFindings.push(finding);
-		} else {
+			continue;
+		}
+		const identity = findingBaselineIdentity(finding);
+		const baselineCount = baselineCounts.get(identity) ?? 0;
+		if (baselineCount > 0) {
+			baselineCounts.set(identity, baselineCount - 1);
 			baselineExceptions.push(finding);
+		} else {
+			newFindings.push(finding);
 		}
 	}
 	return { newFindings, mergeTouchedFindings, baselineExceptions };
@@ -755,6 +815,50 @@ export function diffCallFindings(currentFindings, baselineFindings, conflictedFi
 
 function callIdentity(entry) {
 	return [entry?.file, entry?.line, entry?.column, entry?.namespace, entry?.key].join("\0");
+}
+
+function shiftedCallGroup(entry) {
+	return [entry.file, entry.namespace, entry.key, entry.kind, entry.prefix].join("\0");
+}
+
+function removedCallsAfterShiftMatching(baselineEntries, currentEntries, removedCalls) {
+	const targetUseCounts = new Map();
+	for (const record of removedCalls) {
+		if (record?.reason === "equivalent-migration") {
+			const identity = callIdentity(record.target);
+			targetUseCounts.set(identity, (targetUseCounts.get(identity) ?? 0) + 1);
+		}
+	}
+	const consolidationSources = new Set(
+		removedCalls
+			.filter((record) => record?.reason === "equivalent-migration" && targetUseCounts.get(callIdentity(record.target)) > 1)
+			.map((record) => callIdentity(record.source)),
+	);
+	const currentIdentities = new Set(currentEntries.map(callIdentity));
+	const baselineIdentities = new Set(baselineEntries.map(callIdentity));
+	const available = currentEntries.filter((entry) => !baselineIdentities.has(callIdentity(entry)));
+	const removedEntries = [];
+	for (const baselineEntry of baselineEntries) {
+		if (currentIdentities.has(callIdentity(baselineEntry))) {
+			continue;
+		}
+		if (consolidationSources.has(callIdentity(baselineEntry))) {
+			removedEntries.push(baselineEntry);
+			continue;
+		}
+		const baselineAnchors = baselineEntry.behaviorAnchors ?? [];
+		const candidateIndex = available.findIndex(
+			(currentEntry) =>
+				shiftedCallGroup(currentEntry) === shiftedCallGroup(baselineEntry) &&
+				(baselineAnchors.length > 0 ? sharesBehavior(currentEntry, baselineEntry) : (currentEntry.behaviorAnchors ?? []).length === 0),
+		);
+		if (candidateIndex >= 0) {
+			available.splice(candidateIndex, 1);
+		} else {
+			removedEntries.push(baselineEntry);
+		}
+	}
+	return removedEntries;
 }
 
 function readSource(repoRoot, file, ref = null) {
@@ -819,13 +923,14 @@ function diffLineRecords(hunk) {
 }
 
 function hunkContainsAddedCall(hunk, target) {
+	const targetText = target.dynamic ? target.prefix : target.key;
 	return diffLineRecords(hunk).some(
 		(record) =>
 			record.type === "added" &&
 			record.newLine >= target.line &&
 			record.newLine <= (target.endLine ?? target.line) &&
-			typeof target.key === "string" &&
-			record.line.includes(target.key),
+			typeof targetText === "string" &&
+			record.line.includes(targetText),
 	);
 }
 
@@ -904,8 +1009,7 @@ export function auditRemovedCalls({
 	removedCalls = [],
 }) {
 	const findings = [];
-	const currentIdentities = new Set(currentEntries.map(callIdentity));
-	const removedEntries = baselineEntries.filter((entry) => !currentIdentities.has(callIdentity(entry)));
+	const removedEntries = removedCallsAfterShiftMatching(baselineEntries, currentEntries, removedCalls);
 	const removedByIdentity = new Map(removedEntries.map((entry) => [callIdentity(entry), entry]));
 	const reviewBySource = new Map();
 	for (const record of removedCalls) {
@@ -972,7 +1076,7 @@ export function auditRemovedCalls({
 				);
 				continue;
 			}
-			const targetFindings = validateCall(target, currentResources);
+			const targetFindings = target.dynamic ? [] : validateCall(target, currentResources);
 			if (targetFindings.length > 0) {
 				findings.push(
 					evidenceFinding("migration-target-invalid", source, `Equivalent-migration target has unresolved English resources`, {
@@ -1004,12 +1108,20 @@ export function auditRemovedCalls({
 					throw new Error("invalid upstream evidence");
 				}
 				const mergeBase = gitOutput(repoRoot, ["merge-base", baseline, upstream.sha]).trim();
-				const diff = gitOutput(repoRoot, ["diff", mergeBase, upstream.sha, "--", upstream.file]);
+				const mergeBaseSource = parseBehaviorSource(upstream.file, readSource(repoRoot, upstream.file, mergeBase));
+				baselineBehaviors = matchingSourceBehaviors(mergeBaseSource, source, copy);
+				let diff = gitOutput(repoRoot, ["diff", mergeBase, upstream.sha, "--", upstream.file]);
+				if (baselineBehaviors.length === 0) {
+					const prHeadSource = parseBehaviorSource(upstream.file, readSource(repoRoot, upstream.file, baseline));
+					const prHeadBehaviors = matchingSourceBehaviors(prHeadSource, source, copy);
+					if (prHeadBehaviors.length > 0) {
+						baselineBehaviors = prHeadBehaviors;
+						diff = gitOutput(repoRoot, ["diff", baseline, upstream.sha, "--", upstream.file]);
+					}
+				}
 				hunk = parseDiffHunks(diff).find((candidate) => candidate.header === upstream.diffHeader) ?? null;
 				if (hunk) {
-					const mergeBaseSource = parseBehaviorSource(upstream.file, readSource(repoRoot, upstream.file, mergeBase));
 					const upstreamSource = parseBehaviorSource(upstream.file, readSource(repoRoot, upstream.file, upstream.sha));
-					baselineBehaviors = matchingSourceBehaviors(mergeBaseSource, source, copy);
 					upstreamBehaviors = matchingSourceBehaviors(upstreamSource, source, copy);
 				}
 			} catch {

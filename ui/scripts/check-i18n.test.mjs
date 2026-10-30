@@ -237,8 +237,34 @@ describe("analyzeTranslationCalls", () => {
 			{ namespace: "observability", key: "title", kind: "trans" },
 		]);
 		expect(validateCall(entries[0], { models: { foo: "Foo" }, observability: {} })).toEqual([
-			expect.objectContaining({ type: "wrong-namespace", namespace: "observability", key: "models.foo" }),
+			expect.objectContaining({ type: "missing-key", namespace: "observability", key: "models.foo" }),
 		]);
+	});
+
+	it("keeps namespace-like nested keys in the hook namespace", () => {
+		const [entry] = analyzeTranslationCalls(
+			makeSourceFile(`const { t } = useTranslation("mcp"); t("common.configCopied");`),
+		);
+		expect(validateCall(entry, { mcp: { common: { configCopied: "Configuration copied" } }, common: {} })).toEqual([]);
+	});
+
+	it("resolves namespace-like key subtrees against an explicit ns option", () => {
+		const [entry] = analyzeTranslationCalls(
+			makeSourceFile(`const { t } = useTranslation("mcp"); t("common.ofEntries", { ns: "mcp", from: 1, to: 1, total: 1 });`),
+		);
+		expect(validateCall(entry, { mcp: { common: { ofEntries: "{{from}}-{{to}} of {{total}} entries" } } })).toEqual([]);
+	});
+
+	it("resolves a Trans t prop through its own hook alias", () => {
+		const [entry] = analyzeTranslationCalls(
+			makeSourceFile(`
+				const { t } = useTranslation("models");
+				const { t: tc } = useTranslation("common");
+				const element = <Trans t={t} i18nKey="title" />;
+			`),
+		);
+		expect(entry).toEqual(expect.objectContaining({ namespace: "models", key: "title" }));
+		expect(validateCall(entry, { models: { title: "Title" }, common: {} })).toEqual([]);
 	});
 
 	it("expands statically enumerable conditional keys", () => {
@@ -388,6 +414,83 @@ describe("dynamic producer-specific validation", () => {
 	});
 });
 
+describe("dynamic candidate producer mappings", () => {
+	const mixedEntries = analyzeTranslationCalls(
+		makeSourceFile(`
+			const { t } = useTranslation("common");
+			t(\`warp.errors.\${summary}\`);
+			t(\`warp.errors.\${cause}\`);
+			t(\`warp.errors.\${suggestions}\`, { returnObjects: true });
+		`),
+	);
+	const candidates = ["warp.errors.summary", "warp.errors.cause", "warp.errors.suggestions"];
+	const resources = {
+		common: {
+			warp: {
+				errors: {
+					summary: "Summary",
+					cause: "Cause",
+					suggestions: [{ text: "Try again" }],
+				},
+			},
+		},
+	};
+
+	function mixedReview(candidateProducers) {
+		return {
+			prefix: "warp.errors.",
+			producers: mixedEntries.map((entry) => `${entry.file}:${entry.line}:${entry.column}`),
+			candidates,
+			englishResults: Object.fromEntries(candidates.map((candidate) => [candidate, "resolved"])),
+			...(candidateProducers ? { candidateProducers } : {}),
+		};
+	}
+
+	it("validates mixed scalar and object candidates only against their mapped producers", () => {
+		const candidateProducers = Object.fromEntries(
+			candidates.map((candidate, index) => [
+				candidate,
+				[`${mixedEntries[index].file}:${mixedEntries[index].line}:${mixedEntries[index].column}`],
+			]),
+		);
+		expect(validateDynamicFamilies(mixedEntries, resources, [mixedReview(candidateProducers)])).toEqual([]);
+	});
+
+	it("requires producer mappings for heterogeneous families", () => {
+		expect(validateDynamicFamilies(mixedEntries, resources, [mixedReview()])).toEqual([
+			expect.objectContaining({ type: "incomplete-dynamic-review", namespace: "common" }),
+		]);
+	});
+
+	it("requires candidate mappings to cover every producer", () => {
+		const candidateProducers = Object.fromEntries(
+			candidates.map((candidate, index) => [
+				candidate,
+				[`${mixedEntries[Math.min(index, 1)].file}:${mixedEntries[Math.min(index, 1)].line}:${mixedEntries[Math.min(index, 1)].column}`],
+			]),
+		);
+		expect(validateDynamicFamilies(mixedEntries, resources, [mixedReview(candidateProducers)])).toEqual([
+			expect.objectContaining({ type: "incomplete-dynamic-review", namespace: "common" }),
+		]);
+	});
+
+	it.each([
+		["empty", []],
+		["malformed", "not-an-array"],
+		["unknown", ["ui/unknown.tsx:1:1"]],
+	])("rejects %s candidate-producer mappings", (_name, mapping) => {
+		const candidateProducers = Object.fromEntries(
+			candidates.map((candidate, index) => [
+				candidate,
+				index === 0 ? mapping : [`${mixedEntries[index].file}:${mixedEntries[index].line}:${mixedEntries[index].column}`],
+			]),
+		);
+		expect(validateDynamicFamilies(mixedEntries, resources, [mixedReview(candidateProducers)])).toEqual([
+			expect.objectContaining({ type: "incomplete-dynamic-review", namespace: "common" }),
+		]);
+	});
+});
+
 describe("baseline call finding diff", () => {
 	it("preserves untouched exceptions and gates only new or merge-touched findings", () => {
 		const baseline = makeFinding();
@@ -398,12 +501,21 @@ describe("baseline call finding diff", () => {
 		expect(result.mergeTouchedFindings).toEqual([touched]);
 		expect(result.baselineExceptions).toEqual([baseline]);
 	});
+
+	it("matches shifted baseline findings by multiplicity without hiding duplicates", () => {
+		const baseline = makeFinding({ line: 10, column: 2 });
+		const shifted = makeFinding({ line: 12, column: 4 });
+		const duplicate = makeFinding({ line: 20, column: 6 });
+		const result = diffCallFindings([shifted, duplicate], [baseline]);
+		expect(result.newFindings).toEqual([duplicate]);
+		expect(result.baselineExceptions).toEqual([shifted]);
+	});
 });
 
 describe("removed call evidence", () => {
 	const file = "ui/example.tsx";
-	const baselineText = `export const Old = () => <button data-testid="save-button" onClick={save}>{i18n.t("common.save")}</button>;\nexport const Other = () => <button data-testid="other-button">{i18n.t("common.other")}</button>;\n`;
-	const migratedText = `export const New = () => <button data-testid="save-button" onClick={save}>{i18n.t("common.saved")}</button>;\nexport const Other = () => <button data-testid="other-button">{i18n.t("common.other")}</button>;\n`;
+	const baselineText = `export const Old = () => <button data-testid="save-button" onClick={save}>{i18n.t("save")}</button>;\nexport const Other = () => <button data-testid="other-button">{i18n.t("other")}</button>;\n`;
+	const migratedText = `export const New = () => <button data-testid="save-button" onClick={save}>{i18n.t("saved")}</button>;\nexport const Other = () => <button data-testid="other-button">{i18n.t("other")}</button>;\n`;
 	const resources = { common: { save: "Save", saved: "Saved", other: "Other" } };
 
 	function migrationFixture() {
@@ -417,10 +529,52 @@ describe("removed call evidence", () => {
 		return { repoRoot, baseline, baselineEntries, currentEntries, diffHeader };
 	}
 
+	function prOnlyRemovalFixture({ mergeBaseText, prText, upstreamText, currentText = upstreamText }) {
+		const repoRoot = makeGitRepo();
+		writeRepoFile(repoRoot, file, mergeBaseText);
+		const mergeBase = commitAll(repoRoot, "merge base");
+		writeRepoFile(repoRoot, file, prText);
+		const baseline = commitAll(repoRoot, "PR-only translation");
+		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
+		git(repoRoot, "checkout", "-b", "dev", mergeBase);
+		writeRepoFile(repoRoot, file, upstreamText);
+		const upstreamSha = commitAll(repoRoot, "upstream behavior change");
+		writeRepoFile(repoRoot, file, currentText);
+		const currentEntries = inventoryAtRef(repoRoot, null, file);
+		return { repoRoot, mergeBase, baseline, baselineEntries, currentEntries, upstreamSha };
+	}
+
+	it("ignores location-only shifts without hiding a different behavior removal", () => {
+		const baselineEntries = [
+			makeCall({ file, line: 10, behaviorAnchors: ["save-button"] }),
+			makeCall({ file, line: 20, behaviorAnchors: ["delete-button"] }),
+		];
+		const currentEntries = [makeCall({ file, line: 30, column: 4, behaviorAnchors: ["save-button"] })];
+		const findings = auditRemovedCalls({
+			baselineEntries,
+			currentEntries,
+			currentResources: resources,
+			baselineResources: resources,
+		});
+		expect(findings).toEqual([expect.objectContaining({ type: "removed-call-unexplained", line: 20 })]);
+	});
+
+	it("matches location-only shifts by multiplicity for duplicate unanchored calls", () => {
+		const baselineEntries = [makeCall({ file, line: 10 }), makeCall({ file, line: 20 })];
+		const currentEntries = [makeCall({ file, line: 30 })];
+		const findings = auditRemovedCalls({
+			baselineEntries,
+			currentEntries,
+			currentResources: resources,
+			baselineResources: resources,
+		});
+		expect(findings).toEqual([expect.objectContaining({ type: "removed-call-unexplained", line: 20 })]);
+	});
+
 	it("accepts a changed same-behavior migration target", () => {
 		const fixture = migrationFixture();
-		const source = fixture.baselineEntries.find((entry) => entry.key === "common.save");
-		const target = fixture.currentEntries.find((entry) => entry.key === "common.saved");
+		const source = fixture.baselineEntries.find((entry) => entry.key === "save");
+		const target = fixture.currentEntries.find((entry) => entry.key === "saved");
 		const findings = auditRemovedCalls({
 			...fixture,
 			currentResources: resources,
@@ -436,10 +590,38 @@ describe("removed call evidence", () => {
 		expect(findings).toEqual([]);
 	});
 
+	it("accepts a newly added dynamic migration target using its AST span", () => {
+		const repoRoot = makeGitRepo();
+		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);
+		const baseline = commitAll(repoRoot, "baseline");
+		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
+		writeRepoFile(repoRoot, file, 'export const New = () => <button data-testid="save-button">{i18n.t(`common.${action}`)}</button>;\n');
+		const currentEntries = inventoryAtRef(repoRoot, null, file);
+		const target = currentEntries[0];
+		expect(target).toEqual(expect.objectContaining({ dynamic: true, key: null, prefix: "common." }));
+		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, "--", file));
+		const findings = auditRemovedCalls({
+			repoRoot,
+			baseline,
+			baselineEntries,
+			currentEntries,
+			currentResources: resources,
+			baselineResources: resources,
+			removedCalls: [
+				{
+					source: sourceIdentity(baselineEntries[0]),
+					reason: "equivalent-migration",
+					target: { ...sourceIdentity(target), diffHeader, behaviorAnchor: "save-button" },
+				},
+			],
+		});
+		expect(findings).toEqual([]);
+	});
+
 	it("rejects a missing migration target", () => {
 		const fixture = migrationFixture();
-		const source = fixture.baselineEntries.find((entry) => entry.key === "common.save");
-		const target = fixture.currentEntries.find((entry) => entry.key === "common.saved");
+		const source = fixture.baselineEntries.find((entry) => entry.key === "save");
+		const target = fixture.currentEntries.find((entry) => entry.key === "saved");
 		const findings = auditRemovedCalls({
 			...fixture,
 			currentResources: resources,
@@ -457,8 +639,8 @@ describe("removed call evidence", () => {
 
 	it("rejects an unchanged same-key call borrowed from another UI location", () => {
 		const fixture = migrationFixture();
-		const source = fixture.baselineEntries.find((entry) => entry.key === "common.save");
-		const target = fixture.currentEntries.find((entry) => entry.key === "common.other");
+		const source = fixture.baselineEntries.find((entry) => entry.key === "save");
+		const target = fixture.currentEntries.find((entry) => entry.key === "other");
 		const findings = auditRemovedCalls({
 			...fixture,
 			currentResources: resources,
@@ -479,17 +661,17 @@ describe("removed call evidence", () => {
 		writeRepoFile(
 			repoRoot,
 			file,
-			`export const Old = () => (\n\t<div data-testid="save-button">\n\t\t<span>{i18n.t("common.save")}</span>\n\t\t<span>{i18n.t("common.saved")}</span>\n\t</div>\n);\n`,
+			`export const Old = () => (\n\t<div data-testid="save-button">\n\t\t<span>{i18n.t("save")}</span>\n\t\t<span>{i18n.t("saved")}</span>\n\t</div>\n);\n`,
 		);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
 		writeRepoFile(
 			repoRoot,
 			file,
-			`export const Old = () => (\n\t<div data-testid="save-button">\n\t\t<span>{null}</span>\n\t\t<span>{i18n.t("common.saved")}</span>\n\t\t<span>{i18n.t("common.saved")}</span>\n\t</div>\n);\n`,
+			`export const Old = () => (\n\t<div data-testid="save-button">\n\t\t<span>{null}</span>\n\t\t<span>{i18n.t("saved")}</span>\n\t\t<span>{i18n.t("saved")}</span>\n\t</div>\n);\n`,
 		);
 		const currentEntries = inventoryAtRef(repoRoot, null, file);
-		const source = baselineEntries.find((entry) => entry.key === "common.save");
+		const source = baselineEntries.find((entry) => entry.key === "save");
 		const target = currentEntries[0];
 		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, "--", file));
 		const findings = auditRemovedCalls({
@@ -512,8 +694,8 @@ describe("removed call evidence", () => {
 
 	it("rejects a behavior anchor attached to an unrelated control", () => {
 		const fixture = migrationFixture();
-		const source = fixture.baselineEntries.find((entry) => entry.key === "common.save");
-		const target = fixture.currentEntries.find((entry) => entry.key === "common.saved");
+		const source = fixture.baselineEntries.find((entry) => entry.key === "save");
+		const target = fixture.currentEntries.find((entry) => entry.key === "saved");
 		const findings = auditRemovedCalls({
 			...fixture,
 			currentResources: resources,
@@ -531,11 +713,11 @@ describe("removed call evidence", () => {
 
 	it("requires separate consolidation review for many-to-one migrations", () => {
 		const repoRoot = makeGitRepo();
-		const twoSourceText = `export const Old = () => <div data-testid="save-button"><span>{i18n.t("common.save")}</span><span>{i18n.t("common.saved")}</span></div>;\n`;
+		const twoSourceText = `export const Old = () => <div data-testid="save-button"><span>{i18n.t("save")}</span><span>{i18n.t("saved")}</span></div>;\n`;
 		writeRepoFile(repoRoot, file, twoSourceText);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
-		writeRepoFile(repoRoot, file, `export const New = () => <div data-testid="save-button">{i18n.t("common.save")}</div>;\n`);
+		writeRepoFile(repoRoot, file, `export const New = () => <div data-testid="save-button">{i18n.t("save")}</div>;\n`);
 		const currentEntries = inventoryAtRef(repoRoot, null, file);
 		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, "--", file));
 		const target = currentEntries[0];
@@ -577,13 +759,13 @@ describe("removed call evidence", () => {
 
 	it("rejects an upstream hunk that re-adds the same translation behavior", () => {
 		const repoRoot = makeGitRepo();
-		writeRepoFile(repoRoot, file, `export const Old = () => <button>{i18n.t("common.save")}</button>;\n`);
+		writeRepoFile(repoRoot, file, `export const Old = () => <button>{i18n.t("save")}</button>;\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
 		writeRepoFile(
 			repoRoot,
 			file,
-			`export const New = () => null;\nexport const Retained = () => <button>{i18n.t("common.save")}</button>;\n`,
+			`export const New = () => null;\nexport const Retained = () => <button>{i18n.t("save")}</button>;\n`,
 		);
 		const upstreamSha = commitAll(repoRoot, "move control");
 		const currentEntries = inventoryAtRef(repoRoot, null, file);
@@ -608,7 +790,7 @@ describe("removed call evidence", () => {
 
 	it("rejects a current hardcoded English replacement despite valid upstream removal evidence", () => {
 		const repoRoot = makeGitRepo();
-		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("common.save")}</button>;\n`);
+		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
 		writeRepoFile(repoRoot, file, "export const Removed = () => null;\n");
@@ -638,11 +820,11 @@ describe("removed call evidence", () => {
 		writeRepoFile(
 			repoRoot,
 			file,
-			`export const Old = () => <button data-testid="save-button">{i18n.t("common.save")}</button>;\n// Save\n`,
+			`export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n// Save\n`,
 		);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
-		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("common.save")}</button>;\n`);
+		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);
 		const upstreamSha = commitAll(repoRoot, "remove comment");
 		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, upstreamSha, "--", file));
 		writeRepoFile(repoRoot, file, "export const Current = () => null;\n");
@@ -669,11 +851,11 @@ describe("removed call evidence", () => {
 		writeRepoFile(
 			repoRoot,
 			file,
-			`export const Old = () => <button data-testid="save-button">{i18n.t("common.save")}</button>;\nexport const Other = () => <button data-testid="other-button">Save</button>;\n`,
+			`export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\nexport const Other = () => <button data-testid="other-button">Save</button>;\n`,
 		);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
-		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("common.save")}</button>;\n`);
+		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);
 		const upstreamSha = commitAll(repoRoot, "remove unrelated control");
 		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, upstreamSha, "--", file));
 		writeRepoFile(repoRoot, file, "export const Current = () => null;\n");
@@ -695,12 +877,79 @@ describe("removed call evidence", () => {
 		expect(findings.map((finding) => finding.type)).toEqual(["upstream-evidence-invalid"]);
 	});
 
+	it("accepts PR-only removal evidence from the PR-head to upstream diff", () => {
+		const mergeBaseText = "export const Old = () => null;\n";
+		const prText = `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`;
+		const fixture = prOnlyRemovalFixture({ mergeBaseText, prText, upstreamText: "export const Old = () => null;\n// dev\n" });
+		expect(fixture.mergeBase).not.toBe(fixture.baseline);
+		const diffHeader = firstDiffHeader(git(fixture.repoRoot, "diff", fixture.baseline, fixture.upstreamSha, "--", file));
+		const findings = auditRemovedCalls({
+			...fixture,
+			currentResources: resources,
+			baselineResources: resources,
+			removedCalls: [
+				{
+					source: sourceIdentity(fixture.baselineEntries[0]),
+					reason: "upstream-removed",
+					upstream: { sha: fixture.upstreamSha, file, diffHeader },
+				},
+			],
+		});
+		expect(findings).toEqual([]);
+	});
+
+	it("rejects PR-only evidence from an unrelated copy-removal hunk", () => {
+		const filler = Array.from({ length: 60 }, (_, index) => `// filler ${index}\n`).join("");
+		const mergeBaseText = `export const Old = () => null;\n${filler}export const Other = () => <button data-testid="other-button">Save</button>;\n`;
+		const prText = `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n${filler}export const Other = () => <button data-testid="other-button">Save</button>;\n`;
+		const upstreamText = `export const Old = () => null;\n${filler}`;
+		const fixture = prOnlyRemovalFixture({ mergeBaseText, prText, upstreamText });
+		const diffHeader = git(fixture.repoRoot, "diff", fixture.baseline, fixture.upstreamSha, "--", file)
+			.split("\n")
+			.filter((line) => line.startsWith("@@"))
+			.at(-1);
+		const findings = auditRemovedCalls({
+			...fixture,
+			currentResources: resources,
+			baselineResources: resources,
+			removedCalls: [
+				{
+					source: sourceIdentity(fixture.baselineEntries[0]),
+					reason: "upstream-removed",
+					upstream: { sha: fixture.upstreamSha, file, diffHeader },
+				},
+			],
+		});
+		expect(findings.map((finding) => finding.type)).toEqual(["upstream-evidence-invalid"]);
+	});
+
+	it("rejects hardcoded English reversion after valid PR-only upstream evidence", () => {
+		const mergeBaseText = "export const Old = () => null;\n";
+		const prText = `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`;
+		const currentText = `export const Current = () => <button data-testid="save-button">Save</button>;\n`;
+		const fixture = prOnlyRemovalFixture({ mergeBaseText, prText, upstreamText: "export const Old = () => null;\n// dev\n", currentText });
+		const diffHeader = firstDiffHeader(git(fixture.repoRoot, "diff", fixture.baseline, fixture.upstreamSha, "--", file));
+		const findings = auditRemovedCalls({
+			...fixture,
+			currentResources: resources,
+			baselineResources: resources,
+			removedCalls: [
+				{
+					source: sourceIdentity(fixture.baselineEntries[0]),
+					reason: "upstream-removed",
+					upstream: { sha: fixture.upstreamSha, file, diffHeader },
+				},
+			],
+		});
+		expect(findings.map((finding) => finding.type)).toEqual(["hardcoded-english-reversion"]);
+	});
+
 	it("distinguishes two removed calls to the same key by source location", () => {
 		const repoRoot = makeGitRepo();
 		writeRepoFile(
 			repoRoot,
 			file,
-			`export const Old = () => <div><button data-testid="one">{i18n.t("common.save")}</button><button data-testid="two">{i18n.t("common.save")}</button></div>;\n`,
+			`export const Old = () => <div><button data-testid="one">{i18n.t("save")}</button><button data-testid="two">{i18n.t("save")}</button></div>;\n`,
 		);
 		const baseline = commitAll(repoRoot, "baseline");
 		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
@@ -733,7 +982,7 @@ describe("checker CLI review contract", () => {
 	it("requires review normally but permits inventory-only without it", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);
-		writeRepoFile(repoRoot, "ui/example.tsx", `export const greeting = i18n.t("common.greeting");\n`);
+		writeRepoFile(repoRoot, "ui/example.tsx", `export const greeting = i18n.t("greeting");\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		expect(() => runCli(["--repo-root", repoRoot, "--baseline", baseline])).toThrow("--review is required");
 		expect(runCli(["--repo-root", repoRoot, "--baseline", baseline, "--inventory-only"])).toBe(0);
@@ -742,7 +991,7 @@ describe("checker CLI review contract", () => {
 	it("rejects a review file without the required evidence arrays", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);
-		writeRepoFile(repoRoot, "ui/example.tsx", `export const greeting = i18n.t("common.greeting");\n`);
+		writeRepoFile(repoRoot, "ui/example.tsx", `export const greeting = i18n.t("greeting");\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const review = path.join(repoRoot, "review.json");
 		writeFileSync(review, "{}");
@@ -754,7 +1003,7 @@ describe("checker CLI review contract", () => {
 	it("preserves baseline call findings but gates new findings in normal mode", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);
-		writeRepoFile(repoRoot, "ui/example.tsx", `export const oldMissing = i18n.t("common.oldMissing");\n`);
+		writeRepoFile(repoRoot, "ui/example.tsx", `export const oldMissing = i18n.t("oldMissing");\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const review = path.join(repoRoot, "review.json");
 		writeFileSync(review, JSON.stringify({ dynamicFamilies: [], removedCalls: [], untranslated: [] }));
@@ -763,7 +1012,7 @@ describe("checker CLI review contract", () => {
 		writeRepoFile(
 			repoRoot,
 			"ui/example.tsx",
-			`export const oldMissing = i18n.t("common.oldMissing");\nexport const newMissing = i18n.t("common.newMissing");\n`,
+			`export const oldMissing = i18n.t("oldMissing");\nexport const newMissing = i18n.t("newMissing");\n`,
 		);
 		expect(runCli(args)).toBe(1);
 	});
@@ -771,8 +1020,8 @@ describe("checker CLI review contract", () => {
 	it("does not audit removed-call reviews outside the selected paths", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);
-		writeRepoFile(repoRoot, "ui/a.tsx", `export const greeting = i18n.t("common.greeting");\n`);
-		writeRepoFile(repoRoot, "ui/b.tsx", `export const save = i18n.t("common.save");\n`);
+		writeRepoFile(repoRoot, "ui/a.tsx", `export const greeting = i18n.t("greeting");\n`);
+		writeRepoFile(repoRoot, "ui/b.tsx", `export const save = i18n.t("save");\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const removedSource = inventoryAtRef(repoRoot, baseline, "ui/b.tsx")[0];
 		writeRepoFile(repoRoot, "ui/b.tsx", "export const save = null;\n");
@@ -801,7 +1050,7 @@ describe("checker CLI review contract", () => {
 	it("inventories an explicitly selected plain TypeScript source", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);
-		writeRepoFile(repoRoot, "ui/example.ts", `export const greeting: string = i18n.t("common.greeting");\n`);
+		writeRepoFile(repoRoot, "ui/example.ts", `export const greeting: string = i18n.t("greeting");\n`);
 		const baseline = commitAll(repoRoot, "baseline");
 		const report = path.join(repoRoot, "report.json");
 		expect(
