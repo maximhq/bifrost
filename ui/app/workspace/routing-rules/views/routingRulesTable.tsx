@@ -31,6 +31,7 @@ import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Search, Trash2 } from 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { getLocale } from "@/lib/i18n";
 
 function RoutingRuleActionsMenu({
 	rule,
@@ -299,9 +300,9 @@ export function RoutingRulesTable({
 				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{t("virtualKeys.rangeOf", {
-							from: (offset + 1).toLocaleString(),
-							to: Math.min(offset + limit, totalCount).toLocaleString(),
-							total: totalCount.toLocaleString(),
+							from: (offset + 1).toLocaleString(getLocale()),
+							to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+							total: totalCount.toLocaleString(getLocale()),
 						})}
 					</div>
 

@@ -7,6 +7,8 @@ import { formatDistanceToNow } from "date-fns";
 import { Check, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 const statusPresentation: Record<
 	SidekiqJobStatus,
@@ -84,7 +86,7 @@ export default function SidekiqJobsSection({ jobs, cancellingId, onCancel, onDis
 									<span className="text-muted-foreground w-24 text-right text-[11px] tabular-nums">
 										{job.status === "completed"
 											? t("sidekiq.done")
-											: `${job.progress.done.toLocaleString()} / ${job.progress.total.toLocaleString()}`}
+											: `${job.progress.done.toLocaleString(getLocale())} / ${job.progress.total.toLocaleString(getLocale())}`}
 									</span>
 								</div>
 							)}
@@ -92,7 +94,10 @@ export default function SidekiqJobsSection({ jobs, cancellingId, onCancel, onDis
 							<div className="text-muted-foreground flex items-center justify-between text-[11px]">
 								<span>
 									{t(job.cancellable ? "sidekiq.started" : "sidekiq.finished", {
-										when: formatDistanceToNow(new Date(job.cancellable ? job.created_at : finishedAt), { addSuffix: true }),
+										when: formatDistanceToNow(new Date(job.cancellable ? job.created_at : finishedAt), {
+											addSuffix: true,
+											locale: dateFnsLocale(getLocale()),
+										}),
 									})}
 								</span>
 								{job.cancellable &&

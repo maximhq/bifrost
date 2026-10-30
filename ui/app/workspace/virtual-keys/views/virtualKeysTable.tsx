@@ -84,7 +84,7 @@ import { assignedToLabel, csvAssignedToCell, latestGraceDeadline } from "./virtu
 // where the user filter stays hidden because no picker is registered.
 import "@enterprise/lib/registrations/userPicker";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { useActionParam } from "@/hooks/useActionParam";
 
 const formatResetDuration = (duration: string) =>
@@ -630,7 +630,9 @@ export default function VirtualKeysTable({
 
 			const failureCount = result.errors ? Object.keys(result.errors).length : 0;
 			const graceUntil = latestGraceDeadline(result.virtual_keys);
-			const graceNote = graceUntil ? ` ${t("virtualKeys.rotateGraceNote", { date: new Date(graceUntil).toLocaleString() })}` : "";
+			const graceNote = graceUntil
+				? ` ${t("virtualKeys.rotateGraceNote", { date: new Date(graceUntil).toLocaleString(getLocale()) })}`
+				: "";
 			if (failureCount > 0) {
 				toast.warning(t("virtualKeys.rotatedBulkPartial", { count: result.virtual_keys.length, failed: failureCount, graceNote }));
 			} else {
@@ -1253,9 +1255,9 @@ export default function VirtualKeysTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("virtualKeys.rangeOf", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 
