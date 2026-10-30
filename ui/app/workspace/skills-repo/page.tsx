@@ -4,6 +4,8 @@ import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
 import { SkillCreateView } from "./components/skillCreatorView";
 import { SkillDetailView } from "./components/skillDetailsView";
 import { SkillsListView } from "./components/skillListView";
+import { useActionParam } from "@/hooks/useActionParam";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 export default function SkillsRepoPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -13,6 +15,11 @@ export default function SkillsRepoPage() {
 		},
 		{ history: "push" },
 	);
+	const canCreate = useRbac(RbacResource.SkillsRepository, RbacOperation.Create);
+	useActionParam("create", () => setUrlState({ create: true, skillId: null, edit: false }), {
+		isOpen: urlState.create,
+		enabled: canCreate,
+	});
 
 	const handleSelectSkill = (id: string, edit = false) => {
 		setUrlState({ skillId: id, edit, create: false });

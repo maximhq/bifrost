@@ -1,5 +1,6 @@
 import { Input } from "@/components/ui/input";
 import type { MCPCodeModeLimits } from "@/lib/types/config";
+import { useTranslation } from "react-i18next";
 import { CODE_MODE_LIMIT_FIELDS, parseCodeModeLimitInput } from "./codeModeLimits.utils";
 
 interface CodeModeLimitsSectionProps {
@@ -11,13 +12,12 @@ interface CodeModeLimitsSectionProps {
 // Inputs are controlled by the numeric limits: an empty input is 0, which the
 // server treats as the default, so the placeholder shows that default.
 export function CodeModeLimitsSection({ value, onChange, disabled }: CodeModeLimitsSectionProps) {
+	const { t } = useTranslation("config");
 	return (
 		<div className="space-y-4 rounded-sm border p-4" data-testid="mcp-code-mode-limits">
 			<div className="space-y-0.5">
-				<p className="text-sm font-medium">Code Mode Limits</p>
-				<p className="text-muted-foreground text-sm">
-					Limits on each code execution. Leave a field empty to use its default. Executions are not limited in how many run at once.
-				</p>
+				<p className="text-sm font-medium">{t("mcpSettings.codeModeLimitsTitle")}</p>
+				<p className="text-muted-foreground text-sm">{t("mcpSettings.codeModeLimitsDescription")}</p>
 			</div>
 			<div className="grid gap-4 sm:grid-cols-2">
 				{CODE_MODE_LIMIT_FIELDS.map((field) => {

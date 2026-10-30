@@ -12,6 +12,7 @@ import { ChevronDown } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { Trans, useTranslation } from "react-i18next";
 
 // Where the operator lands after the token is accepted: the security page holds the
 // existing admin-account form, which is the step that lifts the lock.
@@ -22,23 +23,22 @@ const CONFIG_SNIPPET = `{
 }`;
 
 function SetupTokenInstructions() {
+	const { t } = useTranslation("login");
+	const code = <code className="text-foreground" />;
 	return (
 		<div className="text-muted-foreground space-y-3 text-sm" data-testid="setup-token-instructions">
-			<p>The setup token is a secret the operator sets on the server. Set it one of two ways, then restart Bifrost:</p>
+			<p>{t("setup.instructionsIntro")}</p>
 			<ul className="list-disc space-y-1 pl-5">
 				<li>
-					Set the <code className="text-foreground">BIFROST_SETUP_TOKEN</code> environment variable.
+					<Trans t={t} i18nKey="setup.instructionsEnv" components={{ code }} />
 				</li>
 				<li>
-					Add <code className="text-foreground">setup_token</code> at the top level of <code className="text-foreground">config.json</code>.
-					It accepts a literal value, an <code className="text-foreground">env.VAR</code> reference, or a{" "}
-					<code className="text-foreground">vault.path</code> reference:
+					<Trans t={t} i18nKey="setup.instructionsConfig" components={{ code }} />
 				</li>
 			</ul>
 			<pre className="bg-muted text-foreground overflow-x-auto rounded-sm p-3 text-xs">{CONFIG_SNIPPET}</pre>
 			<p>
-				API clients send the same value in the <code className="text-foreground">{SETUP_TOKEN_HEADER}</code> header. The token stops working
-				once dashboard authentication is enabled.
+				<Trans t={t} i18nKey="setup.instructionsHeader" values={{ header: SETUP_TOKEN_HEADER }} components={{ code }} />
 			</p>
 		</div>
 	);
@@ -52,6 +52,7 @@ interface SetupTokenViewProps {
 // call needs the operator's setup token. It verifies the token against a locked endpoint,
 // stores it for this tab, and hands off to the security page to create the admin account.
 export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewProps) {
+	const { t } = useTranslation("login");
 	const { resolvedTheme } = useTheme();
 	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
 	const [helpOpen, setHelpOpen] = useState(false);
@@ -72,15 +73,15 @@ export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewP
 				headers: { [SETUP_TOKEN_HEADER]: setup_token },
 			});
 		} catch {
-			form.setError("setup_token", { message: "Could not reach Bifrost. Check that the server is running." });
+			form.setError("setup_token", { message: t("setup.unreachable") });
 			return;
 		}
 		if (res.status === 401 || res.status === 403) {
-			form.setError("setup_token", { message: "Invalid setup token" });
+			form.setError("setup_token", { message: t("setup.invalidToken") });
 			return;
 		}
 		if (!res.ok) {
-			form.setError("setup_token", { message: `Bifrost returned ${res.status} while checking the token` });
+			form.setError("setup_token", { message: t("setup.checkFailed", { status: res.status }) });
 			return;
 		}
 		form.reset();
@@ -96,11 +97,8 @@ export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewP
 					</div>
 
 					<div className="space-y-2 text-center">
-						<h1 className="text-foreground text-lg font-semibold">Finish setting up Bifrost</h1>
-						<p className="text-muted-foreground text-sm">
-							Dashboard authentication is not configured, so the API is locked. Enter the setup token to continue and create an admin
-							account.
-						</p>
+						<h1 className="text-foreground text-lg font-semibold">{t("setup.title")}</h1>
+						<p className="text-muted-foreground text-sm">{t("setup.description")}</p>
 					</div>
 
 					{setupTokenConfigured ? (
@@ -112,12 +110,12 @@ export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewP
 										name="setup_token"
 										render={({ field }) => (
 											<FormItem>
-												<FormLabel>Setup token</FormLabel>
+												<FormLabel>{t("setup.tokenLabel")}</FormLabel>
 												<FormControl>
 													<Input
 														{...field}
 														type="password"
-														placeholder="Enter the setup token"
+														placeholder={t("setup.tokenPlaceholder")}
 														autoComplete="off"
 														className="text-sm"
 														data-testid="setup-token-input"
@@ -134,13 +132,13 @@ export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewP
 										disabled={form.formState.isSubmitting}
 										data-testid="setup-token-submit"
 									>
-										Continue
+										{t("setup.continue")}
 									</Button>
 								</form>
 							</Form>
 							<Collapsible open={helpOpen} onOpenChange={setHelpOpen}>
 								<CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm transition-colors">
-									Where do I find the setup token?
+									{t("setup.whereToFind")}
 									<ChevronDown className={`h-4 w-4 transition-transform ${helpOpen ? "rotate-180" : ""}`} />
 								</CollapsibleTrigger>
 								<CollapsibleContent className="pt-3">
@@ -150,9 +148,7 @@ export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewP
 						</>
 					) : (
 						<div className="space-y-4">
-							<div className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">
-								No setup token is configured on this server, so setup cannot continue yet.
-							</div>
+							<div className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">{t("setup.notConfigured")}</div>
 							<SetupTokenInstructions />
 						</div>
 					)}

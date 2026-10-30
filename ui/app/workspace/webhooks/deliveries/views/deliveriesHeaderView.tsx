@@ -7,6 +7,7 @@ import type { WebhookDeliveryFilters } from "@/lib/types/webhooks";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { initialIdSearchField } from "../deliveries.page.utils";
 
 interface DeliveriesHeaderViewProps {
@@ -43,6 +44,8 @@ export function DeliveriesHeaderView({
 	onToggleColumnVisibility,
 	onResetColumns,
 }: DeliveriesHeaderViewProps) {
+	const { t } = useTranslation("governance");
+	const { t: tObs } = useTranslation("observability");
 	const [localSearch, setLocalSearch] = useState(idSearchValue(filters));
 	const [timezone, setTimezone] = useTimezonePreference();
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
@@ -96,7 +99,7 @@ export function DeliveriesHeaderView({
 				data-testid="webhook-deliveries-header-refresh-btn"
 			>
 				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-				Refresh
+				{tObs("labels.refresh")}
 			</Button>
 			<Button
 				variant={polling ? "default" : "outline"}
@@ -106,14 +109,16 @@ export function DeliveriesHeaderView({
 				data-testid="webhook-deliveries-header-live-btn"
 			>
 				<Radio className={`h-4 w-4 ${polling ? "animate-pulse" : ""}`} />
-				Live
+				{tObs("labels.live")}
 			</Button>
 			<div className="border-input flex h-7.5 min-w-[16rem] flex-1 items-center overflow-hidden rounded-sm border">
 				<Search className="mr-2 ml-2 size-4" />
 				<Input
 					type="text"
 					className="!h-7 rounded-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
-					placeholder={searchField === "request_id" ? "Search by request ID" : "Search by delivery ID"}
+					placeholder={
+						searchField === "request_id" ? tObs("logs.searchPlaceholders.request_id") : t("webhooks.deliveries.header.searchByDeliveryId")
+					}
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value, searchField)}
 					data-testid="webhook-deliveries-search-input"
@@ -127,10 +132,10 @@ export function DeliveriesHeaderView({
 						setSearchField(next);
 						handleSearchChange(localSearch, next);
 					}}
-					title="Switch between request ID and delivery ID lookup"
+					title={t("webhooks.deliveries.header.switchLookup")}
 					data-testid="webhook-deliveries-search-field-toggle"
 				>
-					{searchField === "request_id" ? "Request ID" : "Delivery ID"}
+					{searchField === "request_id" ? t("webhooks.details.requestId") : t("webhooks.deliveries.columns.deliveryId")}
 				</Button>
 			</div>
 			<DateTimePickerWithRange

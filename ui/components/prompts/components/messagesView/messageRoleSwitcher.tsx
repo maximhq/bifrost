@@ -1,13 +1,9 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { cn } from "@/lib/utils";
 import { ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
-const AVAILABLE_ROLES = [
-	{ value: "system", label: "System" },
-	{ value: "user", label: "User" },
-	{ value: "assistant", label: "Assistant" },
-	{ value: "tool", label: "Tool" },
-] as const;
+const AVAILABLE_ROLES = [{ value: "system" }, { value: "user" }, { value: "assistant" }, { value: "tool" }] as const;
 
 /**
  * Render a dropdown that lets the user switch the current message role.
@@ -29,6 +25,13 @@ export default function MessageRoleSwitcher({
 	onRoleChange: (role: string) => void;
 	restrictedRoles?: (typeof AVAILABLE_ROLES)[number]["value"][];
 }) {
+	const { t } = useTranslation("config");
+	const roleLabels: Record<(typeof AVAILABLE_ROLES)[number]["value"], string> = {
+		system: t("promptRepo.roleSystem"),
+		user: t("promptRepo.roleUser"),
+		assistant: t("promptRepo.roleAssistant"),
+		tool: t("promptRepo.roleTool"),
+	};
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild disabled={disabled}>
@@ -38,14 +41,14 @@ export default function MessageRoleSwitcher({
 						!disabled && "hover:bg-muted cursor-pointer",
 					)}
 				>
-					{role}
+					{roleLabels[role as keyof typeof roleLabels] ?? role}
 					<ChevronDown className="size-3 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100" />
 				</button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start">
 				{AVAILABLE_ROLES.filter((r) => r.value !== role && (!restrictedRoles || !restrictedRoles.includes(r.value))).map((option) => (
 					<DropdownMenuItem key={option.value} onSelect={() => onRoleChange(option.value)}>
-						{option.label.toUpperCase()}
+						{roleLabels[option.value]}
 					</DropdownMenuItem>
 				))}
 			</DropdownMenuContent>

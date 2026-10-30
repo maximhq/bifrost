@@ -11,8 +11,10 @@ import { injectedToolsFormSchema, type InjectedToolsFormSchema } from "@/lib/typ
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Plus, Trash2 } from "lucide-react";
+import type { ParseKeys } from "i18next";
 import { useEffect, useState } from "react";
 import { useFieldArray, useForm, type Resolver, type UseFormReturn } from "react-hook-form";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { buildProviderUpdatePayload } from "../views/utils";
 import {
@@ -34,12 +36,12 @@ import {
 
 const SAVED_CLIENT_PAGE_SIZE = 50;
 
-const TOOL_PLACEHOLDERS: Record<ReturnType<typeof toolMenuState>, string> = {
-	"no-server": "Pick an MCP server first",
-	loading: "Loading tools...",
-	error: "Could not load tools",
-	empty: "This MCP server exposes no tools",
-	ready: "Pick a tool",
+const TOOL_PLACEHOLDER_KEYS: Record<ReturnType<typeof toolMenuState>, ParseKeys<"models">> = {
+	"no-server": "providers.injectedTools.placeholders.noServer",
+	loading: "providers.injectedTools.placeholders.loading",
+	error: "providers.injectedTools.placeholders.error",
+	empty: "providers.injectedTools.placeholders.empty",
+	ready: "providers.injectedTools.placeholders.ready",
 };
 
 interface InjectedToolsFormFragmentProps {
@@ -83,6 +85,8 @@ interface InjectedToolRowProps {
 }
 
 function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRowProps) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const testId = `provider-tools-row-${index}`;
 	const name = form.watch(`tools.${index}.name`);
 	const clientId = form.watch(`tools.${index}.mcp_client_id`);
@@ -132,13 +136,13 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 									placeholder="web_search"
 									className="h-8 font-mono text-xs"
 									disabled={lockPickers}
-									aria-label="Tool name the model sees"
+									aria-label={t("providers.injectedTools.toolNameAria")}
 									data-testid={`${testId}-name`}
 								/>
 							</FormControl>
 							{replacesNativeWebSearch(name) && (
 								<Badge variant="secondary" className="text-xs" data-testid={`${testId}-replaces-web-search`}>
-									Replaces native web search
+									{t("providers.injectedTools.replacesWebSearch")}
 								</Badge>
 							)}
 							<FormMessage />
@@ -171,19 +175,19 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 							</FormControl>
 							{savedClientStatus === "loading" && (
 								<p className="text-muted-foreground text-xs" data-testid={`${testId}-client-loading`}>
-									Loading saved MCP server &quot;{clientName}&quot;...
+									{t("providers.injectedTools.loadingSavedServer", { name: clientName })}
 								</p>
 							)}
 							{savedClientStatus === "missing" && (
 								<p className="text-destructive text-xs" data-testid={`${testId}-client-missing`}>
-									The saved MCP server &quot;{clientName}&quot; no longer exists. Pick another one.
+									{t("providers.injectedTools.savedServerMissing", { name: clientName })}
 								</p>
 							)}
 							{savedClientStatus === "error" && (
 								<div className="text-destructive flex items-center gap-2 text-xs" data-testid={`${testId}-client-error`}>
-									Could not load the saved MCP server &quot;{clientName}&quot;.
+									{t("providers.injectedTools.savedServerError", { name: clientName })}
 									<Button type="button" variant="outline" size="sm" onClick={savedClient.retry} data-testid={`${testId}-client-retry`}>
-										Retry
+										{tc("retry")}
 									</Button>
 								</div>
 							)}
@@ -210,7 +214,7 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 							>
 								<FormControl>
 									<SelectTrigger className="h-8 w-full text-xs" data-testid={`${testId}-tool-select`}>
-										<SelectValue placeholder={TOOL_PLACEHOLDERS[menuState]} />
+										<SelectValue placeholder={t(TOOL_PLACEHOLDER_KEYS[menuState])} />
 									</SelectTrigger>
 								</FormControl>
 								<SelectContent>
@@ -223,7 +227,7 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 							</Select>
 							{menuState === "error" && (
 								<div className="text-destructive flex items-center gap-2 text-xs" data-testid={`${testId}-tool-error`}>
-									Could not load this server&apos;s tools.
+									{t("providers.injectedTools.toolsLoadError")}
 									<Button
 										type="button"
 										variant="outline"
@@ -231,7 +235,7 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 										onClick={() => toolsQuery.refetch()}
 										data-testid={`${testId}-tool-retry`}
 									>
-										Retry
+										{tc("retry")}
 									</Button>
 								</div>
 							)}
@@ -248,7 +252,7 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 					className="h-8 w-8"
 					disabled={lockPickers}
 					onClick={onRemove}
-					aria-label={name ? `Remove tool ${name}` : "Remove tool"}
+					aria-label={name ? t("providers.injectedTools.removeToolNamed", { name }) : t("providers.injectedTools.removeTool")}
 					data-testid={`${testId}-remove-btn`}
 				>
 					<Trash2 className="h-3.5 w-3.5" />
@@ -259,6 +263,8 @@ function InjectedToolRow({ form, index, lockPickers, onRemove }: InjectedToolRow
 }
 
 export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmentProps) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	const dispatch = useAppDispatch();
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -289,11 +295,11 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 		updateProvider(buildProviderUpdatePayload(provider, { injected_tools: injectedTools }))
 			.unwrap()
 			.then(() => {
-				toast.success(injectedTools ? "Tools updated" : "Tools removed");
+				toast.success(injectedTools ? t("providers.injectedTools.toolsUpdated") : t("providers.injectedTools.toolsRemoved"));
 				form.reset(data);
 			})
 			.catch((err) => {
-				toast.error("Failed to update tools", { description: getErrorMessage(err) });
+				toast.error(t("providers.injectedTools.updateFailed"), { description: getErrorMessage(err) });
 			});
 	};
 
@@ -301,20 +307,18 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(save)} className="space-y-4 px-4 md:px-6" data-testid="provider-config-tools-content">
 				<p className="text-muted-foreground text-xs">
-					MCP tools added to every chat and responses request to this provider. Bifrost runs them itself when the model calls them and
-					returns only the final answer. The model sees each tool under its name. A name that matches a tool the client sends replaces that
-					tool, and the name <code className="font-mono">web_search</code> also replaces native web search.
+					<Trans t={t} i18nKey="providers.injectedTools.intro" components={{ code: <code className="font-mono" /> }} />
 				</p>
 				{fields.length > 0 ? (
 					<div className="overflow-x-auto rounded-md border">
 						<table className="w-full text-sm" data-testid="provider-tools-table">
 							<thead>
 								<tr className="border-b">
-									<th className="px-3 py-2 text-left font-medium">Name</th>
-									<th className="px-3 py-2 text-left font-medium">MCP server</th>
-									<th className="px-3 py-2 text-left font-medium">Tool</th>
+									<th className="px-3 py-2 text-left font-medium">{t("providers.name")}</th>
+									<th className="px-3 py-2 text-left font-medium">{t("providers.injectedTools.colServer")}</th>
+									<th className="px-3 py-2 text-left font-medium">{t("providers.injectedTools.colTool")}</th>
 									<th className="w-10 px-1 py-2">
-										<span className="sr-only">Remove</span>
+										<span className="sr-only">{t("providers.injectedTools.remove")}</span>
 									</th>
 								</tr>
 							</thead>
@@ -330,7 +334,7 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 						className="text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center text-xs"
 						data-testid="provider-tools-empty"
 					>
-						No tools are injected for this provider.
+						{t("providers.injectedTools.empty")}
 					</p>
 				)}
 
@@ -344,7 +348,7 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 						data-testid="provider-tools-add-btn"
 					>
 						<Plus className="mr-1 h-3.5 w-3.5" />
-						Add tool
+						{t("providers.injectedTools.addTool")}
 					</Button>
 					<Button
 						type="submit"
@@ -352,7 +356,7 @@ export function InjectedToolsFormFragment({ provider }: InjectedToolsFormFragmen
 						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdatingProvider}
 						isLoading={isUpdatingProvider}
 					>
-						Save Tools
+						{t("providers.injectedTools.save")}
 					</Button>
 				</div>
 			</form>

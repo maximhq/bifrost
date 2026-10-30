@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes } from "./logs";
+import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels } from "./logs";
 
 describe("logs constants", () => {
 	it.each([

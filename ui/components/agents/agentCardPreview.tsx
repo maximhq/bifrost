@@ -7,6 +7,8 @@ import type { InspectAgentCardResponse, InspectedAgentSkill } from "@/lib/types/
 import { AlertTriangle, Bot, CheckCircle2, ChevronDown, ExternalLink } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 function capabilityLabel(name: string) {
 	return name
@@ -15,10 +17,10 @@ function capabilityLabel(name: string) {
 		.replace(/^./, (value) => value.toUpperCase());
 }
 
-function requirementLabel(requirement: string[], details?: Record<string, string[]>) {
+function requirementLabel(t: TFunction<"observability">, requirement: string[], details?: Record<string, string[]>) {
 	return requirement.length
 		? requirement.map((name) => (details?.[name]?.length ? `${name} (${details[name].join(", ")})` : name)).join(" + ")
-		: "None";
+		: t("agentGateway.sheet.none");
 }
 
 function DefinitionFields({ fields }: { fields: Record<string, unknown> }) {
@@ -43,15 +45,19 @@ function DefinitionFields({ fields }: { fields: Record<string, unknown> }) {
 }
 
 function SecurityFields({ fields }: { fields: Record<string, unknown> }) {
+	const { t } = useTranslation("observability");
 	const labels: Record<string, string> = {
-		oauth2MetadataUrl: "OAuth metadata URL",
-		openIdConnectUrl: "OpenID Connect URL",
-		authorizationUrl: "Authorization URL",
-		tokenUrl: "Token URL",
-		refreshUrl: "Refresh URL",
-		bearerFormat: "Bearer format",
-		authorizationCode: "Authorization code",
-		clientCredentials: "Client credentials",
+		oauth2MetadataUrl: t("agentGateway.cardPreview.fields.oauth2MetadataUrl"),
+		openIdConnectUrl: t("agentGateway.cardPreview.fields.openIdConnectUrl"),
+		authorizationUrl: t("agentGateway.cardPreview.fields.authorizationUrl"),
+		tokenUrl: t("agentGateway.authFields.tokenUrl"),
+		refreshUrl: t("agentGateway.cardPreview.fields.refreshUrl"),
+		bearerFormat: t("agentGateway.cardPreview.fields.bearerFormat"),
+		authorizationCode: t("agentGateway.cardPreview.fields.authorizationCode"),
+		clientCredentials: t("agentGateway.cardPreview.fields.clientCredentials"),
+		inputModes: t("agentGateway.cardPreview.inputModes"),
+		outputModes: t("agentGateway.cardPreview.outputModes"),
+		authentication: t("agentGateway.cardPreview.authentication"),
 	};
 	return (
 		<dl className="divide-y text-xs">
@@ -60,7 +66,7 @@ function SecurityFields({ fields }: { fields: Record<string, unknown> }) {
 				if (key === "flows" && record) {
 					return (
 						<div key={key} className="py-3 first:pt-0 last:pb-0">
-							<dt className="sr-only">OAuth flows</dt>
+							<dt className="sr-only">{t("agentGateway.cardPreview.oauthFlows")}</dt>
 							<dd className="space-y-4">
 								{Object.entries(record).map(([flow, definition]) => {
 									const flowFields =
@@ -71,14 +77,16 @@ function SecurityFields({ fields }: { fields: Record<string, unknown> }) {
 										<section key={flow} className="space-y-3">
 											<dl className="border-b pb-2.5">
 												<div className="grid gap-1 sm:grid-cols-[140px_minmax(0,1fr)] sm:gap-4">
-													<dt className="text-muted-foreground">Flow</dt>
+													<dt className="text-muted-foreground">{t("agentGateway.cardPreview.flow")}</dt>
 													<dd>{labels[flow] ?? capabilityLabel(flow)}</dd>
 												</div>
 											</dl>
 											{flowFields ? (
 												<SecurityFields fields={flowFields} />
 											) : (
-												<p className="text-muted-foreground">{definition === "REDACTED" ? "Redacted" : String(definition)}</p>
+												<p className="text-muted-foreground">
+													{definition === "REDACTED" ? t("logs.detail.guardrailActions.redacted") : String(definition)}
+												</p>
 											)}
 										</section>
 									);
@@ -106,7 +114,11 @@ function SecurityFields({ fields }: { fields: Record<string, unknown> }) {
 								)
 							) : (
 								<span className="font-mono break-all">
-									{Array.isArray(value) ? value.join(", ") : value === "REDACTED" ? "Redacted" : String(value)}
+									{Array.isArray(value)
+										? value.join(", ")
+										: value === "REDACTED"
+											? t("logs.detail.guardrailActions.redacted")
+											: String(value)}
 								</span>
 							)}
 						</dd>
@@ -138,7 +150,8 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 function SkillItem({ skill }: { skill: InspectedAgentSkill }) {
 	const idRef = useRef<HTMLButtonElement>(null);
 	const [idTruncated, setIdTruncated] = useState(false);
-	const { copy } = useCopyToClipboard({ successMessage: "Copied" });
+	const { t } = useTranslation("observability");
+	const { copy } = useCopyToClipboard({ successMessage: t("agentGateway.pushConfigs.copied") });
 
 	return (
 		<details className="group/skill">
@@ -160,7 +173,7 @@ function SkillItem({ skill }: { skill: InspectedAgentSkill }) {
 										type="button"
 										ref={idRef}
 										className="text-muted-foreground max-w-[45%] truncate font-mono text-[11px] hover:underline"
-										aria-label={`Copy skill ID ${skill.id}`}
+										aria-label={t("agentGateway.cardPreview.copySkillIdAria", { id: skill.id })}
 										onClick={(event) => {
 											event.preventDefault();
 											event.stopPropagation();
@@ -172,7 +185,7 @@ function SkillItem({ skill }: { skill: InspectedAgentSkill }) {
 								</TooltipTrigger>
 								<TooltipContent>
 									{idTruncated && <p>{skill.id}</p>}
-									<p>Click to copy skill ID</p>
+									<p>{t("agentGateway.cardPreview.copySkillIdHint")}</p>
 								</TooltipContent>
 							</Tooltip>
 						</TooltipProvider>
@@ -199,7 +212,7 @@ function SkillItem({ skill }: { skill: InspectedAgentSkill }) {
 							...(skill.security_requirements?.length
 								? {
 										authentication: skill.security_requirements
-											.map((requirement, index) => requirementLabel(requirement, skill.security_requirement_details?.[index]))
+											.map((requirement, index) => requirementLabel(t, requirement, skill.security_requirement_details?.[index]))
 											.join(" or "),
 									}
 								: {}),
@@ -229,6 +242,7 @@ export function AgentCardPreview({
 	showFetched?: boolean;
 	gatewayCard?: boolean;
 }) {
+	const { t } = useTranslation("observability");
 	const [detailsOpen, setDetailsOpen] = useState(false);
 	const [iconFailed, setIconFailed] = useState(false);
 	const capabilities = Object.entries(card.capabilities)
@@ -255,17 +269,17 @@ export function AgentCardPreview({
 				</div>
 				<div className="min-w-0 flex-1 space-y-0.5">
 					<div className="flex flex-wrap items-center gap-2">
-						<p className="truncate font-medium">{card.name || "Unnamed agent"}</p>
+						<p className="truncate font-medium">{card.name || t("agentGateway.cardPreview.unnamedAgent")}</p>
 						{card.version && <Badge variant="outline">v{card.version}</Badge>}
 					</div>
 					<div className="text-muted-foreground flex flex-wrap items-center gap-x-3 text-xs">
 						{card.provider &&
 							(card.provider_url ? (
 								<a href={card.provider_url} target="_blank" rel="noreferrer" className="hover:text-foreground hover:underline">
-									by {card.provider}
+									{t("agentGateway.cardPreview.byProvider", { provider: card.provider })}
 								</a>
 							) : (
-								<span>by {card.provider}</span>
+								<span>{t("agentGateway.cardPreview.byProvider", { provider: card.provider })}</span>
 							))}
 						{card.documentation_url && (
 							<a
@@ -274,7 +288,7 @@ export function AgentCardPreview({
 								rel="noreferrer"
 								className="hover:text-foreground inline-flex items-center gap-1 hover:underline"
 							>
-								Docs <ExternalLink className="size-3" />
+								{t("agentGateway.cardPreview.docs")} <ExternalLink className="size-3" />
 							</a>
 						)}
 					</div>
@@ -282,7 +296,7 @@ export function AgentCardPreview({
 				{showFetched && (
 					<span className="inline-flex shrink-0 items-center gap-1 text-xs text-green-700 dark:text-green-400">
 						<CheckCircle2 className="size-3.5" />
-						Fetched
+						{t("agentGateway.cardPreview.fetched")}
 					</span>
 				)}
 			</div>
@@ -290,10 +304,10 @@ export function AgentCardPreview({
 			{card.description && <p className="text-muted-foreground px-4 pb-4 text-xs leading-relaxed break-words">{card.description}</p>}
 
 			<div className="bg-muted/30 grid grid-cols-3 divide-x border-t">
-				<Stat label="Skills" value={skills.length} />
-				<Stat label="Interfaces" value={interfaces.length} />
+				<Stat label={t("agentGateway.cardPreview.skills")} value={skills.length} />
+				<Stat label={t("agentGateway.cardPreview.interfaces")} value={interfaces.length} />
 				<Stat
-					label="Signatures"
+					label={t("agentGateway.cardPreview.signatures")}
 					value={
 						gatewayCard ? (
 							<TooltipProvider>
@@ -301,10 +315,7 @@ export function AgentCardPreview({
 									<TooltipTrigger asChild>
 										<span className="cursor-help border-b border-dotted">{card.signature_count}</span>
 									</TooltipTrigger>
-									<TooltipContent className="max-w-80">
-										Upstream signatures are removed because the gateway rewrites the card’s endpoints and authentication requirements.
-										Original signatures remain in raw capture when recorded.
-									</TooltipContent>
+									<TooltipContent className="max-w-80">{t("agentGateway.cardPreview.signaturesRemovedTooltip")}</TooltipContent>
 								</Tooltip>
 							</TooltipProvider>
 						) : (
@@ -342,13 +353,13 @@ export function AgentCardPreview({
 					className="text-muted-foreground hover:text-foreground flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium"
 					data-testid="agent-card-details-toggle"
 				>
-					{detailsOpen ? "Hide card details" : "Show card details"}
+					{detailsOpen ? t("agentGateway.cardPreview.hideDetails") : t("agentGateway.cardPreview.showDetails")}
 					<ChevronDown className={`size-4 transition-transform ${detailsOpen ? "rotate-180" : ""}`} />
 				</CollapsibleTrigger>
 				<CollapsibleContent className="divide-y border-t px-4 pb-2">
 					{interfaces.length > 0 && (
 						<section className="py-3">
-							<p className="text-muted-foreground mb-2 text-xs">Interfaces</p>
+							<p className="text-muted-foreground mb-2 text-xs">{t("agentGateway.cardPreview.interfaces")}</p>
 							<div className="space-y-2">
 								{interfaces.map((item) => (
 									<div key={`${item.protocol_binding}-${item.url}`} className="flex min-w-0 items-start gap-3">
@@ -358,27 +369,31 @@ export function AgentCardPreview({
 										</div>
 										<div className="min-w-0 flex-1">
 											<TruncatedLabel className="block font-mono text-xs">{item.url}</TruncatedLabel>
-											{item.tenant && <p className="text-muted-foreground mt-1 text-xs">Tenant: {item.tenant}</p>}
+											{item.tenant && (
+												<p className="text-muted-foreground mt-1 text-xs">
+													{t("agentGateway.cardPreview.tenant", { tenant: item.tenant })}
+												</p>
+											)}
 										</div>
 									</div>
 								))}
 							</div>
 						</section>
 					)}
-					<DetailRow label="Input modes">
-						<p className="font-mono text-xs break-words">{inputModes || "Not declared"}</p>
+					<DetailRow label={t("agentGateway.cardPreview.inputModes")}>
+						<p className="font-mono text-xs break-words">{inputModes || t("agentGateway.cardPreview.notDeclared")}</p>
 					</DetailRow>
-					<DetailRow label="Output modes">
-						<p className="font-mono text-xs break-words">{outputModes || "Not declared"}</p>
+					<DetailRow label={t("agentGateway.cardPreview.outputModes")}>
+						<p className="font-mono text-xs break-words">{outputModes || t("agentGateway.cardPreview.notDeclared")}</p>
 					</DetailRow>
-					<DetailRow label="Authentication">
+					<DetailRow label={t("agentGateway.cardPreview.authentication")}>
 						<div className="flex flex-wrap gap-1">
 							{card.security_requirements.length === 0 ? (
-								<Badge variant="outline">None</Badge>
+								<Badge variant="outline">{t("agentGateway.sheet.none")}</Badge>
 							) : (
 								card.security_requirements.map((requirement, index) => (
 									<Badge key={`${requirement.join("-")}-${index}`} variant="outline">
-										{requirementLabel(requirement, card.security_requirement_details?.[index])}
+										{requirementLabel(t, requirement, card.security_requirement_details?.[index])}
 									</Badge>
 								))
 							)}
@@ -386,7 +401,7 @@ export function AgentCardPreview({
 					</DetailRow>
 					{card.security_schemes.length > 0 && (
 						<section className="py-3">
-							<p className="text-muted-foreground mb-2 text-xs">Security schemes</p>
+							<p className="text-muted-foreground mb-2 text-xs">{t("agentGateway.cardPreview.securitySchemes")}</p>
 							<div className="divide-y overflow-hidden rounded-sm border">
 								{card.security_schemes.map((scheme) => (
 									<details key={scheme.name} className="group/scheme">
@@ -414,7 +429,7 @@ export function AgentCardPreview({
 						</section>
 					)}
 					{(card.signatures?.length ?? 0) > 0 && (
-						<DetailRow label="Signatures">
+						<DetailRow label={t("agentGateway.cardPreview.signatures")}>
 							<div className="divide-y">
 								{card.signatures?.map((signature, index) => (
 									<details key={index} className="group/signature py-2 first:pt-0 last:pb-0">
@@ -422,7 +437,7 @@ export function AgentCardPreview({
 											data-testid="agent-card-signature-toggle"
 											className="flex cursor-pointer list-none items-center justify-between text-xs [&::-webkit-details-marker]:hidden"
 										>
-											Signature {index + 1}
+											{t("agentGateway.cardPreview.signature", { index: index + 1 })}
 											<ChevronDown className="text-muted-foreground size-3.5 transition-transform group-open/signature:rotate-180" />
 										</summary>
 										<div className="pt-2">
@@ -434,12 +449,12 @@ export function AgentCardPreview({
 						</DetailRow>
 					)}
 					{card.capabilities.extendedAgentCard && (
-						<DetailRow label="Extended card">
-							<p className="text-muted-foreground text-xs">Supports fetching an extended agent card with authentication.</p>
+						<DetailRow label={t("agentGateway.cardPreview.extendedCard")}>
+							<p className="text-muted-foreground text-xs">{t("agentGateway.cardPreview.extendedCardDescription")}</p>
 						</DetailRow>
 					)}
 					{extensions.length > 0 && (
-						<DetailRow label="Extensions">
+						<DetailRow label={t("agentGateway.cardPreview.extensions")}>
 							<div className="flex flex-wrap gap-1">
 								{extensions.map((extension) => (
 									<TooltipProvider key={extension.uri}>
@@ -448,7 +463,7 @@ export function AgentCardPreview({
 												<Badge variant="outline" className="max-w-full">
 													<span className="min-w-0 truncate">{extension.uri}</span>
 													{extension.required && (
-														<span className="text-destructive shrink-0" aria-label="Required">
+														<span className="text-destructive shrink-0" aria-label={t("agentGateway.cardPreview.required")}>
 															*
 														</span>
 													)}
@@ -456,7 +471,7 @@ export function AgentCardPreview({
 											</TooltipTrigger>
 											{(extension.description || extension.params || extension.required) && (
 												<TooltipContent className="max-w-80">
-													{extension.required && <p className="font-medium">Required</p>}
+													{extension.required && <p className="font-medium">{t("agentGateway.cardPreview.required")}</p>}
 													{extension.description && <p>{extension.description}</p>}
 													{extension.params && (
 														<pre className="mt-1 text-xs whitespace-pre-wrap">{JSON.stringify(extension.params, null, 2)}</pre>
@@ -471,7 +486,7 @@ export function AgentCardPreview({
 					)}
 					{skills.length > 0 && (
 						<section className="py-3">
-							<p className="text-muted-foreground mb-2 text-xs">Skills</p>
+							<p className="text-muted-foreground mb-2 text-xs">{t("agentGateway.cardPreview.skills")}</p>
 							<div className="divide-y overflow-hidden rounded-sm border">
 								{skills.map((skill) => (
 									<SkillItem key={skill.id} skill={skill} />

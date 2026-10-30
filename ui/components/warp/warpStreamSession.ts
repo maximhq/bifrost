@@ -11,6 +11,7 @@ import {
 	type WarpUsage,
 } from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
+import i18n from "@/lib/i18n";
 import type { WarpModel } from "@/lib/types/warp";
 import { getApiBaseUrl } from "@/lib/utils/port";
 
@@ -203,11 +204,16 @@ export class WarpStreamSession {
 				} catch {
 					reason = "";
 				}
-				throw new Error(encodeTurnError(reason || undefined, reason ? "" : message || `Warp request failed (${response.status})`));
+				throw new Error(
+					encodeTurnError(
+						reason || undefined,
+						reason ? "" : message || i18n.t("warp.errors.requestFailedStatus", { ns: "shell", status: response.status }),
+					),
+				);
 			}
 
 			const reader = response.body?.getReader();
-			if (!reader) throw new Error(encodeTurnError(undefined, "Warp returned no response body"));
+			if (!reader) throw new Error(encodeTurnError(undefined, i18n.t("warp.errors.noResponseBody", { ns: "shell" })));
 
 			const decoder = new TextDecoder();
 			let buffer = "";
@@ -215,7 +221,7 @@ export class WarpStreamSession {
 				const { done, value } = await reader.read();
 				if (done) {
 					if (!sawTerminal) {
-						throw new Error(encodeTurnError("upstream_error", "The connection closed before Warp finished answering."));
+						throw new Error(encodeTurnError("upstream_error", i18n.t("warp.errors.connectionClosed", { ns: "shell" })));
 					}
 					break;
 				}
@@ -230,7 +236,7 @@ export class WarpStreamSession {
 		} catch (caught) {
 			// An abort is the user pressing stop: keep the partial answer.
 			if (!(caught instanceof DOMException && caught.name === "AbortError")) {
-				const raw = caught instanceof Error ? caught.message : "Warp request failed";
+				const raw = caught instanceof Error ? caught.message : i18n.t("warp.errors.requestFailed", { ns: "shell" });
 				// Checked against known codes, not a colon: "TypeError: Failed to fetch" is not encoded.
 				terminalError = isEncodedTurnError(raw) ? raw : encodeTurnError(undefined, raw);
 			}

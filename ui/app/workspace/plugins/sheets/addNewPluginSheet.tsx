@@ -5,50 +5,19 @@ import { getErrorMessage, useCreatePluginMutation, useUpdatePluginMutation } fro
 import { Plugin } from "@/lib/types/plugins";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { z } from "zod";
 import { PluginFormFragment } from "../fragments/pluginFormFragments";
 
-const pluginFormSchema = z.object({
-	name: z
-		.string()
-		.min(1, "Plugin name is required")
-		.regex(/^[A-Za-z0-9-_]+$/, "Plugin name must contain only letters, numbers, hyphens, and underscores"),
-	path: z
-		.string()
-		.min(1, "Plugin path/URL is required")
-		.refine(
-			(val) => {
-				// Accept either absolute file paths or HTTP/HTTPS URLs
-				return val.startsWith("/") || val.startsWith("http://") || val.startsWith("https://");
-			},
-			{
-				message: "Please enter a valid absolute file path (starting with /) or HTTP/HTTPS URL",
-			},
-		),
-	hasConfig: z.boolean(),
-	config: z
-		.string()
-		.optional()
-		.refine(
-			(val) => {
-				if (!val) return true;
-				try {
-					JSON.parse(val);
-					return true;
-				} catch {
-					return false;
-				}
-			},
-			{
-				message: "Configuration must be valid JSON",
-			},
-		),
-});
-
-type PluginFormData = z.infer<typeof pluginFormSchema>;
+type PluginFormData = {
+	name: string;
+	path: string;
+	hasConfig: boolean;
+	config?: string;
+};
 
 interface AddNewPluginSheetProps {
 	open: boolean;
@@ -58,6 +27,8 @@ interface AddNewPluginSheetProps {
 }
 
 export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: AddNewPluginSheetProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
 	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
 	const [createPlugin, { isLoading: isCreating }] = useCreatePluginMutation();
@@ -65,6 +36,47 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 	const isEditMode = !!plugin;
 	const isLoading = isCreating || isUpdating;
+
+	const pluginFormSchema = useMemo(
+		() =>
+			z.object({
+				name: z
+					.string()
+					.min(1, t("plugins.nameRequiredFull"))
+					.regex(/^[A-Za-z0-9-_]+$/, t("plugins.namePattern")),
+				path: z
+					.string()
+					.min(1, t("plugins.pathRequired"))
+					.refine(
+						(val) => {
+							// Accept either absolute file paths or HTTP/HTTPS URLs
+							return val.startsWith("/") || val.startsWith("http://") || val.startsWith("https://");
+						},
+						{
+							message: t("plugins.pathInvalid"),
+						},
+					),
+				hasConfig: z.boolean(),
+				config: z
+					.string()
+					.optional()
+					.refine(
+						(val) => {
+							if (!val) return true;
+							try {
+								JSON.parse(val);
+								return true;
+							} catch {
+								return false;
+							}
+						},
+						{
+							message: t("plugins.configMustBeValidJson"),
+						},
+					),
+			}),
+		[t],
+	);
 
 	const form = useForm<PluginFormData>({
 		resolver: zodResolver(pluginFormSchema),
@@ -105,7 +117,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 				try {
 					parsedConfig = JSON.parse(data.config);
 				} catch {
-					toast.error("Invalid JSON configuration");
+					toast.error(t("plugins.invalidJsonConfig"));
 					return;
 				}
 			}
@@ -119,7 +131,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 						config: parsedConfig,
 					},
 				}).unwrap();
-				toast.success("Plugin updated successfully");
+				toast.success(t("plugins.updated"));
 			} else {
 				// Create new plugin
 				await createPlugin({
@@ -128,7 +140,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 					enabled: true,
 					config: parsedConfig,
 				}).unwrap();
-				toast.success("Plugin created successfully");
+				toast.success(t("plugins.created"));
 				// Notify parent with the config name to select it
 				onCreate?.(data.name);
 			}
@@ -151,12 +163,8 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 		<Sheet open={open} onOpenChange={handleClose}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4">
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky top-0 bg-card z-10 px-4 md:px-8">
-					<SheetTitle>{isEditMode ? "Update Plugin" : "Install New Plugin"}</SheetTitle>
-					<SheetDescription>
-						{isEditMode
-							? "Update the plugin configuration. Note: Plugin name and path cannot be changed."
-							: "Add a custom plugin by providing its name, path/URL, and optional configuration."}
-					</SheetDescription>
+					<SheetTitle>{isEditMode ? t("plugins.updateTitle") : t("plugins.installTitle")}</SheetTitle>
+					<SheetDescription>{isEditMode ? t("plugins.updateDescription") : t("plugins.installDescription")}</SheetDescription>
 				</SheetHeader>
 
 				<Form {...form}>
@@ -167,10 +175,10 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 
 						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
 							<Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
-								Cancel
+								{tCommon("cancel")}
 							</Button>
 							<Button type="submit" disabled={isLoading || !form.formState.isValid || disableAction} isLoading={isLoading}>
-								{isEditMode ? "Update Plugin" : "Install Plugin"}
+								{isEditMode ? t("plugins.updatePlugin") : t("plugins.installPlugin")}
 							</Button>
 						</div>
 					</form>

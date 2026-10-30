@@ -6,6 +6,8 @@ import type { LogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { Check, Loader2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { buildFallbackChain, fallbackChainOutcome, type FallbackChainOutcome } from "../sheets/logDetailView.utils";
 
 // The search endpoint's page cap. The server takes any number of fallbacks, so
@@ -52,20 +54,17 @@ export function useFallbackChain(log: LogEntry): LogEntry[] | undefined {
 	return chain && chain.length > 1 ? chain : undefined;
 }
 
-const outcomeCopy: Record<FallbackChainOutcome, { text: string; className: string }> = {
-	succeeded: {
-		text: "Request succeeded",
-		className: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
-	},
-	failed: {
-		text: "All attempts failed",
-		className: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
-	},
-	in_progress: {
-		text: "Still running",
-		className: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-400",
-	},
+const outcomeClassName: Record<FallbackChainOutcome, string> = {
+	succeeded: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
+	failed: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
+	in_progress: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-400",
 };
+
+function outcomeText(outcome: FallbackChainOutcome, t: TFunction<"observability">): string {
+	if (outcome === "succeeded") return t("logs.fallbackChain.outcome.succeeded");
+	if (outcome === "failed") return t("logs.fallbackChain.outcome.failed");
+	return t("logs.fallbackChain.outcome.inProgress");
+}
 
 function StepIcon({ status }: { status: string }) {
 	if (status === "success") return <Check className="text-chart-success-ink h-3 w-3" />;
@@ -84,12 +83,12 @@ function attemptError(entry: LogEntry): string | undefined {
 
 // Short reason shown under a chip: the HTTP code, or the error type for
 // failures that never got a response (timeouts, network).
-function attemptReason(entry: LogEntry): string | undefined {
+function attemptReason(entry: LogEntry, t: TFunction<"observability">): string | undefined {
 	if (entry.status === "success") return undefined;
-	if (entry.status === "processing") return "running";
+	if (entry.status === "processing") return t("logs.statuses.processing");
 	const code = entry.error_details?.status_code;
 	if (code) return String(code);
-	return entry.error_details?.error?.type ?? (entry.status === "cancelled" ? "cancelled" : undefined);
+	return entry.error_details?.error?.type ?? (entry.status === "cancelled" ? t("logs.statuses.cancelled") : undefined);
 }
 
 function reasonClass(entry: LogEntry): string {
@@ -117,23 +116,28 @@ interface FallbackChainProps {
 // Header strip: says in one line what the whole request did, and lets the
 // reader hop between attempts without leaving the sheet.
 export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackChainProps) {
+	const { t } = useTranslation("observability");
 	const outcome = fallbackChainOutcome(chain);
 	const last = chain[chain.length - 1];
 	const position = chain.findIndex((e) => e.id === currentId) + 1;
 	const current = chain[position - 1];
 	const isFinal = current?.id === last.id;
-	const copy = outcomeCopy[outcome];
-	let summary = `Attempt ${position} of ${chain.length}`;
+	let summary = t("logs.fallbackChain.summary.attempt", { position, total: chain.length });
 	if (!isFinal && current?.status === "error" && outcome === "succeeded") {
-		summary += `. This attempt failed and the request fell back to ${attemptLabel(last)}.`;
+		summary = t("logs.fallbackChain.summary.fellBack", { position, total: chain.length, label: attemptLabel(last) });
 	} else if (!isFinal) {
-		summary += ". Later attempts ran after this one.";
+		summary = t("logs.fallbackChain.summary.later", { position, total: chain.length });
 	}
 	return (
 		<div className="border-border bg-card flex flex-col gap-3 rounded-sm border p-4" data-testid="logdetails-fallback-banner">
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-				<span className={cn("inline-flex items-center rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase", copy.className)}>
-					{copy.text}
+				<span
+					className={cn(
+						"inline-flex items-center rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase",
+						outcomeClassName[outcome],
+					)}
+				>
+					{outcomeText(outcome, t)}
 				</span>
 				<span className="text-foreground text-sm">{summary}</span>
 				{!isFinal && onOpenLog && (
@@ -143,7 +147,7 @@ export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackCha
 						onClick={() => onOpenLog(last.id)}
 						data-testid="logdetails-fallback-open-final"
 					>
-						Open final attempt
+						{t("logs.fallbackChain.openFinalAttempt")}
 					</button>
 				)}
 			</div>
@@ -168,8 +172,8 @@ export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackCha
 										>
 											<RenderProviderIcon provider={entry.provider as ProviderIconType} size={12} className="h-4 w-4" />
 											<span className="max-w-[160px] truncate">{entry.provider}</span>
-											{attemptReason(entry) && entry.status === "error" && (
-												<span className={cn("text-[11px] font-normal tabular-nums", reasonClass(entry))}>{attemptReason(entry)}</span>
+											{attemptReason(entry, t) && entry.status === "error" && (
+												<span className={cn("text-[11px] font-normal tabular-nums", reasonClass(entry))}>{attemptReason(entry, t)}</span>
 											)}
 											{entry.status !== "error" && <StepIcon status={entry.status} />}
 										</button>
@@ -192,6 +196,7 @@ export function FallbackChainBanner({ chain, currentId, onOpenLog }: FallbackCha
 // Routing tab block: one row per attempt with the facts that explain why the
 // next one ran. A row opens that attempt on click.
 export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackChainProps) {
+	const { t } = useTranslation("observability");
 	const outcome = fallbackChainOutcome(chain);
 	const totalMs = chain.reduce((sum, e) => sum + (e.latency ?? 0), 0);
 	const startMs = new Date(chain[0].timestamp).getTime();
@@ -199,14 +204,15 @@ export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackC
 		<div className="border-border rounded-sm border" data-testid="logdetails-fallback-timeline">
 			<div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b px-4 py-3">
 				<div className="flex items-center gap-2">
-					<div className="text-sm font-medium">Fallback chain</div>
-					<span className={cn("rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase", outcomeCopy[outcome].className)}>
-						{outcomeCopy[outcome].text}
+					<div className="text-sm font-medium">{t("logs.fallbackChain.title")}</div>
+					<span className={cn("rounded-sm border px-2 py-0.5 text-[11px] font-semibold uppercase", outcomeClassName[outcome])}>
+						{outcomeText(outcome, t)}
 					</span>
 				</div>
 				<div className="text-muted-foreground text-xs tabular-nums">
-					{chain.length} attempts
-					{totalMs > 0 ? ` · ${formatLatency(totalMs)} total` : ""}
+					{totalMs > 0
+						? t("logs.fallbackChain.attemptsWithTotal", { count: chain.length, latency: formatLatency(totalMs) })
+						: t("logs.fallbackChain.attempts", { count: chain.length })}
 				</div>
 			</div>
 			<ol className="divide-border divide-y">
@@ -214,13 +220,13 @@ export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackC
 					<WithDetails key={listEntry.id} entry={listEntry}>
 						{(entry) => {
 							const error = attemptError(entry);
-							const reason = attemptReason(entry);
+							const reason = attemptReason(entry, t);
 							const isCurrent = entry.id === currentId;
 							const clickable = !isCurrent && !!onOpenLog;
 							const offset = new Date(entry.timestamp).getTime() - startMs;
 							const meta = [
-								entry.selected_key?.name ? `key ${entry.selected_key.name}` : undefined,
-								entry.number_of_retries > 0 ? `${entry.number_of_retries} retr${entry.number_of_retries === 1 ? "y" : "ies"}` : undefined,
+								entry.selected_key?.name ? t("logs.fallbackChain.keyName", { name: entry.selected_key.name }) : undefined,
+								entry.number_of_retries > 0 ? t("logs.fallbackChain.retries", { count: entry.number_of_retries }) : undefined,
 							].filter(Boolean);
 							return (
 								<li>
@@ -270,7 +276,7 @@ export function FallbackChainTimeline({ chain, currentId, onOpenLog }: FallbackC
 												{entry.status === "processing" && <Loader2 className="h-3 w-3 animate-spin text-blue-500" />}
 												{isCurrent && (
 													<span className="bg-foreground/10 text-foreground rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase">
-														Viewing
+														{t("logs.fallbackChain.viewing")}
 													</span>
 												)}
 											</div>

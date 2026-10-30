@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import i18n from "@/lib/i18n";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
 	WARP_COMPOSER_TESTID,
 	decodeTurnError,
@@ -30,7 +31,12 @@ import {
 	warpTimeline,
 	warpToolLabel,
 	warpToolStatusLabel,
+	nextWarpHandoff,
 } from "./warpStream.utils";
+
+beforeAll(async () => {
+	await i18n.changeLanguage("en");
+});
 
 describe("splitWarpFrames", () => {
 	it("returns complete frames and keeps the remainder", () => {
@@ -983,7 +989,51 @@ describe("weekly and rate charts", () => {
 	});
 
 	it("labels weekly points and time bars by date, not as category names", () => {
-		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Wk of Sep 14");
+		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Week of Sep 14");
 		expect(formatWarpChartX({ kind: "bar", interval: "day" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Sep 14");
+	});
+});
+describe("nextWarpHandoff", () => {
+	const ready = {
+		isConfigLoading: false,
+		isConfigFetching: false,
+		isConfigError: false,
+		isConfigured: true,
+		isBusy: false,
+		isStreamingNow: false,
+	};
+	const queueOf = (...items: string[]) => {
+		const pending = [...items];
+		return { pending, take: () => pending.shift() ?? null };
+	};
+
+	it("sends the oldest handoff once the panel is free", () => {
+		const q = queueOf("first", "second");
+		expect(nextWarpHandoff(ready, q.take)).toBe("first");
+		expect(q.pending).toEqual(["second"]);
+	});
+
+	it("drops every queued handoff when Warp is not set up, so none sends after setup", () => {
+		const q = queueOf("first", "second");
+		expect(nextWarpHandoff({ ...ready, isConfigured: false }, q.take)).toBeNull();
+		expect(q.pending).toEqual([]);
+	});
+
+	it("keeps the handoff while the config request has failed", () => {
+		const q = queueOf("first");
+		expect(nextWarpHandoff({ ...ready, isConfigured: false, isConfigError: true }, q.take)).toBeNull();
+		expect(q.pending).toEqual(["first"]);
+	});
+
+	it("waits for the opening refetch even when a cached config says configured", () => {
+		const q = queueOf("first");
+		expect(nextWarpHandoff({ ...ready, isConfigFetching: true }, q.take)).toBeNull();
+		expect(q.pending).toEqual(["first"]);
+	});
+
+	it("waits while the session is streaming even if the render has not caught up", () => {
+		const q = queueOf("first", "second");
+		expect(nextWarpHandoff({ ...ready, isStreamingNow: true }, q.take)).toBeNull();
+		expect(q.pending).toEqual(["first", "second"]);
 	});
 });

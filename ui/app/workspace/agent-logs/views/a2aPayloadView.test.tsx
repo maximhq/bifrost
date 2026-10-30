@@ -1,3 +1,4 @@
+import "@/lib/i18n";
 import { mapAgentCard } from "@/lib/utils/agentCard";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";

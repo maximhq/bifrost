@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { BarChart3, LineChart } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 export type ChartType = "bar" | "line";
 
@@ -10,14 +11,15 @@ interface ChartTypeToggleProps {
 }
 
 export function ChartTypeToggle({ chartType, onToggle, "data-testid": testId }: ChartTypeToggleProps) {
+	const { t } = useTranslation("observability");
 	return (
-		<div className="flex items-center gap-1" role="group" aria-label="Chart type" data-testid={testId}>
+		<div className="flex items-center gap-1" role="group" aria-label={t("dashboard.charts.chartType")} data-testid={testId}>
 			<Button
 				variant={chartType === "bar" ? "secondary" : "ghost"}
 				size="sm"
 				className="h-7 w-7 p-0"
 				onClick={() => onToggle("bar")}
-				aria-label="Bar chart"
+				aria-label={t("dashboard.charts.barChart")}
 				aria-pressed={chartType === "bar"}
 				data-testid={testId ? `${testId}-bar-btn` : undefined}
 			>
@@ -28,7 +30,7 @@ export function ChartTypeToggle({ chartType, onToggle, "data-testid": testId }: 
 				size="sm"
 				className="h-7 w-7 p-0"
 				onClick={() => onToggle("line")}
-				aria-label="Line chart"
+				aria-label={t("dashboard.charts.lineChart")}
 				aria-pressed={chartType === "line"}
 				data-testid={testId ? `${testId}-line-btn` : undefined}
 			>

@@ -1,6 +1,7 @@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
+import { useTranslation } from "react-i18next";
 import { exposedByRule, isExposed, nextExposeList } from "./mcpExposeList.utils";
 import { SectionHeader } from "./sectionHeader";
 
@@ -27,9 +28,14 @@ export function MCPExposeList({
 	value: string[] | null | undefined;
 	onChange: (next: string[]) => void;
 }) {
+	const { t } = useTranslation("mcp");
 	const allKeys = items.map((item) => item.key);
 	const selected = allKeys.filter((key) => isExposed(value, key));
-	const status = selected.length === allKeys.length ? "All served" : selected.length === 0 ? "None served" : `${selected.length} served`;
+	const status = selected.length === allKeys.length
+			? t("registry.expose.allServed")
+			: selected.length === 0
+				? t("registry.expose.noneServed")
+				: t("registry.expose.someServed", { count: selected.length });
 
 	return (
 		<div className="space-y-4" data-testid={`mcp-expose-${kind}`}>
@@ -43,7 +49,7 @@ export function MCPExposeList({
 						<TriStateCheckbox
 							allIds={allKeys}
 							selectedIds={selected}
-							ariaLabel={`Serve all ${kind} (${status})`}
+							ariaLabel={t("registry.expose.serveAllAria", { kind, status })}
 							data-testid={`mcp-expose-${kind}-all`}
 							onChange={(next) => onChange(next.length === allKeys.length ? ["*"] : next)}
 						/>
@@ -55,8 +61,8 @@ export function MCPExposeList({
 					<Table>
 						<TableHeader>
 							<TableRow>
-								<TableHead>Name</TableHead>
-								<TableHead className="w-24 text-center">Served</TableHead>
+								<TableHead>{t("registry.expose.name")}</TableHead>
+								<TableHead className="w-24 text-center">{t("registry.expose.served")}</TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -76,9 +82,11 @@ export function MCPExposeList({
 													size="md"
 													checked={exposed}
 													disabled={byRule}
-													title={byRule ? "Served by a pattern rule" : undefined}
+													title={byRule ? t("registry.expose.servedByRule") : undefined}
 													aria-label={
-														byRule ? `${item.label} is served by a pattern rule` : `${exposed ? "Stop serving" : "Serve"} ${item.label}`
+														byRule
+																? t("registry.expose.servedByRuleAria", { label: item.label })
+																: t(exposed ? "registry.expose.stopServingAria" : "registry.expose.serveAria", { label: item.label })
 													}
 													data-testid={`mcp-expose-${kind}-toggle-${item.key}`}
 													onCheckedChange={(checked) => onChange(nextExposeList(value, allKeys, item.key, checked))}
@@ -93,7 +101,7 @@ export function MCPExposeList({
 				</div>
 			) : (
 				<div className="text-muted-foreground rounded-sm border p-6 text-center" data-testid={`mcp-expose-${kind}-empty`}>
-					<p className="text-sm">This server lists no {kind}</p>
+					<p className="text-sm">{t("registry.expose.listsNone", { kind })}</p>
 				</div>
 			)}
 		</div>

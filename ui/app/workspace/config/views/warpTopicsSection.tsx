@@ -12,6 +12,7 @@ import type { WarpBackfillJob } from "@/lib/types/warp";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Info, Loader2 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const DEFAULT_TOPICS_PERIOD = "30d";
@@ -47,6 +48,7 @@ export default function WarpTopicsSection({
 	hasChanges,
 	discoveryField,
 }: WarpTopicsSectionProps) {
+	const { t } = useTranslation("config");
 	const [startTopics, { isLoading: isStarting }] = useStartWarpTopicsMutation();
 	const [cancelTopics, { isLoading: isCancelling }] = useCancelWarpTopicsMutation();
 	const [activeID, setActiveID] = useState<string | null>(null);
@@ -128,14 +130,14 @@ export default function WarpTopicsSection({
 	const onStart = async () => {
 		const window = period ? getRangeForPeriod(period) : { from: start, to: end };
 		if (!window.from || !window.to || window.from >= window.to) {
-			toast.error("Choose a valid time range for topics.");
+			toast.error(t("warp.topics.badRange"));
 			return;
 		}
 		try {
 			const started = await startTopics({ start_time: window.from.toISOString(), end_time: window.to.toISOString() }).unwrap();
 			setFinished(null);
 			setActiveID(started.id ?? null);
-			toast.success("Topic seeding started.");
+			toast.success(t("warp.topics.started"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -144,7 +146,7 @@ export default function WarpTopicsSection({
 	const onCancel = async () => {
 		try {
 			await cancelTopics(activeID ? { id: activeID } : undefined).unwrap();
-			toast.success("Topic clustering cancellation requested.");
+			toast.success(t("warp.topics.cancelRequested"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -154,50 +156,42 @@ export default function WarpTopicsSection({
 		<div className="-mx-4 space-y-3 border-t px-4 pt-4" data-testid="warp-topics-section">
 			<div className="space-y-0.5">
 				<div className="flex items-center gap-1.5">
-					<h4 className="text-sm font-medium">Topic clusters</h4>
+					<h4 className="text-sm font-medium">{t("warp.topics.title")}</h4>
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<button
 								type="button"
 								className="text-muted-foreground hover:text-foreground inline-flex"
-								aria-label="How topics work"
+								aria-label={t("warp.topics.infoLabel")}
 								data-testid="warp-topics-info"
 							>
 								<Info className="size-3.5" />
 							</button>
 						</TooltipTrigger>
 						<TooltipContent className="max-w-sm space-y-1.5" data-testid="warp-topics-info-content">
-							<p>Topics group requests by what was asked, so Warp can answer what people ask about.</p>
+							<p>{t("warp.topics.infoIntro")}</p>
 							<p>
-								<span className="font-medium">1. Seed, once.</span> A one-time run clusters the indexed requests of a window and names each
-								group. Seeding is once per embedding model.
+								<Trans t={t} i18nKey="warp.topics.infoSeed" components={{ b0: <span className="font-medium" /> }} />
 							</p>
 							<p>
-								<span className="font-medium">2. Filed as they arrive.</span> Every request indexed after that is filed under its nearest
-								topic.
+								<Trans t={t} i18nKey="warp.topics.infoFiled" components={{ b0: <span className="font-medium" /> }} />
 							</p>
 							<p>
-								<span className="font-medium">3. New topics found.</span> Requests that match no topic wait. Once the new topic threshold is
-								reached, an hourly pass groups them into new topics or folds them into existing ones.
+								<Trans t={t} i18nKey="warp.topics.infoFound" components={{ b0: <span className="font-medium" /> }} />
 							</p>
 							<p>
-								<span className="font-medium">4. Kept tidy.</span> The same pass retires topics with no requests for 30 days and merges
-								topics that come to mean the same thing.
+								<Trans t={t} i18nKey="warp.topics.infoTidy" components={{ b0: <span className="font-medium" /> }} />
 							</p>
-							<p>Changing the embedding model starts over: its topics are seeded again.</p>
+							<p>{t("warp.topics.infoReseed")}</p>
 						</TooltipContent>
 					</Tooltip>
 				</div>
-				<p className="text-muted-foreground text-xs">
-					Seed topics once from a window of indexed requests. After that they keep themselves up to date as new requests are indexed, with
-					no further runs.
-				</p>
+				<p className="text-muted-foreground text-xs">{t("warp.topics.description")}</p>
 			</div>
 
 			{seeded ? (
 				<p className="text-muted-foreground text-xs" data-testid="warp-topics-seeded">
-					Topics are built for this embedding model and keep themselves up to date: new requests are filed as they are indexed, and new
-					topics are found among the ones that match none.
+					{t("warp.topics.seeded")}
 				</p>
 			) : (
 				<div className="flex flex-col gap-2 md:flex-row md:items-center">
@@ -235,7 +229,7 @@ export default function WarpTopicsSection({
 								disabled={isCancelling || !hasSettingsUpdateAccess}
 								data-testid="warp-topics-cancel-btn"
 							>
-								{isCancelling && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Cancel clustering
+								{isCancelling && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} {t("warp.topics.cancel")}
 							</Button>
 						) : (
 							<Button
@@ -256,17 +250,17 @@ export default function WarpTopicsSection({
 								data-testid="warp-topics-start-btn"
 							>
 								{isStarting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-								Seed topics
+								{t("warp.topics.seed")}
 							</Button>
 						)}
 					</div>
 				</div>
 			)}
 
-			{hasChanges && !seeded && <p className="text-muted-foreground text-xs">Save configuration changes before seeding topics.</p>}
+			{hasChanges && !seeded && <p className="text-muted-foreground text-xs">{t("warp.topics.saveBeforeSeed")}</p>}
 			{needsBackfill && !seeded && !isActive && (
 				<p className="text-muted-foreground text-xs" data-testid="warp-topics-needs-backfill">
-					Nothing is indexed for this embedding model yet. Backfill a window above first, then seed topics from the same window.
+					{t("warp.topics.needsBackfill")}
 				</p>
 			)}
 
@@ -274,37 +268,37 @@ export default function WarpTopicsSection({
 
 			{health && (
 				<p className="text-muted-foreground text-xs" data-testid="warp-topics-health">
-					{health.active_topics} active topic{health.active_topics === 1 ? "" : "s"}
-					{health.themes > 0 ? ` in ${health.themes} theme${health.themes === 1 ? "" : "s"}` : ""} · {health.pooled} request
-					{health.pooled === 1 ? "" : "s"} waiting for a topic
-					{health.requests_24h > 0
-						? ` · ${Math.round(health.unmatched_share_24h * 100)}% of the last day's ${health.requests_24h} request${health.requests_24h === 1 ? "" : "s"} matched no topic`
-						: " · nothing filed in the last day"}
+					{[
+						t("warp.topics.activeTopics", { count: health.active_topics }) +
+							(health.themes > 0 ? ` ${t("warp.topics.inThemes", { count: health.themes })}` : ""),
+						t("warp.topics.pooled", { count: health.pooled }) +
+							(health.requests_24h > 0
+								? ` · ${t("warp.topics.unmatchedLastDay", { count: health.requests_24h, percent: Math.round(health.unmatched_share_24h * 100) })}`
+								: ` · ${t("warp.topics.nothingFiled")}`),
+					].join(" · ")}
 				</p>
 			)}
 			{shown?.id && (
 				<div className="bg-muted/40 space-y-2 rounded-sm p-3 text-sm" data-testid="warp-topics-status">
 					<div className="flex items-center justify-between gap-3">
 						<span className="font-medium capitalize">{shown.status}</span>
-						<span className="text-muted-foreground">
-							{shown.scanned} request{shown.scanned === 1 ? "" : "s"} read
-						</span>
+						<span className="text-muted-foreground">{t("warp.topics.requestsRead", { count: shown.scanned })}</span>
 					</div>
 					<div className="text-muted-foreground text-xs">
-						{shown.indexed} topic{shown.indexed === 1 ? "" : "s"} written
-						{shown.themes ? ` · ${shown.themes} theme${shown.themes === 1 ? "" : "s"}` : ""}
-						{shown.failed > 0 ? ` · ${shown.failed} label${shown.failed === 1 ? "" : "s"} fell back` : ""}
+						{t("warp.topics.topicsWritten", { count: shown.indexed })}
+						{shown.themes ? ` · ${t("warp.topics.themesCount", { count: shown.themes })}` : ""}
+						{shown.failed > 0 ? ` · ${t("warp.topics.labelsFellBack", { count: shown.failed })}` : ""}
 					</div>
 					{shown.message && <p className="text-muted-foreground text-xs">{shown.message}</p>}
-					{shown.last_error && <p className="text-destructive text-xs">Latest error: {shown.last_error}</p>}
+					{shown.last_error && <p className="text-destructive text-xs">{t("warp.latestError", { error: shown.last_error })}</p>}
 				</div>
 			)}
 
 			{isStatusError && (
 				<p className="text-destructive flex items-center gap-2 text-xs" role="alert" data-testid="warp-topics-status-error">
-					Could not read topic clustering status, so a running job may not be shown.
+					{t("warp.topics.statusFailed")}
 					<button type="button" onClick={() => refetchStatus()} className="underline" data-testid="warp-topics-status-retry">
-						Retry
+						{t("warp.retry")}
 					</button>
 				</p>
 			)}

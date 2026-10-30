@@ -13,6 +13,7 @@ import type { Control, FieldValues, UseFormReturn } from "react-hook-form";
 import type { RouteForm } from "../routes.utils";
 import { InfoLabel } from "./infoLabel";
 import { UsageFields } from "./usageFields";
+import { useTranslation } from "react-i18next";
 
 /** The job a route starts when the async job switch is turned on. */
 export const NEW_RELAY_JOB: RelayJobConfig = {
@@ -81,6 +82,8 @@ function PollHeaders({
 	onChange: (v: Record<string, string> | undefined) => void;
 	disabled?: boolean;
 }) {
+	const { t } = useTranslation("config");
+
 	const [rows, setRows] = useState(() => Object.entries(value ?? {}).map(([name, v]) => ({ name, value: v })));
 	const commit = (next: { name: string; value: string }[]) => {
 		setRows(next);
@@ -111,7 +114,7 @@ function PollHeaders({
 						type="button"
 						variant="ghost"
 						size="icon"
-						aria-label="Remove poll header"
+						aria-label={t("relays.job.removePollHeader")}
 						disabled={disabled}
 						onClick={() => commit(rows.filter((_, j) => j !== i))}
 					>
@@ -127,7 +130,7 @@ function PollHeaders({
 				onClick={() => setRows([...rows, { name: "", value: "" }])}
 				data-testid="relay-route-job-poll-add-header"
 			>
-				<Plus className="h-4 w-4" /> Add poll header
+				<Plus className="h-4 w-4" /> {t("relays.job.addPollHeader")}
 			</Button>
 		</div>
 	);
@@ -147,6 +150,8 @@ interface JobFieldsProps {
  * and charges the finished job to the caller's budgets once.
  */
 export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
+	const { t } = useTranslation("config");
+
 	const job = form.watch("job");
 	const [open, setOpen] = useState(false);
 	// A refused save opens the section so its field errors are visible.
@@ -156,8 +161,13 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 	}, [hasErrors]);
 	const control = form.control;
 	const summary = job
-		? `Polls ${job.poll.method || "GET"} ${job.poll.path || "…"} until ${job.status_path || "…"} is ${job.succeeded.join(" or ") || "…"}`
-		: "This route answers right away.";
+		? t("relays.job.summary", {
+				method: job.poll.method || "GET",
+				path: job.poll.path || "…",
+				statusPath: job.status_path || "…",
+				statuses: job.succeeded.join(` ${t("or", { ns: "common" })} `) || "…",
+			})
+		: t("relays.job.summaryNone");
 	// The settlement charges only a fee the job sets itself: the start call already paid the route fee.
 	const jobInherit = inheritFrom ? { ...inheritFrom, cost_per_request: undefined } : undefined;
 
@@ -166,7 +176,7 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 			<CollapsibleTrigger asChild>
 				<button type="button" className="flex w-full items-center justify-between px-4 py-3 text-left" data-testid="relay-route-job-toggle">
 					<div className="min-w-0 space-y-0.5">
-						<div className="text-sm font-medium">Async Job</div>
+						<div className="text-sm font-medium">{t("relays.job.title")}</div>
 						<p className="text-muted-foreground truncate text-sm">{summary}</p>
 					</div>
 					<ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform", open && "rotate-180")} />
@@ -176,8 +186,8 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 				<div className="flex flex-row items-center justify-between">
 					<InfoLabel
 						inForm={false}
-						label="This route starts an async job"
-						info="For APIs that reply with a job id and bill when the work finishes. The route is then always buffered."
+						label={t("relays.job.enableLabel")}
+						info={t("relays.job.enableInfo")}
 					/>
 					<Switch
 						checked={!!job}
@@ -189,18 +199,19 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 				{job && (
 					<>
 						<ol className="text-muted-foreground list-decimal space-y-1 pl-5 text-sm">
-							<li>The start call is relayed and billed like any call.</li>
-							<li>Bifrost reads the job id from its reply.</li>
-							<li>It sends the poll request, with the job id in place of {"{{job.id}}"}, until the status is terminal.</li>
-							<li>A succeeded job is priced with the job pricing below and charged to the caller once.</li>
+							<li>{t("relays.job.step1")}</li>
+							<li>{t("relays.job.step2")}</li>
+							<li>{t("relays.job.step3", { token: "{{job.id}}" })}</li>
+							<li>{t("relays.job.step4")}</li>
 						</ol>
 						<FormField
 							control={control}
 							name="job.id_path"
 							render={({ field }) => (
 								<FormItem>
-									<InfoLabel label="Job ID Path (Required)" info="Where the start call's reply carries the job id, as a gjson path." />
+									<InfoLabel label={t("relays.job.idPathLabel")} info={t("relays.job.idPathInfo")} />
 									<FormControl>
+										{/* i18n-ignore: sample path */}
 										<Input placeholder="JobId" disabled={disabled} data-testid="relay-route-job-id-path" {...field} />
 									</FormControl>
 									<FormMessage />
@@ -210,8 +221,8 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 						<div className="space-y-2">
 							<InfoLabel
 								inForm={false}
-								label="Poll Request"
-								info="The request that reports where the job stands. {{job.id}} in the path, a header value or the body is replaced with the job id."
+								label={t("relays.job.pollLabel")}
+								info={t("relays.job.pollInfo", { token: "{{job.id}}" })}
 							/>
 							<div className="flex w-full flex-row items-start gap-4">
 								<FormField
@@ -263,7 +274,7 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 											<Textarea
 												rows={2}
 												className="font-mono text-xs"
-												placeholder={'Body (optional), e.g. {"JobId":"{{job.id}}"}'}
+												placeholder={t("relays.job.pollBodyPlaceholder", { example: '{"JobId":"{{job.id}}"}' })}
 												disabled={disabled}
 												data-testid="relay-route-job-poll-body"
 												value={field.value ?? ""}
@@ -279,8 +290,9 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 							name="job.status_path"
 							render={({ field }) => (
 								<FormItem>
-									<InfoLabel label="Status Path (Required)" info="Where the poll reply carries the job status, as a gjson path." />
+									<InfoLabel label={t("relays.job.statusPathLabel")} info={t("relays.job.statusPathInfo")} />
 									<FormControl>
+										{/* i18n-ignore: sample path */}
 										<Input placeholder="JobStatus" disabled={disabled} data-testid="relay-route-job-status-path" {...field} />
 									</FormControl>
 									<FormMessage />
@@ -293,12 +305,12 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 								name="job.succeeded"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<InfoLabel label="Succeeded Statuses (Required)" info="Comma-separated statuses that end the job with work to bill." />
+										<InfoLabel label={t("relays.job.succeededLabel")} info={t("relays.job.succeededInfo")} />
 										<FormControl>
 											<ListInput
 												value={field.value}
 												onChange={field.onChange}
-												placeholder="SUCCEEDED"
+												placeholder="SUCCEEDED" // i18n-ignore: sample status
 												disabled={disabled}
 												testId="relay-route-job-succeeded"
 											/>
@@ -312,12 +324,12 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 								name="job.failed"
 								render={({ field }) => (
 									<FormItem className="flex-1">
-										<InfoLabel label="Failed Statuses (Optional)" info="Comma-separated statuses that end the job at no further charge." />
+										<InfoLabel label={t("relays.job.failedLabel")} info={t("relays.job.failedInfo")} />
 										<FormControl>
 											<ListInput
 												value={field.value}
 												onChange={(v) => field.onChange(v.length ? v : undefined)}
-												placeholder="FAILED"
+												placeholder="FAILED" // i18n-ignore: sample status
 												disabled={disabled}
 												testId="relay-route-job-failed"
 											/>
@@ -329,12 +341,12 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 						<div className="flex w-full flex-row items-start gap-4">
 							{(
 								[
-									["interval_seconds", "Poll Interval (seconds)", "30", "Seconds between polls."],
+									["interval_seconds", t("relays.job.intervalLabel"), "30", t("relays.job.intervalInfo")],
 									[
 										"timeout_seconds",
-										"Timeout (seconds)",
-										"3600",
-										"A job still running after this long is dropped without a further charge.",
+										t("relays.job.timeoutLabel"),
+											"3600",
+											t("relays.job.timeoutInfo"),
 									],
 								] as const
 							).map(([key, label, placeholder, info]) => (
@@ -363,10 +375,9 @@ export function JobFields({ form, inheritFrom, disabled }: JobFieldsProps) {
 							))}
 						</div>
 						<div className="space-y-1">
-							<div className="text-sm font-medium">Job Pricing</div>
+							<div className="text-sm font-medium">{t("relays.job.pricingTitle")}</div>
 							<p className="text-muted-foreground text-sm">
-								Applied to the final poll reply of a succeeded job, such as pages processed. Empty fields inherit the route pricing; the fee
-								is charged only if set here, since the start call already paid it.
+								{t("relays.job.pricingInfo")}
 							</p>
 						</div>
 						<UsageFields

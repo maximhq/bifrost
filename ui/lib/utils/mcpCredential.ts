@@ -1,3 +1,5 @@
+import i18n, { getLocale } from "@/lib/i18n";
+
 // Formatting helpers shared by the MCP auth sessions table and the MCP
 // server sheet's credential block, so both surfaces describe the same
 // token row with the same words.
@@ -9,13 +11,13 @@ export function formatRelativePast(iso: string): string {
 		const t = new Date(iso).getTime();
 		if (Number.isNaN(t)) return iso;
 		const diffMs = Date.now() - t;
-		if (diffMs < 60_000) return "just now";
+		if (diffMs < 60_000) return i18n.t("credentials.justNow", { ns: "mcp" });
 		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 60) return `${mins} min ago`;
+		if (mins < 60) return i18n.t("credentials.minutesAgo", { ns: "mcp", minutes: mins });
 		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours < 48) return `${hours}h ago`;
+		if (hours < 48) return i18n.t("credentials.hoursAgo", { ns: "mcp", hours });
 		const days = Math.floor(diffMs / 86_400_000);
-		return `${days}d ago`;
+		return i18n.t("credentials.daysAgo", { ns: "mcp", days });
 	} catch {
 		return iso;
 	}
@@ -36,22 +38,22 @@ export function formatTokenExpiry(expiresAt: string | null | undefined, status: 
 		if (Number.isNaN(t)) return expiresAt;
 		const diffMs = t - Date.now();
 		if (diffMs <= 0) {
-			if (hasRefreshToken === false) return "expired";
+			if (hasRefreshToken === false) return i18n.t("credentials.expired", { ns: "mcp" });
 			switch (status) {
 				case "active":
-					return "Refreshes on next use";
+					return i18n.t("credentials.refreshNextUse", { ns: "mcp" });
 				case "orphaned":
-					return "Refreshes when access is restored";
+					return i18n.t("credentials.refreshAccessRestored", { ns: "mcp" });
 				default:
-					return "expired";
+					return i18n.t("credentials.expired", { ns: "mcp" });
 			}
 		}
 		const days = Math.floor(diffMs / 86_400_000);
-		if (days > 1) return `in ${days} days`;
+		if (days > 1) return i18n.t("credentials.inDays", { ns: "mcp", days });
 		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours > 1) return `in ${hours} hours`;
+		if (hours > 1) return i18n.t("credentials.inHours", { ns: "mcp", hours });
 		const mins = Math.floor(diffMs / 60_000);
-		return `in ${Math.max(mins, 1)} min`;
+		return i18n.t("credentials.inMinutes", { ns: "mcp", minutes: Math.max(mins, 1) });
 	} catch {
 		return expiresAt;
 	}
@@ -60,13 +62,13 @@ export function formatTokenExpiry(expiresAt: string | null | undefined, status: 
 export function formatAbsoluteDateTime(iso: string): string {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return iso;
-	return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+	return d.toLocaleString(getLocale(), { dateStyle: "medium", timeStyle: "short" });
 }
 
 export function formatAbsoluteDate(iso: string): string {
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) return iso;
-	return d.toLocaleDateString(undefined, { dateStyle: "medium" });
+	return d.toLocaleDateString(getLocale(), { dateStyle: "medium" });
 }
 
 /**

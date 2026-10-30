@@ -4,7 +4,7 @@ import { WarpStreamSession } from "@/components/warp/warpStreamSession";
 import { useFeatureFlag } from "@/hooks/useFeatureFlag";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { FEATURE_FLAGS } from "@/lib/constants/featureFlags";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 /** One turn in an Warp conversation. */
 export interface WarpTurn {
@@ -117,6 +117,12 @@ interface WarpContextValue {
 	 */
 	selectedModelKey: string | null;
 	selectModel: (key: string) => void;
+	/** Opens the dock and hands it a question to send, for callers outside the panel such as the ⌘K palette. */
+	ask: (text: string) => void;
+	/** Bumped by each ask, so a mounted panel knows to call takeHandoff. */
+	handoffSeq: number;
+	/** Returns the oldest handed-over question and removes it, so each can be sent only once. */
+	takeHandoff: () => string | null;
 }
 
 const WarpContext = createContext<WarpContextValue | null>(null);
@@ -153,6 +159,10 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 	const [conversationId, setConversationIdState] = useState("");
 	const [question, setQuestion] = useState<WarpQuestion | null>(null);
 	const [selectedModelKey, setSelectedModelKey] = useState<string | null>(readStoredWarpModelKey);
+	// A ref, not state: taking one must remove it at once, or a second effect pass sees it again and sends it twice.
+	// A list, so a second question asked while the first waits for a busy panel is not overwritten.
+	const handoff = useRef<string[]>([]);
+	const [handoffSeq, setHandoffSeq] = useState(0);
 	// One session for the provider's lifetime. The sink only closes over state
 	// setters, which are stable, so nothing here goes stale across renders.
 	const [stream] = useState(
@@ -175,6 +185,18 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 	const toggle = useCallback(() => setIsOpen((current) => !current), []);
 	const appendTurn = useCallback((turn: WarpTurn) => setTurns((current) => [...current, turn]), []);
 	const replaceTurns = useCallback((next: WarpTurn[]) => setTurns(next), []);
+	const ask = useCallback((text: string) => {
+		handoff.current.push(text);
+		setHandoffSeq((n) => n + 1);
+		setIsOpen(true);
+	}, []);
+	const takeHandoff = useCallback(() => {
+		return handoff.current.shift() ?? null;
+	}, []);
+	// Closing the dock before the panel sent it drops the question, so it can't fire on some later open.
+	useEffect(() => {
+		if (!isOpen) handoff.current = [];
+	}, [isOpen]);
 	const selectModel = useCallback((key: string) => {
 		setSelectedModelKey(key);
 		storeWarpModelKey(key);
@@ -208,6 +230,9 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 			setQuestion,
 			selectedModelKey,
 			selectModel,
+			ask,
+			handoffSeq,
+			takeHandoff,
 		}),
 		[
 			isOpen,
@@ -224,6 +249,9 @@ export function WarpProvider({ children }: { children: React.ReactNode }) {
 			question,
 			selectedModelKey,
 			selectModel,
+			ask,
+			handoffSeq,
+			takeHandoff,
 		],
 	);
 	return <WarpContext.Provider value={isWarpEnabled ? value : null}>{children}</WarpContext.Provider>;

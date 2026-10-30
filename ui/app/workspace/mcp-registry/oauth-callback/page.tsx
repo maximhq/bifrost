@@ -13,8 +13,11 @@ import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, CircleCheck, CircleX } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "@/lib/i18n";
 
 export default function MCPRegistryOAuthCallbackPage() {
+	const { t } = useTranslation("mcp");
 	const [closeAttempted, setCloseAttempted] = useState(false);
 
 	useEffect(() => {
@@ -26,7 +29,10 @@ export default function MCPRegistryOAuthCallbackPage() {
 			if (status === "success") {
 				window.opener.postMessage({ type: "oauth_success" }, window.location.origin);
 			} else {
-				window.opener.postMessage({ type: "oauth_failed", error: error ?? "OAuth flow failed" }, window.location.origin);
+				window.opener.postMessage(
+					{ type: "oauth_failed", error: error ?? i18n.t("registry.authorizer.oauth.flowFailed", { ns: "mcp" }) },
+					window.location.origin,
+				);
 			}
 			setCloseAttempted(true);
 			window.close();
@@ -54,12 +60,10 @@ export default function MCPRegistryOAuthCallbackPage() {
 					<StatusIcon className="size-5" aria-hidden="true" />
 				</div>
 				<h1 id="mcp-callback-title" className="text-foreground mt-5 text-xl font-semibold tracking-tight">
-					{isSuccess ? "Authorization complete" : "Authorization failed"}
+					{isSuccess ? t("oauthCallback.successTitle") : t("oauthCallback.failedTitle")}
 				</h1>
 				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
-					{isSuccess
-						? "The MCP server is connected. You can close this tab and return to the MCP registry."
-						: "The MCP server could not be authorized. Return to the MCP registry and try again."}
+					{isSuccess ? t("oauthCallback.successDescription") : t("oauthCallback.failedDescription")}
 				</p>
 				{error && (
 					<p
@@ -73,10 +77,10 @@ export default function MCPRegistryOAuthCallbackPage() {
 					<Button asChild size="sm" variant="outline" data-testid="mcp-callback-back-button">
 						<Link to="/workspace/mcp-registry">
 							<ArrowLeft aria-hidden="true" />
-							Back to MCP registry
+							{t("oauthCallback.backToRegistry")}
 						</Link>
 					</Button>
-					<p className="text-muted-foreground text-xs">{closeAttempted ? "You can close this tab." : "This window can be closed."}</p>
+					<p className="text-muted-foreground text-xs">{closeAttempted ? t("oauthCallback.closeTab") : t("oauthCallback.closeWindow")}</p>
 				</div>
 			</section>
 		</div>
