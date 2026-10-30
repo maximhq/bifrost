@@ -16,6 +16,7 @@ import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { toast } from "sonner";
 import { A2AConversationMessage as ConversationMessage, A2APayloadView, TaskStateBadge } from "./a2aPayloadView";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
+import { getLocale } from "@/lib/i18n";
 
 const CONTEXT_PAGE_SIZE = 10;
 const CONTEXT_FILTERS = (contextId: string) => ({ context_id: contextId, record_kind: ["request"] });
@@ -648,9 +649,9 @@ export function AgentContextDetailsSheet({
 							<div className="bg-card sticky bottom-0 z-10 flex items-center justify-between py-3 text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
 									{t("agentGateway.agentsTable.entriesRange", {
-										from: (page * CONTEXT_PAGE_SIZE + 1).toLocaleString(),
-										to: Math.min((page + 1) * CONTEXT_PAGE_SIZE, totalCount).toLocaleString(),
-										total: totalCount.toLocaleString(),
+										from: (page * CONTEXT_PAGE_SIZE + 1).toLocaleString(getLocale()),
+										to: Math.min((page + 1) * CONTEXT_PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+										total: totalCount.toLocaleString(getLocale()),
 									})}
 								</div>
 								<div className="flex items-center gap-2">

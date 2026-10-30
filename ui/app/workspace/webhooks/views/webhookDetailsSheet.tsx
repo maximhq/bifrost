@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { getErrorMessage, useGetWebhookDeliveriesQuery, useRedeliverWebhookDeliveryMutation } from "@/lib/store";
 import { WEBHOOK_TUNING_DEFAULTS, WebhookEndpoint, WebhookEvent } from "@/lib/types/webhooks";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { useNavigate } from "@tanstack/react-router";
 import { format, formatDistanceToNow } from "date-fns";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
@@ -175,7 +175,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 							data-testid="webhook-view-delivery-history-btn"
 						>
 							{totalCount > PREVIEW_SIZE
-								? t("webhooks.details.viewAll", { count: totalCount.toLocaleString() })
+								? t("webhooks.details.viewAll", { count: totalCount.toLocaleString(getLocale()) })
 								: t("webhooks.details.viewHistory")}
 							<ArrowRight className="size-3" />
 						</Button>

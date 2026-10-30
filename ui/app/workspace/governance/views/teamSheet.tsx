@@ -36,6 +36,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
+import { getLocale } from "@/lib/i18n";
 
 interface TeamSheetProps {
 	team?: Team | null;
@@ -627,7 +628,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											<p className="text-muted-foreground text-xs">{t("sheet.tokens")}</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{team.rate_limit.token_current_usage.toLocaleString()} / {team.rate_limit.token_max_limit.toLocaleString()}
+													{team.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
+													{team.rate_limit.token_max_limit.toLocaleString(getLocale())}
 												</span>
 												<Badge
 													variant={
@@ -657,7 +659,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											<p className="text-muted-foreground text-xs">{t("sheet.requests")}</p>
 											<div className="flex items-center gap-2">
 												<span className="font-mono text-sm">
-													{team.rate_limit.request_current_usage.toLocaleString()} / {team.rate_limit.request_max_limit.toLocaleString()}
+													{team.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
+													{team.rate_limit.request_max_limit.toLocaleString(getLocale())}
 												</span>
 												<Badge
 													variant={

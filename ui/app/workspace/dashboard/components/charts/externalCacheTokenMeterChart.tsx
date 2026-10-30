@@ -8,6 +8,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { GaugeNeedle, getGaugeGeometry, useGaugeSize } from "./gaugeUtils";
 import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface ExternalCacheTokenMeterChartProps {
 	data: TokenHistogramResponse | null;
@@ -16,6 +17,7 @@ interface ExternalCacheTokenMeterChartProps {
 const METER_COLORS = { cached: "var(--chart-seq-2)", input: "var(--chart-seq-5)" };
 
 function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
+	useLocale();
 	const { t } = useTranslation("observability");
 	const { ref, width, height } = useGaugeSize();
 

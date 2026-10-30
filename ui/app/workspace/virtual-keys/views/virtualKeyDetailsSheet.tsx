@@ -33,6 +33,7 @@ import { formatDistanceToNow } from "date-fns";
 import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
+import { getLocale } from "@/lib/i18n";
 
 function usageBarClass(pct: number, exhausted: boolean) {
 	if (exhausted) return "[&>div]:bg-red-500/70";
@@ -217,7 +218,9 @@ export default function VirtualKeyDetailSheet({
 											addSuffix: true,
 											locale: dateFnsLocale(i18n.language),
 										})}
-										<span className="text-muted-foreground ml-1 text-xs">({new Date(virtualKey.expires_at).toLocaleString()})</span>
+										<span className="text-muted-foreground ml-1 text-xs">
+											({new Date(virtualKey.expires_at).toLocaleString(getLocale())})
+										</span>
 										{deletesAfterExpire && (
 											<span className="text-muted-foreground ml-1 text-xs" data-testid="vk-details-delete-after-expire">
 												{t("virtualKeys.deletedAfterExpiry")}
@@ -458,7 +461,7 @@ export default function VirtualKeyDetailSheet({
 																			<UsageLine
 																				current={config.rate_limit.token_current_usage}
 																				max={config.rate_limit.token_max_limit}
-																				format={(n) => n.toLocaleString()}
+																				format={(n) => n.toLocaleString(getLocale())}
 																			/>
 																			<div className="text-muted-foreground flex items-center justify-between text-xs">
 																				<span>
@@ -490,7 +493,7 @@ export default function VirtualKeyDetailSheet({
 																			<UsageLine
 																				current={config.rate_limit.request_current_usage}
 																				max={config.rate_limit.request_max_limit}
-																				format={(n) => n.toLocaleString()}
+																				format={(n) => n.toLocaleString(getLocale())}
 																			/>
 																			<div className="text-muted-foreground flex items-center justify-between text-xs">
 																				<span>
@@ -579,7 +582,7 @@ export default function VirtualKeyDetailSheet({
 																					<UsageLine
 																						current={mb.rate_limit.token_current_usage}
 																						max={mb.rate_limit.token_max_limit}
-																						format={(n) => n.toLocaleString()}
+																						format={(n) => n.toLocaleString(getLocale())}
 																					/>
 																					<div className="text-muted-foreground text-xs">
 																						{t("virtualKeys.resets", {
@@ -601,7 +604,7 @@ export default function VirtualKeyDetailSheet({
 																					<UsageLine
 																						current={mb.rate_limit.request_current_usage}
 																						max={mb.rate_limit.request_max_limit}
-																						format={(n) => n.toLocaleString()}
+																						format={(n) => n.toLocaleString(getLocale())}
 																					/>
 																					<div className="text-muted-foreground text-xs">
 																						{t("virtualKeys.resets", {
@@ -786,7 +789,7 @@ export default function VirtualKeyDetailSheet({
 												<UsageLine
 													current={displayRateLimit.token_current_usage}
 													max={displayRateLimit.token_max_limit}
-													format={(n) => n.toLocaleString()}
+													format={(n) => n.toLocaleString(getLocale())}
 												/>
 												<div className="text-muted-foreground flex items-center justify-between text-xs">
 													<span>
@@ -816,7 +819,7 @@ export default function VirtualKeyDetailSheet({
 												<UsageLine
 													current={displayRateLimit.request_current_usage}
 													max={displayRateLimit.request_max_limit}
-													format={(n) => n.toLocaleString()}
+													format={(n) => n.toLocaleString(getLocale())}
 												/>
 												<div className="text-muted-foreground flex items-center justify-between text-xs">
 													<span>

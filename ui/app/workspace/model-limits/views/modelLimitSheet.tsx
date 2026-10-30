@@ -30,7 +30,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 
 interface ModelLimitSheetProps {
 	modelConfig?: ModelConfig | null;
@@ -395,8 +395,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">{t("modelLimits.tokens")}</p>
 											<p className="text-sm font-medium">
-												{modelConfig.rate_limit.token_current_usage.toLocaleString()} /{" "}
-												{modelConfig.rate_limit.token_max_limit.toLocaleString()} (
+												{modelConfig.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
+												{modelConfig.rate_limit.token_max_limit.toLocaleString(getLocale())} (
 												{resetDurationLabels[modelConfig.rate_limit.token_reset_duration || "1h"] ||
 													modelConfig.rate_limit.token_reset_duration}
 												)
@@ -407,8 +407,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">{t("modelLimits.requests")}</p>
 											<p className="text-sm font-medium">
-												{modelConfig.rate_limit.request_current_usage.toLocaleString()} /{" "}
-												{modelConfig.rate_limit.request_max_limit.toLocaleString()} (
+												{modelConfig.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
+												{modelConfig.rate_limit.request_max_limit.toLocaleString(getLocale())} (
 												{resetDurationLabels[modelConfig.rate_limit.request_reset_duration || "1h"] ||
 													modelConfig.rate_limit.request_reset_duration}
 												)
@@ -676,8 +676,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												<div className="space-y-1">
 													<p className="text-muted-foreground text-xs">{t("modelLimits.tokens")}</p>
 													<p className="text-sm font-medium">
-														{modelConfig.rate_limit.token_current_usage.toLocaleString()} /{" "}
-														{modelConfig.rate_limit.token_max_limit.toLocaleString()}
+														{modelConfig.rate_limit.token_current_usage.toLocaleString(getLocale())} /{" "}
+														{modelConfig.rate_limit.token_max_limit.toLocaleString(getLocale())}
 													</p>
 												</div>
 											)}
@@ -685,8 +685,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												<div className="space-y-1">
 													<p className="text-muted-foreground text-xs">{t("modelLimits.requests")}</p>
 													<p className="text-sm font-medium">
-														{modelConfig.rate_limit.request_current_usage.toLocaleString()} /{" "}
-														{modelConfig.rate_limit.request_max_limit.toLocaleString()}
+														{modelConfig.rate_limit.request_current_usage.toLocaleString(getLocale())} /{" "}
+														{modelConfig.rate_limit.request_max_limit.toLocaleString(getLocale())}
 													</p>
 												</div>
 											)}
