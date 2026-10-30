@@ -45,7 +45,7 @@ starting faults in one step, for scenarios that need more than names.
 
 ## Transports
 
-Both speak the protocol for real, and they are not interchangeable. The
+All three speak the protocol for real, and they are not interchangeable. The
 differences below are the point: a client that handles one correctly can still
 mishandle another.
 
@@ -53,12 +53,39 @@ mishandle another.
 |---|---|---|
 | Streamable HTTP | `/s/<name>/mcp` | Response returns in the reply to the POST. A `GET` on the same path opens the standalone listening stream, which only a client that opted in ever does. |
 | Legacy HTTP+SSE | `/s/<name>/sse` | Response arrives **out-of-band** on a stream opened separately; the POST is only acknowledged with 202. The stream is also the session, so it exists before `initialize` rather than being created by it. |
+| STDIO | subprocess | Spawned by the system under test, so it runs in its own process. Served by a thin bridge (see below). |
 
 The SSE split is what makes a dropped connection mean something different
 there. Under streamable HTTP a drop fails the request in flight; under SSE it
 **strands** it, because the POST already succeeded and the answer has nowhere
 to land. `sse_test.go` pins that a client gives up on its own deadline rather
 than being told.
+
+### The STDIO bridge
+
+A STDIO server cannot share memory with the fleet, since the process under
+test spawns it. Rather than reimplement the state there, and end up with two
+tool sets and two sets of counters to keep in step, the child is deliberately
+thin: it reads newline-delimited JSON-RPC from stdin, forwards each message to
+the fleet over HTTP, and writes the reply to stdout. Every control verb keeps
+working unchanged, and what is actually under test on this transport
+(subprocess lifecycle, pipe framing, respawn after death) is exercised for
+real.
+
+```sh
+mcpchaos -stdio -fleet http://127.0.0.1:8400 -server alpha
+```
+
+The child registers its process id with the fleet at startup, before any
+protocol traffic, so `POST /control/<s>/stdio/kill` can kill it. That is the
+one fault this transport has that cannot be simulated, and the registration
+clears on kill so a later respawn is distinguishable from one that never
+happened.
+
+An injected HTTP status has no equivalent on a pipe, so the bridge reports it
+as a JSON-RPC error: a client should see a failed call, not a dead server. A
+fleet that becomes unreachable does end the process, which is the closest
+analogue to an upstream dying.
 
 ## Control API
 
@@ -87,6 +114,8 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/sessions/kill` | | invalidate sessions without touching the transport |
 | `POST /control/<s>/streams/drop` | | close listening streams without killing sessions |
 | `POST /control/<s>/notify/tools-changed` | | push `notifications/tools/list_changed` |
+| `POST /control/<s>/stdio/register` | `{"pid":N}` | record the bridging child process (the child does this itself) |
+| `POST /control/<s>/stdio/kill` | | kill the bridging child process |
 | `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts |
 
 ## Faults

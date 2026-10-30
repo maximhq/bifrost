@@ -3,6 +3,8 @@ package chaosmock
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"sync"
 	"time"
 )
 
@@ -28,6 +30,14 @@ type Server struct {
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
 	version string
+
+	// stdioPID is the process id of the child currently bridging this server
+	// over stdin and stdout, when one has registered. It exists so a scenario
+	// can kill that process, which is the fault this transport has and the
+	// others do not, and which nothing else can inject: the child is spawned
+	// by the system under test, not by the fleet.
+	stdioMu  sync.Mutex
+	stdioPID int
 }
 
 // NewServer creates a healthy virtual server with no tools and no auth.
@@ -104,6 +114,45 @@ func (s *Server) DropStreams() int { return s.streams.closeAll() }
 
 // OpenStreams reports how many server-to-client streams are currently held.
 func (s *Server) OpenStreams() int { return s.streams.count() }
+
+// RegisterStdioPID records the child process bridging this server over stdio.
+func (s *Server) RegisterStdioPID(pid int) {
+	s.stdioMu.Lock()
+	s.stdioPID = pid
+	s.stdioMu.Unlock()
+}
+
+// StdioPID reports the registered child process id, or 0 when none has
+// registered. A scenario reads it to tell "the subprocess is gone" apart from
+// "the subprocess never started".
+func (s *Server) StdioPID() int {
+	s.stdioMu.Lock()
+	defer s.stdioMu.Unlock()
+	return s.stdioPID
+}
+
+// KillStdio kills the registered child process, reproducing an upstream server
+// that dies without warning. The registration is cleared either way: a pid
+// that could not be signalled is not one worth trying again, and leaving it
+// would make a later respawn look like it had already registered.
+func (s *Server) KillStdio() error {
+	s.stdioMu.Lock()
+	pid := s.stdioPID
+	s.stdioPID = 0
+	s.stdioMu.Unlock()
+
+	if pid == 0 {
+		return fmt.Errorf("no stdio process is registered for %q", s.name)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("could not find pid %d: %w", pid, err)
+	}
+	if err := proc.Kill(); err != nil {
+		return fmt.Errorf("could not kill pid %d: %w", pid, err)
+	}
+	return nil
+}
 
 // initializeResult is the payload of a successful initialize.
 type initializeResult struct {
