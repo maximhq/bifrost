@@ -3657,3 +3657,126 @@ func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
 		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
 	}
 }
+
+// TestToAnthropicResponsesRequest_EmptyTextBlocksAreDropped pins that an empty
+// input_text/output_text block, or an empty string content, never reaches the
+// Anthropic wire as {"type":"text","text":""}. Anthropic rejects such a block with
+// 400 "text content blocks must be non-empty" (messages) and the same for system.
+// OpenAI accepts empty text, so Responses clients such as Codex send it; the Chat
+// Completions converter already skips empty text, the Responses converter did not.
+func TestToAnthropicResponsesRequest_EmptyTextBlocksAreDropped(t *testing.T) {
+	cases := []struct {
+		name         string
+		input        string
+		wantMessages []string // "role:text|text" per emitted message
+		wantSystem   []string
+	}{
+		{
+			name:         "user input_text block",
+			input:        `[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"sds"}]}]`,
+			wantMessages: []string{"user:sds"},
+		},
+		{
+			name:         "user string content",
+			input:        `[{"type":"message","role":"user","content":""},{"type":"message","role":"user","content":[{"type":"input_text","text":"sds"}]}]`,
+			wantMessages: []string{"user:sds"},
+		},
+		{
+			name:         "assistant output_text block",
+			input:        `[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"sds"}]}]`,
+			wantMessages: []string{"user:hi", "user:sds"},
+		},
+		{
+			name:         "empty block beside a non-empty one",
+			input:        `[{"type":"message","role":"user","content":[{"type":"input_text","text":""},{"type":"input_text","text":"sds"}]}]`,
+			wantMessages: []string{"user:sds"},
+		},
+		{
+			name:         "leading developer block",
+			input:        `[{"type":"message","role":"developer","content":[{"type":"input_text","text":"perm"},{"type":"input_text","text":""}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"sds"}]}]`,
+			wantMessages: []string{"user:sds"},
+			wantSystem:   []string{"perm"},
+		},
+		{
+			name:         "leading developer string content",
+			input:        `[{"type":"message","role":"developer","content":""},{"type":"message","role":"user","content":[{"type":"input_text","text":"sds"}]}]`,
+			wantMessages: []string{"user:sds"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var input []schemas.ResponsesMessage
+			if err := sonic.Unmarshal([]byte(tc.input), &input); err != nil {
+				t.Fatalf("unmarshal input: %v", err)
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-opus-4-6", Input: input}
+			result, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			wire, err := sonic.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(wire), `"text":""`) {
+				t.Fatalf("empty text block reached the wire: %s", wire)
+			}
+
+			var gotMessages []string
+			for _, msg := range result.Messages {
+				var texts []string
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Text != nil {
+						texts = append(texts, *block.Text)
+					}
+				}
+				if msg.Content.ContentStr != nil {
+					texts = append(texts, *msg.Content.ContentStr)
+				}
+				gotMessages = append(gotMessages, string(msg.Role)+":"+strings.Join(texts, "|"))
+			}
+			if !slices.Equal(gotMessages, tc.wantMessages) {
+				t.Errorf("messages = %q, want %q (wire: %s)", gotMessages, tc.wantMessages, wire)
+			}
+
+			var gotSystem []string
+			if result.System != nil {
+				if result.System.ContentStr != nil {
+					gotSystem = append(gotSystem, *result.System.ContentStr)
+				}
+				for _, block := range result.System.ContentBlocks {
+					if block.Text != nil {
+						gotSystem = append(gotSystem, *block.Text)
+					}
+				}
+			}
+			if !slices.Equal(gotSystem, tc.wantSystem) {
+				t.Errorf("system = %q, want %q (wire: %s)", gotSystem, tc.wantSystem, wire)
+			}
+		})
+	}
+}
+
+func BenchmarkToAnthropicResponsesRequest_TextMessages(b *testing.B) {
+	user := schemas.ResponsesInputMessageRoleUser
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	input := make([]schemas.ResponsesMessage, 0, 20)
+	for i := 0; i < 10; i++ {
+		input = append(input,
+			schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("What time is it?")},
+			}}},
+			schemas.ResponsesMessage{Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("It is noon.")}},
+		)
+	}
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-opus-4-6", Input: input}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := ToAnthropicResponsesRequest(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
