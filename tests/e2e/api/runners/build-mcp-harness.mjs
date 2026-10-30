@@ -6468,6 +6468,27 @@ const EP51 = folder("EP-51 Per-user headers tool through `/mcp`", `Setup: ${FLEE
   ...fleetTeardown("EP-51"),
 ]);
 
+// EP52_AUTH_REQUIRED is the tool result EP-52 expects in every mode: Bifrost's link for po's per-user OAuth.
+const EP52_AUTH_REQUIRED = [toolResultError("Authentication required for po. Open this URL to connect your account: "), gwText("Bifrost's /workspace/mcp-sessions/auth?flow= link follows, not the authorization server's URL", [
+    "var rest = text.slice('Authentication required for po. Open this URL to connect your account: '.length);",
+    "var prefix = pm.variables.get('base_url') + '/workspace/mcp-sessions/auth?flow=';",
+    "pm.expect(rest.indexOf(prefix), 'text: ' + text).to.equal(0);",
+    "pm.expect(/^[0-9a-f-]{36}$/.test(rest.slice(prefix.length)), 'text: ' + text).to.equal(true);",
+  ])];
+const EP52 = folder("EP-52 Per-user OAuth tool through `/mcp`", `Setup: ${FLEET}; ${PU_TEXT(false)}; ${PU_SERVER_TEXT("po")}, verified as admin; a VK granted every tool of alpha, beta and po, with no po token.`, [
+  ...fleetSetup("EP-52"),
+  ...puConfig("EP-52", false),
+  ...puConnect("EP-52", "po"),
+  vkCreate("EP-52", "setup: create the VK, granted alpha, beta and po", { name: "EP-52 key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }, { mcp_client_name: "beta", tools_to_execute: ["*"] }, { mcp_client_name: "po", tools_to_execute: ["*"] }] }, "ep52_vk"),
+  mockPost("EP-52", "po", "counters/reset", "setup: reset po's counters", {}),
+  gwCall("EP-52", "tools/call po-echo_tool with the VK", "po-echo_tool", EP52_AUTH_REQUIRED, [{ key: "x-bf-vk", value: "{{ep52_vk}}" }]),
+  mockGet("EP-52", "po", "po received no call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls || {}, 'body: ' + pm.response.text()).to.eql({});"])]),
+  deleteClient("EP-52", "po-u"),
+  vkDelete("EP-52", "teardown: delete the VK", "ep52_vk"),
+  restoreConfig("EP-52"),
+  ...fleetTeardown("EP-52"),
+]);
+
 // ================================================================ the setup lock, Host spoofing and per-client settings
 
 // ADMIN_PAIR reads the admin username and password back out of admin_auth_header (Basic) as `user` and `pass`.
@@ -6527,6 +6548,13 @@ const OAS05 = folder("OAS-05 Spoofed Host", `Setup: ${FLEET}; ${BOTH}, temp-toke
   request("OAS-05", "authorize", "GET", goodAuthorize("oas05_client"), { noAuth: true, noRedirect: true, headers: [EVIL], asserts: [A.status(302), noEvil(), A.custom("the consent Location starts with the issuer", ["pm.expect((pm.response.headers.get('Location') || '').indexOf(pm.variables.get('base_url')), 'Location: ' + pm.response.headers.get('Location')).to.equal(0);"])] }),
   rpc("OAS-05", "/mcp tools/list with no credential", listMsg, { headers: [MCP_ACCEPT, EVIL], asserts: [A.status(401), noEvil(), A.custom("WWW-Authenticate points at the base URL's resource metadata", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata=\"' + pm.variables.get('base_url') + '/.well-known/oauth-protected-resource/mcp\"');"])] }),
   restoreConfig("OAS-05"), ...fleetTeardown("OAS-05"),
+]);
+
+const SET14 = folder("SET-14 OAuth private allowlist validation", "Setup: PUT /api/config with admin credentials.", [
+  readConfig("SET-14"),
+  putConfig("SET-14", "mcp_oauth_private_allowlist [\"169.254.169.254\"]", ["cc.mcp_oauth_private_allowlist = ['169.254.169.254'];"], [A.status(400), A.msgContains("can never be allowlisted")]),
+  putConfig("SET-14", "mcp_oauth_private_allowlist [\"0.0.0.0/0\"]", ["cc.mcp_oauth_private_allowlist = ['0.0.0.0/0'];"], [A.status(400), A.msgContains("can never be allowlisted")]),
+  restoreConfig("SET-14"),
 ]);
 
 const SET19 = folder("SET-19 Disabling a per-call client", "Setup: admin credentials; alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, tools_to_execute [\"*\"], then disabled.", [
@@ -6871,6 +6899,62 @@ const LOG35 = folder("LOG-35 Cost histogram", `Setup: ${LOG_CLIENT_TEXT("log35",
   deleteClient("LOG-35", "log35-c"),
 ]);
 
+// ================================================================ header rotation, a sticky round trip, a disabled client, filter dimensions and the setup lock on create
+
+const T2 = "auth-t2-token";
+const AUTH07 = folder("AUTH-07 Rotation applies to the live connection", `Setup: alpha (echo_tool, add_tool) requires a bearer token and maps T1 (${T1}) to id1 and T2 (${T2}) to id2; ${T1_CLIENT_TEXT}, needs_session_stickiness true, tools_to_execute ["*"] (as AUTH-02); then a PUT sets Authorization: Bearer T2.`, [
+  ...freshServer("AUTH-07", "alpha", ["echo_tool", "add_tool"]),
+  mockAuth("AUTH-07", "alpha", "setup: alpha requires a bearer token, T1 mapped to id1 and T2 to id2", { bearer: { [T1]: "id1", [T2]: "id2" }, require: true }),
+  createClient("AUTH-07", t1Client("auth07-c", "auth07_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
+  saveSessions("AUTH-07", "alpha", "auth07_s"),
+  request("AUTH-07", "PUT Authorization: Bearer T2", "PUT", "/api/mcp/client/auth07-c", { body: { headers: { Authorization: `Bearer ${T2}` } }, asserts: [A.status(200)] }),
+  mockGet("AUTH-07", "alpha", "two more sessions: the new header is verified on its own connection, then the client reconnects", [sessionsPlus("auth07_s", 2)]),
+  execTool("AUTH-07", "execute after the rotation", "auth07_c-echo_tool", [A.status(200)]),
+  mockGet("AUTH-07", "alpha", "the call was counted under id2", [identityCallsAre({ id2: 1 })]),
+  deleteClient("AUTH-07", "auth07-c"),
+]);
+
+const CONN01 = folder("CONN-01 HTTP sticky round trip", "Setup: alpha (echo_tool replying \"hi\", add_tool); an HTTP client on alpha named conn01, auth none, needs_session_stickiness true, tools_to_execute [\"*\"].", [
+  ...serveTools("CONN-01", "alpha", [{ name: "echo_tool", reply: HI_REPLY }, { name: "add_tool" }], "echo_tool (replying \"hi\") and add_tool"),
+  createClient("CONN-01", httpClient("conn01-c", "conn01", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] })),
+  getClient("CONN-01", "conn01-c", "the client list shows healthy, the server's tool names and no last_failure", [clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]),
+    A.custom("there is no last_failure", ["pm.expect(pm.response.json().clients[0].last_failure == null, 'body: ' + pm.response.text()).to.equal(true);"])]),
+  ...[1, 2, 3].map((i) => execTool("CONN-01", `execute ${i} of 3`, "conn01-echo_tool", [A.status(200), A.custom("the body is {role \"tool\", content \"hi\", tool_call_id \"c1\"}", [
+    "pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ role: 'tool', content: 'hi', tool_call_id: 'c1' });",
+  ])])),
+  mockGet("CONN-01", "alpha", "one session, three calls to echo_tool", [counterIs("sessions", 1), callsIs("echo_tool", 3)]),
+  deleteClient("CONN-01", "conn01-c"),
+]);
+
+const INF32 = folder("INF-32 Disabled client", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"], then disabled with a PUT of disabled true.`, [
+  ...freshServer("INF-32", "alpha", ["echo", "add", "greet"]),
+  alphaClient("INF-32"),
+  request("INF-32", "setup: disable client alpha", "PUT", "/api/mcp/client/inf-32-alpha", { body: { disabled: true }, asserts: [A.status(200)] }),
+  llmScript("INF-32", "inf32", TEXT_OK),
+  infChat("INF-32", "chat", "inf32", [A.status(200)]),
+  llmCaptured("INF-32", "nothing is injected", "inf32", [reqCount(1), toolsAre(0, [])]),
+  execTool("INF-32", "execute alpha-echo", "alpha-echo", [A.status(400), A.msgContains("is not permitted (client alpha is disabled)")]),
+  mockCalls("INF-32", "alpha", "echo", 0),
+  deleteClient("INF-32", "inf-32-alpha"),
+]);
+
+const MCP_DIMS = ["apps", "server_labels", "tool_names", "user_agents", "virtual_keys"];
+const keysAre = (keys) => A.custom(`the body's keys are ${lit(keys)}`, [`pm.expect(Object.keys(pm.response.json()).sort(), 'body: ' + pm.response.text()).to.eql(${lit(keys)});`]);
+const LOG32 = folder("LOG-32 Filter data dimensions", "Setup: none.", [
+  request("LOG-32", "dimensions=tool_names", "GET", "/api/mcp-logs/filterdata?dimensions=tool_names", { asserts: [A.status(200), keysAre(["tool_names"])] }),
+  request("LOG-32", "dimensions=bogus falls back to all five", "GET", "/api/mcp-logs/filterdata?dimensions=bogus", { asserts: [A.status(200), keysAre(MCP_DIMS)] }),
+]);
+
+const ADM02 = folder("ADM-02 Setup-lock gating of `POST /api/mcp/client`", `Setup: alpha (echo_tool, add_tool) on loopback; ${LOCK_TEXT}. Each create is a sticky client on alpha.`, [
+  ...freshServer("ADM-02", "alpha", ["echo_tool", "add_tool"]),
+  authOff("ADM-02"),
+  request("ADM-02", "create with no setup token", "POST", "/api/mcp/client", { noAuth: true, noCookies: true, body: httpClient("adm02-c", "adm02_c", "alpha", { needs_session_stickiness: true }), asserts: [A.status(401), A.msgContains("send the setup token in the X-Bifrost-Setup-Token header")] }),
+  request("ADM-02", "create with a wrong setup token", "POST", "/api/mcp/client", { noAuth: true, noCookies: true, headers: [WRONG_TOKEN], body: httpClient("adm02-c", "adm02_c", "alpha", { needs_session_stickiness: true }), asserts: [A.status(403), A.msgEquals("invalid setup token")] }),
+  request("ADM-02", "create with the setup token", "POST", "/api/mcp/client", { noAuth: true, noCookies: true, headers: [SETUP_TOKEN], body: httpClient("adm02-c", "adm02_c", "alpha", { needs_session_stickiness: true }), asserts: [A.status(200)] }),
+  authOn("ADM-02"),
+  deleteClient("ADM-02", "adm02-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -6884,16 +6968,16 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
-    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP53]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
+    section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP52, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET19, SET20, SET21, SET22]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };
