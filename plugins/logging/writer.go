@@ -1212,12 +1212,10 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 				size += len(*body)
 			}
 		}
-		// Headers are still maps here (the store serializes them on write), so they are sized as
-		// such; the serialized columns are nil until then.
-		for _, headers := range []map[string]string{entry.endpointLog.RequestHeadersParsed, entry.endpointLog.ResponseHeadersParsed} {
-			for k, v := range headers {
-				size += len(k) + len(v) + 6
-			}
+		// The matched request headers are still a map here (the store serializes them on write), so
+		// they are sized as such; the serialized column is nil until then.
+		for k, v := range entry.endpointLog.RequestHeadersParsed {
+			size += len(k) + len(v) + 6
 		}
 		return size
 	}

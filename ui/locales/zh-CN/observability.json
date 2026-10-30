@@ -901,6 +901,7 @@
 			"matchedRoute": "匹配的路由",
 			"parentLog": "父日志",
 			"responseBodyPreview": "响应正文（预览）",
+			"filterByValue": "显示具有此值的中继调用",
 			"queryParameters": "查询参数",
 			"matchedHeaders": "匹配的请求头",
 			"errorNoMessageWithStatus": "中继返回了错误（HTTP {{status}}），但没有消息。",
@@ -921,7 +922,9 @@
 			"minCost": "最小 $",
 			"maxCost": "最大 $",
 			"minimumCost": "最低费用",
-			"maximumCost": "最高费用"
+			"maximumCost": "最高费用",
+			"exactJobID": "精确作业 ID",
+			"exactParentRequestID": "精确父请求 ID"
 		},
 		"grants": {
 			"label": "中继访问",

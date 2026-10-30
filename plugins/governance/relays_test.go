@@ -127,6 +127,7 @@ func TestPreRelayHookGrants(t *testing.T) {
 	require.NotNil(t, short.Error.StatusCode)
 	assert.Equal(t, 403, *short.Error.StatusCode, "an ungranted endpoint is refused")
 	assert.Equal(t, string(DecisionRelayBlocked), *short.Error.Type)
+	assert.Equal(t, schemas.ErrorTypePolicyAccessDenied, short.Error.ExtraFields.ErrorType, "classified as the access denial it is")
 	assert.Equal(t, true, ctx.Value(governanceRejectedContextKey))
 
 	none, _ := newPluginForEndpoints(t)

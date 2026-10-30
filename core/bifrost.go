@@ -10236,7 +10236,9 @@ func (p *PluginPipeline) RunRelayPreHooks(ctx *schemas.BifrostContext, req *sche
 	for i, plugin := range p.relayPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running endpoint pre-hook for plugin %s", pluginName)
-		// Start span for this plugin's PreRelayHook
+		// Start span for this plugin's PreRelayHook. The parent is restored after the hook, as for
+		// LLM hooks, so each plugin's span is a sibling of the next rather than its parent.
+		prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.relays_prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
 		// Update pluginCtx with span context for nested operations
 		if spanCtx != nil {
@@ -10253,6 +10255,7 @@ func (p *PluginPipeline) RunRelayPreHooks(ctx *schemas.BifrostContext, req *sche
 			defer pluginCtx.ReleasePluginScope()
 			req, shortCircuit, err = plugin.PreRelayHook(pluginCtx, req)
 		}()
+		ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 
 		// End span with appropriate status
 		if err != nil {
@@ -10296,7 +10299,8 @@ func (p *PluginPipeline) RunRelayPostHooks(ctx *schemas.BifrostContext, endpoint
 		plugin := p.relayPlugins[i]
 		pluginName := plugin.GetName()
 		p.logger.Debug("running endpoint post-hook for plugin %s", pluginName)
-		// Create span per plugin
+		// Create span per plugin, restoring the parent afterwards as the pre-hooks do.
+		prevSpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.relays_posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
 		// Update pluginCtx with span context for nested operations
 		if spanCtx != nil {
@@ -10326,6 +10330,7 @@ func (p *PluginPipeline) RunRelayPostHooks(ctx *schemas.BifrostContext, endpoint
 			}()
 			endpointResp, bifrostErr, err = plugin.PostRelayHook(pluginCtx, endpointResp, bifrostErr)
 		}()
+		ctx.SetValue(schemas.BifrostContextKeySpanID, prevSpanID)
 
 		// End span with appropriate status
 		if panicked {

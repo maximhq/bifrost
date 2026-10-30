@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"github.com/fasthttp/router"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -460,7 +462,8 @@ func TestRelayLogsAPIMirrorsLLMLogsAPI(t *testing.T) {
 	h, logs := relayLogsTestHandler(t, false)
 	now := time.Now().UTC()
 	_, err := logs.BatchCreateRelayLogsIfNotExists(context.Background(), []*logstore.RelayLog{
-		{ID: "recent", RequestID: "recent", Timestamp: now.Add(-10 * time.Minute), RelayName: "docs", Status: logstore.RelayLogStatusSuccess, Latency: schemas.Ptr(40.0), SessionID: schemas.Ptr("s-1")},
+		{ID: "recent", RequestID: "recent", Timestamp: now.Add(-10 * time.Minute), RelayName: "docs", Status: logstore.RelayLogStatusSuccess, Latency: schemas.Ptr(40.0), SessionID: schemas.Ptr("s-1"),
+			App: schemas.Ptr("Acme, Inc"), RequestBody: schemas.Ptr(`{"q":"wombat"}`), AgentCorrelationID: schemas.Ptr("a-1"), ParentRequestID: schemas.Ptr("p-1")},
 		{ID: "gone", RequestID: "gone", Timestamp: now.Add(-10 * time.Minute), RelayName: "docs", Status: logstore.RelayLogStatusCancelled, Latency: schemas.Ptr(400.0)},
 		{ID: "old", RequestID: "old", Timestamp: now.Add(-2 * time.Hour), RelayName: "docs", Status: logstore.RelayLogStatusSuccess, Latency: schemas.Ptr(900.0)},
 	})
@@ -495,6 +498,35 @@ func TestRelayLogsAPIMirrorsLLMLogsAPI(t *testing.T) {
 		require.Len(t, page.Logs, 1)
 		require.Equal(t, "recent", page.Logs[0].ID)
 	})
+	t.Run("apps, content search and correlation ids are read as on /api/logs", func(t *testing.T) {
+		for _, query := range []string{
+			"apps=" + url.QueryEscape(`["Acme, Inc"]`), // a JSON array keeps a comma inside a name
+			"content_search=wombat",
+			"agent_correlation_id=a-1",
+			"parent_request_id=p-1",
+		} {
+			ctx := relayLogsGet(query)
+			h.searchLogs(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var page logstore.RelayLogSearchResult
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+			require.Len(t, page.Logs, 1, query)
+			require.Equal(t, "recent", page.Logs[0].ID, query)
+		}
+	})
+	t.Run("a value that does not parse is ignored, as on /api/logs", func(t *testing.T) {
+		ctx := relayLogsGet("billable=maybe&min_cost=abc&max_latency=fast&start_time=yesterday&limit=many&offset=x")
+		h.searchLogs(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var page logstore.RelayLogSearchResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		require.EqualValues(t, 3, page.Pagination.TotalCount, "every unparseable filter is dropped")
+		for _, query := range []string{"limit=0", "limit=100000", "offset=-1"} {
+			ctx = relayLogsGet(query)
+			h.searchLogs(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: a number out of range is refused, as on /api/logs", query)
+		}
+	})
 	t.Run("status filters by row status, named as on /api/logs", func(t *testing.T) {
 		var page logstore.RelayLogSearchResult
 		ctx := relayLogsGet("status=cancelled")
@@ -522,6 +554,42 @@ func TestRelayLogsAPIMirrorsLLMLogsAPI(t *testing.T) {
 		require.EqualValues(t, 1, stats.CancelledCount)
 		require.InDelta(t, 50, stats.SuccessRate, 1e-9)
 	})
+	t.Run("latency histogram carries the percentiles /api/logs/histogram/latency does", func(t *testing.T) {
+		ctx := relayLogsGet("period=1h&bucket_size=3600")
+		h.logLatencyHistogram(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var hist logstore.LatencyHistogramResult
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &hist))
+		var requests int64
+		var p99 float64
+		for _, b := range hist.Buckets {
+			requests += b.TotalRequests
+			p99 = max(p99, b.P99Latency)
+		}
+		require.EqualValues(t, 2, requests, "the two finished calls in the window")
+		require.Greater(t, p99, 40.0, "the slow call sets the tail")
+		ctx = relayLogsGet("period=1h&bucket_size=420")
+		h.logLatencyHistogram(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	})
+	t.Run("delete is audited and answered as /api/logs delete is", func(t *testing.T) {
+		_, err := logs.BatchCreateRelayLogsIfNotExists(context.Background(), []*logstore.RelayLog{
+			{ID: "doomed", RequestID: "doomed", Timestamp: now.Add(-3 * time.Hour), RelayName: "docs", Status: logstore.RelayLogStatusSuccess},
+		})
+		require.NoError(t, err)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+		ctx.Request.SetBodyString(`{"ids":["doomed","never-existed"]}`)
+		h.deleteLogs(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		require.JSONEq(t, `{"message":"Relay logs deleted successfully"}`, string(ctx.Response.Body()))
+		changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+		require.Len(t, changes, 1)
+		require.Equal(t, "relay_logs.deleted", changes[0].EventName)
+		require.Contains(t, string(changes[0].Before), "doomed")
+		_, err = logs.FindRelayLog(context.Background(), "doomed")
+		require.ErrorIs(t, err, logstore.ErrNotFound)
+	})
 	t.Run("histogram bucket follows the window and validates an override", func(t *testing.T) {
 		ctx := relayLogsGet("period=1h")
 		h.logHistogram(ctx)
@@ -540,6 +608,21 @@ func TestRelayLogsAPIMirrorsLLMLogsAPI(t *testing.T) {
 		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &hist))
 		require.EqualValues(t, 300, hist.BucketSizeSeconds)
 	})
+}
+
+// TestRelayLogRoutesFollowLogging pins that the Relay Logs API is mounted apart from the relay
+// management API, so the server mounts it only with the LLM logs API: with logging off, both 404.
+func TestRelayLogRoutesFollowLogging(t *testing.T) {
+	h, _ := relayLogsTestHandler(t, false)
+	served := func(register func(*router.Router)) int {
+		r := router.New()
+		register(r)
+		ctx := relayLogsGet("")
+		r.Handler(ctx)
+		return ctx.Response.StatusCode()
+	}
+	assert.Equal(t, fasthttp.StatusNotFound, served(func(r *router.Router) { h.RegisterRoutes(r) }), "management routes alone do not serve relay logs")
+	assert.Equal(t, fasthttp.StatusOK, served(func(r *router.Router) { h.RegisterRoutes(r); h.RegisterLogRoutes(r) }))
 }
 
 // TestRelayLogsFilterDataResolvesDeletedVirtualKeys pins hide_deleted_virtual_keys_in_filters on

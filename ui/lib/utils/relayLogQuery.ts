@@ -13,7 +13,6 @@ export const RELAY_LOG_MULTI_FILTER_KEYS = [
 	"customer_ids",
 	"business_unit_ids",
 	"project_ids",
-	"apps",
 ] as const;
 
 /**
@@ -34,6 +33,10 @@ export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayL
 			if (value) params.append(key, value);
 		}
 	}
+	// Apps are names an operator types into a user-agent mapping, so they go as one JSON array, as
+	// the LLM logs send them: a comma inside a name must not split it.
+	const apps = (filters.apps ?? []).filter(Boolean);
+	if (apps.length > 0) params.set("apps", JSON.stringify(apps));
 	if (filters.billable !== undefined) params.set("billable", String(filters.billable));
 	// 0 is a real bound (max_cost=0 is "free calls only"), so only undefined and NaN mean unset.
 	if (filters.min_cost !== undefined && Number.isFinite(filters.min_cost)) params.set("min_cost", String(filters.min_cost));
@@ -42,7 +45,11 @@ export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayL
 	if (filters.max_latency !== undefined && Number.isFinite(filters.max_latency)) params.set("max_latency", String(filters.max_latency));
 	if (filters.request_id) params.set("request_id", filters.request_id);
 	if (filters.session_id) params.set("session_id", filters.session_id);
+	if (filters.job_id) params.set("job_id", filters.job_id);
+	if (filters.parent_request_id) params.set("parent_request_id", filters.parent_request_id);
+	if (filters.agent_correlation_id) params.set("agent_correlation_id", filters.agent_correlation_id);
 	if (filters.search) params.set("search", filters.search);
+	if (filters.content_search) params.set("content_search", filters.content_search);
 	if (filters.period) {
 		// The server resolves the period, as it does for the LLM logs, so every poll is a fresh
 		// rolling window and the day periods follow the browser's timezone.

@@ -906,6 +906,7 @@
 			"matchedRoute": "Route correspondante",
 			"parentLog": "Journal parent",
 			"responseBodyPreview": "Corps de la réponse (aperçu)",
+			"filterByValue": "Afficher les appels relay avec cette valeur",
 			"queryParameters": "Paramètres de requête",
 			"matchedHeaders": "En-têtes correspondants",
 			"errorNoMessageWithStatus": "Le relais a renvoyé une erreur (HTTP {{status}}) sans message.",
@@ -926,7 +927,9 @@
 			"minCost": "Min $",
 			"maxCost": "Max $",
 			"minimumCost": "Coût minimal",
-			"maximumCost": "Coût maximal"
+			"maximumCost": "Coût maximal",
+			"exactJobID": "ID de tâche exact",
+			"exactParentRequestID": "ID exact de la requête parente"
 		},
 		"grants": {
 			"label": "Accès aux relais",

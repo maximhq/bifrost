@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -88,6 +87,9 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	if req.RawQuery != "" {
 		entry.Path += "?" + redactQuery(req.RawQuery)
 	}
+	// Recorded now as well as in the post-hook, as PreLLMHook captures them, so a row persisted at
+	// eviction (a call still running when the sweep runs) carries its correlation.
+	applyRelayCorrelation(ctx, entry, requestID)
 	// The raw User-Agent is stored verbatim and mapped to a client app, as on LLM and MCP rows,
 	// and the app key is stamped for the plugins that run after this one, as PreLLMHook stamps it.
 	if ua := userAgentFromContext(ctx); ua != "" {
@@ -171,8 +173,10 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	// Merged again here, as PostLLMHook does: the key's metadata is stamped by governance, which may
 	// run after this plugin's pre-hook, and the key's values win over caller-sent labels.
 	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
-	if sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID); sessionID != "" {
-		entry.SessionID = schemas.Ptr(clampString(sessionID, 255))
+	// The pre-hook already recorded the correlation on a pending row; only a row built here (an
+	// evicted call's update, or a call the pre-hook never saw) reads it again.
+	if pending == nil {
+		applyRelayCorrelation(ctx, entry, requestID)
 	}
 	if resp != nil {
 		if entry.RelayName == "" {
@@ -193,7 +197,9 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			entry.UpstreamLatency = &upstream
 			entry.OverheadLatency = &overhead
 		}
-		if len(resp.Body) > 0 {
+		// Copied only when the row keeps content: a call with content logging off must not pay for
+		// a copy of its reply that is dropped a few lines below.
+		if len(resp.Body) > 0 && policy.storeContent {
 			entry.ResponseBody = textBody(resp.Body)
 		}
 		applyEndpointUsage(entry, resp.Usage)
@@ -225,6 +231,12 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	if bifrostErr != nil {
 		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, policy.visible(), shouldStoreRaw)
+		// Content retained as hidden keeps the error in full, raw request and response included,
+		// for the object alone, as an LLM row's offloaded error_details does; the database row
+		// keeps it without them.
+		if policy.storeContent && policy.hidden {
+			entry.RetainedErrorDetails = sanitizeErrorForLogging(bifrostErr, true, shouldStoreRaw)
+		}
 		if entry.StatusCode == 0 && bifrostErr.StatusCode != nil {
 			entry.StatusCode = *bifrostErr.StatusCode
 		}
@@ -239,14 +251,32 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		entry.RequestBody, entry.ResponseBody = nil, nil
 	}
 	if !policy.visible() {
+		// The query string is content: hidden, it is kept in the object only, as the bodies are.
+		if policy.storeContent && strings.Contains(entry.Path, "?") {
+			entry.RetainedPath = schemas.Ptr(entry.Path)
+		}
 		entry.Path = stripQuery(entry.Path)
 	}
-	entry.PluginLogs = serializePluginLogsBounded(ctx.GetPluginLogs(), maxA2APluginLogsLen)
 	if resp != nil && resp.Usage != nil && resp.Usage.Job != nil {
 		p.recordEndpointJob(entry, resp.Usage.Job)
 	}
 	p.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry, reconcile: evicted, dropRequestBody: !policy.storeContent})
 	return resp, bifrostErr, nil
+}
+
+// applyRelayCorrelation records the caller's correlation on a relay row, as an LLM row records it:
+// the session identity resolved at ingress, a parent named through baggage (never the call itself)
+// and the agent correlation header.
+func applyRelayCorrelation(ctx *schemas.BifrostContext, entry *logstore.RelayLog, requestID string) {
+	if sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID); sessionID != "" {
+		entry.SessionID = schemas.Ptr(clampString(sessionID, 255))
+	}
+	if parentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && parentRequestID != "" && parentRequestID != requestID {
+		entry.ParentRequestID = schemas.Ptr(clampString(parentRequestID, 255))
+	}
+	if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+		entry.AgentCorrelationID = schemas.Ptr(clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen))
+	}
 }
 
 // probeEvictedRelayPartial looks for a processing row persisted for the request by a previous
@@ -318,6 +348,8 @@ func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[s
 		"project_id":                entry.ProjectID,
 		"project_name":              entry.ProjectName,
 		"session_id":                entry.SessionID,
+		"parent_request_id":         entry.ParentRequestID,
+		"agent_correlation_id":      entry.AgentCorrelationID,
 		"team_ids":                  entry.TeamIDs,
 		"team_names":                entry.TeamNames,
 		"customer_ids":              entry.CustomerIDs,
@@ -337,6 +369,14 @@ func relayLogUpdateColumns(entry *logstore.RelayLog, dropRequestBody bool) map[s
 	if entry.ContentHidden && entry.Path != "" {
 		// The partial stored the full path; the final policy hides the query with the bodies.
 		updates["path"] = stripQuery(entry.Path)
+	}
+	// Hidden content with no body column rides along for the hybrid store's object; every store
+	// strips these keys before writing the row.
+	if entry.RetainedPath != nil {
+		updates[logstore.RelayRetainedPathUpdate] = entry.RetainedPath
+	}
+	if entry.RetainedErrorDetails != nil {
+		updates[logstore.RelayRetainedErrorDetailsUpdate] = entry.RetainedErrorDetails
 	}
 	return updates
 }
@@ -385,6 +425,10 @@ func (p *LoggerPlugin) persistEvictedRelayPartial(key any, pending *pendingRelay
 		partial.RequestBody = nil
 	}
 	if pending.provisionalInput || !policy.visible() {
+		// Content retained as hidden keeps the query in the row's object, as PostRelayHook does.
+		if !pending.provisionalInput && policy.storeContent && strings.Contains(partial.Path, "?") {
+			partial.RetainedPath = schemas.Ptr(partial.Path)
+		}
 		partial.Path = stripQuery(partial.Path)
 	}
 	partial.ContentHidden = !policy.visible()
@@ -411,7 +455,7 @@ func (p *LoggerPlugin) persistEvictedRelayPartial(key any, pending *pendingRelay
 func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, item relayInjectEntry) {
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" || p.traceAlreadyEnded(ctx, traceID) {
-		p.writeRelayEntry(item)
+		p.writeRelayEntryUntraced(ctx, item)
 		return
 	}
 	existing, loaded := p.pendingRelayLogsToInject.LoadOrStore(traceID, &pendingRelayInjectEntries{entries: []relayInjectEntry{item}, createdAt: time.Now()})
@@ -425,7 +469,7 @@ func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, ite
 				late := orphaned.entries
 				orphaned.mu.Unlock()
 				for _, e := range late {
-					p.writeRelayEntry(e)
+					p.writeRelayEntryUntraced(ctx, e)
 				}
 			}
 		}
@@ -435,11 +479,20 @@ func (p *LoggerPlugin) storeOrEnqueueRelayEntry(ctx *schemas.BifrostContext, ite
 	pending.mu.Lock()
 	if pending.drained {
 		pending.mu.Unlock()
-		p.writeRelayEntry(item)
+		p.writeRelayEntryUntraced(ctx, item)
 		return
 	}
 	pending.entries = append(pending.entries, item)
 	pending.mu.Unlock()
+}
+
+// writeRelayEntryUntraced writes a row no trace will backfill, with the plugin logs on its context.
+// A parked row takes the trace's instead (injectRelayEntries), which also hold the lines later
+// post-hooks and the transport plugins add, so the logs are serialized once either way. Uncapped,
+// as on LLM rows.
+func (p *LoggerPlugin) writeRelayEntryUntraced(ctx *schemas.BifrostContext, item relayInjectEntry) {
+	item.entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
+	p.writeRelayEntry(item)
 }
 
 // injectRelayEntries drains the Relay rows parked for a completed trace and backfills upstream,
@@ -468,8 +521,14 @@ func (p *LoggerPlugin) injectRelayEntries(trace *schemas.Trace, joinKey string) 
 		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
+	// The trace's plugin logs, as an LLM row takes them: they include what the post-hooks after
+	// this plugin's and the transport plugins logged, which the post-hook copy cannot see.
+	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
 	for _, item := range entries {
 		entry := item.entry
+		if pluginLogsJSON != "" {
+			entry.PluginLogs = pluginLogsJSON
+		}
 		if upOK || ovOK {
 			entry.UpstreamLatency = nil
 			entry.OverheadLatency = nil
@@ -620,21 +679,11 @@ func redactQuery(raw string) string {
 	return strings.Join(parts, "&")
 }
 
-// textBody keeps a body as text; a binary body is not kept. A capture can end inside a multi-byte
-// character (a caller that disconnected mid-stream), so up to one incomplete trailing character is
-// dropped; anything else invalid is a binary payload.
+// textBody keeps a body as text, the way LLM rows keep passthrough bodies (omitBinaryBody): a
+// binary body becomes a "<binary content omitted: N bytes>" placeholder, and a capture that ends
+// inside a multi-byte character (a caller that disconnected mid-stream) drops that character.
 func textBody(body []byte) *string {
-	if !utf8.Valid(body) {
-		trimmed := body
-		for i := 0; i < utf8.UTFMax && len(trimmed) > 0 && !utf8.Valid(trimmed); i++ {
-			trimmed = trimmed[:len(trimmed)-1]
-		}
-		if !utf8.Valid(trimmed) {
-			return nil
-		}
-		body = trimmed
-	}
-	s := string(body)
+	s := omitBinaryBody(string(body))
 	return &s
 }
 
@@ -653,20 +702,6 @@ func relayMatchedHeaders(req *schemas.BifrostRelayRequest) map[string]string {
 	for name, value := range req.RouteHeaders {
 		kept[strings.ToLower(name)] = value
 	}
-	return boundedHeaders(schemas.RedactSensitiveHeaders(kept))
-}
-
-// relayHeaderValueLimit bounds one stored header value; the header count is bounded by the
-// transport's read buffer, so the row stays a few KB at most.
-const relayHeaderValueLimit = 2048
-
-// boundedHeaders clamps each header value in place, as bodies are bounded, so a row never grows
-// with an oversized header.
-func boundedHeaders(headers map[string]string) map[string]string {
-	for k, v := range headers {
-		if len(v) > relayHeaderValueLimit {
-			headers[k] = clampString(v, relayHeaderValueLimit)
-		}
-	}
-	return headers
+	// Values are stored whole, as LLM rows store their logging headers.
+	return schemas.RedactSensitiveHeaders(kept)
 }
