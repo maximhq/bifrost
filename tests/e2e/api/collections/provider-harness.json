@@ -298484,11 +298484,11 @@
       ]
     },
     {
-      "name": "297. Live model listings survive discovery failures (live-listing-fallback)",
+      "name": "297. Live model listings survive discovery failures (PR #9321)",
       "description": "Offline fixture regression using provider-error-fixture.mjs (providerErrorFixture=1). A run-scoped OpenAI-based provider discovers two synthetic models, with a regex allowlist exposing only one. The fixture then fails discovery without changing the provider configuration or credentials. A manual refresh keeps its existing 200 response and failed key status; GET /api/models retains the filtered model and unfiltered=true retains both models. No paid provider calls. This pins the HTTP fallback contract; SQL durability and cold database reload are covered by TestPersistentLiveDiscovery.",
       "item": [
         {
-          "name": "openai custom provider /api/models keeps filtered and unfiltered listings after failed refresh - live-listing-fallback",
+          "name": "openai/persist-visible custom provider /api/models keeps filtered and unfiltered listings after failed refresh - PR #9321",
           "event": [
             {
               "listen": "prerequest",
