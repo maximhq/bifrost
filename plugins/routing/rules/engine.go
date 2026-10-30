@@ -174,6 +174,12 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 	var finalDecision *Decision
 	var complexityResult *complexity.ComplexityResult
 	ComputeComplexity := routingCtx.ComputeComplexity
+	// One instant for this call, including every chain step. Stays unset until a
+	// rule actually references current_time.
+	var (
+		currentTime      any
+		currentTimeReady bool
+	)
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -236,6 +242,17 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				re.logger.Debug("[Engine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
 				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+
+				// Lazy clock: one UTC timestamp per evaluation, and only when this
+				// rule reads current_time. Overwrites the zero placeholder so the
+				// rule cannot match against year-one.
+				if ruleReferencesCurrentTime(rule.CelExpression) {
+					if !currentTimeReady {
+						currentTime = nowFunc().UTC()
+						currentTimeReady = true
+					}
+					variables["current_time"] = currentTime
+				}
 
 				program, err := re.rules.GetProgram(ctx, rule)
 				if err != nil {
@@ -539,7 +556,32 @@ func extractRoutingVariables(ctx *EvaluationContext) (map[string]interface{}, er
 	// evaluated as a CEL unknown so negative predicates do not accidentally match.
 	variables["complexity_tier"] = ""
 
+	// Placeholder only. The zero Time is preboxed, so rules that never mention
+	// current_time do not allocate for it. EvaluateRoutingRules overwrites it
+	// before any referencing rule is evaluated.
+	variables["current_time"] = currentTimeUnset
+
 	return variables, nil
+}
+
+// nowFunc is the clock behind current_time. Tests replace it. Production leaves time.Now.
+var nowFunc = time.Now
+
+// currentTimeUnset is the zero timestamp stored until a rule references current_time.
+// Boxed once so the per-request map write does not allocate.
+var currentTimeUnset any = time.Time{}
+
+const currentTimeVar = "current_time"
+
+// ruleReferencesCurrentTime reports whether expr reads the current_time identifier.
+// The substring check allocates nothing and skips the AST walk for expressions that
+// never mention the name. The walk is the decision, so a string literal or a
+// shadowed macro variable does not read the clock.
+func ruleReferencesCurrentTime(expr string) bool {
+	if !strings.Contains(expr, currentTimeVar) {
+		return false
+	}
+	return celExpressionReferencesIdentifier(expr, currentTimeVar)
 }
 
 // scopeChainToStrings converts a scope chain to a string representation for logging
@@ -683,5 +725,10 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Complexity tier. When analysis is unavailable, evaluation marks this
 		// variable as CEL unknown so complexity-dependent predicates do not match.
 		cel.Variable("complexity_tier", cel.StringType),
+
+		// Request time. A CEL timestamp, so getHours/getDayOfWeek and the other
+		// timestamp methods take a timezone name. Filled only when a rule
+		// references it, once per evaluation.
+		cel.Variable("current_time", cel.TimestampType),
 	)
 }

@@ -298482,6 +298482,654 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Routing rules: current_time is read when a referencing rule is evaluated (current-time)",
+      "description": "Wire-level pins for the current_time routing variable. Routing rules run in the routing plugin PreRequestHook for every request that is not passthrough, and current_time is filled the same way on each of them: the engine reads the clock the first time a rule that references it is evaluated, once per evaluation. These rows do not depend on the wall-clock hour.\n\nEach rule is gated on a run-scoped header so it cannot match other harness traffic. Each live target is a run-scoped OpenAI-backed custom provider serving gpt-4o-mini. extra_fields.routing_info.provider names which provider served.\n\nRows: (1) current_time.getFullYear('UTC') >= 2020 is true on any current date and routes POST /v1/chat/completions for openai/gpt-4o-mini to that target; (2) current_time.getFullYear('UTC') < 2000 is never true, so the same chat request stays on openai; (3) the same always-true rule routes POST /v1/responses for openai/gpt-4o-mini to its target, a second ingress of the same evaluation. Passthrough returns before PreRequestHook, so routing rules do not run there. The Go SDK is not an HTTP route. /openai, /anthropic, /bedrock and /genai reach the same PreRequestHook and the same current_time read; they are not a separate path for this variable. (4) POST /api/governance/routing-rules with current_time.getHours() == 'x' is a CEL type error. Create calls ValidateCELExpression and returns 400, and nothing is stored. Each row deletes what it made. Run with FEATURE=\"current-time\".",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini /v1/chat/completions current_time year >= 2020 routes to the rule target - current-time",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Creates one header-gated global rule and one OpenAI-backed custom provider, then the request below is the chat or responses call.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-ct-';",
+                  "var GATE = 'x-harness-ct-run';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'failed: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  (state.rules || []).forEach(function (id) { if (id) { paths.push('/api/governance/routing-rules/' + id); } });",
+                  "  (state.providers || []).forEach(function (p) { paths.push('/api/providers/' + encodeURIComponent(p)); });",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) {",
+                  "      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () {",
+                  "        pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code);",
+                  "      });",
+                  "      next();",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function isStaleName(name, prefix) {",
+                  "  var text = String(name || '');",
+                  "  if (text.indexOf(prefix) !== 0) { return false; }",
+                  "  var m = text.match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, providers: [], rules: [] };",
+                  "function provider(cb) {",
+                  "  var name = PREFIX + 'ct1-' + run;",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "    if (!expectOk('setup: created provider ct1', res)) { return cb(false); }",
+                  "    state.providers.push(name);",
+                  "    state.p_target = name;",
+                  "    call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', { name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+                  "      cb(expectOk('setup: created the key of provider ct1', r2));",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function rule(cb) {",
+                  "  var body = {",
+                  "    name: 'Harness ct ct1 ' + run,",
+                  "    description: 'Provider harness, created at run time and deleted by the same row.',",
+                  "    priority: 910000 + Math.floor(Math.random() * 80000),",
+                  "    cel_expression: '\"' + GATE + '\" in headers && headers[\"' + GATE + '\"] == \"' + run + '\" && ' + \"current_time.getFullYear('UTC') >= 2020\",",
+                  "    targets: [{ provider: state.p_target, model: 'gpt-4o-mini', weight: 1 }],",
+                  "    scope: 'global'",
+                  "  };",
+                  "  call('POST', '/api/governance/routing-rules', body, function (res, j) {",
+                  "    if (!expectOk('setup: created the current_time rule', res)) { return cb(false); }",
+                  "    var id = ((j || {}).rule || {}).id;",
+                  "    state.rules.push(id);",
+                  "    cb(true);",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStaleName(p.name, PREFIX); });",
+                  "  (function sweepProviders() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweepProviders(); }); }",
+                  "    call('GET', '/api/governance/routing-rules', null, function (rr, rj) {",
+                  "      var staleRules = ((rj && rj.rules) || []).filter(function (rule) { return isStaleName(rule && rule.name, 'Harness ct '); });",
+                  "      (function sweepRules() {",
+                  "        if (staleRules.length) { return call('DELETE', '/api/governance/routing-rules/' + staleRules.shift().id, null, function () { sweepRules(); }); }",
+                  "        provider(function (ok) {",
+                  "          if (!ok) {",
+                  "            pm.collectionVariables.set('ct1State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('ct1Run', run);",
+                  "            return;",
+                  "          }",
+                  "          rule(function () {",
+                  "            pm.collectionVariables.set('ct1State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('ct1Run', run);",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-ct-';",
+                  "var GATE = 'x-harness-ct-run';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'failed: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  (state.rules || []).forEach(function (id) { if (id) { paths.push('/api/governance/routing-rules/' + id); } });",
+                  "  (state.providers || []).forEach(function (p) { paths.push('/api/providers/' + encodeURIComponent(p)); });",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) {",
+                  "      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () {",
+                  "        pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code);",
+                  "      });",
+                  "      next();",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function isStaleName(name, prefix) {",
+                  "  var text = String(name || '');",
+                  "  if (text.indexOf(prefix) !== 0) { return false; }",
+                  "  var m = text.match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var state = {};",
+                  "try { state = JSON.parse(pm.collectionVariables.get('ct1State') || '{}'); } catch (e) { state = {}; }",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var ri = (json.extra_fields || {}).routing_info || {};",
+                  "",
+                  "pm.test('openai gpt-4o-mini was served by the current_time rule target', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+                  "  pm.expect(state.p_target, 'rule target was not created: ' + text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(ri.provider, text).to.eql(state.p_target);",
+                  "  pm.expect(ri.model, text).to.eql('gpt-4o-mini');",
+                  "});",
+                  "",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-ct-run",
+                "value": "{{ct1Run}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /v1/chat/completions current_time year < 2000 does not reroute - current-time",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Creates one header-gated global rule and one OpenAI-backed custom provider, then the request below is the chat or responses call.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-ct-';",
+                  "var GATE = 'x-harness-ct-run';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'failed: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  (state.rules || []).forEach(function (id) { if (id) { paths.push('/api/governance/routing-rules/' + id); } });",
+                  "  (state.providers || []).forEach(function (p) { paths.push('/api/providers/' + encodeURIComponent(p)); });",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) {",
+                  "      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () {",
+                  "        pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code);",
+                  "      });",
+                  "      next();",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function isStaleName(name, prefix) {",
+                  "  var text = String(name || '');",
+                  "  if (text.indexOf(prefix) !== 0) { return false; }",
+                  "  var m = text.match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, providers: [], rules: [] };",
+                  "function provider(cb) {",
+                  "  var name = PREFIX + 'ct2-' + run;",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "    if (!expectOk('setup: created provider ct2', res)) { return cb(false); }",
+                  "    state.providers.push(name);",
+                  "    state.p_target = name;",
+                  "    call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', { name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+                  "      cb(expectOk('setup: created the key of provider ct2', r2));",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function rule(cb) {",
+                  "  var body = {",
+                  "    name: 'Harness ct ct2 ' + run,",
+                  "    description: 'Provider harness, created at run time and deleted by the same row.',",
+                  "    priority: 910000 + Math.floor(Math.random() * 80000),",
+                  "    cel_expression: '\"' + GATE + '\" in headers && headers[\"' + GATE + '\"] == \"' + run + '\" && ' + \"current_time.getFullYear('UTC') < 2000\",",
+                  "    targets: [{ provider: state.p_target, model: 'gpt-4o-mini', weight: 1 }],",
+                  "    scope: 'global'",
+                  "  };",
+                  "  call('POST', '/api/governance/routing-rules', body, function (res, j) {",
+                  "    if (!expectOk('setup: created the current_time rule', res)) { return cb(false); }",
+                  "    var id = ((j || {}).rule || {}).id;",
+                  "    state.rules.push(id);",
+                  "    cb(true);",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStaleName(p.name, PREFIX); });",
+                  "  (function sweepProviders() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweepProviders(); }); }",
+                  "    call('GET', '/api/governance/routing-rules', null, function (rr, rj) {",
+                  "      var staleRules = ((rj && rj.rules) || []).filter(function (rule) { return isStaleName(rule && rule.name, 'Harness ct '); });",
+                  "      (function sweepRules() {",
+                  "        if (staleRules.length) { return call('DELETE', '/api/governance/routing-rules/' + staleRules.shift().id, null, function () { sweepRules(); }); }",
+                  "        provider(function (ok) {",
+                  "          if (!ok) {",
+                  "            pm.collectionVariables.set('ct2State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('ct2Run', run);",
+                  "            return;",
+                  "          }",
+                  "          rule(function () {",
+                  "            pm.collectionVariables.set('ct2State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('ct2Run', run);",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-ct-';",
+                  "var GATE = 'x-harness-ct-run';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'failed: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  (state.rules || []).forEach(function (id) { if (id) { paths.push('/api/governance/routing-rules/' + id); } });",
+                  "  (state.providers || []).forEach(function (p) { paths.push('/api/providers/' + encodeURIComponent(p)); });",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) {",
+                  "      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () {",
+                  "        pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code);",
+                  "      });",
+                  "      next();",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function isStaleName(name, prefix) {",
+                  "  var text = String(name || '');",
+                  "  if (text.indexOf(prefix) !== 0) { return false; }",
+                  "  var m = text.match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var state = {};",
+                  "try { state = JSON.parse(pm.collectionVariables.get('ct2State') || '{}'); } catch (e) { state = {}; }",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var ri = (json.extra_fields || {}).routing_info || {};",
+                  "",
+                  "pm.test('openai gpt-4o-mini stayed on openai because the current_time rule is false', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+                  "  pm.expect(state.p_target, 'rule target was not created: ' + text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(ri.provider, text).to.eql('openai');",
+                  "  pm.expect(ri.provider, text).to.not.eql(state.p_target);",
+                  "  pm.expect(ri.model, text).to.eql('gpt-4o-mini');",
+                  "});",
+                  "",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-ct-run",
+                "value": "{{ct2Run}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /v1/responses current_time year >= 2020 routes to the rule target - current-time",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Creates one header-gated global rule and one OpenAI-backed custom provider, then the request below is the chat or responses call.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-ct-';",
+                  "var GATE = 'x-harness-ct-run';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'failed: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  (state.rules || []).forEach(function (id) { if (id) { paths.push('/api/governance/routing-rules/' + id); } });",
+                  "  (state.providers || []).forEach(function (p) { paths.push('/api/providers/' + encodeURIComponent(p)); });",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) {",
+                  "      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () {",
+                  "        pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code);",
+                  "      });",
+                  "      next();",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function isStaleName(name, prefix) {",
+                  "  var text = String(name || '');",
+                  "  if (text.indexOf(prefix) !== 0) { return false; }",
+                  "  var m = text.match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, providers: [], rules: [] };",
+                  "function provider(cb) {",
+                  "  var name = PREFIX + 'ct3-' + run;",
+                  "  call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "    if (!expectOk('setup: created provider ct3', res)) { return cb(false); }",
+                  "    state.providers.push(name);",
+                  "    state.p_target = name;",
+                  "    call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', { name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }, function (r2) {",
+                  "      cb(expectOk('setup: created the key of provider ct3', r2));",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function rule(cb) {",
+                  "  var body = {",
+                  "    name: 'Harness ct ct3 ' + run,",
+                  "    description: 'Provider harness, created at run time and deleted by the same row.',",
+                  "    priority: 910000 + Math.floor(Math.random() * 80000),",
+                  "    cel_expression: '\"' + GATE + '\" in headers && headers[\"' + GATE + '\"] == \"' + run + '\" && ' + \"current_time.getFullYear('UTC') >= 2020\",",
+                  "    targets: [{ provider: state.p_target, model: 'gpt-4o-mini', weight: 1 }],",
+                  "    scope: 'global'",
+                  "  };",
+                  "  call('POST', '/api/governance/routing-rules', body, function (res, j) {",
+                  "    if (!expectOk('setup: created the current_time rule', res)) { return cb(false); }",
+                  "    var id = ((j || {}).rule || {}).id;",
+                  "    state.rules.push(id);",
+                  "    cb(true);",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStaleName(p.name, PREFIX); });",
+                  "  (function sweepProviders() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweepProviders(); }); }",
+                  "    call('GET', '/api/governance/routing-rules', null, function (rr, rj) {",
+                  "      var staleRules = ((rj && rj.rules) || []).filter(function (rule) { return isStaleName(rule && rule.name, 'Harness ct '); });",
+                  "      (function sweepRules() {",
+                  "        if (staleRules.length) { return call('DELETE', '/api/governance/routing-rules/' + staleRules.shift().id, null, function () { sweepRules(); }); }",
+                  "        provider(function (ok) {",
+                  "          if (!ok) {",
+                  "            pm.collectionVariables.set('ct3State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('ct3Run', run);",
+                  "            return;",
+                  "          }",
+                  "          rule(function () {",
+                  "            pm.collectionVariables.set('ct3State', JSON.stringify(state));",
+                  "            pm.collectionVariables.set('ct3Run', run);",
+                  "          });",
+                  "        });",
+                  "      })();",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-ct-';",
+                  "var GATE = 'x-harness-ct-run';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'failed: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var paths = [];",
+                  "  (state.rules || []).forEach(function (id) { if (id) { paths.push('/api/governance/routing-rules/' + id); } });",
+                  "  (state.providers || []).forEach(function (p) { paths.push('/api/providers/' + encodeURIComponent(p)); });",
+                  "  (function next() {",
+                  "    if (!paths.length) { return; }",
+                  "    var p = paths.shift();",
+                  "    call('DELETE', p, null, function (res) {",
+                  "      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () {",
+                  "        pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code);",
+                  "      });",
+                  "      next();",
+                  "    });",
+                  "  })();",
+                  "}",
+                  "function isStaleName(name, prefix) {",
+                  "  var text = String(name || '');",
+                  "  if (text.indexOf(prefix) !== 0) { return false; }",
+                  "  var m = text.match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var state = {};",
+                  "try { state = JSON.parse(pm.collectionVariables.get('ct3State') || '{}'); } catch (e) { state = {}; }",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var ri = (json.extra_fields || {}).routing_info || {};",
+                  "",
+                  "pm.test('openai gpt-4o-mini was served by the current_time rule target', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+                  "  pm.expect(state.p_target, 'rule target was not created: ' + text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(ri.provider, text).to.eql(state.p_target);",
+                  "  pm.expect(ri.model, text).to.eql('gpt-4o-mini');",
+                  "});",
+                  "",
+                  "cleanup(state);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-harness-ct-run",
+                "value": "{{ct3Run}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai gpt-4o-mini current_time.getHours() == 'x' is rejected - current-time",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Unique name and priority so a rejected create cannot collide with a stored rule.",
+                  "var run = 'run-' + Date.now();",
+                  "var priority = 910000 + Math.floor(Math.random() * 80000);",
+                  "pm.collectionVariables.set('ctBadName', 'Harness ct invalid ' + run);",
+                  "pm.request.body.raw = JSON.stringify({",
+                  "  name: 'Harness ct invalid ' + run,",
+                  "  description: 'Provider harness. A current_time type error must be rejected and not stored.',",
+                  "  priority: priority,",
+                  "  cel_expression: \"current_time.getHours() == 'x'\",",
+                  "  targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }],",
+                  "  scope: 'global'",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.test('the rule API rejects the current_time type error with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(400);",
+                  "  pm.expect(text, 'failed: ' + text).to.include('invalid CEL expression');",
+                  "});",
+                  "var id = json.rule && json.rule.id;",
+                  "if (id) {",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/routing-rules/' + id, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup removed a rule the type error should not have stored', function () {",
+                  "      pm.expect([200, 204], err ? String(err) : (res ? res.text() : 'no response')).to.include(res && res.code);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/routing-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Harness ct invalid current_time\",\n  \"description\": \"Provider harness. A current_time type error must be rejected and not stored.\",\n  \"priority\": 990001,\n  \"cel_expression\": \"current_time.getHours() == 'x'\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"scope\": \"global\"\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
