@@ -330,6 +330,10 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone 
 				// (e.g. autoscaling cold start); the client was previously configured
 				// and should be recovered without user intervention.
 				m.mu.Lock()
+				if m.ctx.Err() != nil {
+					m.mu.Unlock()
+					return
+				}
 				if _, exists := m.clientMap[clientConfig.ID]; !exists {
 					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
 						Name:            clientConfig.Name,

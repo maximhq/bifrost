@@ -240,45 +240,69 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 
 // Cleanup must cancel discovery even before the candidate has been installed in clientMap.
 func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
-	upstream := server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728))
-	listed := make(chan struct{})
-	var pendingRequests atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		if bytes.Contains(body, []byte(`"tools/list"`)) {
-			pendingRequests.Add(1)
-			defer pendingRequests.Add(-1)
-			close(listed)
-			<-r.Context().Done()
-			return
-		}
-		upstream.ServeHTTP(w, r)
-	}))
-	t.Cleanup(ts.Close)
-	callerCtx, cancelCaller := context.WithCancel(context.Background())
-	t.Cleanup(cancelCaller)
-	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
-	t.Cleanup(func() { _ = m.Cleanup() })
-	config := &schemas.MCPClientConfig{
-		ID: "pending-cleanup", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
-	}
-	connected := make(chan error, 1)
-	go func() { connected <- m.connectToMCPClient(context.Background(), config) }()
-	select {
-	case <-listed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the candidate never started discovery")
-	}
-	require.NoError(t, m.Cleanup())
-	assert.NoError(t, callerCtx.Err(), "cleanup must not cancel a shared caller context")
-	require.Eventually(t, func() bool { return pendingRequests.Load() == 0 }, time.Second, 10*time.Millisecond, "cleanup must cancel an uninstalled candidate")
-	select {
-	case err := <-connected:
-		require.Error(t, err, "a canceled candidate cannot become an installed connection")
-	case <-time.After(time.Second):
-		t.Fatal("the candidate dial did not exit after cleanup")
+	for _, mode := range []string{"sticky", "per-call", "boot"} {
+		t.Run(mode, func(t *testing.T) {
+			upstream := server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728))
+			listed := make(chan struct{})
+			var pendingRequests atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				if bytes.Contains(body, []byte(`"tools/list"`)) {
+					pendingRequests.Add(1)
+					defer pendingRequests.Add(-1)
+					close(listed)
+					<-r.Context().Done()
+					return
+				}
+				upstream.ServeHTTP(w, r)
+			}))
+			t.Cleanup(ts.Close)
+			callerCtx, cancelCaller := context.WithCancel(context.Background())
+			requestCtx, cancelRequest := context.WithCancel(context.Background())
+			config := &schemas.MCPClientConfig{
+				ID: "pending-cleanup", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeHeaders,
+				ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(mode != "per-call"), ToolsToExecute: []string{"*"},
+			}
+			m := NewMCPManager(callerCtx, schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{config}}, nil, &MockLogger{}, nil)
+			require.Equal(t, mode == "per-call", m.credStore.RequiresPerCallConnection(config), "fixture must take the intended connection path")
+			connected, done := make(chan error, 1), make(chan struct{})
+			t.Cleanup(func() {
+				cancelRequest()
+				cancelCaller()
+				<-done
+				_ = m.Cleanup()
+			})
+			go func() {
+				defer close(done)
+				if mode == "boot" {
+					m.ConnectConfiguredClients(requestCtx)
+					connected <- nil
+					return
+				}
+				connected <- m.AddClient(requestCtx, config)
+			}()
+			select {
+			case <-listed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the candidate never started discovery")
+			}
+			require.NoError(t, m.Cleanup())
+			assert.NoError(t, callerCtx.Err(), "cleanup must not cancel a shared caller context")
+			assert.NoError(t, requestCtx.Err(), "cleanup must not cancel the request's context")
+			require.Eventually(t, func() bool { return pendingRequests.Load() == 0 }, time.Second, 10*time.Millisecond, "cleanup must cancel an uninstalled candidate")
+			select {
+			case err := <-connected:
+				if mode != "boot" {
+					require.Error(t, err, "a canceled candidate cannot become an installed connection")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("the candidate dial did not exit after cleanup")
+			}
+			_, exists := snapshotClientState(m, config.ID)
+			assert.False(t, exists, "a canceled candidate must not restore a client after cleanup")
+			assert.Nil(t, registeredChecker(m, config.ID), "a canceled candidate must not restart its checker")
+		})
 	}
 }
 
