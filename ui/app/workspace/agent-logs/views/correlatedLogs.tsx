@@ -21,7 +21,7 @@ import { useGetLogsQuery, useGetLogsStatsQuery } from "@/lib/store/apis/logsApi"
 import { useGetMCPLogsQuery, useGetMCPLogsStatsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { LogEntry, LogFilters, MCPToolLogEntry, MCPToolLogFilters } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -89,7 +89,7 @@ function Pagination({
 				{t("agentLogs.correlated.range", {
 					start: page * PAGE_SIZE + 1,
 					end: Math.min((page + 1) * PAGE_SIZE, total),
-					total: total.toLocaleString(),
+					total: total.toLocaleString(getLocale()),
 				})}
 			</span>
 			<div className="flex items-center gap-2">
@@ -317,15 +317,15 @@ export function CorrelatedLogsContent({
 				<div className="text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs">
 					{isLLM ? (
 						<>
-							<Stat label={t("labels.requests")} value={(llmStats?.total_requests ?? 0).toLocaleString()} />
+							<Stat label={t("labels.requests")} value={(llmStats?.total_requests ?? 0).toLocaleString(getLocale())} />
 							<Stat label={t("labels.cost")} value={formatCost(llmStats?.total_cost ?? 0)} />
-							<Stat label={t("labels.tokens")} value={(llmStats?.total_tokens ?? 0).toLocaleString()} />
+							<Stat label={t("labels.tokens")} value={(llmStats?.total_tokens ?? 0).toLocaleString(getLocale())} />
 							<Stat label={t("labels.success")} value={`${(llmStats?.success_rate ?? 0).toFixed(1)}%`} />
 							<Stat label={t("agentLogs.correlated.avgLatency")} value={formatLatency(llmStats?.average_latency ?? 0)} />
 						</>
 					) : (
 						<>
-							<Stat label={t("agentLogs.correlated.executions")} value={(mcpStats?.total_executions ?? 0).toLocaleString()} />
+							<Stat label={t("agentLogs.correlated.executions")} value={(mcpStats?.total_executions ?? 0).toLocaleString(getLocale())} />
 							<Stat label={t("labels.cost")} value={formatCost(mcpStats?.total_cost ?? 0)} />
 							<Stat label={t("labels.success")} value={`${(mcpStats?.success_rate ?? 0).toFixed(1)}%`} />
 							<Stat label={t("agentLogs.correlated.avgLatency")} value={formatLatency(mcpStats?.average_latency ?? 0)} />

@@ -47,6 +47,7 @@ import { ScopeChips } from "@/components/scopeChips";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
@@ -248,9 +249,9 @@ export default function SessionsTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("common.ofEntries", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 

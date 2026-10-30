@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { LogMessageCell } from "../views/columns";
+import { getLocale } from "@/lib/i18n";
 
 const SESSION_LOG_PAGE_SIZE = 500;
 
@@ -85,10 +86,10 @@ export function SessionDetailsSheet({
 		() => [
 			{
 				label: t("logs.session.logs"),
-				value: (sessionSummary?.count || 0).toLocaleString(),
+				value: (sessionSummary?.count || 0).toLocaleString(getLocale()),
 				helper:
 					sessionSummary && sessionLogs.length < sessionSummary.count
-						? t("logs.session.loadedCount", { count: sessionLogs.length.toLocaleString() })
+						? t("logs.session.loadedCount", { count: sessionLogs.length.toLocaleString(getLocale()) })
 						: undefined,
 			},
 			{
@@ -97,7 +98,7 @@ export function SessionDetailsSheet({
 			},
 			{
 				label: t("logs.session.totalTokens"),
-				value: (sessionSummary?.total_tokens || 0).toLocaleString(),
+				value: (sessionSummary?.total_tokens || 0).toLocaleString(getLocale()),
 			},
 			{
 				label: t("logs.session.started"),

@@ -34,6 +34,7 @@ import { useTranslation } from "react-i18next";
 import AgentSheet from "./agentSheet";
 import { AgentsEmptyState } from "./agentsEmptyState";
 import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 function AgentActionsMenu({
 	agent,
@@ -441,9 +442,9 @@ export default function AgentsTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("agentGateway.agentsTable.entriesRange", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 						<div className="flex items-center gap-2">

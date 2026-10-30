@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import TeamSheet from "./teamSheet";
 import { TeamsEmptyState } from "./teamsEmptyState";
 import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -379,7 +380,7 @@ export default function TeamsTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
 																					<span className="font-medium">
-																						{t("usage.tokens", { value: team.rate_limit.token_max_limit.toLocaleString() })}
+																						{t("usage.tokens", { value: team.rate_limit.token_max_limit.toLocaleString(getLocale()) })}
 																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(team.rate_limit.token_reset_duration || "1h")}
@@ -402,8 +403,8 @@ export default function TeamsTable({
 																		<TooltipContent>
 																			<p className="font-medium">
 																				{t("usage.tokenTooltip", {
-																					used: team.rate_limit.token_current_usage.toLocaleString(),
-																					max: team.rate_limit.token_max_limit.toLocaleString(),
+																					used: team.rate_limit.token_current_usage.toLocaleString(getLocale()),
+																					max: team.rate_limit.token_max_limit.toLocaleString(getLocale()),
 																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
@@ -418,7 +419,7 @@ export default function TeamsTable({
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
 																					<span className="font-medium">
-																						{t("usage.req", { value: team.rate_limit.request_max_limit.toLocaleString() })}
+																						{t("usage.req", { value: team.rate_limit.request_max_limit.toLocaleString(getLocale()) })}
 																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(team.rate_limit.request_reset_duration || "1h")}
@@ -441,8 +442,8 @@ export default function TeamsTable({
 																		<TooltipContent>
 																			<p className="font-medium">
 																				{t("usage.requestTooltip", {
-																					used: team.rate_limit.request_current_usage.toLocaleString(),
-																					max: team.rate_limit.request_max_limit.toLocaleString(),
+																					used: team.rate_limit.request_current_usage.toLocaleString(getLocale()),
+																					max: team.rate_limit.request_max_limit.toLocaleString(getLocale()),
 																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
@@ -492,9 +493,9 @@ export default function TeamsTable({
 							<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
 									{t("webhooks.pagination.entries", {
-										from: (offset + 1).toLocaleString(),
-										to: Math.min(offset + limit, totalCount).toLocaleString(),
-										total: totalCount.toLocaleString(),
+										from: (offset + 1).toLocaleString(getLocale()),
+										to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+										total: totalCount.toLocaleString(getLocale()),
 									})}
 								</div>
 
