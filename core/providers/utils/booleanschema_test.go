@@ -17,6 +17,7 @@ func booleanSchemaParams(t *testing.T, raw string) *schemas.ToolFunctionParamete
 	return &params
 }
 
+// marshalBooleanSchemaParams preserves the exact serialization for ordered-schema assertions.
 func marshalBooleanSchemaParams(t *testing.T, params *schemas.ToolFunctionParameters) string {
 	t.Helper()
 	data, err := json.Marshal(params)
@@ -209,6 +210,8 @@ func TestRewriteResponsesToolBooleanSchemaNodes(t *testing.T) {
 	}
 }
 
+// TestRewriteChatToolBooleanSchemaNodes_InvalidatesOnlyRewrittenCache verifies
+// that rewritten tools serialize their new parameters without changing the original cache.
 func TestRewriteChatToolBooleanSchemaNodes_InvalidatesOnlyRewrittenCache(t *testing.T) {
 	params := booleanSchemaParams(t, `{"type":"object","properties":{"state":true}}`)
 	tools := []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "set_state", Parameters: params}}}
@@ -240,6 +243,8 @@ func TestRewriteChatToolBooleanSchemaNodes_InvalidatesOnlyRewrittenCache(t *test
 	}
 }
 
+// TestRewriteBooleanSchemaNodes_LeavesNestedInstanceData keeps schema-shaped
+// instance values unchanged while rewriting a neighboring schema node.
 func TestRewriteBooleanSchemaNodes_LeavesNestedInstanceData(t *testing.T) {
 	raw := `{"type":"object","properties":{"data":{"enum":[{"items":true}],"const":{"not":false},"default":{"properties":{"flag":true}},"examples":[{"anyOf":[true,false]}]},"changed":false}}`
 	params := booleanSchemaParams(t, raw)

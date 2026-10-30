@@ -106,6 +106,27 @@ const responsesFor = (body, count) => {
 	};
 };
 
+// Reuse the Responses envelope for the boolean-schema route cases, including a
+// complete text-item lifecycle so a stream must reach its terminal event.
+const responsesStream = (response) => {
+	const message = response.output.find((item) => item.type === "message");
+	const completed = { ...response, output: [message] };
+	const started = { ...completed, status: "in_progress", output: [], usage: null };
+	const position = { item_id: message.id, output_index: 0, content_index: 0 };
+	const events = [
+		{ type: "response.created", response: started },
+		{ type: "response.in_progress", response: started },
+		{ type: "response.output_item.added", output_index: 0, item: { ...message, status: "in_progress", content: [] } },
+		{ type: "response.content_part.added", ...position, part: { ...message.content[0], text: "" } },
+		{ type: "response.output_text.delta", ...position, delta: message.content[0].text },
+		{ type: "response.output_text.done", ...position, text: message.content[0].text },
+		{ type: "response.content_part.done", ...position, part: message.content[0] },
+		{ type: "response.output_item.done", output_index: 0, item: message },
+		{ type: "response.completed", response: completed },
+	];
+	return events.map((event, sequence_number) => `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`).join("");
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 
@@ -228,6 +249,10 @@ const server = http.createServer((req, res) => {
 				body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			} catch {}
 			const r = responsesFor(body, (k) => { hits[k] = (hits[k] || 0) + 1; });
+			if (parsed.stream === true && model.startsWith("upstream-ok~boolean-schema-nodes-")) {
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(responsesStream(JSON.parse(r.body)));
+			}
 			return send(r.status, r.headers, r.body);
 		}
 		const behaviour = name === "azure-filtered" ? azureFiltered : Object.hasOwn(behaviours, name) ? behaviours[name] : undefined;

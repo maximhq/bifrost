@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "provider-error-fixture.mjs");
 
 // startFixture boots the fixture on a random port and resolves once it listens. The returned post
-// sends one chat completion and, when the fixture does not answer, fails with what it printed on its
+// sends one fixture request and, when the fixture does not answer, fails with what it printed on its
 // way out.
 async function startFixture(t) {
   const port = 20000 + Math.floor(Math.random() * 20000);
@@ -78,4 +78,37 @@ test("filtered Live create checks accounting events and unchanged command permis
   const complete = await create(required);
   assert.equal(complete.status, 201);
   assert.equal((await complete.json()).transport.sdp, "invalid SDP answer");
+});
+
+test("boolean-schema route fixture supplies chat and Responses in both transfer modes", async (t) => {
+  const post = await startFixture(t);
+  for (const path of ["/v1/chat/completions", "/v1/responses"]) {
+    for (const stream of [false, true]) {
+      const res = await post({ model: "upstream-ok~boolean-schema-nodes-fixture-test", stream }, path);
+      assert.equal(res.status, 200, `${path} stream=${stream}`);
+      if (!stream) {
+        const body = await res.json();
+        const text = path.endsWith("/responses")
+          ? body.output.find((item) => item.type === "message").content[0].text
+          : body.choices[0].message.content;
+        assert.equal(text, "hello");
+        continue;
+      }
+      assert.match(res.headers.get("content-type"), /text\/event-stream/);
+      const text = await res.text();
+      const events = text.split("\n").filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6)).filter((data) => data !== "[DONE]").map((data) => JSON.parse(data));
+      if (path.endsWith("/responses")) {
+        assert.deepEqual(events.map((event) => event.sequence_number), events.map((_, index) => index));
+        assert.equal(events[0].type, "response.created");
+        assert.equal(events.at(-1).type, "response.completed");
+        assert.equal(events.find((event) => event.type === "response.output_text.delta").delta, "hello");
+        assert.equal(events.at(-1).response.output[0].content[0].text, "hello");
+      } else {
+        assert.equal(events.map((event) => event.choices?.[0]?.delta?.content || "").join(""), "hello");
+        assert.equal(events.at(-1).choices[0].finish_reason, "stop");
+        assert.match(text, /data: \[DONE\]\n\n$/);
+      }
+    }
+  }
 });

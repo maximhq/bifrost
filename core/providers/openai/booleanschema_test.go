@@ -32,6 +32,7 @@ const booleanSchemaModel = "acme-model-v1"
 
 var booleanSchemaModes = []string{"chat", "chat-stream", "responses", "responses-stream"}
 
+// booleanSchemaChatRequest builds a caller-owned request with nested boolean schemas.
 func booleanSchemaChatRequest(t *testing.T) *schemas.BifrostChatRequest {
 	t.Helper()
 	var params schemas.ToolFunctionParameters
@@ -80,6 +81,7 @@ func booleanSchemaServer(t *testing.T, mode string) (*httptest.Server, *atomic.V
 	return server, &body
 }
 
+// drainBooleanSchemaStream requires a provider stream to close within the test timeout.
 func drainBooleanSchemaStream(t *testing.T, stream chan *schemas.BifrostStreamChunk) {
 	t.Helper()
 	timeout := time.After(5 * time.Second)
@@ -95,6 +97,7 @@ func drainBooleanSchemaStream(t *testing.T, stream chan *schemas.BifrostStreamCh
 	}
 }
 
+// capturedBooleanSchemaBody returns the body received by the test upstream.
 func capturedBooleanSchemaBody(t *testing.T, body *atomic.Value) []byte {
 	t.Helper()
 	data, _ := body.Load().([]byte)
@@ -180,6 +183,7 @@ func sendDirect(t *testing.T, mode string, chat *schemas.BifrostChatRequest) []b
 	return capturedBooleanSchemaBody(t, body)
 }
 
+// booleanSchemaParametersPath selects the tool-parameter location for each wire format.
 func booleanSchemaParametersPath(mode string) string {
 	if mode == "chat" || mode == "chat-stream" {
 		return "tools.0.function.parameters"
@@ -246,6 +250,8 @@ func TestBooleanSchemaNodesUnsupported_UnflaggedProviderIsByteIdentical(t *testi
 	}
 }
 
+// TestBooleanSchemaNodesUnsupported_OnlyOptedInOpenAIBaseRewrites checks that
+// ineligible providers return the original requests without allocating.
 func TestBooleanSchemaNodesUnsupported_OnlyOptedInOpenAIBaseRewrites(t *testing.T) {
 	for name, config := range map[string]*schemas.CustomProviderConfig{
 		"native":     nil,
