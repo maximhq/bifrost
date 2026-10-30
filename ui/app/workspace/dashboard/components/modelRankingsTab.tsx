@@ -67,7 +67,7 @@ function UsageShareTooltip({ active, payload, models, modelLabels }: any) {
 									{displayModelLabel(model, modelLabels)}
 								</StartTruncatedLabel>
 							</span>
-							<span className="font-medium">{val.toLocaleString()}</span>
+							<span className="font-medium">{val.toLocaleString(getLocale())}</span>
 						</div>
 					);
 				})}

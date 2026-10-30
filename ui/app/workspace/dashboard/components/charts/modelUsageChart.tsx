@@ -18,6 +18,8 @@ import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 import { NoChartData } from "./noChartData";
+import { getLocale } from "@/lib/i18n";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 // Sanitize model names to avoid Recharts interpreting dots/brackets as path separators
 function sanitizeModelKey(model: string): string {
@@ -58,7 +60,7 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 										</StartTruncatedLabel>
 									</span>
 									<span className="font-medium" style={{ color: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}>
-										{total.toLocaleString()}
+										{total.toLocaleString(getLocale())}
 									</span>
 								</div>
 							);
@@ -71,14 +73,18 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 								<span className="bg-chart-success h-2 w-2 rounded-full" />
 								<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 							</span>
-							<span className="text-chart-success-ink font-medium">{(data.by_model?.[selectedModel]?.success || 0).toLocaleString()}</span>
+							<span className="text-chart-success-ink font-medium">
+								{(data.by_model?.[selectedModel]?.success || 0).toLocaleString(getLocale())}
+							</span>
 						</div>
 						<div className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
 								<span className="bg-chart-error h-2 w-2 rounded-full" />
 								<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 							</span>
-							<span className="text-chart-error-ink font-medium">{(data.by_model?.[selectedModel]?.error || 0).toLocaleString()}</span>
+							<span className="text-chart-error-ink font-medium">
+								{(data.by_model?.[selectedModel]?.error || 0).toLocaleString(getLocale())}
+							</span>
 						</div>
 						<div className="flex items-center justify-between gap-4">
 							<span className="flex items-center gap-1.5">
@@ -86,7 +92,7 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 								<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cancelled")}</span>
 							</span>
 							<span className="font-medium text-zinc-600 dark:text-zinc-400">
-								{(data.by_model?.[selectedModel]?.cancelled || 0).toLocaleString()}
+								{(data.by_model?.[selectedModel]?.cancelled || 0).toLocaleString(getLocale())}
 							</span>
 						</div>
 					</>
@@ -97,6 +103,7 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 }
 
 function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedModel }: ModelUsageChartProps) {
+	useLocale();
 	const { chartData, displayModels } = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return { chartData: [], displayModels: [] };

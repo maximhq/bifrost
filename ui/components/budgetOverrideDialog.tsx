@@ -11,6 +11,7 @@ import { Pencil, Plus } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { getLocale } from "@/lib/i18n";
 
 interface BudgetOverrideDialogProps {
 	budget: Budget;
@@ -161,7 +162,7 @@ export function BudgetOverrideDialog({ budget, onSave, onRemove, disabled, calen
 										<Trans
 											t={t}
 											i18nKey="budgetOverride.validUntil"
-											values={{ date: validUntil.toLocaleString() }}
+											values={{ date: validUntil.toLocaleString(getLocale()) }}
 											components={{ b0: <span className="text-foreground font-medium" /> }}
 										/>
 									</p>
