@@ -8,6 +8,7 @@ import type { AgentRegistrationView } from "@/lib/types/agents";
 import { showLoadError } from "@/lib/utils/loadError";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { AgentsFilterSidebar, type AgentFilters } from "./views/agentsFilterSidebar";
 import AgentsTable from "./views/agentsTable";
 
@@ -38,6 +39,7 @@ function matchesFilters(agent: AgentRegistrationView, filters: AgentFilters): bo
 }
 
 export default function AgentGatewayPage() {
+	const { t: tCommon } = useTranslation("common");
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			search: parseAsString.withDefault(""),
@@ -100,9 +102,9 @@ export default function AgentGatewayPage() {
 
 	useEffect(() => {
 		if (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		}
-	}, [error, toast]);
+	}, [error, toast, tCommon]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
@@ -110,7 +112,13 @@ export default function AgentGatewayPage() {
 
 	if (showLoadError(error, data)) {
 		return (
-			<LoadErrorView entity="agents" error={error} onRetry={() => void refetch()} testId="agents-load-error" className="h-full py-0" />
+			<LoadErrorView
+				entity={tCommon("entities.agents")}
+				error={error}
+				onRetry={() => void refetch()}
+				testId="agents-load-error"
+				className="h-full py-0"
+			/>
 		);
 	}
 

@@ -2,6 +2,7 @@ import { SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
 import * as React from "react";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Badge } from "./badge";
 
 type BaseSecretVarInputProps = {
@@ -58,6 +59,7 @@ export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEl
 		},
 		ref,
 	) => {
+		const { t } = useTranslation("common");
 		const hasChanged = useRef(false);
 		const isUserChange = useRef(false);
 
@@ -166,7 +168,7 @@ export const SecretVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEl
 						</Badge>
 					)}
 				</div>
-				{showEnvHint && <p className="mt-1.5 text-xs text-orange-400">The resolved value will appear after saving</p>}
+				{showEnvHint && <p className="mt-1.5 text-xs text-orange-400">{t("secretVar.resolvedAfterSave")}</p>}
 			</div>
 		);
 	},

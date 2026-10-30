@@ -3,6 +3,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { currentQuarterIndex, nextQuarterReset, quarterRanges, quarterStartMonthOptions } from "@/lib/constants/governance";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
+import { Trans, useTranslation } from "react-i18next";
 
 interface QuarterStartSelectProps {
 	"data-testid"?: string;
@@ -23,6 +24,7 @@ interface QuarterStartSelectProps {
  * The helper line spells out the concrete next reset date so the effect is unambiguous.
  */
 export default function QuarterStartSelect({ "data-testid": testId, value, onChange }: QuarterStartSelectProps) {
+	const { t } = useTranslation("common");
 	const quarters = quarterRanges(value);
 	const current = currentQuarterIndex(value);
 	const nextReset = nextQuarterReset(value);
@@ -34,10 +36,10 @@ export default function QuarterStartSelect({ "data-testid": testId, value, onCha
 			{/* Stacks below sm so the label and month select don't crush each other on
 			    narrow viewports; horizontal (select right-aligned inside the box) above. */}
 			<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-				<Label className="font-normal">Fiscal year starts</Label>
+				<Label className="font-normal">{t("quarterStart.fiscalYearStarts")}</Label>
 				<Select value={String(value ?? 1)} onValueChange={(month) => onChange(Number(month))}>
 					<SelectTrigger
-						aria-label="Fiscal year starts"
+						aria-label={t("quarterStart.fiscalYearStarts")}
 						className="h-9 w-full shrink-0 sm:w-40"
 						data-testid={testId ? `${testId}-trigger` : undefined}
 					>
@@ -72,8 +74,12 @@ export default function QuarterStartSelect({ "data-testid": testId, value, onCha
 				})}
 			</div>
 			<p className="text-muted-foreground border-t pt-2.5 text-[0.8rem] leading-relaxed">
-				Next reset on <span className="text-foreground font-medium">{format(nextReset, "MMM d, yyyy")}</span>. The current quarter ends{" "}
-				{format(currentQuarterEnd, "MMM d, yyyy")}.
+				<Trans
+					t={t}
+					i18nKey="quarterStart.nextReset"
+					values={{ reset: format(nextReset, "MMM d, yyyy"), end: format(currentQuarterEnd, "MMM d, yyyy") }}
+					components={{ date: <span className="text-foreground font-medium" /> }}
+				/>
 			</p>
 		</div>
 	);

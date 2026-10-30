@@ -69,35 +69,35 @@ const getPlaceholder = (providerType: BaseProvider | undefined, requestKey: Requ
 	return ProviderEndpoints["openai"]?.[requestKey] ?? "";
 };
 
-const RequestTypes: Array<{ key: RequestType; label: string }> = [
-	{ key: "list_models", label: "List Models" },
-	{ key: "model_retrieve", label: "Retrieve Model" },
-	{ key: "text_completion", label: "Text Completion" },
-	{ key: "text_completion_stream", label: "Text Completion Stream" },
-	{ key: "chat_completion", label: "Chat Completion" },
-	{ key: "chat_completion_stream", label: "Chat Completion Stream" },
-	{ key: "responses", label: "Responses" },
-	{ key: "responses_stream", label: "Responses Stream" },
-	{ key: "responses_retrieve", label: "Responses Retrieve" },
-	{ key: "responses_delete", label: "Responses Delete" },
-	{ key: "responses_cancel", label: "Responses Cancel" },
-	{ key: "responses_input_items", label: "Responses Input Items" },
-	{ key: "embedding", label: "Embedding" },
-	{ key: "speech", label: "Speech" },
-	{ key: "speech_stream", label: "Speech Stream" },
-	{ key: "transcription", label: "Transcription" },
-	{ key: "transcription_stream", label: "Transcription Stream" },
-	{ key: "image_generation", label: "Image Generation" },
-	{ key: "image_generation_stream", label: "Image Generation Stream" },
-	{ key: "image_edit", label: "Image Edit" },
-	{ key: "image_edit_stream", label: "Image Edit Stream" },
-	{ key: "image_variation", label: "Image Variation" },
-	{ key: "count_tokens", label: "Count Tokens" },
-	{ key: "decisions", label: "Decisions" },
-	{ key: "live", label: "Live" },
-	{ key: "passthrough", label: "Passthrough" },
-	{ key: "passthrough_stream", label: "Passthrough Stream" },
-];
+const RequestTypes = [
+	{ key: "list_models" },
+	{ key: "model_retrieve" },
+	{ key: "text_completion" },
+	{ key: "text_completion_stream" },
+	{ key: "chat_completion" },
+	{ key: "chat_completion_stream" },
+	{ key: "responses" },
+	{ key: "responses_stream" },
+	{ key: "responses_retrieve" },
+	{ key: "responses_delete" },
+	{ key: "responses_cancel" },
+	{ key: "responses_input_items" },
+	{ key: "embedding" },
+	{ key: "speech" },
+	{ key: "speech_stream" },
+	{ key: "transcription" },
+	{ key: "transcription_stream" },
+	{ key: "image_generation" },
+	{ key: "image_generation_stream" },
+	{ key: "image_edit" },
+	{ key: "image_edit_stream" },
+	{ key: "image_variation" },
+	{ key: "count_tokens" },
+	{ key: "decisions" },
+	{ key: "live" },
+	{ key: "passthrough" },
+	{ key: "passthrough_stream" },
+] as const satisfies ReadonlyArray<{ key: RequestType }>;
 
 // Path overrides replace the default path verbatim; these request paths embed a
 // resource ID, so an override can never produce a valid URL for them. Passthrough
@@ -134,7 +134,7 @@ export function AllowedRequestsFields({
 
 	const isPathOverrideDisabled = useMemo(() => providerType === "gemini" || providerType === "bedrock", [providerType]);
 
-	const renderRequestField = (requestType: { key: RequestType }) => {
+	const renderRequestField = (requestType: (typeof RequestTypes)[number]) => {
 		const isDisabled = isRequestTypeDisabled(providerType, requestType.key);
 		const placeholder = getPlaceholder(providerType, requestType.key);
 

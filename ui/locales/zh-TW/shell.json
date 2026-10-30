@@ -360,7 +360,11 @@
 			"followUp": "提出追問，目前回答結束後會傳送…",
 			"placeholder": "詢問你的 Bifrost 資料…",
 			"stop": "停止",
-			"send": "傳送"
+			"send": "傳送",
+			"commandClear": "開始新對話",
+			"settings": "Warp 設定",
+			"switchModel": "切換模型",
+			"defaultModel": "預設"
 		},
 		"question": {
 			"label": "問題",
@@ -449,16 +453,17 @@
 			"render_chart": {
 				"running": "繪製圖表",
 				"done": "畫了一個圖表"
+			},
+			"list_topics": {
+				"running": "正在列出主題",
+				"done": "已列出主題"
 			}
 		},
 		"errors": {
 			"not_configured": {
 				"summary": "Warp 尚未設定。",
 				"cause": "未設定供應商和模型，或在設定中關閉了 Warp。",
-				"suggestions": [
-					"開啟 Warp 設定並選擇供應商和模型。",
-					"確認已開啟「啟用 Warp」。"
-				]
+				"suggestions": ["開啟 Warp 設定並選擇供應商和模型。", "確認已開啟「啟用 Warp」。"]
 			},
 			"max_iterations": {
 				"summary": "Warp 未能得出答案。",
@@ -473,11 +478,7 @@
 			"timeout": {
 				"summary": "耗時過長。",
 				"cause": "整個請求在 Warp 完成前已超過時間預算。時間範圍長、範圍寬會使每次查詢更慢，而 Warp 會執行多次查詢。",
-				"suggestions": [
-					"嘗試更短的時間範圍。",
-					"縮小到一個團隊、客戶或虛擬金鑰。",
-					"若模型本身較慢，可在 Warp 設定中提高請求逾時。"
-				]
+				"suggestions": ["嘗試更短的時間範圍。", "縮小到一個團隊、客戶或虛擬金鑰。", "若模型本身較慢，可在 Warp 設定中提高請求逾時。"]
 			},
 			"upstream_error": {
 				"summary": "無法連線到 Warp 的模型。",
@@ -491,10 +492,7 @@
 			"tool_error": {
 				"summary": "一次查詢失敗。",
 				"cause": "Warp 的某次資料查詢回傳了錯誤，且在剩餘步驟內無法復原。",
-				"suggestions": [
-					"嘗試更窄的時間範圍。",
-					"確認你提到的模型、金鑰或團隊確實存在。"
-				]
+				"suggestions": ["嘗試更窄的時間範圍。", "確認你提到的模型、金鑰或團隊確實存在。"]
 			},
 			"cancelled": {
 				"summary": "已停止。",
@@ -504,10 +502,7 @@
 			"unknown": {
 				"summary": "出了點問題。",
 				"cause": "Warp 回傳了錯誤，但沒有可辨識的錯誤碼。",
-				"suggestions": [
-					"再試一次該問題。",
-					"若持續發生，請連同下方詳情一併回報。"
-				]
+				"suggestions": ["再試一次該問題。", "若持續發生，請連同下方詳情一併回報。"]
 			},
 			"access_denied": {
 				"summary": "你的帳戶無法存取 Warp 的模型。",
@@ -529,20 +524,61 @@
 			"rate_limited": {
 				"summary": "你已達到速率限制。",
 				"cause": "你的帳戶在限制時段內傳送的請求或 token 超過速率限制，因此治理規則拒絕了 Warp 的模型呼叫。Warp 的模型呼叫會算在你的帳戶上，因此共用相同的限制。",
-				"suggestions": [
-					"稍等片刻後再試。",
-					"如果問題持續發生，請管理員提高上限。",
-					"下方詳細資料會指出是哪項限制拒絕了請求。"
-				]
+				"suggestions": ["稍等片刻後再試。", "如果問題持續發生，請管理員提高上限。", "下方詳細資料會指出是哪項限制拒絕了請求。"]
 			},
 			"model_blocked": {
 				"summary": "你的帳戶不允許使用 Warp 的模型。",
 				"cause": "此部署的治理規則禁止你的帳戶使用 Warp 設定的模型或提供者，因此請求在送達提供者前就遭到拒絕。",
-				"suggestions": [
-					"請管理員允許你的帳戶使用 Warp 的模型。",
-					"或在 Warp 設定中改用你的帳戶獲准使用的模型。"
-				]
+				"suggestions": ["請管理員允許你的帳戶使用 Warp 的模型。", "或在 Warp 設定中改用你的帳戶獲准使用的模型。"]
 			}
+		},
+		"dock": {
+			"resize": "調整 Warp 面板大小",
+			"description": "向 Warp 詢問有關此部署的日誌、用量和花費的問題。"
+		},
+		"chart": {
+			"openInLogs": "在日誌中開啟",
+			"empty": "此時間範圍內沒有資料。"
 		}
+	},
+	"rssSources": {
+		"newsOn": "已開啟新聞",
+		"newsOff": "已為此閘道關閉新聞",
+		"updateSettingsFailed": "無法更新新聞設定",
+		"updateFeedFailed": "無法更新 {{name}}",
+		"updatedLogo": "已更新 {{name}} 的標誌",
+		"removedLogo": "已移除 {{name}} 的標誌",
+		"updateLogoFailed": "無法更新 {{name}} 的標誌",
+		"removed": "已移除 {{name}}",
+		"removeFailed": "無法移除 {{name}}",
+		"title": "新聞來源",
+		"description": "選擇要在此閘道上所有人的通知匣「新聞」分頁中顯示哪些 RSS 訂閱源。",
+		"showNews": "在通知匣中顯示新聞",
+		"showNewsHelp": "關閉後，此閘道上所有人都將看不到「新聞」分頁，並停止擷取新聞項目。下方的來源會被保留。",
+		"settingLoadFailed": "無法載入此設定。",
+		"tryAgain": "重試",
+		"loading": "正在載入來源",
+		"loadFailed": "無法載入來源。",
+		"builtinFeeds": "內建訂閱源",
+		"customFeeds": "自訂訂閱源",
+		"noCustomFeeds": "尚無自訂訂閱源。請在下方新增任意 RSS 或 Atom URL。",
+		"removeAria": "移除 {{name}}",
+		"disableAria": "停用 {{name}}",
+		"enableAria": "啟用 {{name}}",
+		"changeLogoAria": "更換 {{name}} 的標誌",
+		"uploadLogo": "上傳標誌",
+		"removeLogo": "移除標誌",
+		"addedFeed": "已新增 {{name}}",
+		"addFeedTitle": "新增訂閱源",
+		"name": "名稱",
+		"namePlaceholder": "Bifrost releases",
+		"feedUrl": "訂閱源 URL",
+		"logo": "標誌",
+		"optional": "（選填）",
+		"logoPreviewName": "標誌預覽",
+		"uploadedImage": "已上傳的圖片",
+		"upload": "上傳",
+		"logoHelp": "圖片 URL，或不超過 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。預設為網站的 favicon。",
+		"addFeed": "新增訂閱源"
 	}
 }

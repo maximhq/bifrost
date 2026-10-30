@@ -36,10 +36,12 @@ import type { RelayLog } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import type { TFunction } from "i18next";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, Waypoints, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface RelayLogDetailSheetProps {
 	log: RelayLog | null;
@@ -61,12 +63,16 @@ const usd = (v?: number | null) => (v === undefined || v === null ? null : forma
 // The chat request type's colour on the LLM sheet (RequestTypeColors["chat.completion"]).
 const RELAY_KIND_PILL_CLASS = "bg-blue-100 text-blue-800";
 
-const KIND_LABELS: Record<RelayLog["kind"], string> = { call: "Call", job: "Job settlement" };
+const kindLabels = (t: TFunction<"observability">): Record<RelayLog["kind"], string> => ({
+	call: t("relayLogs.fields.call"),
+	job: t("relayLogs.fields.jobSettlement"),
+});
 
 type RelayLogFilterKey = "user_ids" | "team_ids" | "customer_ids" | "business_unit_ids" | "project_ids";
 
 /** A governance attribution row that filters the Relay Logs list by the same id, as the LLM sheet's rows do. */
 function AttributionLink({ label, id, name, filterKey }: { label: string; id?: string; name?: string; filterKey: RelayLogFilterKey }) {
+	const { t } = useTranslation("observability");
 	if (!id) return null;
 	return (
 		<LogEntryDetailsView
@@ -87,7 +93,7 @@ function AttributionLink({ label, id, name, filterKey }: { label: string; id?: s
 							{name || id}
 						</Link>
 					</TooltipTrigger>
-					<TooltipContent sideOffset={6}>{name ? id : `Filter by ${label.toLowerCase()}`}</TooltipContent>
+					<TooltipContent sideOffset={6}>{name ? id : t("mcpLogs.detail.filterBy", { label: label.toLowerCase() })}</TooltipContent>
 				</Tooltip>
 			}
 		/>
@@ -117,6 +123,8 @@ export function RelayLogDetailSheet({
 	hasPrev = false,
 	hasNext = false,
 }: RelayLogDetailSheetProps) {
+	const { t } = useTranslation("observability");
+	const KIND_LABELS = useMemo(() => kindLabels(t), [t]);
 	// The list carries bodies already; the detail read refreshes a row the list has paged out.
 	// currentData, not data: data keeps the previous log while the next one loads, and Delete and
 	// Export must never act on it.
@@ -138,7 +146,7 @@ export function RelayLogDetailSheet({
 	const pathOnly = display ? (queryIndex >= 0 ? display.path.slice(0, queryIndex) : display.path) : "";
 	const queryOnly = display && queryIndex >= 0 ? display.path.slice(queryIndex + 1) : "";
 	const queryParams = useMemo(() => [...new URLSearchParams(queryOnly).entries()], [queryOnly]);
-	const requestLine = display ? (display.kind === "job" ? `job ${display.job_id ?? "—"}` : `${display.method} ${pathOnly}`) : "";
+	const requestLine = display ? (display.kind === "job" ? t("relayLogs.detail.jobLine", { id: display.job_id ?? "—" }) : `${display.method} ${pathOnly}`) : "";
 
 	// Client app, mapped the same way the LLM sheet maps it: the backend-detected app first, then the User-Agent.
 	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery(undefined, { skip: !open });
@@ -163,16 +171,16 @@ export function RelayLogDetailSheet({
 			>
 				{!display ? (
 					<div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center" data-testid="relay-log-details-empty">
-						<SheetTitle className="sr-only">{isFetching ? "Loading relay log details" : "Relay log not found"}</SheetTitle>
+						<SheetTitle className="sr-only">{isFetching ? t("relayLogs.detail.loadingDetails") : t("relayLogs.detail.notFound")}</SheetTitle>
 						{isFetching ? (
 							<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 						) : (
 							<>
 								<p className="text-muted-foreground text-sm">
-									{isError ? "This relay log could not be loaded." : "This relay log no longer exists."}
+									{isError ? t("relayLogs.detail.loadFailed") : t("relayLogs.detail.gone")}
 								</p>
 								<Button variant="outline" size="sm" type="button" onClick={() => onOpenChange(false)} data-testid="relay-log-close-button">
-									Close
+									{t("labels.close")}
 								</Button>
 							</>
 						)}
@@ -188,15 +196,15 @@ export function RelayLogDetailSheet({
 									onNavigate={(d) => onNavigate?.(d)}
 									prevKeys={prevKeys}
 									nextKeys={nextKeys}
-									entityLabel="log"
+									entityLabel={t("logs.detail.entityLog")}
 								/>
-								<SheetTitle className="text-foreground text-sm font-medium">Request details</SheetTitle>
+								<SheetTitle className="text-foreground text-sm font-medium">{t("relayLogs.detail.title")}</SheetTitle>
 							</div>
 							<div className="flex items-center gap-3">
 								<AlertDialog>
 									<DropdownMenu>
 										<DropdownMenuTrigger asChild>
-											<Button variant="ghost" className="size-7" type="button" aria-label="Log actions" data-testid="relay-log-actions">
+											<Button variant="ghost" className="size-7" type="button" aria-label={t("logs.logActions")} data-testid="relay-log-actions">
 												<MoreVertical className="h-3 w-3" />
 											</Button>
 										</DropdownMenuTrigger>
@@ -206,7 +214,7 @@ export function RelayLogDetailSheet({
 												data-testid="export-log-json"
 											>
 												<Download className="h-4 w-4" />
-												Export as JSON
+												{t("mcpLogs.exportJson")}
 											</DropdownMenuItem>
 											{handleDelete && (
 												<>
@@ -214,7 +222,7 @@ export function RelayLogDetailSheet({
 													<AlertDialogTrigger asChild>
 														<DropdownMenuItem variant="destructive" data-testid="relay-log-delete">
 															<Trash2 className="h-4 w-4" />
-															Delete
+															{t("labels.delete")}
 														</DropdownMenuItem>
 													</AlertDialogTrigger>
 												</>
@@ -223,13 +231,13 @@ export function RelayLogDetailSheet({
 									</DropdownMenu>
 									<AlertDialogContent>
 										<AlertDialogHeader>
-											<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
+											<AlertDialogTitle>{t("mcpLogs.deleteConfirmTitle")}</AlertDialogTitle>
 											<AlertDialogDescription>
-												This action cannot be undone. This will permanently delete the log entry.
+												{t("mcpLogs.deleteConfirmDesc")}
 											</AlertDialogDescription>
 										</AlertDialogHeader>
 										<AlertDialogFooter>
-											<AlertDialogCancel data-testid="relay-log-delete-cancel">Cancel</AlertDialogCancel>
+											<AlertDialogCancel data-testid="relay-log-delete-cancel">{t("labels.cancel")}</AlertDialogCancel>
 											<AlertDialogAction
 												data-testid="relay-log-delete-confirm"
 												onClick={() =>
@@ -239,7 +247,7 @@ export function RelayLogDetailSheet({
 													)
 												}
 											>
-												Delete
+												{t("labels.delete")}
 											</AlertDialogAction>
 										</AlertDialogFooter>
 									</AlertDialogContent>
@@ -250,7 +258,7 @@ export function RelayLogDetailSheet({
 									type="button"
 									onClick={() => onOpenChange(false)}
 									data-testid="relay-log-close-button"
-									aria-label="Close"
+									aria-label={t("labels.close")}
 								>
 									<X className="h-3 w-3" />
 								</Button>
@@ -272,25 +280,25 @@ export function RelayLogDetailSheet({
 													variant="outline"
 													className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200"
 												>
-													Streamed
+													{t("relayLogs.fields.streamed")}
 												</Badge>
 											)}
 											<StatusPill status={display.status as Status} />
 											{!display.billable && (
 												<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
-													Not billable
+													{t("relayLogs.fields.notBillable")}
 												</Badge>
 											)}
 										</div>
 										<HeroIdRow
-											label={display.kind === "job" ? "Job" : "Route"}
+											label={display.kind === "job" ? t("relayLogs.fields.job") : t("relayLogs.detail.route")}
 											value={requestLine}
 											testId="relay-log-copy-route-button"
 											className="mt-3"
 										/>
-										<HeroIdRow label="Request" value={display.request_id} testId="relay-log-copy-request-id-button" className="mt-1" />
-										{display.route_path && <HeroIdRow label="Matched" value={display.route_path} className="mt-1" />}
-										{display.virtual_key_name && <HeroIdRow label="Virtual key" value={display.virtual_key_name} className="mt-1" />}
+										<HeroIdRow label={t("mcpLogs.detail.request")} value={display.request_id} testId="relay-log-copy-request-id-button" className="mt-1" />
+										{display.route_path && <HeroIdRow label={t("relayLogs.detail.matched")} value={display.route_path} className="mt-1" />}
+										{display.virtual_key_name && <HeroIdRow label={t("relayLogs.fields.virtualKey")} value={display.virtual_key_name} className="mt-1" />}
 									</div>
 									<div className="flex shrink-0 items-center gap-1.5 rounded-sm border bg-white px-2 py-1 font-mono text-[12px] font-medium dark:bg-zinc-900">
 										<Waypoints className="text-muted-foreground h-3.5 w-3.5" />
@@ -299,14 +307,14 @@ export function RelayLogDetailSheet({
 								</div>
 								<div className="border-border grid grid-cols-1 border-t sm:grid-cols-2 md:grid-cols-4">
 									<HeroStat
-										label="Latency"
+										label={t("labels.latency")}
 										valueClass="text-primary"
 										value={hasLatency ? formatLatency(display.latency as number) : "—"}
 										sub={hasStart ? (end ? `${format(start, "HH:mm:ss")} → ${format(end, "HH:mm:ss")}` : format(start, "HH:mm:ss")) : ""}
 										hasRightBorder
 									/>
 									<HeroStat
-										label={display.total_tokens ? "Tokens in / out" : "Units"}
+										label={display.total_tokens ? t("relayLogs.detail.tokensInOut") : t("relayLogs.fields.units")}
 										mono
 										value={
 											display.total_tokens
@@ -319,9 +327,9 @@ export function RelayLogDetailSheet({
 										}
 										sub={
 											display.total_tokens
-												? `total ${formatCompactNumber(display.total_tokens)} · not priced`
+												? t("relayLogs.detail.totalNotPriced", { total: formatCompactNumber(display.total_tokens) })
 												: display.billed_units !== undefined && display.units !== undefined && display.billed_units !== display.units
-													? `${formatCompactNumber(display.units)} read`
+													? t("relayLogs.detail.unitsRead", { units: formatCompactNumber(display.units) })
 													: display.model
 														? display.model
 														: ""
@@ -329,21 +337,21 @@ export function RelayLogDetailSheet({
 										hasRightBorder
 									/>
 									<HeroStat
-										label="Cost"
+										label={t("labels.cost")}
 										value={display.cost != null ? formatCostPrecise(display.cost) : "—"}
 										sub={
 											display.cost != null && display.billed_units
-												? `≈ ${formatCostPrecise(display.cost / display.billed_units)} per unit`
+												? t("relayLogs.detail.perUnit", { cost: formatCostPrecise(display.cost / display.billed_units) })
 												: display.cost_per_request != null
-													? `${formatCostPrecise(display.cost_per_request)} per call`
+													? t("relayLogs.detail.perCall", { cost: formatCostPrecise(display.cost_per_request) })
 													: display.cost == null
-														? "not charged"
+														? t("relayLogs.detail.notCharged")
 														: ""
 										}
 										hasRightBorder
 									/>
 									<HeroStat
-										label="Bytes out"
+										label={t("relayLogs.detail.bytesOut")}
 										mono
 										value={formatCompactNumber(display.bytes_out)}
 										sub={display.bytes_out.toLocaleString()}
@@ -359,43 +367,43 @@ export function RelayLogDetailSheet({
 								data-testid="relay-log-more-details"
 							>
 								<summary className="hover:bg-muted/30 flex cursor-pointer items-center justify-between px-4 py-2.5 text-sm transition">
-									<span className="text-foreground font-medium">More details</span>
+									<span className="text-foreground font-medium">{t("mcpLogs.detail.moreDetails")}</span>
 									<span className="text-muted-foreground flex items-center gap-2 text-xs">
-										<span className="hidden md:inline">timings, cost, request meta, headers</span>
+										<span className="hidden md:inline">{t("relayLogs.detail.summary")}</span>
 										<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
 									</span>
 								</summary>
 								<div className="space-y-4 border-t px-4 py-4 md:px-6">
 									<div className="space-y-4">
-										<BlockHeader title="Timings" />
+										<BlockHeader title={t("logs.detail.timings")} />
 										<div className="grid w-full grid-cols-1 items-center gap-4 md:grid-cols-3">
 											<LogEntryDetailsView
 												className="w-full"
-												label="Start Timestamp"
-												value={hasStart ? format(start, "yyyy-MM-dd hh:mm:ss aa") : "N/A"}
+												label={t("logs.detail.startTimestamp")}
+												value={hasStart ? format(start, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
-												label="End Timestamp"
-												value={end ? format(end, "yyyy-MM-dd hh:mm:ss aa") : "N/A"}
+												label={t("logs.detail.endTimestamp")}
+												value={end ? format(end, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
-												label="Latency"
-												tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
-												value={hasLatency ? `${(display.latency as number).toFixed(2)}ms` : "Not recorded"}
+												label={t("labels.latency")}
+												tooltip={t("relayLogs.detail.latencyTooltip")}
+												value={hasLatency ? `${(display.latency as number).toFixed(2)}ms` : t("mcpLogs.notRecorded")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
-												label="Upstream Latency"
-												tooltip="Time spent waiting on the upstream API."
-												value={display.upstream_latency != null ? `${display.upstream_latency.toFixed(2)}ms` : "N/A"}
+												label={t("logs.detail.upstreamLatency")}
+												tooltip={t("relayLogs.detail.upstreamLatencyTooltip")}
+												value={display.upstream_latency != null ? `${display.upstream_latency.toFixed(2)}ms` : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
-												label="Bifrost Overhead"
-												tooltip="Time added by Bifrost itself: routing, plugins, and processing."
-												value={display.overhead_latency != null ? `${display.overhead_latency.toFixed(2)}ms` : "N/A"}
+												label={t("logs.detail.bifrostOverhead")}
+												tooltip={t("relayLogs.detail.overheadTooltip")}
+												value={display.overhead_latency != null ? `${display.overhead_latency.toFixed(2)}ms` : t("labels.nA")}
 											/>
 										</div>
 										{display.overhead_breakdown && display.overhead_breakdown.length > 0 ? (
@@ -404,39 +412,39 @@ export function RelayLogDetailSheet({
 									</div>
 									<DottedSeparator />
 									<div className="space-y-4" data-testid="relay-log-cost">
-										<BlockHeader title="Cost" />
+										<BlockHeader title={t("labels.cost")} />
 										<div className="grid w-full grid-cols-1 gap-4 md:grid-cols-3">
-											<LogEntryDetailsView className="w-full" label="Charged" value={usd(display.cost) ?? "Not charged"} />
-											<LogEntryDetailsView className="w-full" label="Fee per call" value={usd(display.cost_per_request)} />
-											<LogEntryDetailsView className="w-full" label="Price per unit" value={usd(display.cost_per_unit)} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.charged")} value={usd(display.cost) ?? t("relayLogs.detail.chargedNone")} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.feePerCall")} value={usd(display.cost_per_request)} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.pricePerUnit")} value={usd(display.cost_per_unit)} />
 											{display.units !== undefined && (
-												<LogEntryDetailsView className="w-full" label="Units read" value={String(display.units)} />
+												<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.unitsReadLabel")} value={String(display.units)} />
 											)}
 											{display.billed_units !== undefined && (
-												<LogEntryDetailsView className="w-full" label="Units billed" value={String(display.billed_units)} />
+												<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.unitsBilled")} value={String(display.billed_units)} />
 											)}
 											{display.extracted_cost !== undefined && (
-												<LogEntryDetailsView className="w-full" label="Reported cost" value={usd(display.extracted_cost)} />
+												<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.reportedCost")} value={usd(display.extracted_cost)} />
 											)}
 											{!!display.total_tokens && (
 												<LogEntryDetailsView
 													className="w-full"
-													label="Tokens (not priced)"
-													value={`${display.input_tokens ?? 0} in / ${display.output_tokens ?? 0} out`}
+													label={t("relayLogs.detail.tokensNotPriced")}
+													value={t("relayLogs.detail.tokensNotPricedValue", { input: display.input_tokens ?? 0, output: display.output_tokens ?? 0 })}
 												/>
 											)}
 										</div>
 									</div>
 									<DottedSeparator />
 									<div className="space-y-4">
-										<BlockHeader title="Request Details" />
+										<BlockHeader title={t("logs.detail.requestDetails")} />
 										<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
-											<LogEntryDetailsView className="w-full" label="Relay" value={display.relay_name} />
-											<LogEntryDetailsView className="w-full" label="Kind" value={KIND_LABELS[display.kind]} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.relay")} value={display.relay_name} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.kind")} value={KIND_LABELS[display.kind]} />
 											{detectedApp && (
 												<LogEntryDetailsView
 													className="w-full"
-													label="App"
+													label={t("labels.app")}
 													value={
 														<div className="flex min-w-0 items-center gap-2" title={display.user_agent || undefined}>
 															{detectedAppIcon ? (
@@ -455,26 +463,26 @@ export function RelayLogDetailSheet({
 													}
 												/>
 											)}
-											<LogEntryDetailsView className="w-full" label="Method" value={display.method || "—"} />
-											<LogEntryDetailsView className="w-full" label="Path" value={pathOnly || "—"} />
-											<LogEntryDetailsView className="w-full" label="Matched route" value={display.route_path || "None"} />
-											<LogEntryDetailsView className="w-full" label="Billable" value={display.billable ? "Yes" : "No"} />
-											<LogEntryDetailsView className="w-full" label="Streamed" value={display.streamed ? "Yes" : "No"} />
-											{display.model && <LogEntryDetailsView className="w-full" label="Model" value={display.model} />}
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.method")} value={display.method || "—"} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.path")} value={pathOnly || "—"} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.detail.matchedRoute")} value={display.route_path || t("agentGateway.sheet.none")} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.billable")} value={display.billable ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")} />
+											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.streamed")} value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")} />
+											{display.model && <LogEntryDetailsView className="w-full" label={t("labels.model")} value={display.model} />}
 											{display.job_id && (
-												<LogEntryDetailsView className="w-full" label="Job" value={`${display.job_id} (${display.job_status ?? "-"})`} />
+												<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.job")} value={`${display.job_id} (${display.job_status ?? "-"})`} />
 											)}
 											{display.parent_log_id && (
 												<LogEntryDetailsView
 													className="w-full"
-													label="Parent log"
+													label={t("relayLogs.detail.parentLog")}
 													value={<code className="font-mono text-xs">{display.parent_log_id}</code>}
 												/>
 											)}
 											{display.virtual_key_id && (
 												<LogEntryDetailsView
 													className="w-full"
-													label="Virtual key"
+													label={t("relayLogs.fields.virtualKey")}
 													value={
 														<Link
 															to="/workspace/governance/virtual-keys"
@@ -487,16 +495,16 @@ export function RelayLogDetailSheet({
 													}
 												/>
 											)}
-											<AttributionLink label="User" id={display.user_id} name={display.user_name} filterKey="user_ids" />
-											<AttributionLink label="Team" id={display.team_id} name={display.team_name} filterKey="team_ids" />
-											<AttributionLink label="Customer" id={display.customer_id} name={display.customer_name} filterKey="customer_ids" />
+											<AttributionLink label={t("labels.user")} id={display.user_id} name={display.user_name} filterKey="user_ids" />
+											<AttributionLink label={t("labels.team")} id={display.team_id} name={display.team_name} filterKey="team_ids" />
+											<AttributionLink label={t("labels.customer")} id={display.customer_id} name={display.customer_name} filterKey="customer_ids" />
 											<AttributionLink
-												label="Business unit"
+												label={t("relayLogs.fields.businessUnit")}
 												id={display.business_unit_id}
 												name={display.business_unit_name}
 												filterKey="business_unit_ids"
 											/>
-											<AttributionLink label="Project" id={display.project_id} name={display.project_name} filterKey="project_ids" />
+											<AttributionLink label={t("labels.project")} id={display.project_id} name={display.project_name} filterKey="project_ids" />
 										</div>
 									</div>
 									{queryParams.length > 0 && (
@@ -505,7 +513,7 @@ export function RelayLogDetailSheet({
 											{/* Laid out like Matched Headers below: one field per parameter, full value on hover. Names
 											    are shown as sent, since query parameters are case-sensitive. */}
 											<div className="space-y-4" data-testid="relay-log-query">
-												<BlockHeader title="Query Parameters" />
+												<BlockHeader title={t("relayLogs.detail.queryParameters")} />
 												<div className="grid w-full grid-cols-1 items-start gap-4 md:grid-cols-3">
 													{queryParams.map(([key, value], i) => (
 														<LogEntryDetailsView key={`${key}-${i}`} className="w-full" label={key} rawLabel value={value || "—"} />
@@ -518,7 +526,7 @@ export function RelayLogDetailSheet({
 										<>
 											<DottedSeparator />
 											<div className="space-y-4">
-												<BlockHeader title="Metadata" />
+												<BlockHeader title={t("mcpLogs.detail.metadata")} />
 												<div className="grid w-full grid-cols-1 items-start justify-between gap-4 md:grid-cols-3">
 													{Object.entries(display.metadata)
 														.sort(([a], [b]) => a.localeCompare(b))
@@ -533,7 +541,7 @@ export function RelayLogDetailSheet({
 										<>
 											<DottedSeparator />
 											<div className="space-y-4">
-												<BlockHeader title="Matched Headers" />
+												<BlockHeader title={t("relayLogs.detail.matchedHeaders")} />
 												<HeadersGrid headers={display.request_headers} />
 											</div>
 										</>
@@ -548,19 +556,19 @@ export function RelayLogDetailSheet({
 								>
 									<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
 										<AlertCircle className="h-4 w-4 shrink-0" />
-										<span className="text-[12.5px] font-semibold">Error</span>
+										<span className="text-[12.5px] font-semibold">{t("labels.error")}</span>
 										{errorMessage ? <CopyInlineButton text={errorMessage} /> : null}
 									</div>
 									<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
 										{errorMessage ??
 											(display.status_code
-												? `The relay returned an error (HTTP ${display.status_code}) without a message.`
-												: "The relay returned an error without a message.")}
+												? t("relayLogs.detail.errorNoMessageWithStatus", { status: display.status_code })
+												: t("relayLogs.detail.errorNoMessage"))}
 									</div>
 									{errorRaw != null ? (
 										<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
 											<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-												<span className="font-medium">Details</span>
+												<span className="font-medium">{t("logs.detail.details")}</span>
 												<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
 											</summary>
 											<div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
@@ -573,15 +581,15 @@ export function RelayLogDetailSheet({
 
 							{display.content_hidden ? (
 								<div className="text-muted-foreground rounded-sm border px-4 py-3 text-sm" data-testid="relay-log-content-hidden">
-									Content logging has been disabled for this request.
+									{t("relayLogs.detail.contentHidden")}
 								</div>
 							) : (
 								<>
 									{display.request_body && (
-										<PassthroughBodyBox title="Request Body" body={display.request_body} testId="relay-log-request-body" />
+										<PassthroughBodyBox title={t("logs.detail.requestBody")} body={display.request_body} testId="relay-log-request-body" />
 									)}
 									{display.response_body && display.status !== "processing" && (
-										<PassthroughBodyBox title="Response Body" body={display.response_body} testId="relay-log-response-body" />
+										<PassthroughBodyBox title={t("logs.detail.responseBody")} body={display.response_body} testId="relay-log-response-body" />
 									)}
 								</>
 							)}

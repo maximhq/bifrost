@@ -3,6 +3,7 @@ import type { TokenHistogramResponse } from "@/lib/types/logs";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Info } from "lucide-react";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import { GaugeNeedle, getGaugeGeometry, useGaugeSize } from "./gaugeUtils";
@@ -15,6 +16,7 @@ interface ExternalCacheTokenMeterChartProps {
 const METER_COLORS = { cached: "var(--chart-seq-2)", input: "var(--chart-seq-5)" };
 
 function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
+	const { t } = useTranslation("observability");
 	const { ref, width, height } = useGaugeSize();
 
 	const { percentage, totalCachedRead, totalPromptTokens } = useMemo(() => {
@@ -78,30 +80,32 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 						<div className="flex shrink-0 flex-col items-center pt-1 leading-none">
 							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
 							<div className="text-muted-foreground mt-1 flex items-center gap-1 text-[11px]">
-								<span>of input tokens cached by provider</span>
+								<span>{t("dashboard.charts.externalCacheCaption")}</span>
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
 											data-testid="external-cache-meter-info-btn"
 											className="text-muted-foreground hover:text-foreground transition-colors"
-											aria-label="More information about external cache hit rate"
+											aria-label={t("dashboard.charts.externalCacheInfo")}
 										>
 											<Info className="h-3 w-3" />
 										</button>
 									</TooltipTrigger>
-									<TooltipContent side="top">This reflects provider-level caching, not Bifrost semantic cache hits.</TooltipContent>
+									<TooltipContent side="top">{t("dashboard.charts.externalCacheNote")}</TooltipContent>
 								</Tooltip>
 							</div>
 						</div>
 						<div className="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.cached }} />
-								<span className="text-primary">Cached: {formatCompactNumber(totalCachedRead)}</span>
+								<span className="text-primary">{t("dashboard.charts.cachedRead", { value: formatCompactNumber(totalCachedRead) })}</span>
 							</span>
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.input }} />
-								<span className="text-muted-foreground">Input: {formatCompactNumber(totalPromptTokens)}</span>
+								<span className="text-muted-foreground">
+									{t("dashboard.charts.inputRead", { value: formatCompactNumber(totalPromptTokens) })}
+								</span>
 							</span>
 						</div>
 					</div>

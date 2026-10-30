@@ -14,6 +14,7 @@
 //     user clicks the Scope Target badge on the Model Limits table.
 
 import type { ComponentType } from "react";
+import i18n from "@/lib/i18n";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import type { ModelConfig } from "@/lib/types/governance";
 
@@ -147,12 +148,17 @@ export function getModelLimitScopeFilterOptions(): ModelLimitScopeFilterOption[]
 
 registerModelLimitScope({
 	value: "global",
-	label: "Global",
+	// Resolved when read so the scope name follows the active locale.
+	get label() {
+		return i18n.t("modelLimits.global", { ns: "models" });
+	},
 });
 
 registerModelLimitScope({
 	value: "virtual_key",
-	label: "Virtual Key",
+	get label() {
+		return i18n.t("virtualKeys.virtualKey", { ns: "models" });
+	},
 	PickerComponent: VirtualKeySelector,
 	buildDeepLink: (scopeId) => ({
 		to: "/workspace/governance/virtual-keys",
