@@ -184,3 +184,65 @@ func TestFleetControlAddsAndRemovesServers(t *testing.T) {
 		t.Errorf("expected 404 for a removed server, got %d", res.StatusCode)
 	}
 }
+
+func TestControlSetsAndClearsInstructions(t *testing.T) {
+	fleet := controlFleet(t)
+	base := fleet.URL() + "/control/alpha"
+
+	_, state := post(t, base+"/instructions", map[string]any{"text": "Call first_tool first"})
+	if state.Instructions != "Call first_tool first" {
+		t.Fatalf("expected the instructions in the state, got %q", state.Instructions)
+	}
+
+	// An empty body could be a misspelled text field, so it is refused
+	// rather than read as "clear".
+	resp, _ := post(t, base+"/instructions", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for instructions without text or clear, got %d", resp.StatusCode)
+	}
+
+	_, state = post(t, base+"/instructions", map[string]any{"clear": true})
+	if state.Instructions != "" {
+		t.Errorf("expected clear to remove the instructions, got %q", state.Instructions)
+	}
+}
+
+func TestControlRejectsToolsThatWouldMisbehaveQuietly(t *testing.T) {
+	fleet := controlFleet(t)
+	base := fleet.URL() + "/control/alpha"
+
+	for name, tool := range map[string]map[string]any{
+		"annotations not an object": {"name": "x", "annotations": []any{"readOnlyHint"}},
+		"reply not an object":       {"name": "x", "reply": "hi"},
+		"two reply sources":         {"name": "x", "reply": map[string]any{"content": []any{}}, "reply_env": "CHAOS_TAG"},
+		"fault on the handshake":    {"name": "x", "fault": map[string]any{"init_fail": true}},
+		"fault scoped by method":    {"name": "x", "fault": map[string]any{"status": 503, "methods": []string{"tools/call"}}},
+	} {
+		resp, _ := post(t, base+"/tools/add", map[string]any{"tool": tool})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d", name, resp.StatusCode)
+		}
+		resp, _ = post(t, base+"/tools/set", map[string]any{"tools": []any{tool}})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: expected 400 from tools/set, got %d", name, resp.StatusCode)
+		}
+	}
+
+	// A valid definition is accepted, and its mock-only fields read back so a
+	// transcript shows what the server was told to do.
+	_, state := post(t, base+"/tools/add", map[string]any{"tool": map[string]any{
+		"name":        "echo_ro",
+		"annotations": map[string]any{"readOnlyHint": true},
+		"reply":       map[string]any{"content": []any{map[string]any{"type": "text", "text": "hi"}}},
+		"fault":       map[string]any{"status": 503, "status_once": true, "message": "busy"},
+	}})
+	var got *chaosmock.Tool
+	for i := range state.Tools {
+		if state.Tools[i].Name == "echo_ro" {
+			got = &state.Tools[i]
+		}
+	}
+	if got == nil || got.Fault == nil || got.Fault.Message != "busy" || len(got.Reply) == 0 || len(got.Annotations) == 0 {
+		t.Fatalf("expected echo_ro to read back with its annotations, reply and fault, got %+v", got)
+	}
+}

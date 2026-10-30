@@ -40,8 +40,9 @@ Paths are derivable from a server's name, so a driver can compute a URL without
 asking the fleet: `/s/<name>/mcp` for streamable HTTP, `/s/<name>/sse` for the
 legacy transport, `/control/<name>/...` to mutate.
 
-`-seed <file.json>` builds a fleet with per-identity tool views, auth and
-starting faults in one step, for scenarios that need more than names.
+`-seed <file.json>` builds a fleet with per-identity tool views, auth,
+instructions and starting faults in one step, for scenarios that need more
+than names.
 
 ## Transports
 
@@ -82,6 +83,13 @@ one fault this transport has that cannot be simulated, and the registration
 clears on kill so a later respawn is distinguishable from one that never
 happened.
 
+It registers its environment too, but only the variables named `CHAOS_*`. The
+child inherits the whole environment of the process that spawned it,
+credentials included, and the control API has no authentication, so nothing
+else leaves the process. A tool with `reply_env` answers with one of those
+values, which is how a scenario checks what environment the system under test
+spawned its subprocess with.
+
 An injected HTTP status has no equivalent on a pipe, so the bridge reports it
 as a JSON-RPC error: a client should see a failed call, not a dead server. A
 fleet that becomes unreachable does end the process, which is the closest
@@ -106,6 +114,7 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/tools/describe` | `{"name":"...","text":"..."}` | change only the description |
 | `POST /control/<s>/tools/schema` | `{"name":"...","schema":{...}}` | change only the input schema |
 | `POST /control/<s>/tools/overlay` | `{"identity":"...","tools":[...]}` | give one identity its own tool list |
+| `POST /control/<s>/instructions` | `{"text":"..."}` / `{"clear":true}` | set or remove the instructions served in the initialize result |
 | `POST /control/<s>/faults` | `{"faults":{...}}` | set the fault state |
 | `POST /control/<s>/faults/clear` | | return to healthy |
 | `POST /control/<s>/auth` | `{"auth":{...}}` | set auth requirements |
@@ -114,9 +123,30 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/sessions/kill` | | invalidate sessions without touching the transport |
 | `POST /control/<s>/streams/drop` | | close listening streams without killing sessions |
 | `POST /control/<s>/notify/tools-changed` | | push `notifications/tools/list_changed` |
-| `POST /control/<s>/stdio/register` | `{"pid":N}` | record the bridging child process (the child does this itself) |
+| `POST /control/<s>/stdio/register` | `{"pid":N,"env":{...}}` | record the bridging child process and its shared environment (the child does this itself) |
 | `POST /control/<s>/stdio/kill` | | kill the bridging child process |
 | `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts |
+
+Clients read instructions during the handshake, so changing them reaches only
+clients that initialize afterwards.
+
+### Tools
+
+A tool is `{"name","description","inputSchema"}` plus optional fields. Only
+`annotations` goes on the wire with the first three; the rest are instructions
+to the mock, shown in the state readback and never sent to a client.
+
+| Field | Effect |
+|---|---|
+| `annotations` | sent verbatim in tools/list, e.g. `{"readOnlyHint":true}` |
+| `reply` | the CallToolResult tools/call returns, verbatim: several content blocks, `structuredContent`, `isError`. An empty result is `{"content":[]}`; clients reject a missing `content`. |
+| `reply_env` | answer with this variable from the stdio bridge's registered environment |
+| `fault` | a fault set that replaces the server-wide one for calls to this tool (see below) |
+
+Without `reply` or `reply_env`, a call echoes `"<tool>:<arguments>"`. A
+definition that would misbehave quietly is rejected with 400: annotations or a
+reply that is not an object, both `reply` and `reply_env`, or a tool fault
+field that cannot apply to one tool.
 
 ## Faults
 
@@ -133,24 +163,40 @@ upstream actually looks like.
 | Protocol | `init_fail`, `bad_version`, `no_ping`, `ping_fail`, `list_fail`, `kill_session` |
 | Timing | `hang`, `latency`, `jitter` (duration strings, e.g. `"1500ms"`) |
 | Call | `err_rate`, `err_kind`, `malformed` |
+| Scope | `methods`, `message` |
+
+`methods` limits the whole set to the listed JSON-RPC methods. Every other
+request, and every stream opened with GET, sees a healthy server, so
+`{"status":503,"methods":["tools/call"]}` fails calls without also failing the
+handshake in front of them. A one-shot status is spent only by a request in
+scope. `message` is the text an injected failure carries: the body of `status`
+and `err_kind` http (sent as plain text, since a client may read a JSON object
+as a JSON-RPC response), the JSON-RPC error of `err_kind` protocol,
+`init_fail`, `ping_fail` and `list_fail`, and the text of an `err_kind` tool
+result. `err_kind` needs `err_rate` above 0 to fire.
 
 `err_kind` distinguishes failures that are not interchangeable: `tool` is a
 successful exchange reporting a failed tool, `protocol` is a failed exchange,
 and `http` is a bare 500 with no JSON-RPC body. A client that conflates them
 looks correct under one and wrong under another.
 
-A per-tool `Fault` overrides the server-wide set entirely, so one broken tool on
-an otherwise healthy server is expressible.
+A tool's `fault` replaces the server-wide set entirely for calls to that tool,
+so one broken tool on an otherwise healthy server is expressible. It applies
+once the call is known to reach the tool, after credentials and session
+checks, and honours the transport, HTTP, timing and call fields. Its one-shot
+status is spent without changing the tool-set revision. Fields that act on
+something other than one call (`methods`, `init_fail`, `bad_version`,
+`no_ping`, `ping_fail`, `list_fail`, `kill_session`, `drop_sse`) are rejected.
 
 ## Counters, and what they can honestly prove
 
 | Counter | Proves |
 |---|---|
-| `calls` | keyed by the tool the server **resolved** the request to, not the name the caller sent. A client that maps a caller-facing name to the wrong upstream tool returns a correct-looking response and a wrong counter, and nothing else catches it. |
+| `calls` | keyed by the tool the server **resolved** the request to, not the name the caller sent. A call stopped in front of the tool, by an injected status, a 401 or a 404, is not counted here but is in `methods`. A client that maps a caller-facing name to the wrong upstream tool returns a correct-looking response and a wrong counter, and nothing else catches it. |
 | `calls_by_identity` | that revoking one caller's credential did not affect another's |
 | `sessions` | the reconnect signal for HTTP (see below) |
 | `open_streams` / `max_streams` | stream-level leak detection |
-| `methods` | every method seen, including unimplemented ones, so a surprise surfaces |
+| `methods` | every JSON-RPC request received, counted as it arrives, before any fault, credential or session check can answer it. A call answered with an injected status, a 401 or a 404 still counts, so retries are countable. Unimplemented methods count too, so a surprise surfaces. |
 | `faulted` | how many responses were injected failures rather than real ones |
 
 **Connection counts are not the HTTP reconnect signal.** Every mcp-go streamable

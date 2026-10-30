@@ -1,6 +1,7 @@
 package chaosmock
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -10,20 +11,77 @@ import (
 // Tool is one tool a virtual server advertises. The zero InputSchema is filled
 // with a permissive object schema at registration, so scenarios that only care
 // about a tool's presence do not have to spell one out.
+//
+// Name, Description, InputSchema and Annotations go on the wire in tools/list.
+// The rest are instructions to the mock itself: they show in the control API's
+// readback but never reach a client, which would otherwise see fields no real
+// server sends.
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
 
-	// Reply is what tools/call returns for this tool when nothing is faulted.
-	// Empty means an echo of the arguments, which is enough to prove which
-	// tool actually ran.
-	Reply string `json:"-"`
+	// Annotations is sent verbatim, so a scenario can mark a tool read-only or
+	// destructive, or send a hint a client does not know yet.
+	Annotations json.RawMessage `json:"annotations,omitempty"`
 
-	// Fault, when non-nil, overrides the server-wide fault set for calls to
+	// Reply is the CallToolResult tools/call returns for this tool when
+	// nothing is faulted, sent verbatim so a scenario can return several
+	// content blocks, structuredContent or isError. Empty means an echo of
+	// the arguments, which is enough to prove which tool actually ran.
+	Reply json.RawMessage `json:"reply,omitempty"`
+
+	// ReplyEnv answers with the value of this variable in the environment
+	// the stdio bridge registered, which is how a scenario proves what
+	// environment the system under test spawned its subprocess with.
+	ReplyEnv string `json:"reply_env,omitempty"`
+
+	// Fault, when non-nil, replaces the server-wide fault set for calls to
 	// this tool. It is how a scenario breaks one tool while leaving the rest
 	// of the server healthy, which no server-level knob can express.
-	Fault *Faults `json:"-"`
+	Fault *Faults `json:"fault,omitempty"`
+}
+
+// wireTool is the part of a Tool that tools/list sends.
+type wireTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+	Annotations json.RawMessage `json:"annotations,omitempty"`
+}
+
+// wire returns the client-visible view of t.
+func (t Tool) wire() wireTool {
+	return wireTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema, Annotations: t.Annotations}
+}
+
+// Validate rejects a definition that would otherwise misbehave quietly:
+// annotations or a reply that is not a JSON object, two reply sources, or a
+// per-tool fault field that cannot apply to one tool's call. In a chaos harness
+// a silently ignored field looks exactly like the client coping.
+func (t Tool) Validate() error {
+	if !isObjectOrEmpty(t.Annotations) {
+		return fmt.Errorf("tool %q: annotations must be a JSON object", t.Name)
+	}
+	if !isObjectOrEmpty(t.Reply) {
+		return fmt.Errorf("tool %q: reply must be a JSON object (a CallToolResult)", t.Name)
+	}
+	if len(t.Reply) > 0 && t.ReplyEnv != "" {
+		return fmt.Errorf("tool %q: reply and reply_env are exclusive", t.Name)
+	}
+	if t.Fault != nil {
+		if err := t.Fault.validateForTool(); err != nil {
+			return fmt.Errorf("tool %q: %w", t.Name, err)
+		}
+	}
+	return nil
+}
+
+// isObjectOrEmpty reports whether raw is absent, null or a JSON object. Callers
+// only pass bytes the JSON decoder already accepted, so the first byte decides.
+func isObjectOrEmpty(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) == 0 || trimmed[0] == '{' || string(trimmed) == "null"
 }
 
 // defaultInputSchema accepts anything. Tools that need to reject input define
@@ -61,6 +119,14 @@ func newToolSet() *toolSet {
 
 // normalize fills defaults so callers can register a bare name.
 func normalize(t Tool) *Tool {
+	// An explicit null is treated as absent, so it neither fails validation
+	// nor reaches the wire as a null a client has to cope with.
+	if string(bytes.TrimSpace(t.Annotations)) == "null" {
+		t.Annotations = nil
+	}
+	if string(bytes.TrimSpace(t.Reply)) == "null" {
+		t.Reply = nil
+	}
 	if len(t.InputSchema) == 0 {
 		t.InputSchema = defaultInputSchema
 	}
@@ -170,17 +236,22 @@ func (ts *toolSet) SetOverlay(identity string, tools []Tool) uint64 {
 	return ts.revision
 }
 
+// view returns the tool map identity sees. Callers hold ts.mu.
+func (ts *toolSet) view(identity string) map[string]*Tool {
+	if identity != "" {
+		if o, ok := ts.overlays[identity]; ok {
+			return o
+		}
+	}
+	return ts.base
+}
+
 // List returns the tools visible to identity, sorted by name so a client that
 // diffs successive listings sees changes rather than map ordering.
 func (ts *toolSet) List(identity string) []Tool {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
-	src := ts.base
-	if identity != "" {
-		if o, ok := ts.overlays[identity]; ok {
-			src = o
-		}
-	}
+	src := ts.view(identity)
 	out := make([]Tool, 0, len(src))
 	for _, t := range src {
 		out = append(out, *t)
@@ -195,19 +266,35 @@ func (ts *toolSet) List(identity string) []Tool {
 func (ts *toolSet) Lookup(identity, name string) (Tool, bool) {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
-	src := ts.base
-	if identity != "" {
-		if o, ok := ts.overlays[identity]; ok {
-			src = o
-		}
-	}
-	t, ok := src[name]
+	t, ok := ts.view(identity)[name]
 	if !ok {
 		return Tool{}, false
 	}
 	return *t, true
 }
 
+// callFault returns the fault a call to name in identity's view is answered
+// with, consuming its one-shot status the way the server-wide set does. The
+// revision does not move: a fault firing is not a change to the tool set. The
+// consumed fault is replaced rather than edited, since readers outside the lock
+// may still hold the old pointer.
+func (ts *toolSet) callFault(identity, name string) (Faults, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	t, ok := ts.view(identity)[name]
+	if !ok || t.Fault == nil {
+		return Faults{}, false
+	}
+	f := *t.Fault
+	if f.StatusOnce && f.Status != 0 {
+		consumed := f
+		consumed.Status, consumed.StatusOnce = 0, false
+		t.Fault = &consumed
+	}
+	return f, true
+}
+
+// Revision reports the current tool-set revision.
 func (ts *toolSet) Revision() uint64 {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()

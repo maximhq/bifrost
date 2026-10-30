@@ -99,10 +99,11 @@ func main() {
 // control calls before it can start.
 type seedSpec struct {
 	Servers map[string]struct {
-		Tools  []chaosmock.Tool            `json:"tools"`
-		Auth   *chaosmock.Auth             `json:"auth,omitempty"`
-		Faults *chaosmock.Faults           `json:"faults,omitempty"`
-		Views  map[string][]chaosmock.Tool `json:"views,omitempty"`
+		Tools        []chaosmock.Tool            `json:"tools"`
+		Auth         *chaosmock.Auth             `json:"auth,omitempty"`
+		Faults       *chaosmock.Faults           `json:"faults,omitempty"`
+		Views        map[string][]chaosmock.Tool `json:"views,omitempty"`
+		Instructions string                      `json:"instructions,omitempty"`
 	} `json:"servers"`
 }
 
@@ -121,8 +122,20 @@ func seedFromFile(fleet *chaosmock.Fleet, path string) error {
 		return fmt.Errorf("seed file declares no servers")
 	}
 	for name, cfg := range spec.Servers {
+		lists := [][]chaosmock.Tool{cfg.Tools}
+		for _, view := range cfg.Views {
+			lists = append(lists, view)
+		}
+		for _, list := range lists {
+			for _, t := range list {
+				if err := t.Validate(); err != nil {
+					return fmt.Errorf("server %q: %w", name, err)
+				}
+			}
+		}
 		srv := fleet.Add(name)
 		srv.Tools().Set(cfg.Tools)
+		srv.SetInstructions(cfg.Instructions)
 		if cfg.Auth != nil {
 			srv.SetAuth(*cfg.Auth)
 		}

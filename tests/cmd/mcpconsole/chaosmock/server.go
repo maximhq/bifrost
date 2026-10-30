@@ -31,13 +31,23 @@ type Server struct {
 	// changed behaviour bump it so a client's own logs distinguish the two.
 	version string
 
+	// mu guards the fields below, which the control API writes while
+	// requests read them.
+	mu sync.Mutex
+
+	// instructions is served in the initialize result, empty for none.
+	instructions string
+
 	// stdioPID is the process id of the child currently bridging this server
 	// over stdin and stdout, when one has registered. It exists so a scenario
 	// can kill that process, which is the fault this transport has and the
 	// others do not, and which nothing else can inject: the child is spawned
 	// by the system under test, not by the fleet.
-	stdioMu  sync.Mutex
 	stdioPID int
+
+	// stdioEnv is the environment that child registered, already filtered to
+	// the variables it may share. See bridgeEnv.
+	stdioEnv map[string]string
 }
 
 // NewServer creates a healthy virtual server with no tools and no auth.
@@ -115,20 +125,54 @@ func (s *Server) DropStreams() int { return s.streams.closeAll() }
 // OpenStreams reports how many server-to-client streams are currently held.
 func (s *Server) OpenStreams() int { return s.streams.count() }
 
-// RegisterStdioPID records the child process bridging this server over stdio.
-func (s *Server) RegisterStdioPID(pid int) {
-	s.stdioMu.Lock()
+// SetInstructions replaces the instructions served in the initialize result.
+// Empty removes them. Clients read them during the handshake, so a change
+// reaches only clients that initialize afterwards.
+func (s *Server) SetInstructions(text string) {
+	s.mu.Lock()
+	s.instructions = text
+	s.mu.Unlock()
+}
+
+// Instructions returns the instructions served in the initialize result.
+func (s *Server) Instructions() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.instructions
+}
+
+// RegisterStdio records the child process bridging this server over stdio and
+// the environment it shares. A later registration replaces both, which is what
+// a respawned child produces.
+func (s *Server) RegisterStdio(pid int, env map[string]string) {
+	s.mu.Lock()
 	s.stdioPID = pid
-	s.stdioMu.Unlock()
+	s.stdioEnv = env
+	s.mu.Unlock()
 }
 
 // StdioPID reports the registered child process id, or 0 when none has
 // registered. A scenario reads it to tell "the subprocess is gone" apart from
 // "the subprocess never started".
 func (s *Server) StdioPID() int {
-	s.stdioMu.Lock()
-	defer s.stdioMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.stdioPID
+}
+
+// StdioEnv returns a copy of the environment the bridging child registered, or
+// nil when none has.
+func (s *Server) StdioEnv() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stdioEnv == nil {
+		return nil
+	}
+	out := make(map[string]string, len(s.stdioEnv))
+	for k, v := range s.stdioEnv {
+		out[k] = v
+	}
+	return out
 }
 
 // KillStdio kills the registered child process, reproducing an upstream server
@@ -136,10 +180,11 @@ func (s *Server) StdioPID() int {
 // that could not be signalled is not one worth trying again, and leaving it
 // would make a later respawn look like it had already registered.
 func (s *Server) KillStdio() error {
-	s.stdioMu.Lock()
+	s.mu.Lock()
 	pid := s.stdioPID
 	s.stdioPID = 0
-	s.stdioMu.Unlock()
+	s.stdioEnv = nil
+	s.mu.Unlock()
 
 	if pid == 0 {
 		return fmt.Errorf("no stdio process is registered for %q", s.name)
@@ -159,6 +204,7 @@ type initializeResult struct {
 	ProtocolVersion string       `json:"protocolVersion"`
 	Capabilities    capabilities `json:"capabilities"`
 	ServerInfo      serverInfo   `json:"serverInfo"`
+	Instructions    string       `json:"instructions,omitempty"`
 }
 
 type capabilities struct {
@@ -186,7 +232,7 @@ type initializeParams struct {
 }
 
 type toolsListResult struct {
-	Tools []Tool `json:"tools"`
+	Tools []wireTool `json:"tools"`
 }
 
 type callParams struct {
@@ -215,25 +261,24 @@ type handleResult struct {
 	// the id on the response headers.
 	NewSession *Session
 	// HTTPStatus, when non-zero, tells the transport to abandon JSON-RPC and
-	// answer with this bare status instead. Injected 5xx on a tool call takes
-	// this path, as does an expired session's 404.
+	// answer with this bare status instead, with Message as the body. An
+	// err_kind http failure on a tool call takes this path.
 	HTTPStatus int
+	Message    string
 	// Malformed tells the transport to write a body that is not valid
 	// JSON-RPC, to exercise a client's decoder rather than its error handling.
 	Malformed bool
 }
 
 // Handle runs one JSON-RPC message against the server's current state. It is
-// transport-agnostic: sessionID and identity are resolved by the caller, since
-// only the transport knows where they came from.
+// transport-agnostic: sessionID, identity and the fault set f are resolved by
+// the caller, since only the transport knows where the first two came from and
+// which faults it has already answered with.
 //
-// Faults are snapshotted once at entry so a control-API write landing mid-call
+// f is resolved once per request, so a control-API write landing mid-call
 // cannot change how this exchange finishes. A request that started against a
 // healthy server completes against a healthy server.
-func (s *Server) Handle(req *request, sessionID, identity string) handleResult {
-	f := s.faults.snapshot()
-	s.counters.method(req.Method, sessionID)
-
+func (s *Server) Handle(req *request, sessionID, identity string, f Faults) handleResult {
 	// Hang before anything else. A client's own timeout is what should cut
 	// this short, and putting the sleep first means even a method that would
 	// have failed still takes the full time, which is what a wedged upstream
@@ -267,7 +312,7 @@ func (s *Server) Handle(req *request, sessionID, identity string) handleResult {
 func (s *Server) handleInitialize(req *request, sessionID, identity string, f Faults) handleResult {
 	if f.InitFail {
 		s.counters.faulted()
-		return handleResult{Response: newError(req.ID, CodeInternalError, "initialize failed (injected)")}
+		return handleResult{Response: newError(req.ID, CodeInternalError, f.text("initialize failed (injected)"))}
 	}
 
 	var params initializeParams
@@ -309,6 +354,7 @@ func (s *Server) handleInitialize(req *request, sessionID, identity string, f Fa
 		ProtocolVersion: version,
 		Capabilities:    capabilities{Tools: &toolsCapability{ListChanged: true}},
 		ServerInfo:      serverInfo{Name: s.name, Version: s.version},
+		Instructions:    s.Instructions(),
 	}
 	return handleResult{Response: newResult(req.ID, result), NewSession: sess}
 }
@@ -324,7 +370,7 @@ func (s *Server) handlePing(req *request, f Faults) handleResult {
 		return handleResult{Response: newError(req.ID, CodeMethodNotFound, "ping is not supported")}
 	case f.PingFail:
 		s.counters.faulted()
-		return handleResult{Response: newError(req.ID, CodeInternalError, "ping failed (injected)")}
+		return handleResult{Response: newError(req.ID, CodeInternalError, f.text("ping failed (injected)"))}
 	}
 	return handleResult{Response: newResult(req.ID, struct{}{})}
 }
@@ -333,14 +379,18 @@ func (s *Server) handleToolsList(req *request, identity string, f Faults) handle
 	s.counters.toolsList()
 	if f.ListFail {
 		s.counters.faulted()
-		return handleResult{Response: newError(req.ID, CodeInternalError, "tools/list failed (injected)")}
+		return handleResult{Response: newError(req.ID, CodeInternalError, f.text("tools/list failed (injected)"))}
 	}
 	if f.Malformed {
 		s.counters.faulted()
 		return handleResult{Malformed: true}
 	}
 	tools := s.tools.List(identity)
-	return handleResult{Response: newResult(req.ID, toolsListResult{Tools: tools})}
+	wire := make([]wireTool, len(tools))
+	for i, t := range tools {
+		wire[i] = t.wire()
+	}
+	return handleResult{Response: newResult(req.ID, toolsListResult{Tools: wire})}
 }
 
 func (s *Server) handleToolsCall(req *request, identity string, f Faults) handleResult {
@@ -362,50 +412,86 @@ func (s *Server) handleToolsCall(req *request, identity string, f Faults) handle
 
 	s.counters.call(tool.Name, identity)
 
-	// A per-tool fault overrides the server-wide set entirely, so one broken
-	// tool on an otherwise healthy server is expressible. Merging instead
-	// would make "this tool alone is slow" impossible to state.
-	effective := f
-	if tool.Fault != nil {
-		effective = *tool.Fault
-		if d := time.Duration(effective.Hang); d > 0 {
-			time.Sleep(d)
-		}
-	}
-
-	if effective.Malformed {
+	// A per-tool fault has already replaced the server-wide set in f (see
+	// Server.callFaults), so one broken tool on an otherwise healthy server
+	// is expressible without anything special here.
+	if f.Malformed {
 		s.counters.faulted()
 		return handleResult{Malformed: true}
 	}
 
-	if s.faults.shouldFail(effective.ErrRate) {
+	if s.faults.shouldFail(f.ErrRate) {
 		s.counters.faulted()
-		switch effective.ErrKind {
+		switch f.ErrKind {
 		case ErrKindHTTP:
-			return handleResult{HTTPStatus: 500}
+			return handleResult{HTTPStatus: 500, Message: f.text("injected failure")}
 		case ErrKindProtocol:
 			return handleResult{Response: newError(req.ID, CodeInternalError,
-				fmt.Sprintf("tool %q failed (injected)", tool.Name))}
+				f.text(fmt.Sprintf("tool %q failed (injected)", tool.Name)))}
 		default:
 			// ErrKindTool, and the zero value. A successful MCP exchange
 			// reporting a failed tool is the most common real-world shape, so
 			// it is what an unspecified ErrKind produces.
 			return handleResult{Response: newResult(req.ID, callResult{
 				Content: []contentBlock{{Type: "text",
-					Text: fmt.Sprintf("tool %q reported an error (injected)", tool.Name)}},
+					Text: f.text(fmt.Sprintf("tool %q reported an error (injected)", tool.Name))}},
 				IsError: true,
 			})}
 		}
 	}
 
-	reply := tool.Reply
-	if reply == "" {
-		// Echo the tool name and arguments. Naming the tool in its own reply
-		// means a test can catch a misdispatch from the response alone, before
-		// it even consults the counters.
-		reply = fmt.Sprintf("%s:%s", tool.Name, string(params.Arguments))
+	switch {
+	case len(tool.Reply) > 0:
+		// Verbatim, so the scenario decides every field of the result,
+		// including ones this mock has no type for.
+		return handleResult{Response: &response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: tool.Reply}}
+	case tool.ReplyEnv != "":
+		value, ok := s.StdioEnv()[tool.ReplyEnv]
+		if !ok {
+			return handleResult{Response: newResult(req.ID, callResult{
+				Content: []contentBlock{{Type: "text",
+					Text: fmt.Sprintf("%s is not set in the bridging process", tool.ReplyEnv)}},
+				IsError: true,
+			})}
+		}
+		return handleResult{Response: newResult(req.ID, callResult{
+			Content: []contentBlock{{Type: "text", Text: value}},
+		})}
 	}
+
+	// Echo the tool name and arguments. Naming the tool in its own reply means
+	// a test can catch a misdispatch from the response alone, before it even
+	// consults the counters.
 	return handleResult{Response: newResult(req.ID, callResult{
-		Content: []contentBlock{{Type: "text", Text: reply}},
+		Content: []contentBlock{{Type: "text", Text: fmt.Sprintf("%s:%s", tool.Name, string(params.Arguments))}},
 	})}
+}
+
+// callFaults returns the fault set a request is answered with once its caller
+// is known. A tools/call for a tool with its own fault gets that fault in place
+// of the server-wide set f, which is how one broken tool on an otherwise
+// healthy server is expressed. Every other request keeps f.
+func (s *Server) callFaults(req *request, identity string, f Faults) Faults {
+	if req.Method != MethodToolsCall {
+		return f
+	}
+	var params callParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return f
+	}
+	if tf, ok := s.tools.callFault(identity, params.Name); ok {
+		return tf
+	}
+	return f
+}
+
+// countMethod records a parsed request as it arrives, before any fault,
+// credential or session check can answer it, so a request the client sent is
+// counted even when the mock refused it. The per-session tally only takes ids
+// the server issued, so a stale id cannot grow it.
+func (s *Server) countMethod(method, sessionID string) {
+	if _, ok := s.sessions.get(sessionID); !ok {
+		sessionID = ""
+	}
+	s.counters.method(method, sessionID)
 }
