@@ -544,7 +544,32 @@
 			"proxyUrlRequired": "A URL do proxy é obrigatória",
 			"rootedPathSearch": "Informe um caminho absoluto como /v1/search",
 			"statusRange": "O status deve estar entre 100 e 599"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "O URL do proxy é obrigatório para http/socks5",
+		"usernameAndPasswordMustBothBeProvided": "O nome de utilizador e a palavra-passe têm de ser ambos indicados",
+		"maxRetriesCannotBeNegative": "O número máximo de tentativas não pode ser negativo",
+		"endpointIsRequiredForAzureKeys": "O endpoint é obrigatório para chaves do Azure",
+		"projectIdIsRequiredForVertexKeys": "O ID do projeto é obrigatório para chaves do Vertex AI",
+		"regionIsRequiredForVertexKeys": "A região é obrigatória para chaves do Vertex AI",
+		"authCredentialsMustBeValidJsonOrEnvVar": "Quando indicadas, as credenciais de autenticação têm de ser um objeto JSON válido ou estar no formato env.VAR",
+		"enterTheVpcEndpointDnsName": "Introduza o nome DNS do endpoint indicado na consola da VPC, não o respetivo ID",
+		"regionIsRequiredForBedrockKeys": "A região é obrigatória para chaves do Bedrock",
+		"bedrockAccessKeyPair": "Para o Bedrock: indique a Access Key e a Secret Key, ou deixe ambas vazias para a autenticação por função IAM",
+		"regionIsRequiredForBedrockMantleKeys": "A região é obrigatória para chaves do Bedrock Mantle",
+		"bedrockMantleAccessKeyPair": "Para o Bedrock Mantle: indique a Access Key e a Secret Key, ou deixe ambas vazias para a autenticação por função IAM",
+		"regionIsRequiredForSagemakerKeys": "A região é obrigatória para chaves do SageMaker",
+		"sagemakerAccessKeyPair": "Para o SageMaker: indique a Access Key e a Secret Key, ou deixe ambas vazias para usar a cadeia de credenciais predefinida da AWS",
+		"keyNameIsRequired": "O nome da chave é obrigatório",
+		"keyWeightsMustBeBetween01And1": "Os pesos das chaves têm de estar entre 0,1 e 1",
+		"deploymentsMustHaveAModelIdOnEveryRow": "Cada linha das implementações tem de ter um ID de modelo",
+		"pleaseSelectAProvider": "Selecione um fornecedor",
+		"customProviderNameFormat": "O nome do fornecedor personalizado só pode conter minúsculas, números, '-' ou '_' (sem espaços)",
+		"baseProviderTypeIsRequiredForCustomProviders": "O tipo de fornecedor base é obrigatório para fornecedores personalizados",
+		"customProviderNameCannotMatchAStandardProvider": "O nome do fornecedor personalizado não pode ser igual ao de um fornecedor padrão",
+		"baseUrlIsRequiredForThisProvider": "O URL base é obrigatório para este fornecedor",
+		"baseUrlMustStartWithHttpOrHttps": "O URL base tem de começar por http:// ou https://",
+		"atLeastOneApiKeyIsRequired": "É necessária pelo menos uma chave de API",
+		"apiKeyValueCannotBeEmpty": "O valor da chave de API não pode estar vazio"
 	},
 	"permissionDenied": {
 		"create": "Não tem permissão para criar {{entity}}.",
@@ -596,5 +621,11 @@
 	},
 	"badges": {
 		"beta": "BETA"
+	},
+	"apiErrors": {
+		"networkUnreachable": "Erro de rede: não é possível ligar ao servidor",
+		"unexpected": "Ocorreu um erro inesperado",
+		"requestTimeout": "Tempo limite do pedido excedido",
+		"network": "Erro de rede"
 	}
 }
