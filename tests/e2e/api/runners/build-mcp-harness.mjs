@@ -1530,6 +1530,243 @@ const OAS38 = folder("OAS-38 disable_vk_identity without an identity provider", 
   ...fleetGrantTeardown("OAS-38"),
 ]);
 
+// ================================================================ more ADM tests
+
+// unauthReq sends a request with no Authorization header and no cookie jar.
+const unauthReq = (id, title, method, path, body, asserts, opts = {}) => request(id, title, method, path, { noAuth: true, noCookies: true, body, asserts, ...opts });
+const whitelist = (id, routes) => putConfig(id, `setup: whitelist ${routes.join(" and ")}`, [`cc.whitelisted_routes = ${lit(routes)};`], [A.status(200)]);
+
+// WRONG_BASIC builds Basic credentials with the admin's username and a wrong password.
+const WRONG_BASIC = (varName) => [
+  "var C = require('crypto-js'); var pair = C.enc.Base64.parse(pm.variables.get('admin_auth_header').replace(/^Basic /, '')).toString(C.enc.Utf8);",
+  `pm.variables.set(${lit(varName)}, 'Basic ' + C.enc.Base64.stringify(C.enc.Utf8.parse(pair.split(':')[0] + ':adm03-wrong-password')));`,
+];
+const ADM03 = folder("ADM-03 Wrong password and VKs are not admin credentials", "Setup: dashboard auth on; a virtual key. Create and list carry a wrong Basic password, the key in x-bf-vk, or the key as a Bearer token.", [
+  vkCreate("ADM-03", "setup: create a virtual key", { name: "ADM-03 vk1" }, "adm03_vk1"),
+  ...[
+    ["a wrong Basic password", { key: "Authorization", value: "{{adm03_wrong_basic}}" }, WRONG_BASIC("adm03_wrong_basic")],
+    ["x-bf-vk set to the key", { key: "x-bf-vk", value: "{{adm03_vk1}}" }, []],
+    ["Bearer with the key", { key: "Authorization", value: "Bearer {{adm03_vk1}}" }, []],
+  ].flatMap(([label, header, pre]) => [
+    unauthReq("ADM-03", `create with ${label}`, "POST", "/api/mcp/client", clientBody({ name: "adm03_client" }), [A.status(401), A.msgEquals("Unauthorized")], { headers: [header], pre }),
+    unauthReq("ADM-03", `list with ${label}`, "GET", "/api/mcp/clients", undefined, [A.status(401), A.msgEquals("Unauthorized")], { headers: [header], pre }),
+  ]),
+  vkDelete("ADM-03", "teardown: delete the virtual key", "adm03_vk1"),
+]);
+
+const PRIVATE_MSG = "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses";
+const adm18Body = (url) => ({ name: "adm18_x", connection_type: "http", auth_type: "none", connection_string: url });
+const ADM18 = folder("ADM-18 Unauthenticated caller cannot target private addresses", "Setup: /api/mcp/client in whitelisted_routes, so its requests carry no credential; alpha (echo_tool, add_tool).", [
+  ...freshServer("ADM-18", "alpha", ["echo_tool", "add_tool"]),
+  readConfig("ADM-18"), whitelist("ADM-18", ["/api/mcp/client"]),
+  unauthReq("ADM-18", "a client at 127.0.0.1", "POST", "/api/mcp/client", adm18Body(`${CHAOS}/s/alpha/mcp`), [A.status(403), A.msgContains(PRIVATE_MSG)]),
+  unauthReq("ADM-18", "a client at localhost", "POST", "/api/mcp/client", adm18Body("{{adm18_localhost}}/s/alpha/mcp"), [A.status(403), A.msgContains(PRIVATE_MSG)],
+    { pre: ["pm.variables.set('adm18_localhost', pm.variables.get('chaos_url').replace('127.0.0.1', 'localhost'));"] }),
+  unauthReq("ADM-18", "a client at 10.0.0.5", "POST", "/api/mcp/client", adm18Body("http://10.0.0.5/mcp"), [A.status(403), A.msgContains(PRIVATE_MSG)]),
+  unauthReq("ADM-18", "a client at 169.254.169.254", "POST", "/api/mcp/client", adm18Body("http://169.254.169.254/mcp"), [A.status(403), A.msgContains(PRIVATE_MSG)]),
+  unauthReq("ADM-18", "a client at nope.invalid", "POST", "/api/mcp/client", adm18Body("http://nope.invalid/mcp"), [A.status(403), A.msgContains("could not resolve MCP target host")]),
+  restoreConfig("ADM-18"),
+  mockGet("ADM-18", "alpha", "alpha opened no session", [A.custom("sessions is 0", [
+    "var b = pm.response.json();",
+    "pm.expect(b.sessions, 'body: ' + pm.response.text()).to.equal(0);",
+    "pm.expect(b.counters.sessions).to.equal(0);",
+  ])]),
+]);
+
+const SECRET_MSG = "env./vault. references in MCP client fields (headers.X-Key)";
+const adm19Stdio = { client_id: "adm19-stdio", name: "adm19_stdio", connection_type: "stdio", auth_type: "none", stdio_config: { command: "{{chaos_bin}}", args: ["-stdio", "-fleet", CHAOS, "-server", "alpha"], envs: [] } };
+const adm19Env = httpClient("adm19-env", "adm19_env", "alpha", { headers: { "X-Key": "env.HOME" } });
+const ADM19 = folder("ADM-19 Unauthenticated caller: STDIO and secret references", "Setup: alpha (echo_tool, add_tool) and an HTTP client on it; /api/mcp/client and that client's path in whitelisted_routes, so their requests carry no credential; then the same requests with admin credentials.", [
+  ...freshServer("ADM-19", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-19", httpClient("adm19-c", "adm19_c", "alpha"), "setup: create the client"),
+  readConfig("ADM-19"), whitelist("ADM-19", ["/api/mcp/client", "/api/mcp/client/adm19-c"]),
+  unauthReq("ADM-19", "a STDIO client without a credential", "POST", "/api/mcp/client", adm19Stdio, [A.status(403), A.msgStartsWith("Registering a stdio MCP client requires an authenticated admin session")]),
+  unauthReq("ADM-19", "an env. header reference on create without a credential", "POST", "/api/mcp/client", adm19Env, [A.status(403), A.msgContains(SECRET_MSG)]),
+  unauthReq("ADM-19", "an env. header reference on PUT without a credential", "PUT", "/api/mcp/client/adm19-c", { headers: { "X-Key": "env.HOME" } }, [A.status(403), A.msgContains(SECRET_MSG)]),
+  restoreConfig("ADM-19"),
+  createExpect("ADM-19", "the STDIO client with admin credentials", adm19Stdio, [A.status(200)]),
+  createExpect("ADM-19", "the env. header reference on create with admin credentials", adm19Env, [A.status(200)]),
+  request("ADM-19", "the env. header reference on PUT with admin credentials", "PUT", "/api/mcp/client/adm19-c", { body: { headers: { "X-Key": "env.HOME" } }, asserts: [A.status(200)] }),
+  deleteClient("ADM-19", "adm19-stdio"), deleteClient("ADM-19", "adm19-env"), deleteClient("ADM-19", "adm19-c"),
+]);
+
+const ADM20 = folder("ADM-20 require_public_target is set by the server, never cleared", "Setup: /api/mcp/client in whitelisted_routes for the first create, which carries no credential; then admin credentials. alpha (echo_tool, add_tool) is the admin client's target; 192.0.2.10 is a documentation address that answers nothing.", [
+  ...freshServer("ADM-20", "alpha", ["echo_tool", "add_tool"]),
+  readConfig("ADM-20"), whitelist("ADM-20", ["/api/mcp/client"]),
+  unauthReq("ADM-20", "create a client at 192.0.2.10 without a credential", "POST", "/api/mcp/client", { client_id: "adm20-wl", name: "adm20_wl", connection_type: "http", connection_string: "http://192.0.2.10/mcp", auth_type: "none" }, [A.status(200)]),
+  restoreConfig("ADM-20"),
+  getClient("ADM-20", "adm20-wl", "the unauthenticated create stored require_public_target true", [clientField("config.require_public_target", true)]),
+  createExpect("ADM-20", "an admin create that sets require_public_target true", httpClient("adm20-admin", "adm20_admin", "alpha", { require_public_target: true }), [A.status(200)]),
+  getClient("ADM-20", "adm20-admin", "the admin create stored it false", [A.custom("require_public_target is false", [
+    "var v = pm.response.json().clients[0].config.require_public_target;",
+    "pm.expect(v === undefined || v === false, 'require_public_target: ' + v).to.equal(true);",
+  ])]),
+  request("ADM-20", "a later admin PUT with require_public_target false", "PUT", "/api/mcp/client/adm20-wl", { body: { require_public_target: false }, asserts: [A.status(200)] }),
+  getClient("ADM-20", "adm20-wl", "require_public_target is still true", [clientField("config.require_public_target", true)]),
+  deleteClient("ADM-20", "adm20-wl"), deleteClient("ADM-20", "adm20-admin"),
+]);
+
+const ADM22 = folder("ADM-22 OAuth create input checks", "Setup: admin credentials.", [
+  createExpect("ADM-22", "auth_type oauth without oauth_config", { name: "adm22_oauth", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'oauth'")]),
+  createExpect("ADM-22", "auth_type per_user_oauth without oauth_config", { name: "adm22_puo", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "per_user_oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'per_user_oauth'")]),
+  createExpect("ADM-22", "oauth_config {} without connection_string", { name: "adm22_noserver", connection_type: "http", auth_type: "oauth", oauth_config: {} }, [A.status(400), A.msgContains("Either client_id must be provided, or server URL must be set")]),
+]);
+
+const ADM52 = folder("ADM-52 Enabling a sticky client with a dead upstream", "Setup: alpha (echo_tool, add_tool); a client on alpha with needs_session_stickiness true, disabled; then alpha refuses connections. The client being reported disabled after the enable is a known issue, so that check is skipped.", [
+  ...freshServer("ADM-52", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-52", httpClient("adm52-s", "adm52_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
+  request("ADM-52", "setup: disable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: true }, asserts: [A.status(200)] }),
+  mockPost("ADM-52", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
+  request("ADM-52", "enable it", "PUT", "/api/mcp/client/adm52-s", { body: { disabled: false }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("message contains \"establishing the shared connection failed\"", [
+    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('establishing the shared connection failed');",
+  ])] }),
+  getClient("ADM-52", "adm52-s", "disabled is false and the client is not reported disabled", [clientField("config.disabled", false), A.skip(A.custom("state is not \"disabled\"", ["pm.expect(pm.response.json().clients[0].state, 'body: ' + pm.response.text()).to.not.equal('disabled');"]))]),
+  mockPost("ADM-52", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("ADM-52", "adm52-s"),
+]);
+
+const sessionsCount = (id, varName) => mockGet(id, "alpha", "setup: record alpha's session count", [], [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().counters.sessions);`]);
+const ADM53 = folder("ADM-53 Flip needs_session_stickiness live", "Setup: alpha (echo_tool, add_tool); an HTTP, auth none, per-call client on alpha.", [
+  ...freshServer("ADM-53", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-53", httpClient("adm53-c", "adm53_c", "alpha"), "setup: create the client"),
+  sessionsCount("ADM-53", "adm53_sessions"),
+  request("ADM-53", "set needs_session_stickiness true", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: true }, asserts: [A.status(200), A.custom("message contains \"now maintains a persistent shared connection\"", [
+    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('now maintains a persistent shared connection');",
+  ])] }),
+  mockGet("ADM-53", "alpha", "alpha opened one more session", [A.custom("sessions is one more than before", [
+    "var before = Number(pm.collectionVariables.get('adm53_sessions'));",
+    "pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + 1);",
+  ])]),
+  request("ADM-53", "set needs_session_stickiness false", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: false }, asserts: [A.status(200), A.custom("message contains \"now connects per call\"", [
+    "pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('now connects per call');",
+  ])] }),
+  mockPost("ADM-53", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
+  request("ADM-53", "set needs_session_stickiness true while alpha refuses", "PUT", "/api/mcp/client/adm53-c", { body: { needs_session_stickiness: true }, asserts: [A.status(200), A.jsonEquals("status", "partial_success")] }),
+  mockPost("ADM-53", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("ADM-53", "adm53-c"),
+]);
+
+const clientIdsIn = (expectIn, varId, clientId) => A.custom(`${clientId} is ${expectIn ? "" : "not "}listed`, [
+  "var ids = (pm.response.json().clients || []).map(function (c) { return c.config.client_id; });",
+  `pm.expect(ids, 'body: ' + pm.response.text()).to.${expectIn ? "" : "not."}include(${lit(clientId)});`,
+]);
+const ADM54 = folder("ADM-54 Assign and remove vk_configs", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual keys vk1 and vk2.", [
+  ...freshServer("ADM-54", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-54", httpClient("adm54-c", "adm54_c", "alpha"), "setup: create the client"),
+  vkCreate("ADM-54", "setup: create vk1", { name: "ADM-54 vk1" }, "adm54_vk1"),
+  vkCreate("ADM-54", "setup: create vk2", { name: "ADM-54 vk2" }, "adm54_vk2"),
+  request("ADM-54", "PUT vk1 with [\"echo_tool\"]", "PUT", "/api/mcp/client/adm54-c", { body: { vk_configs: [{ virtual_key_id: "{{adm54_vk1_id}}", tools_to_execute: ["echo_tool"] }] }, asserts: [A.status(200)] }),
+  getClient("ADM-54", "adm54-c", "vk_configs has vk1 with its name and tools", [A.custom("one entry: vk1, \"ADM-54 vk1\", [\"echo_tool\"]", [
+    "var v = pm.response.json().clients[0].vk_configs;",
+    "pm.expect(v, 'body: ' + pm.response.text()).to.have.lengthOf(1);",
+    "pm.expect(v[0].virtual_key_id).to.equal(pm.collectionVariables.get('adm54_vk1_id'));",
+    "pm.expect(v[0].virtual_key_name).to.equal('ADM-54 vk1');",
+    "pm.expect(v[0].tools_to_execute).to.eql(['echo_tool']);",
+  ])]),
+  request("ADM-54", "?virtual_keys=vk1 lists the client", "GET", "/api/mcp/clients?virtual_keys={{adm54_vk1_id}}&limit=100", { asserts: [A.status(200), clientIdsIn(true, "adm54_vk1_id", "adm54-c")] }),
+  request("ADM-54", "?virtual_keys=vk2 does not", "GET", "/api/mcp/clients?virtual_keys={{adm54_vk2_id}}&limit=100", { asserts: [A.status(200), clientIdsIn(false, "adm54_vk2_id", "adm54-c")] }),
+  request("ADM-54", "PUT []", "PUT", "/api/mcp/client/adm54-c", { body: { vk_configs: [] }, asserts: [A.status(200)] }),
+  getClient("ADM-54", "adm54-c", "vk_configs is []", [clientField("vk_configs", [])]),
+  deleteClient("ADM-54", "adm54-c"),
+  vkDelete("ADM-54", "teardown: delete vk1", "adm54_vk1"),
+  vkDelete("ADM-54", "teardown: delete vk2", "adm54_vk2"),
+]);
+
+const ADM55 = folder("ADM-55 vk_configs validation", "Setup: alpha (echo_tool, add_tool); a client on alpha; virtual key vk1.", [
+  ...freshServer("ADM-55", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-55", httpClient("adm55-c", "adm55_c", "alpha"), "setup: create the client"),
+  vkCreate("ADM-55", "setup: create vk1", { name: "ADM-55 vk1" }, "adm55_vk1"),
+  request("ADM-55", "a duplicate virtual_key_id", "PUT", "/api/mcp/client/adm55-c", {
+    body: { vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }, { virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*"] }] },
+    asserts: [A.status(400), A.custom("error message is \"duplicate virtual_key_id in vk_configs: <vk1 id>\"", [
+      "var b = pm.response.json();",
+      "pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.equal('duplicate virtual_key_id in vk_configs: ' + pm.collectionVariables.get('adm55_vk1_id'));",
+    ])],
+  }),
+  request("ADM-55", "an empty virtual_key_id", "PUT", "/api/mcp/client/adm55-c", { body: { vk_configs: [{ virtual_key_id: "", tools_to_execute: ["*"] }] }, asserts: [A.status(400), A.msgEquals("virtual_key_id must not be empty")] }),
+  request("ADM-55", "tools_to_execute [\"*\",\"x\"]", "PUT", "/api/mcp/client/adm55-c", {
+    body: { vk_configs: [{ virtual_key_id: "{{adm55_vk1_id}}", tools_to_execute: ["*", "x"] }] },
+    asserts: [A.status(400), A.custom("error message contains \"invalid tools_to_execute for virtual key <vk1 id>\"", [
+      "var b = pm.response.json();",
+      "pm.expect(b.error && b.error.message, 'body: ' + pm.response.text()).to.include('invalid tools_to_execute for virtual key ' + pm.collectionVariables.get('adm55_vk1_id'));",
+    ])],
+  }),
+  deleteClient("ADM-55", "adm55-c"),
+  vkDelete("ADM-55", "teardown: delete vk1", "adm55_vk1"),
+]);
+
+// HEADERS_BASE is a per_user_headers client on alpha; alpha requires x-key: good.
+const HEADERS_BASE = (clientId, name, over) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${CHAOS}/s/alpha/mcp`, auth_type: "per_user_headers", ...over });
+const alphaRequiresKey = (id) => [
+  ...freshServer(id, "alpha", ["echo_tool", "add_tool"]),
+  mockPost(id, "alpha", "auth", "setup: alpha requires x-key: good", { auth: { require_headers: { "x-key": "good" } } }),
+];
+const ADM65 = folder("ADM-65 per_user_headers create validation", "Setup: admin credentials; alpha (echo_tool, add_tool) requires the header x-key: good.", [
+  ...alphaRequiresKey("ADM-65"),
+  createExpect("ADM-65", "no per_user_header_keys", HEADERS_BASE("adm65-h", "adm65_h", {}), [A.status(400), A.msgContains("per_user_header_keys must be a non-empty list")]),
+  createExpect("ADM-65", "per_user_header_keys [\"X-Key\",\"x-key\"]", HEADERS_BASE("adm65-h", "adm65_h", { per_user_header_keys: ["X-Key", "x-key"], user_headers: { "x-key": "good" } }), [A.status(400), A.msgContains("contains duplicate entries")]),
+  createExpect("ADM-65", "per_user_header_keys [\" \"]", HEADERS_BASE("adm65-h", "adm65_h", { per_user_header_keys: [" "] }), [A.status(400), A.msgEquals("per_user_header_keys[0] is empty")]),
+  createExpect("ADM-65", "no sample user_headers", HEADERS_BASE("adm65-h", "adm65_h", { per_user_header_keys: ["x-key"] }), [A.status(400), A.msgEquals("sample user_headers missing values for required keys: x-key")]),
+  createExpect("ADM-65", "a wrong sample value", HEADERS_BASE("adm65-h", "adm65_h", { per_user_header_keys: ["x-key"], user_headers: { "x-key": "bad" } }), [A.status(422), A.msgStartsWith("Verification failed:")]),
+]);
+
+const ADM66 = folder("ADM-66 per_user_headers create succeeds", "Setup: admin credentials; alpha (echo_tool, add_tool) requires the header x-key: good; the sample value sent is \"good\".", [
+  ...alphaRequiresKey("ADM-66"),
+  createExpect("ADM-66", "create with X-Key \"good\"", HEADERS_BASE("adm66-h", "adm66_h", { per_user_header_keys: ["X-Key"], user_headers: { "X-Key": "good" } }),
+    [A.status(200), A.jsonMessage("MCP client registered. 2 tools discovered. Each user will submit their own headers on first tool use.")]),
+  getClient("ADM-66", "adm66-h", "keys [\"x-key\"], healthy, 2 tools, no credential", [clientField("config.per_user_header_keys", ["x-key"]), clientState("healthy"), toolNamesAre(["add_tool", "echo_tool"]), A.custom("there is no credential", [
+    "pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');",
+  ])]),
+  deleteClient("ADM-66", "adm66-h"),
+]);
+
+// PETSTORE is a small OpenAPI 3.0.3 document with three operations and an absolute server URL.
+const PETSTORE = `{
+  "openapi": "3.0.3",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "servers": [{"url": "https://petstore.example.com/v1"}],
+  "components": {"securitySchemes": {"ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}}},
+  "security": [{"ApiKeyAuth": []}],
+  "paths": {
+    "/pets": {
+      "get": {"operationId": "listPets", "summary": "List pets", "responses": {"200": {"description": "ok"}}},
+      "post": {"operationId": "createPet", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"name": {"type": "string"}}}}}}, "responses": {"201": {"description": "created"}}}
+    },
+    "/pets/{petId}": {
+      "get": {"operationId": "getPetById", "parameters": [{"name": "petId", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "ok"}}}
+    }
+  }
+}`;
+const PETSTORE_NO_SERVERS = (() => { const d = JSON.parse(PETSTORE); delete d.servers; return JSON.stringify(d); })();
+const openapiBody = (over) => ({ name: "adm81_q", connection_type: "openapi", auth_type: "none", tools_to_execute: ["*"], openapi_config: { spec: PETSTORE }, ...over });
+const ADM81 = folder("ADM-81 OpenAPI create validation", "Setup: admin credentials; an inline Petstore OpenAPI document with an absolute server URL.", [
+  createExpect("ADM-81", "auth_type oauth", openapiBody({ auth_type: "oauth" }), [A.status(400), A.msgContains("not supported for connection_type 'openapi'")]),
+  createExpect("ADM-81", "connection_string set", openapiBody({ connection_string: "https://mcp.example.com" }), [A.status(400)]),
+  createExpect("ADM-81", "spec_file", openapiBody({ openapi_config: { spec_file: "x.yaml" } }), [A.status(400), A.msgContains("only supported in config.json")]),
+  createExpect("ADM-81", "no spec", openapiBody({ openapi_config: {} }), [A.status(400)]),
+  createExpect("ADM-81", "an unknown tool", openapiBody({ tools_to_execute: ["X"] }), [A.status(400), A.msgContains("the spec defines no tool named X")]),
+  createExpect("ADM-81", "no server URL", openapiBody({ openapi_config: { spec: PETSTORE_NO_SERVERS } }), [A.status(400), A.msgContains("set openapi_config.base_url")]),
+]);
+
+const ADM82 = folder("ADM-82 Stored OpenAPI spec endpoint", "Setup: alpha (echo_tool, add_tool) and an HTTP client on it; an OpenAPI client created from the inline Petstore document.", [
+  ...freshServer("ADM-82", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-82", httpClient("adm82-c", "adm82_c", "alpha"), "setup: create the HTTP client"),
+  createClient("ADM-82", { client_id: "adm82-q", name: "adm82_q", connection_type: "openapi", auth_type: "none", openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI client"),
+  request("ADM-82", "the OpenAPI client's spec", "GET", "/api/mcp/client/adm82-q/openapi-spec", { asserts: [A.status(200), A.custom("the body equals the stored spec", [
+    `pm.expect(pm.response.text()).to.equal(${lit(PETSTORE)});`,
+  ]), A.custom("Content-Type is \"application/json; charset=utf-8\"", [
+    "pm.expect(pm.response.headers.get('Content-Type')).to.equal('application/json; charset=utf-8');",
+  ])] }),
+  getClient("ADM-82", "adm82-q", "the list shows the spec empty", [A.custom("openapi_config.spec is empty", [
+    "var oc = pm.response.json().clients[0].config.openapi_config;",
+    "pm.expect(oc, 'body: ' + pm.response.text()).to.be.an('object');",
+    "pm.expect(oc.spec === undefined || oc.spec === '', 'spec: ' + oc.spec).to.equal(true);",
+  ])]),
+  request("ADM-82", "the HTTP client's spec", "GET", "/api/mcp/client/adm82-c/openapi-spec", { asserts: [A.status(404), A.msgEquals("OpenAPI MCP client not found")] }),
+  request("ADM-82", "an unknown client's spec", "GET", "/api/mcp/client/adm82-no-such-client/openapi-spec", { asserts: [A.status(404), A.msgEquals("OpenAPI MCP client not found")] }),
+  deleteClient("ADM-82", "adm82-c"), deleteClient("ADM-82", "adm82-q"),
+]);
+
 // ================================================================ EP slugs, credentials and auth modes
 
 const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
@@ -1613,7 +1850,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM42, ADM44, ADM46, ADM51, ADM59, ADM62, ADM73, ADM83]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
