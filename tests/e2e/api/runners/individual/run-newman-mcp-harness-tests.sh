@@ -218,11 +218,11 @@ write_config() {
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
   "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
   "providers": {
-    "openai": { "keys": [{ "name": "mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
+    "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/openai", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
-    "anthropic": { "keys": [{ "name": "mock", "value": "sk-ant-mock", "models": ["*"], "weight": 1 }],
+    "anthropic": { "keys": [{ "name": "anthropic-mock", "value": "sk-ant-mock", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/anthropic", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
-    "gemini": { "keys": [{ "name": "mock", "value": "mock-gemini-key", "models": ["*"], "weight": 1 }],
+    "gemini": { "keys": [{ "name": "gemini-mock", "value": "mock-gemini-key", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/genai/v1beta", "max_retries": 0, "default_request_timeout_in_seconds": 30 } }
   },
   "framework": { "pricing": {
