@@ -246,6 +246,55 @@ describe("analyzeTranslationCalls", () => {
 		expect(validateCall(entry, { mcp: { common: { configCopied: "Configuration copied" } }, common: {} })).toEqual([]);
 	});
 
+	it("applies useTranslation keyPrefix to static, plural, and Trans keys", () => {
+		const entries = analyzeTranslationCalls(
+			makeSourceFile(`
+				const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" });
+				tcpx("phraseDefaultsCallout");
+				tcpx("phrases", { count: 2 });
+				const element = <Trans t={tcpx} i18nKey="nested" />;
+			`),
+		);
+		const resources = {
+			models: {
+				routing: {
+					complexityUi: {
+						phraseDefaultsCallout: "Defaults",
+						phrases_one: "{{count}} phrase",
+						phrases_other: "{{count}} phrases",
+						nested: "Nested",
+					},
+				},
+			},
+		};
+		expect(entries.map((entry) => entry.key)).toEqual([
+			"routing.complexityUi.phraseDefaultsCallout",
+			"routing.complexityUi.phrases",
+			"routing.complexityUi.nested",
+		]);
+		for (const entry of entries) {
+			expect(validateCall(entry, resources)).toEqual([]);
+		}
+	});
+
+	it("applies useTranslation keyPrefix to dynamic families", () => {
+		const entries = analyzeTranslationCalls(
+			makeSourceFile(
+				'const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" }); tcpx(`status.${value}`);',
+				"ui/models.tsx",
+			),
+		);
+		expect(entries[0]).toEqual(expect.objectContaining({ dynamic: true, prefix: "routing.complexityUi.status." }));
+		const review = {
+			prefix: "routing.complexityUi.status.",
+			producers: entries.map((entry) => `${entry.file}:${entry.line}:${entry.column}`),
+			candidates: ["routing.complexityUi.status.ready"],
+			englishResults: { "routing.complexityUi.status.ready": "resolved" },
+		};
+		const resources = { models: { routing: { complexityUi: { status: { ready: "Ready" } } } } };
+		expect(validateDynamicFamilies(entries, resources, [review])).toEqual([]);
+	});
+
 	it("resolves namespace-like key subtrees against an explicit ns option", () => {
 		const [entry] = analyzeTranslationCalls(
 			makeSourceFile(`const { t } = useTranslation("mcp"); t("common.ofEntries", { ns: "mcp", from: 1, to: 1, total: 1 });`),

@@ -355,7 +355,11 @@ function namespaceFromType(typeNode) {
 }
 
 function makeScope(parent = null) {
-	return { parent, namespace: parent ? parent.namespace : "common", aliases: new Map() };
+	return { parent, namespace: parent ? parent.namespace : "common", keyPrefix: parent ? parent.keyPrefix : null, aliases: new Map() };
+}
+
+function applyKeyPrefix(keyPrefix, key) {
+	return keyPrefix ? `${keyPrefix}.${key}` : key;
 }
 
 function lookupAlias(scope, name) {
@@ -439,7 +443,7 @@ function sharesBehavior(left, right) {
 export function analyzeTranslationCalls(sourceFile) {
 	const entries = [];
 
-	function addEntry(node, namespace, keyExpression, optionsNode, kind, optionOverrides = {}) {
+	function addEntry(node, namespace, keyExpression, optionsNode, kind, optionOverrides = {}, keyPrefix = null) {
 		const location = sourceLocation(sourceFile, node);
 		const base = {
 			file: sourceFile.fileName.replaceAll("\\", "/"),
@@ -454,11 +458,11 @@ export function analyzeTranslationCalls(sourceFile) {
 		const keys = staticKeyValues(keyExpression);
 		if (keys) {
 			for (const key of keys) {
-				entries.push({ ...base, key, dynamic: false, prefix: null });
+				entries.push({ ...base, key: applyKeyPrefix(keyPrefix, key), dynamic: false, prefix: null });
 			}
 			return;
 		}
-		entries.push({ ...base, key: null, dynamic: true, prefix: dynamicPrefix(keyExpression) });
+		entries.push({ ...base, key: null, dynamic: true, prefix: applyKeyPrefix(keyPrefix, dynamicPrefix(keyExpression)) });
 	}
 
 	function visit(node, scope) {
@@ -473,7 +477,7 @@ export function analyzeTranslationCalls(sourceFile) {
 				if (ts.isIdentifier(parameter.name)) {
 					const namespace = namespaceFromType(parameter.type);
 					if (namespace !== undefined) {
-						functionScope.aliases.set(parameter.name.text, namespace);
+						functionScope.aliases.set(parameter.name.text, { namespace, keyPrefix: null });
 					}
 				}
 			}
@@ -489,7 +493,13 @@ export function analyzeTranslationCalls(sourceFile) {
 					: ts.isStringLiteral(namespaceArgument) || ts.isNoSubstitutionTemplateLiteral(namespaceArgument)
 						? namespaceArgument.text
 						: null;
+				const keyPrefixNode = optionValue(initializer.arguments[1], "keyPrefix");
+				const keyPrefix =
+					keyPrefixNode && (ts.isStringLiteral(keyPrefixNode) || ts.isNoSubstitutionTemplateLiteral(keyPrefixNode))
+						? keyPrefixNode.text
+						: null;
 				scope.namespace = namespace;
+				scope.keyPrefix = keyPrefix;
 				if (ts.isObjectBindingPattern(node.name)) {
 					for (const element of node.name.elements) {
 						if (
@@ -498,9 +508,9 @@ export function analyzeTranslationCalls(sourceFile) {
 							element.propertyName.text === "t" &&
 							ts.isIdentifier(element.name)
 						) {
-							scope.aliases.set(element.name.text, namespace);
+							scope.aliases.set(element.name.text, { namespace, keyPrefix });
 						} else if (!element.propertyName && ts.isIdentifier(element.name) && element.name.text === "t") {
-							scope.aliases.set("t", namespace);
+							scope.aliases.set("t", { namespace, keyPrefix });
 						}
 					}
 				}
@@ -508,8 +518,11 @@ export function analyzeTranslationCalls(sourceFile) {
 		}
 		if (ts.isCallExpression(node) && node.arguments.length > 0) {
 			let namespace;
+			let keyPrefix = null;
 			if (ts.isIdentifier(node.expression)) {
-				namespace = lookupAlias(scope, node.expression.text);
+				const alias = lookupAlias(scope, node.expression.text);
+				namespace = alias?.namespace;
+				keyPrefix = alias?.keyPrefix ?? null;
 			} else if (
 				ts.isPropertyAccessExpression(node.expression) &&
 				node.expression.name.text === "t" &&
@@ -519,7 +532,7 @@ export function analyzeTranslationCalls(sourceFile) {
 				namespace = "common";
 			}
 			if (namespace !== undefined) {
-				addEntry(node, namespace, node.arguments[0], node.arguments[1], "t");
+				addEntry(node, namespace, node.arguments[0], node.arguments[1], "t", {}, keyPrefix);
 			}
 		}
 		if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
@@ -556,17 +569,16 @@ export function analyzeTranslationCalls(sourceFile) {
 					}
 				}
 				if (keyExpression) {
-					const inheritedNamespace = translationFunctionNode
-						? ts.isIdentifier(translationFunctionNode)
-							? (lookupAlias(scope, translationFunctionNode.text) ?? null)
-							: null
-						: scope.namespace;
+					const inheritedAlias =
+						translationFunctionNode && ts.isIdentifier(translationFunctionNode) ? lookupAlias(scope, translationFunctionNode.text) : null;
+					const inheritedNamespace = translationFunctionNode ? (inheritedAlias?.namespace ?? null) : scope.namespace;
+					const inheritedKeyPrefix = translationFunctionNode ? (inheritedAlias?.keyPrefix ?? null) : scope.keyPrefix;
 					const namespace = !namespaceNode
 						? inheritedNamespace
 						: ts.isStringLiteral(namespaceNode) || ts.isNoSubstitutionTemplateLiteral(namespaceNode)
 							? namespaceNode.text
 							: null;
-					addEntry(node, namespace, keyExpression, undefined, "trans", optionOverrides);
+					addEntry(node, namespace, keyExpression, undefined, "trans", optionOverrides, inheritedKeyPrefix);
 				}
 			}
 		}
