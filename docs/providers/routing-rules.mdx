@@ -154,10 +154,10 @@ current_time.getHours('America/Los_Angeles')   // 0-23 in that zone
 current_time.getDayOfWeek()                    // 0 = Sunday through 6 = Saturday, UTC
 ```
 
-**DeepSeek off-peak.** Send `deepseek-chat` to an off-peak target from 04:00 up to 06:00 UTC:
+**DeepSeek off-peak.** Send `deepseek-v4-flash` to an off-peak target from 04:00 up to 06:00 UTC:
 
 ```cel
-model == "deepseek-chat" && current_time.getHours('UTC') >= 4 && current_time.getHours('UTC') < 6
+model == "deepseek-v4-flash" && current_time.getHours('UTC') >= 4 && current_time.getHours('UTC') < 6
 ```
 
 Weekdays only (Monday through Friday, UTC):

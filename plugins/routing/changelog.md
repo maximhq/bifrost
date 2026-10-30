@@ -1,1 +1,2 @@
 - feat: routing rules can read the request time through a new `current_time` CEL timestamp variable
+- fix: routing rules that reference a variable with a leading dot (`.current_time`, `.complexity_tier`) now read the clock and compute complexity like the bare name
