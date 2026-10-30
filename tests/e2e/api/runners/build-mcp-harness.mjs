@@ -1555,6 +1555,10 @@ const ADM03 = folder("ADM-03 Wrong password and VKs are not admin credentials", 
   vkDelete("ADM-03", "teardown: delete the virtual key", "adm03_vk1"),
 ]);
 
+// toolPrice sets tool_pricing with PUT, the only endpoint that takes it. Priced folders clear it again before
+// deleting the client, or the next client with the same name inherits the price.
+const toolPrice = (id, clientId, title, pricing) => request(id, title, "PUT", `/api/mcp/client/${clientId}`, { body: { tool_pricing: pricing }, asserts: [A.status(200)] });
+
 const PRIVATE_MSG = "unauthenticated callers cannot register MCP clients that connect to loopback, private-network, or link-local addresses";
 const adm18Body = (url) => ({ name: "adm18_x", connection_type: "http", auth_type: "none", connection_string: url });
 const ADM18 = folder("ADM-18 Unauthenticated caller cannot target private addresses", "Setup: /api/mcp/client in whitelisted_routes, so its requests carry no credential; alpha (echo_tool, add_tool).", [
@@ -3052,6 +3056,323 @@ const FAIL18 = folder("FAIL-18 Malformed tools/call reply", "Setup: alpha (echo_
   deleteClient("FAIL-18", "fail-18-a"),
 ]);
 
+// ================================================================ LOG log entries written by tool calls
+
+// LOG tests run on setClient's alpha (echo_tool, add_tool) as client alpha, per call, and tag each call with a
+// folder-unique x-request-id R, which becomes the MCP log entry's id.
+const ALPHA_TOOLS_TEXT = "alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, tools_to_execute [\"*\"]";
+const reqId = (R) => ({ key: "x-request-id", value: R });
+const execR = (id, title, R, tool, args, asserts, { query = "", headers = [] } = {}) => execBody(id, title,
+  { id: `${R}-call`, type: "function", function: { name: tool, arguments: lit(args) } }, asserts, { query, headers: [reqId(R), ...headers] });
+const rpcR = (id, title, path, R, tok, asserts, headers = []) => rpc(id, title, call("alpha-echo_tool", { text: tok }), { path, headers: [MCP_ACCEPT, reqId(R), ...headers], asserts });
+// logRow polls GET /api/mcp-logs/R for up to about 15s (log entries are written in 5s batches), then asserts on it.
+const pollLogRow = (R) => [
+  "var left = 30;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const logRow = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/${R}`, { pre: pollLogRow(R), asserts: [A.status(200), ...asserts] });
+const noRowYet = (id, title, R) => request(id, title, "GET", `/api/mcp-logs/${R}`, { asserts: [A.status(404), A.msgEquals("MCP log not found")] });
+const rowIs = (field, v) => A.custom(`${field} is ${lit(v)}`, [`pm.expect(pm.response.json()[${lit(field)}], 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+const rowLacks = (...fields) => A.custom(`no ${fields.join(" or ")}`, fields.map((f) => `pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property(${lit(f)});`));
+const rowLatency = () => A.custom("latency is a number", ["pm.expect(pm.response.json().latency, 'body: ' + pm.response.text()).to.be.a('number');"]);
+const rowErrorMsg = (how, m) => A.custom(`error_details.error.message ${how === "equals" ? "is" : "contains"} ${lit(m)}`, [
+  "var e = pm.response.json().error_details;",
+  `pm.expect(e && e.error && e.error.message, 'body: ' + pm.response.text()).to.${how === "equals" ? "equal" : "include"}(${lit(m)});`,
+]);
+const ECHO_ROW = [rowIs("server_label", "alpha"), rowIs("tool_name", "echo_tool"), rowIs("status", "success")];
+const logVK = (id, varPrefix, extra = {}) => vkCreate(id, "setup: create a VK granting alpha", { name: `${id} vk`, mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }], ...extra }, varPrefix);
+const vkH = (varPrefix) => ({ key: "x-bf-vk", value: `{{${varPrefix}}}` });
+const logsCount = (id, title, query, n, pre = []) => request(id, title, "GET", `/api/mcp-logs?${query}`, { pre, asserts: [A.status(200), A.custom(`total_count is ${n}`, [
+  `pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(${n});`,
+])] });
+const CLAUDE_UA = "claude-cli/2.1.0 (external, cli)";
+const UA_H = { key: "User-Agent", value: CLAUDE_UA };
+const PROTOCOL_FAULT = { faults: { err_rate: 1, err_kind: "protocol" } };
+
+const LOG01 = folder("LOG-01 POST /v1/mcp/tool/execute (chat) writes a log entry", `Setup: ${ALPHA_TOOLS_TEXT}; the call carries x-request-id log01-r and User-Agent "${CLAUDE_UA}".`, [
+  ...setClient("LOG-01", {}),
+  callsBefore("LOG-01", "log01_calls", "echo_tool"),
+  execR("LOG-01", "execute alpha-echo_tool", "log01-r", "alpha-echo_tool", { text: "log01" }, [A.status(200)], { headers: [UA_H] }),
+  logRow("LOG-01", "the log entry", "log01-r", [...ECHO_ROW, rowLatency(), rowIs("arguments", lit({ text: "log01" })), A.custom("result is present", [
+    "pm.expect(pm.response.json().result, 'body: ' + pm.response.text()).to.not.equal(undefined);",
+    "pm.expect(pm.response.json().result).to.not.equal(null);",
+  ]), rowIs("user_agent", CLAUDE_UA), rowIs("app", "Claude Code"), rowLacks("llm_request_id")]),
+  mockGet("LOG-01", "alpha", "alpha counted the call", [callsPlusOne("log01_calls", "echo_tool")]),
+  deleteClient("LOG-01", "log-01-a"),
+]);
+
+const LOG02 = folder("LOG-02 Responses format", `Setup: ${ALPHA_TOOLS_TEXT}; execute with ?format=responses and x-request-id log02-r.`, [
+  ...setClient("LOG-02", {}),
+  execBody("LOG-02", "execute alpha-echo_tool in the Responses format", { call_id: "log02-call", name: "alpha-echo_tool", arguments: lit({ text: "log02" }) },
+    [A.status(200), A.jsonEquals("type", "function_call_output")], { query: "?format=responses", headers: [reqId("log02-r")] }),
+  logRow("LOG-02", "the log entry", "log02-r", [rowIs("status", "success"), rowIs("tool_name", "echo_tool")]),
+  deleteClient("LOG-02", "log-02-a"),
+]);
+
+const LOG03 = folder("LOG-03 Unknown format", `Setup: ${ALPHA_TOOLS_TEXT}; execute with ?format=xml and x-request-id log03-r.`, [
+  ...setClient("LOG-03", {}),
+  execR("LOG-03", "execute with format=xml", "log03-r", "alpha-echo_tool", {}, [A.status(400), A.msgEquals("Invalid format value, must be 'chat' or 'responses'")], { query: "?format=xml" }),
+  execR("LOG-03", "control: a valid call after it", "log03-ctl", "alpha-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-03", "control: the valid call's log entry was written", "log03-ctl", []),
+  noRowYet("LOG-03", "no log entry for log03-r", "log03-r"),
+  deleteClient("LOG-03", "log-03-a"),
+]);
+
+const LOG04 = folder("LOG-04 /mcp tools/call writes a log entry", `Setup: ${ALPHA_TOOLS_TEXT}; tools/call on /mcp with x-request-id log04-r.`, [
+  ...setClient("LOG-04", {}),
+  rpcR("LOG-04", "tools/call alpha-echo_tool on /mcp", "/mcp", "log04-r", "log04", [A.status(200), A.custom("result.content[0].text is the echo", [
+    "pm.expect(pm.response.json().result.content[0].text, 'body: ' + pm.response.text()).to.equal('echo_tool:{\"text\":\"log04\"}');",
+  ])]),
+  logRow("LOG-04", "the log entry", "log04-r", ECHO_ROW),
+  deleteClient("LOG-04", "log-04-a"),
+]);
+
+const LOG05 = folder("LOG-05 /mcp/{client slug} tools/call", `Setup: ${ALPHA_TOOLS_TEXT} (slug "alpha"); tools/call on /mcp/alpha with x-request-id log05-r.`, [
+  ...setClient("LOG-05", {}),
+  rpcR("LOG-05", "tools/call alpha-echo_tool on /mcp/alpha", "/mcp/alpha", "log05-r", "log05", [A.status(200)]),
+  logRow("LOG-05", "the log entry", "log05-r", ECHO_ROW),
+  deleteClient("LOG-05", "log-05-a"),
+]);
+
+const LOG09_POLL = [
+  "var left = 30;",
+  "function poll() {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs?tool_names=echo_tool&content_search=log09-', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    if ((!err && res.code === 200 && res.json().pagination.total_count >= 2) || --left <= 0) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+// pollLogCount re-reads /api/mcp-logs?<query> for up to about 15s until total_count reaches n.
+const pollLogCount = (query, n) => [
+  "var left = 30;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs?${query}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  `    if ((!err && res.code === 200 && res.json().pagination.total_count >= ${n}) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const LOG09 = folder("LOG-09 Code mode logs the nested calls only", "Setup: alpha (echo_tool, add_tool) registered as client alpha, a code-mode client, auth none, per call, tools_to_execute [\"*\"]; listToolFiles, readToolFile and getToolDocs are each called once; executeToolCode calls echo_tool twice.", [
+  ...setClient("LOG-09", { is_code_mode_client: true }),
+  execR("LOG-09", "listToolFiles", "log09-l", "listToolFiles", {}, [A.status(200)]),
+  execR("LOG-09", "readToolFile servers/alpha.pyi", "log09-f", "readToolFile", { fileName: "servers/alpha.pyi" }, [A.status(200)]),
+  execR("LOG-09", "getToolDocs alpha/echo_tool", "log09-d", "getToolDocs", { server: "alpha", tool: "echo_tool" }, [A.status(200)]),
+  execR("LOG-09", "executeToolCode calls echo_tool twice", "log09-r", "executeToolCode", { code: "a = alpha.echo_tool(text=\"log09-a\")\nb = alpha.echo_tool(text=\"log09-b\")\nresult = [a, b]" }, [A.status(200)]),
+  request("LOG-09", "two echo_tool log entries with distinct ids", "GET", "/api/mcp-logs?tool_names=echo_tool&content_search=log09-", { pre: LOG09_POLL, asserts: [A.status(200), A.custom("total_count is 2 and the ids differ", [
+    "var b = pm.response.json();",
+    "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(2);",
+    "pm.expect(b.logs[0].id).to.not.equal(b.logs[1].id);",
+  ])] }),
+  // A later call whose nested log entry lands after any log entry the meta tool calls could have queued.
+  execR("LOG-09", "control: a later executeToolCode call", "log09-c", "executeToolCode", { code: "alpha.echo_tool(text=\"log09ctl\")\nresult = 1" }, [A.status(200)]),
+  logsCount("LOG-09", "control: the later call's nested log entry landed", "tool_names=echo_tool&content_search=log09ctl", 1, pollLogCount("tool_names=echo_tool&content_search=log09ctl", 1)),
+  noRowYet("LOG-09", "no log entry for the executeToolCode call", "log09-r"),
+  noRowYet("LOG-09", "no log entry for the listToolFiles call", "log09-l"),
+  noRowYet("LOG-09", "no log entry for the readToolFile call", "log09-f"),
+  noRowYet("LOG-09", "no log entry for the getToolDocs call", "log09-d"),
+  logsCount("LOG-09", "no log entries for the meta tools", "tool_names=executeToolCode,listToolFiles,readToolFile,getToolDocs", 0),
+  deleteClient("LOG-09", "log-09-a"),
+]);
+
+const LOG11 = folder("LOG-11 Unknown tool", `Setup: ${ALPHA_TOOLS_TEXT}; execute alpha-nope with x-request-id log11-r.`, [
+  ...setClient("LOG-11", {}),
+  execR("LOG-11", "execute alpha-nope", "log11-r", "alpha-nope", {}, [A.status(400), A.msgEquals("tool 'alpha-nope' is not available or not permitted")]),
+  logRow("LOG-11", "the log entry", "log11-r", [rowIs("status", "error"), rowIs("tool_name", "nope"), rowErrorMsg("equals", "tool 'alpha-nope' is not available or not permitted"), rowLacks("latency", "cost")]),
+  callsEmpty("LOG-11", "alpha"),
+  deleteClient("LOG-11", "log-11-a"),
+]);
+
+const LOG12 = folder("LOG-12 Tool outside tools_to_execute", "Setup: alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, tools_to_execute [\"add_tool\"]; execute alpha-echo_tool with x-request-id log12-r.", [
+  ...setClient("LOG-12", { tools_to_execute: ["add_tool"] }),
+  execR("LOG-12", "execute alpha-echo_tool", "log12-r", "alpha-echo_tool", {}, [A.status(400), A.msgContains("is not permitted (not in client's ToolsToExecute allow-list)")]),
+  logRow("LOG-12", "the log entry", "log12-r", [rowIs("status", "error")]),
+  deleteClient("LOG-12", "log-12-a"),
+]);
+
+// protocolFault is the LOG-13 and LOG-16 setup: alpha fails every tools/call with a JSON-RPC error.
+const protocolFault = (id) => mockPost(id, "alpha", "faults", "setup: alpha fails every tools/call with a JSON-RPC error", PROTOCOL_FAULT);
+const clearFaults = (id) => mockPost(id, "alpha", "faults/clear", "teardown: clear alpha's faults");
+const LOG13 = folder("LOG-13 Upstream protocol failure", `Setup: ${ALPHA_TOOLS_TEXT}; alpha fails every tools/call with a JSON-RPC error (err_rate 1, err_kind protocol).`, [
+  ...setClient("LOG-13", {}), protocolFault("LOG-13"),
+  execR("LOG-13", "execute alpha-echo_tool", "log13-r", "alpha-echo_tool", {}, [A.status(400), A.msgContains("MCP tool call failed for alpha-echo_tool")]),
+  logRow("LOG-13", "the log entry", "log13-r", [rowIs("status", "error"), rowErrorMsg("contains", "MCP tool call failed for alpha-echo_tool")]),
+  clearFaults("LOG-13"), deleteClient("LOG-13", "log-13-a"),
+]);
+
+const LOG14 = folder("LOG-14 Upstream timeout", "Setup: alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, tools_to_execute [\"*\"], tool_execution_timeout 2; alpha hangs 3s on every request.", [
+  ...setClient("LOG-14", { tool_execution_timeout: 2 }),
+  mockPost("LOG-14", "alpha", "faults", "setup: alpha hangs 3s", { faults: { hang: "3s" } }),
+  execR("LOG-14", "execute alpha-echo_tool", "log14-r", "alpha-echo_tool", {}, [A.status(400), A.msgContains("MCP tool call timed out after 2s: alpha-echo_tool")]),
+  logRow("LOG-14", "the log entry", "log14-r", [rowIs("status", "error")]),
+  clearFaults("LOG-14"), deleteClient("LOG-14", "log-14-a"),
+]);
+
+const LOG16 = folder("LOG-16 Tool error over /mcp", `Setup: as LOG-13 (${ALPHA_TOOLS_TEXT}; alpha fails every tools/call with a JSON-RPC error).`, [
+  ...setClient("LOG-16", {}), protocolFault("LOG-16"),
+  rpcR("LOG-16", "tools/call alpha-echo_tool on /mcp", "/mcp", "log16-r", "log16", [A.status(200), toolResultError("Tool execution failed: ", null)]),
+  logRow("LOG-16", "the log entry", "log16-r", [rowIs("status", "error")]),
+  clearFaults("LOG-16"), deleteClient("LOG-16", "log-16-a"),
+]);
+
+const LOG17 = folder("LOG-17 Global content logging off", `Setup: ${ALPHA_TOOLS_TEXT}; disable_content_logging true.`, [
+  readConfig("LOG-17"), ...setClient("LOG-17", {}),
+  execR("LOG-17", "control: a call before the change", "log17-ctl", "alpha-echo_tool", { text: "log17-on" }, [A.status(200)]),
+  putConfig("LOG-17", "setup: disable_content_logging true", ["cc.disable_content_logging = true;"], [A.status(200)]),
+  execR("LOG-17", "execute alpha-echo_tool", "log17-r", "alpha-echo_tool", { text: "log17-off" }, [A.status(200)]),
+  logRow("LOG-17", "the log entry has no content", "log17-r", [rowLacks("arguments", "result"), rowIs("status", "success"), rowLatency(), rowIs("tool_name", "echo_tool")]),
+  logRow("LOG-17", "control: the earlier log entry was written", "log17-ctl", []),
+  logsCount("LOG-17", "control: content search finds the earlier log entry", "content_search=log17-on", 1),
+  logsCount("LOG-17", "content search finds nothing for the new log entry", "content_search=log17-off", 0),
+  restoreConfig("LOG-17"), deleteClient("LOG-17", "log-17-a"),
+]);
+
+const NO_CONTENT_H = { key: "x-bf-disable-content-logging", value: "true" };
+const LOG18 = folder("LOG-18 Per-request override header", `Setup: ${ALPHA_TOOLS_TEXT}; calls send x-bf-disable-content-logging: true with allow_per_request_content_storage_override on, then off.`, [
+  readConfig("LOG-18"), ...setClient("LOG-18", {}),
+  putConfig("LOG-18", "setup: allow_per_request_content_storage_override true", ["cc.allow_per_request_content_storage_override = true;"], [A.status(200)]),
+  execR("LOG-18", "execute with the header, override on", "log18-on", "alpha-echo_tool", { text: "log18-on" }, [A.status(200)], { headers: [NO_CONTENT_H] }),
+  putConfig("LOG-18", "setup: allow_per_request_content_storage_override false", ["cc.allow_per_request_content_storage_override = false;"], [A.status(200)]),
+  execR("LOG-18", "execute with the header, override off", "log18-off", "alpha-echo_tool", { text: "log18-off" }, [A.status(200)], { headers: [NO_CONTENT_H] }),
+  logRow("LOG-18", "override on: no content", "log18-on", [rowLacks("arguments", "result")]),
+  logRow("LOG-18", "override off: content stored", "log18-off", [rowIs("arguments", lit({ text: "log18-off" })), A.custom("result is present", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.have.property('result');"])]),
+  restoreConfig("LOG-18"), deleteClient("LOG-18", "log-18-a"),
+]);
+
+const rowVK = (varPrefix) => A.custom("virtual_key_id is the VK's id", [`pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get(${lit(varPrefix + "_id")}));`]);
+const LOG19 = folder("LOG-19 VK turns content logging off", `Setup: ${ALPHA_TOOLS_TEXT}; a VK granting alpha with disable_content_logging true.`, [
+  ...setClient("LOG-19", {}), logVK("LOG-19", "log19_vk", { disable_content_logging: true }),
+  execR("LOG-19", "execute with the VK", "log19-r", "alpha-echo_tool", { text: "log19" }, [A.status(200)], { headers: [vkH("log19_vk")] }),
+  logRow("LOG-19", "the VK's log entry has no content", "log19-r", [rowVK("log19_vk"), rowLacks("arguments", "result")]),
+  execR("LOG-19", "control: a call without the VK", "log19-ctl", "alpha-echo_tool", { text: "log19-ctl" }, [A.status(200)]),
+  logRow("LOG-19", "control: the call without the VK stores content", "log19-ctl", [rowIs("arguments", lit({ text: "log19-ctl" })), A.custom("result is present", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.have.property('result');"])]),
+  vkDelete("LOG-19", "teardown: delete the VK", "log19_vk"), deleteClient("LOG-19", "log-19-a"),
+]);
+
+const LOG20 = folder("LOG-20 VK attribution", `Setup: ${ALPHA_TOOLS_TEXT}; a VK "LOG-20 vk" granting alpha; the call carries x-bf-vk.`, [
+  ...setClient("LOG-20", {}), logVK("LOG-20", "log20_vk"),
+  execR("LOG-20", "execute with the VK", "log20-r", "alpha-echo_tool", {}, [A.status(200)], { headers: [vkH("log20_vk")] }),
+  logRow("LOG-20", "the log entry names the VK", "log20-r", [rowVK("log20_vk"), rowIs("virtual_key_name", "LOG-20 vk")]),
+  request("LOG-20", "?virtual_key_ids= finds the log entry", "GET", "/api/mcp-logs?virtual_key_ids={{log20_vk_id}}", { asserts: [A.status(200), A.custom("exactly one log entry, log20-r, and it carries the VK id", [
+    "var b = pm.response.json();",
+    "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(b.logs.map(function (l) { return l.id; })).to.eql(['log20-r']);",
+    "b.logs.forEach(function (l) { pm.expect(l.virtual_key_id).to.equal(pm.collectionVariables.get('log20_vk_id')); });",
+  ])] }),
+  vkDelete("LOG-20", "teardown: delete the VK", "log20_vk"), deleteClient("LOG-20", "log-20-a"),
+]);
+
+const clearPrice = (id, clientId) => toolPrice(id, clientId, "teardown: clear tool_pricing", {});
+const priceEcho = (id, clientId) => toolPrice(id, clientId, "setup: PUT tool_pricing echo_tool 0.25", { echo_tool: 0.25 });
+const pricedCalls = (id, p, setupPrefix = "") => [
+  execR(id, `${setupPrefix}a successful call`, `${p}-ok`, "alpha-echo_tool", {}, [A.status(200)]),
+  protocolFault(id),
+  execR(id, `${setupPrefix}a failing call`, `${p}-err`, "alpha-echo_tool", {}, [A.status(400)]),
+];
+const LOG21 = folder("LOG-21 Cost from tool_pricing", `Setup: ${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT; one successful call, then one failing call (JSON-RPC error).`, [
+  ...setClient("LOG-21", {}), priceEcho("LOG-21", "log-21-a"),
+  ...pricedCalls("LOG-21", "log21"),
+  logRow("LOG-21", "the successful log entry costs 0.25", "log21-ok", [rowIs("cost", 0.25)]),
+  logRow("LOG-21", "the failing log entry has no cost", "log21-err", [rowIs("status", "error"), rowLacks("cost")]),
+  clearFaults("LOG-21"), clearPrice("LOG-21", "log-21-a"), deleteClient("LOG-21", "log-21-a"),
+]);
+
+const LOG22 = folder("LOG-22 Cost survives a rename", `Setup: as LOG-21 (${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT; one successful and one failing call); then alpha is renamed alpha2.`, [
+  ...setClient("LOG-22", {}), priceEcho("LOG-22", "log-22-a"),
+  ...pricedCalls("LOG-22", "log22", "setup: "),
+  clearFaults("LOG-22"),
+  request("LOG-22", "setup: rename alpha to alpha2", "PUT", "/api/mcp/client/log-22-a", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
+  execR("LOG-22", "execute alpha2-echo_tool", "log22-new", "alpha2-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-22", "the new log entry costs 0.25 under alpha2", "log22-new", [rowIs("cost", 0.25), rowIs("server_label", "alpha2")]),
+  clearPrice("LOG-22", "log-22-a"), deleteClient("LOG-22", "log-22-a"),
+]);
+
+const LOG31 = folder("LOG-31 Filter data", `Setup: ${ALPHA_TOOLS_TEXT}; a VK "LOG-31 vk" granting alpha; one call with User-Agent "${CLAUDE_UA}" (as LOG-01) and one with the VK (as LOG-20).`, [
+  ...setClient("LOG-31", {}), logVK("LOG-31", "log31_vk"),
+  execR("LOG-31", "setup: a call with the Claude Code user agent", "log31-ua", "alpha-echo_tool", {}, [A.status(200)], { headers: [UA_H] }),
+  execR("LOG-31", "setup: a call with the VK", "log31-vk", "alpha-echo_tool", {}, [A.status(200)], { headers: [vkH("log31_vk")] }),
+  logRow("LOG-31", "setup: the user agent log entry was written", "log31-ua", []),
+  logRow("LOG-31", "setup: the VK log entry was written", "log31-vk", []),
+  request("LOG-31", "GET filterdata", "GET", "/api/mcp-logs/filterdata", { asserts: [A.status(200), A.custom(`tool_names has echo_tool; server_labels alpha; apps "Claude Code"; user_agents "${CLAUDE_UA}"; virtual_keys the VK`, [
+    "var b = pm.response.json();",
+    "pm.expect(b.tool_names, 'body: ' + pm.response.text()).to.include('echo_tool');",
+    "pm.expect(b.server_labels).to.include('alpha');",
+    "pm.expect(b.apps).to.include('Claude Code');",
+    `pm.expect(b.user_agents).to.include(${lit(CLAUDE_UA)});`,
+    "var vk = (b.virtual_keys || []).filter(function (v) { return v.id === pm.collectionVariables.get('log31_vk_id'); });",
+    "pm.expect(vk.length).to.equal(1);",
+    "pm.expect(vk[0].name).to.equal('LOG-31 vk');",
+  ])] }),
+  vkDelete("LOG-31", "teardown: delete the VK", "log31_vk"), deleteClient("LOG-31", "log-31-a"),
+]);
+
+const vkInFilter = (present, name, varPrefix = "log33_vk") => A.custom(present ? `virtual_keys has the VK named ${lit(name)}` : "virtual_keys does not have the deleted VK", [
+  `var vk = (pm.response.json().virtual_keys || []).filter(function (v) { return v.id === pm.collectionVariables.get(${lit(varPrefix + "_id")}); });`,
+  ...(present ? ["pm.expect(vk.length, 'body: ' + pm.response.text()).to.equal(1);", `pm.expect(vk[0].name).to.equal(${lit(name)});`] : ["pm.expect(vk.length, 'body: ' + pm.response.text()).to.equal(0);"]),
+]);
+const LOG33 = folder("LOG-33 Deleted VK in filter data", `Setup: ${ALPHA_TOOLS_TEXT}; a VK "LOG-33 vk" granting alpha, used once and then deleted; a second VK "LOG-33 live vk", used once and kept; hide_deleted_virtual_keys_in_filters off, then on.`, [
+  readConfig("LOG-33"),
+  putConfig("LOG-33", "setup: hide_deleted_virtual_keys_in_filters false", ["cc.hide_deleted_virtual_keys_in_filters = false;"], [A.status(200)]),
+  ...setClient("LOG-33", {}), logVK("LOG-33", "log33_vk"),
+  execR("LOG-33", "setup: a call with the VK", "log33-r", "alpha-echo_tool", {}, [A.status(200)], { headers: [vkH("log33_vk")] }),
+  logRow("LOG-33", "setup: the log entry was written", "log33-r", []),
+  vkCreate("LOG-33", "setup: create a second VK that stays", { name: "LOG-33 live vk", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }] }, "log33_live"),
+  execR("LOG-33", "setup: a call with the second VK", "log33-live", "alpha-echo_tool", {}, [A.status(200)], { headers: [vkH("log33_live")] }),
+  logRow("LOG-33", "setup: the second VK's log entry was written", "log33-live", []),
+  vkDelete("LOG-33", "setup: delete the VK", "log33_vk"),
+  request("LOG-33", "setting off: filterdata shows the VK as deleted", "GET", "/api/mcp-logs/filterdata?dimensions=virtual_keys", { asserts: [A.status(200), vkInFilter(true, "LOG-33 vk (deleted)")] }),
+  putConfig("LOG-33", "setup: hide_deleted_virtual_keys_in_filters true", ["cc.hide_deleted_virtual_keys_in_filters = true;"], [A.status(200)]),
+  request("LOG-33", "setting on: filterdata leaves the deleted VK out and keeps the live one", "GET", "/api/mcp-logs/filterdata?dimensions=virtual_keys", { asserts: [A.status(200), vkInFilter(false), vkInFilter(true, "LOG-33 live vk", "log33_live")] }),
+  restoreConfig("LOG-33"), vkDelete("LOG-33", "teardown: delete the second VK", "log33_live"), deleteClient("LOG-33", "log-33-a"),
+]);
+
+const LOG38 = folder("LOG-38 Delete logs", `Setup: ${ALPHA_TOOLS_TEXT}; authenticated; one call with x-request-id log38-r.`, [
+  ...setClient("LOG-38", {}),
+  execR("LOG-38", "setup: execute alpha-echo_tool", "log38-r", "alpha-echo_tool", {}, [A.status(200)]),
+  logRow("LOG-38", "control: the log entry exists", "log38-r", []),
+  request("LOG-38", "delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["log38-r"] }, asserts: [A.status(200), A.jsonMessage("MCP tool logs deleted successfully")] }),
+  noRowYet("LOG-38", "the log entry is gone", "log38-r"),
+  deleteClient("LOG-38", "log-38-a"),
+]);
+
+// LOG43_SERIES finds the duration-count series for the VK's calls and checks its labels and value.
+const LOG43_SERIES = String.raw`var vk = pm.collectionVariables.get('log43_vk_id');
+var lines = pm.response.text().split('\n').filter(function (l) { return l.indexOf('bifrost_mcp_client_operation_duration_seconds_count{') === 0 && l.indexOf('virtual_key_id="' + vk + '"') >= 0; });
+pm.expect(lines.length, 'matching series: ' + lines.join(' | ')).to.equal(1);
+var m = /^[^{]+\{(.*)\}\s+(\S+)$/.exec(lines[0]);
+var labels = {}, re = /(\w+)="((?:[^"\\]|\\.)*)"/g, x;
+while ((x = re.exec(m[1]))) { labels[x[1]] = x[2]; }
+pm.expect(labels.mcp_client, lines[0]).to.equal('alpha');
+pm.expect(labels.mcp_tool_name, lines[0]).to.equal('echo_tool');
+pm.expect(labels.mcp_method, lines[0]).to.equal('tools/call');
+pm.expect(labels.error_type || '', lines[0]).to.equal('');
+pm.expect(Number(m[2]), lines[0]).to.equal(1);`.split("\n");
+const LOG43_POLL = [
+  "var left = 20;",
+  "function poll() {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/metrics', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    var vk = pm.collectionVariables.get('log43_vk_id');",
+  "    if ((!err && res.code === 200 && res.text().indexOf('virtual_key_id=\"' + vk + '\"') >= 0) || --left <= 0) { return; }",
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+const LOG43 = folder("LOG-43 Prometheus metric on success", `Setup: ${ALPHA_TOOLS_TEXT}; telemetry on (the default); a VK granting alpha; one call with the VK, then GET /metrics.`, [
+  ...setClient("LOG-43", {}), logVK("LOG-43", "log43_vk"),
+  execR("LOG-43", "execute with the VK", "log43-r", "alpha-echo_tool", {}, [A.status(200)], { headers: [vkH("log43_vk")] }),
+  request("LOG-43", "GET /metrics", "GET", "/metrics", { pre: LOG43_POLL, asserts: [A.status(200), A.custom("bifrost_mcp_client_operation_duration_seconds_count for the VK: mcp_client alpha, mcp_tool_name echo_tool, mcp_method tools/call, error_type \"\", value 1", LOG43_SERIES)] }),
+  vkDelete("LOG-43", "teardown: delete the VK", "log43_vk"), deleteClient("LOG-43", "log-43-a"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -3085,7 +3406,7 @@ const collection = {
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
     section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB11, LIB13, LIB16, LIB18, LIB19, LIB20, LIB32, LIB33, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL14, FAIL16, FAIL18]),
   ],
 };
