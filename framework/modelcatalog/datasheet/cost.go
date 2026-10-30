@@ -345,6 +345,18 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	if pricing == nil {
 		return BatchCostDetails{}
 	}
+	// An image row reached through the chat/responses fallback has no batch image-token rate: price from a
+	// custom override alone, as before that fallback existed, or leave the row unpriced
+	if pricing.Mode == normalizeRequestType(schemas.ImageGenerationRequest) {
+		if lookupScopes.Provider == "" {
+			lookupScopes.Provider = string(provider)
+		}
+		overridden, applied := s.applyPricingOverrides(model, normalizeStreamRequestType(requestType), configstoreTables.TableModelPricing{}, lookupScopes)
+		if !applied {
+			return BatchCostDetails{}
+		}
+		pricing = &overridden
+	}
 
 	switch normalizeStreamRequestType(requestType) {
 	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
@@ -920,6 +932,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
 			AudioTokens:     u.OutputTokensDetails.AudioTokens,
+			ImageTokens:     u.OutputTokensDetails.ImageTokens,
 
 			StandardSpeechAudioTokens: u.OutputTokensDetails.StandardSpeechAudioTokens,
 			CustomSpeechAudioTokens:   u.OutputTokensDetails.CustomSpeechAudioTokens,
@@ -1101,6 +1114,15 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		textOutputCost -= float64(priced) * outputRate
 	}
 
+	// Image output tokens (an image model called over chat/responses) move off the text rate onto the
+	// image-token rate, like audio above. Rows with no image-token rate keep billing them as text.
+	outputImageCost := 0.0
+	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ImageTokens != nil && pricing.OutputCostPerImageToken != nil {
+		outputImageTokens := min(max(*usage.CompletionTokensDetails.ImageTokens, 0), completionTokens-outputAudioTokens)
+		outputImageCost = float64(outputImageTokens) * *pricing.OutputCostPerImageToken
+		textOutputCost -= float64(outputImageTokens) * outputRate
+	}
+
 	// Search query cost (billed on the output side)
 	searchCost := 0.0
 	if pricing.WebSearchCostPerRequest != nil && usage.ToolUsage != nil && usage.ToolUsage.WebSearch != nil {
@@ -1118,10 +1140,11 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 		inputAudioCost *= m
 		textOutputCost *= m
 		outputAudioCost *= m
+		outputImageCost *= m
 	}
 
 	inputCost := textInputCost + cacheReadCost + cacheWriteCost + inputAudioCost
-	outputCost := textOutputCost + outputAudioCost + searchCost
+	outputCost := textOutputCost + outputAudioCost + outputImageCost + searchCost
 
 	cost := &schemas.BifrostCost{
 		InputCost:  inputCost,
@@ -1136,10 +1159,11 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 			CachedWriteCost: cacheWriteCost,
 		}
 	}
-	if textOutputCost != 0 || outputAudioCost != 0 || searchCost != 0 {
+	if textOutputCost != 0 || outputAudioCost != 0 || outputImageCost != 0 || searchCost != 0 {
 		cost.OutputCostDetails = &schemas.OutputCostDetails{
 			TextCost:          textOutputCost,
 			AudioCost:         outputAudioCost,
+			ImageCost:         outputImageCost,
 			SearchQueriesCost: searchCost,
 		}
 	}
@@ -1661,12 +1685,25 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 // imageQuality: "low", "medium", "high", "standard", "auto" use quality-specific rates when available; other values use base/size-tier rates.
 func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, width, height, pixels int, imageQuality string, tier serviceTier) float64 {
 	// Try token-based pricing first
-	var outputTextTokens, outputImageTokens int
-	if imageUsage.OutputTokensDetails != nil {
-		outputImageTokens = imageUsage.OutputTokensDetails.ImageTokens
-		outputTextTokens = imageUsage.OutputTokensDetails.TextTokens
-	} else {
+	var outputTextTokens, outputImageTokens, reasoningTokens int
+	if d := imageUsage.OutputTokensDetails; d != nil {
+		outputImageTokens, outputTextTokens, reasoningTokens = d.ImageTokens, d.TextTokens, d.ReasoningTokens
+	}
+	// Thinking billed on top of a pixel or per-image charge, when the row cannot price image tokens
+	reasoningCost := 0.0
+	switch {
+	case outputImageTokens > 0 || outputTextTokens > 0:
+		// Output the details leave unattributed bills at the text rate, and never less than the reported
+		// thinking tokens: Gemini can report a candidatesTokenCount below its own IMAGE detail
+		outputTextTokens += max(imageUsage.OutputTokens-outputImageTokens-outputTextTokens, reasoningTokens, 0)
+	case imageUsage.OutputTokensDetails == nil:
 		outputImageTokens = imageUsage.OutputTokens
+	case reasoningTokens > 0 && pricing.OutputCostPerImageToken != nil:
+		// No modality breakdown: output is image tokens, except reported thinking, which bills as text
+		outputTextTokens = min(reasoningTokens, imageUsage.OutputTokens)
+		outputImageTokens = imageUsage.OutputTokens - outputTextTokens
+	case reasoningTokens > 0:
+		reasoningCost = float64(min(reasoningTokens, imageUsage.OutputTokens)) * tieredOutputRate(pricing, totalTokens, tier)
 	}
 
 	// Same as the input side: a row with no token rate falls through to pixel/image rates.
@@ -1683,7 +1720,7 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
 			numOutputImages = imageUsage.OutputTokensDetails.NImages
 		}
-		return float64(pixels*numOutputImages) * *pricing.OutputCostPerPixel
+		return reasoningCost + float64(pixels*numOutputImages)**pricing.OutputCostPerPixel
 	}
 
 	// Fall back to per-image count pricing with size-tier selection
@@ -1709,10 +1746,10 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		perImageRate = pricing.OutputCostPerImage
 	}
 	if perImageRate != nil {
-		return float64(numOutputImages) * *perImageRate
+		return reasoningCost + float64(numOutputImages)**perImageRate
 	}
 
-	return 0
+	return reasoningCost
 }
 
 // imageSizeRates holds the per-image output rates for each size threshold:
@@ -2648,6 +2685,26 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
 			return &pricing, true
+		}
+	}
+
+	// An image model called over chat/responses (e.g. Gemini generateContent with no IMAGE modality) has only an image_generation row
+	if hasFallbackMode && requestType != schemas.DecisionRequest {
+		imageMode := normalizeRequestType(schemas.ImageGenerationRequest)
+		s.logger.Debug("primary lookup failed, trying image generation mode for the same model")
+		if pricing, ok = s.pricingData[makeKey(model, provider, imageMode)]; ok {
+			return &pricing, true
+		}
+		if provider == string(schemas.Gemini) {
+			if pricing, ok = s.pricingData[makeKey(model, "vertex", imageMode)]; ok {
+				return &pricing, true
+			}
+		}
+		// Vertex "publisher/model" form, matching the prefix strip above
+		if provider == string(schemas.Vertex) && strings.Contains(model, "/") {
+			if pricing, ok = s.pricingData[makeKey(strings.SplitN(model, "/", 2)[1], provider, imageMode)]; ok {
+				return &pricing, true
+			}
 		}
 	}
 

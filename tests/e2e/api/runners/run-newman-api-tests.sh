@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Bifrost API Management & Health Tests
 # This script runs tests for /api/* and /health endpoints

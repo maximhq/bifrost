@@ -20,10 +20,6 @@ import (
 
 var _ schemas.RelayPlugin = (*LoggerPlugin)(nil)
 
-// maxEndpointLogBodyLen bounds each body a Relay Logs row keeps. Endpoint payloads can be
-// documents or audio; the row keeps enough to debug a mapping, not the payload itself.
-const maxEndpointLogBodyLen = 64 * 1024
-
 // PreRelayHook records the request side of a relay call. The row is
 // completed and written by the post-hook, which runs once the reply (or the stream) has ended.
 func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
@@ -67,7 +63,7 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
 	entry.RequestHeadersParsed = relayMatchedHeaders(req)
 	if len(req.Body) > 0 {
-		entry.RequestBody = boundedBody(req.Body)
+		entry.RequestBody = textBody(req.Body)
 	}
 	// A streamed reply has no body until core/relay buffers it as it forwards bytes; that buffering
 	// only pays its cost when the content policy would keep the body anyway. This hook runs before
@@ -83,6 +79,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	// layer is knowable this early.
 	enabledByDefault := p.disableContentLogging == nil || !*p.disableContentLogging
 	ctx.SetValue(schemas.BifrostContextKeyRelayContentLoggingEnabledByDefault, enabledByDefault)
+	// Whether content that ends up disabled is still retained hidden in object storage depends only
+	// on static settings, so it is knowable here; core/relay then captures a stream for the offload.
+	if p.retainContentInObjectStorage != nil && *p.retainContentInObjectStorage && p.objectStorageEnabled {
+		ctx.SetValue(schemas.BifrostContextKeyRelayContentRetainedWhenDisabled, true)
+	}
 	p.pendingEndpointLogs.Store(requestID, entry)
 	return req, nil, nil
 }
@@ -122,7 +123,7 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			entry.OverheadLatency = &overhead
 		}
 		if len(resp.Body) > 0 {
-			entry.ResponseBody = boundedBody(resp.Body)
+			entry.ResponseBody = textBody(resp.Body)
 		}
 		applyEndpointUsage(entry, resp.Usage)
 	}
@@ -156,19 +157,16 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 			entry.StatusCode = *bifrostErr.StatusCode
 		}
 	}
-	// As on LLM rows: the flag says the row carries no content, whatever the reason. Relay rows
-	// have no object-storage offload yet, so content that would be retained as hidden is dropped
-	// instead of kept in columns the logs API would return. Query values are caller content too.
+	// As on LLM rows: the flag says the row carries no content, whatever the reason. Content
+	// retained as hidden keeps its bodies for the hybrid store to offload, as on A2A rows; the
+	// database row then holds none and reads never hydrate them. Query values are caller content too.
 	entry.ContentHidden = !policy.visible()
-	if policy.hidden {
-		p.relayRetainWarnOnce.Do(func() {
-			p.logger.Warn("retain_content_in_object_storage does not apply to Relay Logs yet; content-disabled relay calls are dropped entirely")
-		})
-	}
 	// Metadata and the matched headers stay when content logging is off, as on LLM and MCP rows:
 	// the operator chose them; only the bodies and the query string are content.
-	if !policy.storeContent || policy.hidden {
+	if !policy.storeContent {
 		entry.RequestBody, entry.ResponseBody = nil, nil
+	}
+	if !policy.visible() {
 		if i := strings.IndexByte(entry.Path, '?'); i >= 0 {
 			entry.Path = entry.Path[:i]
 		}
@@ -395,13 +393,11 @@ func redactQuery(raw string) string {
 	return strings.Join(parts, "&")
 }
 
-// boundedBody keeps up to maxEndpointLogBodyLen bytes of a body as text; a binary body is not kept.
-func boundedBody(body []byte) *string {
-	if len(body) > maxEndpointLogBodyLen {
-		body = body[:maxEndpointLogBodyLen]
-	}
+// textBody keeps a body as text; a binary body is not kept. A capture can end inside a multi-byte
+// character (a stream cut at its bound, or a caller that disconnected), so up to one incomplete
+// trailing character is dropped; anything else invalid is a binary payload.
+func textBody(body []byte) *string {
 	if !utf8.Valid(body) {
-		// A cut can split a rune at the end; anything else invalid is a binary payload.
 		trimmed := body
 		for i := 0; i < utf8.UTFMax && len(trimmed) > 0 && !utf8.Valid(trimmed); i++ {
 			trimmed = trimmed[:len(trimmed)-1]

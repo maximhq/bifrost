@@ -4478,25 +4478,22 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		isDisabled := (params.Reasoning.Effort != nil && *params.Reasoning.Effort == "none") ||
 			(hasMaxTokens && *params.Reasoning.MaxTokens == 0)
 		supportsLevel := caps.SupportsReasoningEffort(isGemini3Plus(capModel)) // thinkingLevel vs thinkingBudget
+		supportsBudget := caps.SupportsReasoningBudget(defaultSupportsReasoningBudget(capModel))
 
 		if isDisabled {
 			setThinkingBudgetZeroIfSupported(&config, caps)
+		} else if hasMaxTokens && !supportsBudget {
+			if err := applyThinkingBudget(&config, caps, *params.Reasoning.MaxTokens); err != nil {
+				return config, err
+			}
 		} else if supportsLevel && hasEffort && effortToThinkingLevel(caps, *params.Reasoning.Effort) != "" {
 			// Gemini 3.0+ - use thinkingLevel (more native), including when cross-provider
 			// converters (e.g. Anthropic thinking.budget_tokens) populate both Effort and MaxTokens.
 			config.ThinkingConfig.ThinkingLevel = schemas.Ptr(effortToThinkingLevel(caps, *params.Reasoning.Effort))
 		} else if hasMaxTokens {
-			budget := *params.Reasoning.MaxTokens
-			switch budget {
-			case 0:
-				setThinkingBudgetZeroIfSupported(&config, caps)
-			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
-			default:
-				if err := validateThinkingBudget(caps, budget); err != nil {
-					return config, err
-				}
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
+			// User provided max_tokens - use thinkingBudget, or the nearest level on models without one
+			if err := applyThinkingBudget(&config, caps, *params.Reasoning.MaxTokens); err != nil {
+				return config, err
 			}
 		} else if hasEffort {
 			maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, capModel, DefaultCompletionMaxTokens)

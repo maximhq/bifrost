@@ -472,18 +472,11 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         "openapi-replace-spec-panel",
       );
       await panel.getByTestId("openapi-spec-source-tab-paste").click();
-      const editor = panel.getByTestId("openapi-spec-paste-editor");
-      await editor
-        .locator("textarea.inputarea")
-        .waitFor({ state: "attached", timeout: 10000 });
-      await editor.locator(".monaco-editor").first().click();
-      await mcpRegistryPage.page.keyboard.press(
-        process.platform === "darwin" ? "Meta+A" : "Control+A",
-      );
-      await mcpRegistryPage.page.keyboard.press("Backspace");
-      await mcpRegistryPage.page.keyboard.insertText(
-        PETSTORE_OPENAPI_SPEC_YAML,
-      );
+      // The stored document fills the editor once it has loaded; replace it only then.
+      await expect(
+        panel.getByTestId("openapi-spec-paste-editor").locator(".view-lines"),
+      ).toContainText("openapi", { timeout: 10000 });
+      await mcpRegistryPage.pasteOpenAPISpec(PETSTORE_OPENAPI_SPEC_YAML, panel);
 
       // The pasted replacement parses on its own.
       await expect(panel.getByTestId("openapi-preview-title")).toHaveText(
