@@ -7,8 +7,10 @@ tools-search:
       for every provider.
 
       This is a web call, not an inference call: it carries no model upstream and is priced
-      per request. The charge is the cost the provider reports when it reports one, and the
-      model catalog's per-request price otherwise; a search that returns no results is free.
+      per request. A cost the provider reports is always charged as reported; only when the
+      provider reports none does the model catalog's per-request price apply. So an empty
+      search is free only where the provider bills nothing for it and reports no cost, as
+      DeepSeek does; a provider that reports a cost for an empty search is charged it.
       Omit `model` and the gateway routes to DeepSeek; a `model` is accepted only as a
       routing handle for virtual-key allowlists.
     tags:
