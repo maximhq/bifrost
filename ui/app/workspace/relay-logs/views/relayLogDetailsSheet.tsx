@@ -42,6 +42,8 @@ import { addMilliseconds, format, isValid } from "date-fns";
 import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, Waypoints, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 
 interface RelayLogDetailSheetProps {
 	log: RelayLog | null;
@@ -354,7 +356,7 @@ export function RelayLogDetailSheet({
 										label={t("relayLogs.detail.bytesOut")}
 										mono
 										value={formatCompactNumber(display.bytes_out)}
-										sub={display.bytes_out.toLocaleString()}
+										sub={display.bytes_out.toLocaleString(getLocale())}
 									/>
 								</div>
 							</div>
@@ -380,12 +382,12 @@ export function RelayLogDetailSheet({
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.startTimestamp")}
-												value={hasStart ? format(start, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA")}
+												value={hasStart ? format(start, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) }) : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.endTimestamp")}
-												value={end ? format(end, "yyyy-MM-dd hh:mm:ss aa") : t("labels.nA")}
+												value={end ? format(end, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) }) : t("labels.nA")}
 											/>
 											<LogEntryDetailsView
 												className="w-full"

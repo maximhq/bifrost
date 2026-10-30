@@ -10,6 +10,7 @@ import { ProviderLabels } from "@/lib/constants/logs";
 import { Info } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 function formatCost(dollars: number) {
 	return `$${dollars.toFixed(4)}`;
@@ -52,9 +53,9 @@ export default function ModelCatalogTable({
 	const { t } = useTranslation("models");
 	const allProvidersOption = useMemo(() => ({ value: ALL_PROVIDERS_VALUE, label: t("modelCatalog.allProviders") }), [t]);
 	const summaryCards = [
-		{ label: t("modelCatalog.totalProviders"), value: totalProviders.toLocaleString() },
-		{ label: t("modelCatalog.totalModels"), value: totalModels.toLocaleString() },
-		{ label: t("modelCatalog.totalRequests24h"), value: totalRequests24h.toLocaleString() },
+		{ label: t("modelCatalog.totalProviders"), value: totalProviders.toLocaleString(getLocale()) },
+		{ label: t("modelCatalog.totalModels"), value: totalModels.toLocaleString(getLocale()) },
+		{ label: t("modelCatalog.totalRequests24h"), value: totalRequests24h.toLocaleString(getLocale()) },
 		{ label: t("modelCatalog.totalCost24h"), value: formatCost(totalCost24h) },
 	];
 
@@ -154,7 +155,7 @@ export default function ModelCatalogTable({
 											<ModelsUsedCell models={row.modelsUsed} />
 										)}
 									</TableCell>
-									<TableCell className="text-right font-mono text-sm">{row.totalTraffic24h.toLocaleString()}</TableCell>
+									<TableCell className="text-right font-mono text-sm">{row.totalTraffic24h.toLocaleString(getLocale())}</TableCell>
 									<TableCell className="text-right font-mono text-sm">{formatCost(row.totalCost24h)}</TableCell>
 								</TableRow>
 							))

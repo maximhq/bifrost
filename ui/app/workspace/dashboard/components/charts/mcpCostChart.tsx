@@ -7,6 +7,7 @@ import { barShape } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 import { NoChartData } from "./noChartData";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface MCPCostChartProps {
 	data: MCPCostHistogramResponse | null;
@@ -39,6 +40,7 @@ function CustomTooltip({ active, payload }: any) {
 }
 
 function MCPCostChartImpl({ data, chartType, startTime, endTime }: MCPCostChartProps) {
+	useLocale();
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];
