@@ -2229,7 +2229,7 @@
       "post": {
         "operationId": "searchWeb",
         "summary": "Search the web",
-        "description": "Runs a web search through the routed provider and returns ranked pages in one shape\nfor every provider.\n\nThis is a web call, not an inference call: it carries no model upstream and is priced\nper request. A cost the provider reports is always charged as reported; only when the\nprovider reports none does the model catalog's per-request price apply. So an empty\nsearch is free only where the provider bills nothing for it and reports no cost, as\nDeepSeek does; a provider that reports a cost for an empty search is charged it.\nOmit `model` and the gateway routes to DeepSeek; a `model` is accepted only as a\nrouting handle for virtual-key allowlists.\n",
+        "description": "Runs a web search through the routed provider and returns ranked pages in one shape\nfor every provider.\n\nThis is a web call, not an inference call: it carries no model upstream and is priced\nper request. A cost the provider reports is always charged as reported; only when the\nprovider reports none does the model catalog's per-request price apply. So an empty\nsearch is free only where the provider bills nothing for it and reports no cost, as\nDeepSeek does; a provider that reports a cost for an empty search is charged it.\n\n`model` selects the provider. A provider name alone (`exa`) routes to that provider; a\nprovider/model pair (`deepseek/deepseek-chat`) routes to the provider and also names a\nmodel, which a virtual key restricted to specific models is held to. Omit it to route to\nDeepSeek.\n",
         "tags": [
           "Web Tools"
         ],
@@ -2322,7 +2322,7 @@
       "post": {
         "operationId": "fetchPage",
         "summary": "Fetch a page as Markdown",
-        "description": "Retrieves a single page through the routed provider and returns its content as\nMarkdown. Priced per request from the cost the provider reports when it reports one,\nand from the model catalog otherwise. Omit `model` to route to DeepSeek; a `model` is\naccepted only as a routing handle for virtual-key allowlists.\n\nThe page is read by the provider's servers, not by Bifrost, so the gateway's\nprivate-network safeguards do not apply. A URL rejected by the provider's security\npolicy surfaces as a 403.\n",
+        "description": "Retrieves a single page through the routed provider and returns its content as\nMarkdown. Priced per request from the cost the provider reports when it reports one,\nand from the model catalog otherwise.\n\n`model` selects the provider, on the same rule as Search: a provider name alone routes\nto that provider, and a provider/model pair also names a model a virtual key's allowlist\nis held to. Omit it to route to DeepSeek.\n\nThe page is read by the provider's servers, not by Bifrost, so the gateway's\nprivate-network safeguards do not apply. A URL rejected by the provider's security\npolicy surfaces as a 403.\n",
         "tags": [
           "Web Tools"
         ],

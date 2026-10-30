@@ -11,8 +11,11 @@ tools-search:
       provider reports none does the model catalog's per-request price apply. So an empty
       search is free only where the provider bills nothing for it and reports no cost, as
       DeepSeek does; a provider that reports a cost for an empty search is charged it.
-      Omit `model` and the gateway routes to DeepSeek; a `model` is accepted only as a
-      routing handle for virtual-key allowlists.
+
+      `model` selects the provider. A provider name alone (`exa`) routes to that provider; a
+      provider/model pair (`deepseek/deepseek-chat`) routes to the provider and also names a
+      model, which a virtual key restricted to specific models is held to. Omit it to route to
+      DeepSeek.
     tags:
     - Web Tools
     requestBody:
@@ -61,8 +64,11 @@ tools-fetch:
     description: |
       Retrieves a single page through the routed provider and returns its content as
       Markdown. Priced per request from the cost the provider reports when it reports one,
-      and from the model catalog otherwise. Omit `model` to route to DeepSeek; a `model` is
-      accepted only as a routing handle for virtual-key allowlists.
+      and from the model catalog otherwise.
+
+      `model` selects the provider, on the same rule as Search: a provider name alone routes
+      to that provider, and a provider/model pair also names a model a virtual key's allowlist
+      is held to. Omit it to route to DeepSeek.
 
       The page is read by the provider's servers, not by Bifrost, so the gateway's
       private-network safeguards do not apply. A URL rejected by the provider's security
