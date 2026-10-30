@@ -122,6 +122,28 @@ type RelayStreamingConfig struct {
 	Paths []string `json:"paths,omitempty"` // route globs that always stream
 }
 
+// RelayWebSocketConfig bounds the WebSocket sessions a relay serves and how they are billed.
+// Zero values take the defaults: no frame size bound of the relay's own (as no HTTP reply has
+// one), no session length bound, and settlement every DefaultRelayWebSocketBillingWindowSeconds.
+type RelayWebSocketConfig struct {
+	MaxMessageBytes      int64    `json:"max_message_bytes,omitempty"`      // largest frame read in either direction; 0 for no bound
+	MaxSessionSeconds    int      `json:"max_session_seconds,omitempty"`    // longest a session may stay open; 0 for no bound
+	BillingWindowSeconds *int     `json:"billing_window_seconds,omitempty"` // usage settled to budgets this often; 0 settles at close only; nil takes the default
+	Subprotocols         []string `json:"subprotocols,omitempty"`           // caller subprotocols that may be negotiated with the upstream; none by default
+}
+
+// DefaultRelayWebSocketBillingWindowSeconds is how often an open session settles its usage when
+// billing_window_seconds is unset, so a long session cannot outrun an exhausted budget.
+const DefaultRelayWebSocketBillingWindowSeconds = 60
+
+// BillingWindow returns the settlement interval in seconds; 0 settles only at close.
+func (c *RelayWebSocketConfig) BillingWindow() int {
+	if c == nil || c.BillingWindowSeconds == nil {
+		return DefaultRelayWebSocketBillingWindowSeconds
+	}
+	return *c.BillingWindowSeconds
+}
+
 // RelayExtraHeaderConflict returns an extra_headers name that appears under two spellings
 // (X-Amz-Target and x-amz-target). An endpoint matches routes on the operator's value of a
 // header, so two spellings could approve one operation while the other is sent.
@@ -194,8 +216,11 @@ type RelayRouteConfig struct {
 	Enabled  *bool             `json:"enabled,omitempty"`  // false: requests matching the route are refused with 404; nil is enabled
 	Billable *bool             `json:"billable,omitempty"` // false: the call is relayed but not counted or charged
 	Stream   *bool             `json:"stream,omitempty"`   // forces the streaming or buffered handler
-	Usage    *RelayUsageConfig `json:"usage,omitempty"`    // field-by-field override of the endpoint usage mapping
-	Job      *RelayJobConfig   `json:"-"`                  // not configurable yet: async jobs are kept for a later release
+	// WebSocket serves an upgrade request on this route as a WebSocket session relayed to the
+	// upstream (wss:// from the base URL). Opt-in per route: nil or false refuses an upgrade.
+	WebSocket *bool             `json:"websocket,omitempty"`
+	Usage     *RelayUsageConfig `json:"usage,omitempty"` // field-by-field override of the endpoint usage mapping
+	Job       *RelayJobConfig   `json:"-"`               // not configurable yet: async jobs are kept for a later release
 }
 
 // RelayConfig is one relay: a raw HTTP relay to a non-LLM API served at
@@ -213,6 +238,7 @@ type RelayConfig struct {
 	ProxyConfig        *ProxyConfig          `json:"proxy_config,omitempty"`         // outbound proxy; nil inherits the global proxy when it is enabled for inference
 	Usage              *RelayUsageConfig     `json:"usage,omitempty"`                // endpoint-level usage mapping every route inherits
 	Streaming          *RelayStreamingConfig `json:"streaming,omitempty"`            // which requests are relayed as streams
+	WebSocket          *RelayWebSocketConfig `json:"websocket,omitempty"`            // bounds and billing for the routes served as WebSocket sessions
 	Routes             []RelayRouteConfig    `json:"routes,omitempty"`               // upstream operations, first match wins
 	SkipRouteCheck     bool                  `json:"skip_route_check,omitempty"`     // relay requests matching no routes[] entry instead of refusing them with 404
 	IgnoreUpstreamCost bool                  `json:"ignore_upstream_cost,omitempty"` // drop cost_path values; the operator's fee and unit pricing still apply
@@ -405,6 +431,9 @@ func (c *RelayConfig) Validate() error {
 			}
 		}
 	}
+	if err := c.WebSocket.validate(); err != nil {
+		return err
+	}
 	for i, route := range c.Routes {
 		if _, ok := endpointRouteMethods[strings.ToUpper(route.Method)]; !ok {
 			return fmt.Errorf("routes[%d]: unsupported method %q", i, route.Method)
@@ -438,6 +467,57 @@ func (c *RelayConfig) Validate() error {
 				return err
 			}
 		}
+		if route.WebSocket != nil && *route.WebSocket {
+			if err := validateWebSocketRoute(fmt.Sprintf("routes[%d]", i), route, c.Usage); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (w *RelayWebSocketConfig) validate() error {
+	if w == nil {
+		return nil
+	}
+	if w.MaxMessageBytes < 0 || w.MaxSessionSeconds < 0 || (w.BillingWindowSeconds != nil && *w.BillingWindowSeconds < 0) {
+		return fmt.Errorf("websocket: max_message_bytes, max_session_seconds and billing_window_seconds must not be negative")
+	}
+	for i, protocol := range w.Subprotocols {
+		if !httpguts.ValidHeaderFieldName(protocol) {
+			return fmt.Errorf("websocket.subprotocols[%d]: %q is not a valid subprotocol token", i, protocol)
+		}
+	}
+	return nil
+}
+
+// validateWebSocketRoute checks a route served as a WebSocket session. An upgrade is a GET; a
+// session is neither a stream nor a job; and a request-side quantity can only be the bytes or
+// characters the caller sends, since a session has no single request body to read a path from.
+func validateWebSocketRoute(field string, route RelayRouteConfig, base *RelayUsageConfig) error {
+	if !strings.EqualFold(route.Method, "GET") {
+		return fmt.Errorf("%s: a websocket route must use method GET", field)
+	}
+	if route.Stream != nil {
+		return fmt.Errorf("%s: a websocket route cannot also set stream", field)
+	}
+	if route.Job != nil {
+		return fmt.Errorf("%s: a websocket route cannot start a job", field)
+	}
+	source, measure := RelayUnitsFromResponse, RelayUnitsValue
+	for _, usage := range []*RelayUsageConfig{base, route.Usage} {
+		if usage == nil {
+			continue
+		}
+		if usage.UnitsSource != "" {
+			source = usage.UnitsSource
+		}
+		if usage.UnitsMeasure != "" {
+			measure = usage.UnitsMeasure
+		}
+	}
+	if source == RelayUnitsFromRequest && measure != RelayUnitsBodyBytes && measure != RelayUnitsBodyChars {
+		return fmt.Errorf("%s.usage: a websocket route bills request-side units only by body_bytes or body_chars (what the caller sends)", field)
 	}
 	return nil
 }
@@ -693,6 +773,14 @@ func (c *RelayConfig) Clone() *RelayConfig {
 		streaming.Paths = append([]string(nil), c.Streaming.Paths...)
 		out.Streaming = &streaming
 	}
+	if c.WebSocket != nil {
+		websocket := *c.WebSocket
+		websocket.Subprotocols = append([]string(nil), c.WebSocket.Subprotocols...)
+		if c.WebSocket.BillingWindowSeconds != nil {
+			websocket.BillingWindowSeconds = Ptr(*c.WebSocket.BillingWindowSeconds)
+		}
+		out.WebSocket = &websocket
+	}
 	if c.Routes != nil {
 		out.Routes = make([]RelayRouteConfig, len(c.Routes))
 		for i, route := range c.Routes {
@@ -711,6 +799,9 @@ func (c *RelayConfig) Clone() *RelayConfig {
 			}
 			if route.Stream != nil {
 				out.Routes[i].Stream = Ptr(*route.Stream)
+			}
+			if route.WebSocket != nil {
+				out.Routes[i].WebSocket = Ptr(*route.WebSocket)
 			}
 			if route.Job != nil {
 				job := *route.Job

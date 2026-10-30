@@ -40,6 +40,11 @@ type RelayLog struct {
 	OverheadLatency   *float64 `json:"overhead_latency,omitempty"` // Bifrost overhead (total minus upstream), ms; nil = unmeasured
 	OverheadBreakdown string   `gorm:"type:text" json:"-"`         // Name-keyed JSON object, mirroring Log.OverheadBreakdown
 	BytesOut          int64    `json:"bytes_out"`
+	WebSocket         bool     `gorm:"column:websocket;default:false" json:"websocket"` // the call was a WebSocket session
+	BytesIn           int64    `json:"bytes_in,omitempty"`                              // payload bytes the caller sent during a session
+	FramesIn          int64    `json:"frames_in,omitempty"`                             // data frames the caller sent during a session
+	FramesOut         int64    `json:"frames_out,omitempty"`                            // data frames forwarded to the caller during a session
+	Socket            *string  `gorm:"type:text" json:"-"`                              // JSON schemas.RelaySocketSummary: how the session ended
 
 	// Cost is the figure charged to budgets; the rest explains it.
 	Cost           *float64 `gorm:"index:idx_relay_logs_cost" json:"cost,omitempty"`
@@ -77,36 +82,37 @@ type RelayLog struct {
 	ClientIP           *string `gorm:"type:varchar(45)" json:"client_ip,omitempty"`                                                                                              // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	// Every team, customer and business unit the call settled, as on logs and mcp_tool_logs: the
 	// scalar columns keep the first, these keep them all, and the dimension filters read both.
-	TeamIDs                 *string               `gorm:"type:text" json:"-"` // JSON serialized []string
-	TeamNames               *string               `gorm:"type:text" json:"-"` // JSON serialized []string
-	CustomerIDs             *string               `gorm:"type:text" json:"-"` // JSON serialized []string
-	CustomerNames           *string               `gorm:"type:text" json:"-"` // JSON serialized []string
-	BusinessUnitIDs         *string               `gorm:"type:text" json:"-"` // JSON serialized []string
-	BusinessUnitNames       *string               `gorm:"type:text" json:"-"` // JSON serialized []string
-	BudgetIDs               *string               `gorm:"type:text" json:"-"`
-	RateLimitIDs            *string               `gorm:"type:text" json:"-"`
-	RequestID               string                `gorm:"type:varchar(255);index:idx_relay_logs_request_id;not null" json:"request_id"`
-	Metadata                *string               `gorm:"type:text" json:"-"` // JSON map: logging headers, x-bf-lh-* labels, x-bf-dim-* dimensions and the key's metadata, as on LLM and MCP rows
-	RequestHeaders          *string               `gorm:"type:text" json:"-"`
-	RequestBody             *string               `gorm:"type:text" json:"request_body,omitempty"`
-	ResponseBody            *string               `gorm:"type:text" json:"response_body,omitempty"`
-	ErrorDetails            string                `gorm:"type:text" json:"-"`
-	ContentHidden           bool                  `gorm:"default:false" json:"content_hidden"`
-	PayloadReference        *string               `gorm:"type:varchar(1024)" json:"-"` // object key of the full bodies in hybrid mode
-	HasObject               bool                  `gorm:"default:false" json:"-"`
-	PluginLogs              string                `gorm:"type:text" json:"plugin_logs,omitempty"`
-	BudgetIDsParsed         []string              `gorm:"-" json:"budget_ids,omitempty"`
-	RateLimitIDsParsed      []string              `gorm:"-" json:"rate_limit_ids,omitempty"`
-	MetadataParsed          map[string]any        `gorm:"-" json:"metadata,omitempty"`
-	RequestHeadersParsed    map[string]string     `gorm:"-" json:"request_headers,omitempty"`
-	ErrorDetailsParsed      *schemas.BifrostError `gorm:"-" json:"error_details,omitempty"`
-	OverheadBreakdownParsed []OverheadBucket      `gorm:"-" json:"overhead_breakdown,omitempty"`
-	TeamIDsParsed           []string              `gorm:"-" json:"team_ids,omitempty"`
-	TeamNamesParsed         []string              `gorm:"-" json:"team_names,omitempty"`
-	CustomerIDsParsed       []string              `gorm:"-" json:"customer_ids,omitempty"`
-	CustomerNamesParsed     []string              `gorm:"-" json:"customer_names,omitempty"`
-	BusinessUnitIDsParsed   []string              `gorm:"-" json:"business_unit_ids,omitempty"`
-	BusinessUnitNamesParsed []string              `gorm:"-" json:"business_unit_names,omitempty"`
+	TeamIDs                 *string                     `gorm:"type:text" json:"-"` // JSON serialized []string
+	TeamNames               *string                     `gorm:"type:text" json:"-"` // JSON serialized []string
+	CustomerIDs             *string                     `gorm:"type:text" json:"-"` // JSON serialized []string
+	CustomerNames           *string                     `gorm:"type:text" json:"-"` // JSON serialized []string
+	BusinessUnitIDs         *string                     `gorm:"type:text" json:"-"` // JSON serialized []string
+	BusinessUnitNames       *string                     `gorm:"type:text" json:"-"` // JSON serialized []string
+	BudgetIDs               *string                     `gorm:"type:text" json:"-"`
+	RateLimitIDs            *string                     `gorm:"type:text" json:"-"`
+	RequestID               string                      `gorm:"type:varchar(255);index:idx_relay_logs_request_id;not null" json:"request_id"`
+	Metadata                *string                     `gorm:"type:text" json:"-"` // JSON map: logging headers, x-bf-lh-* labels, x-bf-dim-* dimensions and the key's metadata, as on LLM and MCP rows
+	RequestHeaders          *string                     `gorm:"type:text" json:"-"`
+	RequestBody             *string                     `gorm:"type:text" json:"request_body,omitempty"`
+	ResponseBody            *string                     `gorm:"type:text" json:"response_body,omitempty"`
+	ErrorDetails            string                      `gorm:"type:text" json:"-"`
+	ContentHidden           bool                        `gorm:"default:false" json:"content_hidden"`
+	PayloadReference        *string                     `gorm:"type:varchar(1024)" json:"-"` // object key of the full bodies in hybrid mode
+	HasObject               bool                        `gorm:"default:false" json:"-"`
+	PluginLogs              string                      `gorm:"type:text" json:"plugin_logs,omitempty"`
+	BudgetIDsParsed         []string                    `gorm:"-" json:"budget_ids,omitempty"`
+	RateLimitIDsParsed      []string                    `gorm:"-" json:"rate_limit_ids,omitempty"`
+	MetadataParsed          map[string]any              `gorm:"-" json:"metadata,omitempty"`
+	RequestHeadersParsed    map[string]string           `gorm:"-" json:"request_headers,omitempty"`
+	ErrorDetailsParsed      *schemas.BifrostError       `gorm:"-" json:"error_details,omitempty"`
+	OverheadBreakdownParsed []OverheadBucket            `gorm:"-" json:"overhead_breakdown,omitempty"`
+	SocketParsed            *schemas.RelaySocketSummary `gorm:"-" json:"socket,omitempty"`
+	TeamIDsParsed           []string                    `gorm:"-" json:"team_ids,omitempty"`
+	TeamNamesParsed         []string                    `gorm:"-" json:"team_names,omitempty"`
+	CustomerIDsParsed       []string                    `gorm:"-" json:"customer_ids,omitempty"`
+	CustomerNamesParsed     []string                    `gorm:"-" json:"customer_names,omitempty"`
+	BusinessUnitIDsParsed   []string                    `gorm:"-" json:"business_unit_ids,omitempty"`
+	BusinessUnitNamesParsed []string                    `gorm:"-" json:"business_unit_names,omitempty"`
 	// Content retained as hidden (retain_content_in_object_storage with content logging off) that
 	// has no body column: the full path with its query string, and the error with its raw request
 	// and response. The hybrid store writes them to the row's object only; the database row keeps
@@ -203,6 +209,11 @@ func (l *RelayLog) SerializeFields() error {
 		}
 		l.ErrorDetails = string(data)
 	}
+	if l.SocketParsed != nil {
+		if err := marshal(l.SocketParsed, &l.Socket); err != nil {
+			return fmt.Errorf("failed to serialize relay socket summary: %w", err)
+		}
+	}
 	if len(l.OverheadBreakdownParsed) > 0 {
 		data, err := marshalOverheadBreakdown(l.OverheadBreakdownParsed)
 		if err != nil {
@@ -231,6 +242,12 @@ func (l *RelayLog) DeserializeFields() error {
 	unmarshal(l.BusinessUnitNames, &l.BusinessUnitNamesParsed)
 	unmarshal(l.Metadata, &l.MetadataParsed)
 	unmarshal(l.RequestHeaders, &l.RequestHeadersParsed)
+	if l.Socket != nil && *l.Socket != "" {
+		var summary schemas.RelaySocketSummary
+		if err := sonic.Unmarshal([]byte(*l.Socket), &summary); err == nil {
+			l.SocketParsed = &summary
+		}
+	}
 	l.ErrorDetailsParsed = nil
 	if l.ErrorDetails != "" {
 		var details schemas.BifrostError
@@ -259,6 +276,7 @@ type RelayLogFilters struct {
 	ProjectIDs         []string   `json:"project_ids,omitempty"`
 	Apps               []string   `json:"apps,omitempty"`
 	Billable           *bool      `json:"billable,omitempty"`
+	WebSocket          *bool      `json:"websocket,omitempty"` // true for WebSocket sessions only, false for HTTP calls only
 	StartTime          *time.Time `json:"start_time,omitempty"`
 	EndTime            *time.Time `json:"end_time,omitempty"`
 	MinCost            *float64   `json:"min_cost,omitempty"`
@@ -387,6 +405,9 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 	}
 	if f.Billable != nil {
 		query = query.Where("billable = ?", *f.Billable)
+	}
+	if f.WebSocket != nil {
+		query = query.Where("websocket = ?", *f.WebSocket)
 	}
 	// timestampBound keeps sub-second bounds on ClickHouse, whose driver drops them otherwise.
 	if f.StartTime != nil {

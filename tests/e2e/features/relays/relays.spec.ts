@@ -348,6 +348,40 @@ test.describe("Relays", () => {
     expect(relay.routes ?? []).toHaveLength(0);
   });
 
+  test("adds a WebSocket route, which is a billable GET", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-ws-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.goto();
+    await page.select(name);
+
+    await page.openAddRoute();
+    await page.page.getByTestId("relay-route-path").fill("/v1/listen");
+    await page.page.getByTestId("relay-route-stream").click();
+    await page.page.getByTestId("relay-route-stream-websocket").click();
+    // A WebSocket upgrade is a GET, so the method is set and locked.
+    await expect(page.page.getByTestId("relay-route-method")).toContainText("GET");
+    await expect(page.page.getByTestId("relay-route-method")).toBeDisabled();
+    await page.saveRoute();
+
+    await expect(page.routeRow(0)).toContainText("/v1/listen");
+    await expect(page.page.getByTestId("relay-route-websocket-badge-0")).toBeVisible();
+    const relay = await getRelay(request, name);
+    expect(relay.routes).toHaveLength(1);
+    expect(relay.routes[0]).toMatchObject({ method: "GET", path: "/v1/listen", websocket: true });
+    expect(relay.routes[0].stream).toBeUndefined();
+
+    // Switching back to Auto clears the flag and unlocks the method.
+    await page.openEditRoute(0);
+    await page.page.getByTestId("relay-route-stream").click();
+    await page.page.getByRole("option", { name: "Auto" }).click();
+    await expect(page.page.getByTestId("relay-route-method")).toBeEnabled();
+    await page.saveRoute();
+    await expect(page.page.getByTestId("relay-route-websocket-badge-0")).toHaveCount(0);
+    expect((await getRelay(request, name)).routes[0].websocket).toBeFalsy();
+  });
+
   test("refuses letters in a route price and clears a price back to the relay's", async ({ relaysPage: page, request }) => {
     const name = `e2e-pte-price-${Date.now()}`;
     created.push(name);

@@ -2586,6 +2586,8 @@ components:
       $ref: "./schemas/management/relays.yaml#/RelayUsageConfig"
     RelayStreamingConfig:
       $ref: "./schemas/management/relays.yaml#/RelayStreamingConfig"
+    RelayWebSocketConfig:
+      $ref: "./schemas/management/relays.yaml#/RelayWebSocketConfig"
     RelayRouteConfig:
       $ref: "./schemas/management/relays.yaml#/RelayRouteConfig"
     RelayConfig:
@@ -2604,6 +2606,8 @@ components:
       $ref: "./schemas/management/relays.yaml#/RelayUsagePreview"
     RelayOverheadBucket:
       $ref: "./schemas/management/relays.yaml#/RelayOverheadBucket"
+    RelaySocketSummary:
+      $ref: "./schemas/management/relays.yaml#/RelaySocketSummary"
     RelayLog:
       $ref: "./schemas/management/relays.yaml#/RelayLog"
     RelayLogSearchResult:

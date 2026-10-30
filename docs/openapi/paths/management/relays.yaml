@@ -75,6 +75,12 @@ _relay-log-filters:
     description: Keep only billable (`true`) or non-billable (`false`) calls.
     schema:
       type: boolean
+  websocket:
+    name: websocket
+    in: query
+    description: true for WebSocket sessions only, false for HTTP calls only.
+    schema:
+      type: boolean
   start_time:
     name: start_time
     in: query
@@ -664,6 +670,7 @@ relay-logs:
       - $ref: '#/_relay-log-filters/project_ids'
       - $ref: '#/_relay-log-filters/apps'
       - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/websocket'
       - $ref: '#/_relay-log-filters/start_time'
       - $ref: '#/_relay-log-filters/end_time'
       - $ref: '#/_relay-log-filters/min_cost'
@@ -853,6 +860,7 @@ relay-logs-stats:
       - $ref: '#/_relay-log-filters/project_ids'
       - $ref: '#/_relay-log-filters/apps'
       - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/websocket'
       - $ref: '#/_relay-log-filters/start_time'
       - $ref: '#/_relay-log-filters/end_time'
       - $ref: '#/_relay-log-filters/min_cost'
@@ -976,6 +984,7 @@ relay-logs-histogram:
       - $ref: '#/_relay-log-filters/project_ids'
       - $ref: '#/_relay-log-filters/apps'
       - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/websocket'
       - $ref: '#/_relay-log-filters/start_time'
       - $ref: '#/_relay-log-filters/end_time'
       - $ref: '#/_relay-log-filters/min_cost'
@@ -1056,6 +1065,7 @@ relay-logs-top-endpoints:
       - $ref: '#/_relay-log-filters/project_ids'
       - $ref: '#/_relay-log-filters/apps'
       - $ref: '#/_relay-log-filters/billable'
+      - $ref: '#/_relay-log-filters/websocket'
       - $ref: '#/_relay-log-filters/start_time'
       - $ref: '#/_relay-log-filters/end_time'
       - $ref: '#/_relay-log-filters/min_cost'

@@ -55,7 +55,8 @@ func (p *GovernancePlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schema
 // cost, which lands on the budgets. A stream the caller abandoned still reports what was
 // forwarded, so it is charged too, and it counts: the upstream answered, and hanging up early
 // must not be a way around a request limit. A call that never got a reply is neither counted nor
-// charged.
+// charged. A WebSocket session counts once, at its final settlement, and is charged in billing
+// windows while it is open (each window a continuation that counts no request).
 func (p *GovernancePlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
 	if _, rejected := ctx.Value(governanceRejectedContextKey).(bool); rejected {
 		return resp, bifrostErr, nil
@@ -65,8 +66,13 @@ func (p *GovernancePlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *sche
 	}
 	cost := 0.0
 	if resp.Usage != nil {
-		cost = resp.Usage.Cost
+		// A WebSocket session's billing windows already charged part of its cost; the final
+		// settlement charges the rest, so the session is charged its total exactly once.
+		cost = max(resp.Usage.Cost-resp.SettledCost, 0)
 	}
+	// A billing window of an open session bills its cost without counting another request: the
+	// session was counted once when it was admitted.
+	continuation := isSessionContinuation(ctx)
 	var budgets, rateLimits []schemas.Limit
 	if limits := ctx.Grant().Limits(); limits != nil {
 		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
@@ -84,14 +90,15 @@ func (p *GovernancePlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *sche
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 	}
 	usageUpdate := &UsageUpdate{
-		Success:      true, // a reply was received; the error, if any, is how the stream ended
-		Cost:         cost,
-		RequestID:    bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID),
-		BillingNonce: bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce),
-		IsFinalChunk: true,
-		HasUsageData: cost > 0,
-		Budgets:      budgets,
-		RateLimits:   rateLimits,
+		Success:          true, // a reply was received; the error, if any, is how the stream ended
+		Cost:             cost,
+		RequestID:        bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID),
+		BillingNonce:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce),
+		IsFinalChunk:     true,
+		HasUsageData:     cost > 0,
+		Budgets:          budgets,
+		RateLimits:       rateLimits,
+		SkipRequestCount: continuation,
 	}
 	p.wg.Add(1)
 	go func() {

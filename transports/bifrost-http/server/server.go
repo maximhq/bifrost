@@ -290,6 +290,7 @@ type BifrostHTTPServer struct {
 	skillsServingHandler *handlers.SkillsServingHandler
 	IntegrationHandler   *handlers.IntegrationHandler
 	wsLiveHandler        *handlers.WSLiveHandler
+	relayGatewayHandler  *handlers.RelayGatewayHandler
 	webrtcLiveHandler    *handlers.WebRTCLiveHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
@@ -2869,7 +2870,8 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
 	if s.relays != nil {
-		handlers.NewRelayGatewayHandler(s.relays, s.Config, logger).RegisterRoutes(s.Router, middlewares...)
+		s.relayGatewayHandler = handlers.NewRelayGatewayHandler(s.relays, s.Config, logger)
+		s.relayGatewayHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if s.AgentGatewayHandler != nil {
 		protocolMiddlewares := append([]schemas.BifrostHTTPMiddleware{}, middlewares...)
@@ -3961,6 +3963,9 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.webrtcLiveHandler != nil {
 			s.webrtcLiveHandler.Close()
 		}
+		if s.relayGatewayHandler != nil {
+			s.relayGatewayHandler.Close()
+		}
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -4078,6 +4083,9 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	}
 	if s.webrtcLiveHandler != nil {
 		s.webrtcLiveHandler.Close()
+	}
+	if s.relayGatewayHandler != nil {
+		s.relayGatewayHandler.Close()
 	}
 	if s.wsPool != nil {
 		s.wsPool.Close()

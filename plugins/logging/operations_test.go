@@ -6860,9 +6860,10 @@ func TestRelayReconcileUpdatesEveryNonRequestColumn(t *testing.T) {
 		persisted[column] = true
 	}
 
-	// Every optional key on: a hidden row with a query string, retained content and a dropped body.
+	// Every optional key on: a hidden WebSocket session row with a query string, retained content
+	// and a dropped body.
 	updates := relayLogUpdateColumns(&logstore.RelayLog{
-		ID: "row", Path: "/search?q=1", ContentHidden: true,
+		ID: "row", Path: "/search?q=1", ContentHidden: true, WebSocket: true,
 		RetainedPath:         schemas.Ptr("/search?q=1"),
 		RetainedErrorDetails: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}},
 	}, true)
@@ -6887,4 +6888,84 @@ func TestRelayReconcileUpdatesEveryNonRequestColumn(t *testing.T) {
 		_, skipped := relayReconcileSkippedColumns[column]
 		require.True(t, skipped, "relay_logs column %q is neither written by relayLogUpdateColumns nor listed in relayReconcileSkippedColumns: an evicted call that reconciles loses it", column)
 	}
+}
+
+// TestRelayLogSocketSessionRow pins the row a relayed WebSocket session writes: one row for the
+// session with its counters, its summary and the caller's text frames as the request body under the
+// content policy, and no row for a billing window.
+func TestRelayLogSocketSessionRow(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, false)
+	plugin.writeQueue = make(chan *writeQueueEntry, 4)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-socket")
+	_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "stt", Method: "GET", Path: "/v1/listen", Streams: true, WebSocket: true, Billable: true})
+	require.NoError(t, err)
+
+	// A billing window: a continuation unit with its own request id writes nothing.
+	unit := policyCtx(false, nil)
+	unit.SetValue(schemas.BifrostContextKeyRequestID, "req-socket-window")
+	unit.SetValue(schemas.BifrostContextKeySessionContinuation, true)
+	_, _, err = plugin.PreRelayHook(unit, &schemas.BifrostRelayRequest{RelayName: "stt", Method: "GET", Path: "/v1/listen", WebSocket: true})
+	require.NoError(t, err)
+	_, _, err = plugin.PostRelayHook(unit, &schemas.BifrostRelayResponse{RelayName: "stt", StatusCode: 101, WebSocket: true, Usage: &schemas.RelayUsage{Cost: 0.2}}, nil)
+	require.NoError(t, err)
+	_, unitPending := plugin.pendingEndpointLogs.Load("req-socket-window")
+	require.False(t, unitPending, "a window opens no pending row")
+	require.Len(t, plugin.writeQueue, 0, "a window writes no row")
+
+	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{
+		RelayName: "stt", StatusCode: 101, Streamed: true, WebSocket: true, BytesIn: 4000, BytesOut: 90, FramesIn: 40, FramesOut: 3,
+		Body: []byte(`{"transcript":"hello"}`), RequestBody: []byte(`{"type":"KeepAlive"}`),
+		Usage:       &schemas.RelayUsage{Cost: 0.5},
+		SettledCost: 0.2,
+		Socket:      &schemas.RelaySocketSummary{CloseCode: 1000, ClosedBy: schemas.RelaySocketClosedByClient, Windows: 1},
+	}, nil)
+	require.NoError(t, err)
+	entry := (<-plugin.writeQueue).endpointLog
+	require.NotNil(t, entry)
+	require.True(t, entry.WebSocket)
+	require.Equal(t, 101, entry.StatusCode)
+	require.Equal(t, logstore.RelayLogStatusSuccess, entry.Status)
+	require.EqualValues(t, 4000, entry.BytesIn)
+	require.EqualValues(t, 40, entry.FramesIn)
+	require.EqualValues(t, 3, entry.FramesOut)
+	require.NotNil(t, entry.Cost)
+	require.InDelta(t, 0.5, *entry.Cost, 1e-12, "the row shows the session's whole cost, not what was left after the windows")
+	require.NotNil(t, entry.SocketParsed)
+	require.Equal(t, 1, entry.SocketParsed.Windows)
+	require.NotNil(t, entry.RequestBody)
+	require.Equal(t, `{"type":"KeepAlive"}`, *entry.RequestBody, "the caller's text frames are the request body")
+	require.Equal(t, `{"transcript":"hello"}`, *entry.ResponseBody)
+
+	// Content logging off: the frames are content and are dropped with the bodies.
+	hidden := policyTestPlugin(boolPtr(true), nil, false)
+	hidden.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx = policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-socket-hidden")
+	_, _, err = hidden.PreRelayHook(ctx, &schemas.BifrostRelayRequest{RelayName: "stt", Method: "GET", Path: "/v1/listen", WebSocket: true})
+	require.NoError(t, err)
+	_, _, err = hidden.PostRelayHook(ctx, &schemas.BifrostRelayResponse{RelayName: "stt", StatusCode: 101, WebSocket: true, Body: []byte("x"), RequestBody: []byte("secret")}, nil)
+	require.NoError(t, err)
+	entry = (<-hidden.writeQueue).endpointLog
+	require.Nil(t, entry.RequestBody)
+	require.Nil(t, entry.ResponseBody)
+	require.True(t, entry.WebSocket, "the session's metadata is still recorded")
+}
+
+// TestRelayLogUpdateColumnsCarrySocketFields pins that a session reconciled onto a row persisted at
+// eviction writes the same socket columns a row written in one shot carries.
+func TestRelayLogUpdateColumnsCarrySocketFields(t *testing.T) {
+	entry := &logstore.RelayLog{
+		ID: "r", Status: logstore.RelayLogStatusSuccess, StatusCode: 101, WebSocket: true, BytesIn: 10, FramesIn: 2, FramesOut: 1,
+		RequestBody: schemas.Ptr("frames"), SocketParsed: &schemas.RelaySocketSummary{CloseCode: 1000},
+	}
+	updates := relayLogUpdateColumns(entry, false)
+	require.Equal(t, true, updates["websocket"])
+	require.EqualValues(t, 10, updates["bytes_in"])
+	require.EqualValues(t, 2, updates["frames_in"])
+	require.EqualValues(t, 1, updates["frames_out"])
+	require.NotNil(t, updates["socket"])
+	require.Contains(t, *(updates["socket"].(*string)), `"close_code":1000`)
+	require.Equal(t, schemas.Ptr("frames"), updates["request_body"], "the caller's frames, which the partial never held, are written")
+	require.Nil(t, relayLogUpdateColumns(entry, true)["request_body"], "the final policy still drops them")
 }

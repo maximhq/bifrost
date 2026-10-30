@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -129,6 +131,54 @@ func (e *endpoint) signAWSRequest(ctx *schemas.BifrostContext, httpReq *http.Req
 		httpReq.Header.Del(name)
 	}
 	return bedrock.SignAWSRequest(ctx, httpReq, e.awsKey, e.awsRegion, e.cfg.Auth.AWS.Service)
+}
+
+// presignedURLExpiry is how long a presigned WebSocket handshake URL is valid. The handshake is
+// sent immediately, so this only has to cover clock skew and the dial.
+const presignedURLExpiry = 5 * time.Minute
+
+// emptyPayloadSHA256 is the SHA-256 of an empty body, the payload hash a handshake GET is signed with.
+const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// presignAWSRequest SigV4-presigns a WebSocket handshake: the signature rides in the query, as AWS
+// streaming APIs over WebSocket (Transcribe) require, and only the host is signed, so the headers
+// the dialer adds to the upgrade never invalidate it. Signature parameters a caller sent in the
+// query are dropped first: the signer owns them. Credentials resolve as for header signing.
+func (e *endpoint) presignAWSRequest(ctx *schemas.BifrostContext, httpReq *http.Request) *schemas.BifrostError {
+	if e.awsKey == nil || e.awsRegion == "" {
+		return providerUtils.NewBifrostBadRequestError("aws_sigv4 auth needs credential.aws.region")
+	}
+	creds, bifrostErr := bedrock.ResolveAWSCredentials(ctx, e.awsKey, e.awsRegion)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+	query := httpReq.URL.Query()
+	for name := range query {
+		for _, owned := range sigv4CallerHeaders {
+			if strings.EqualFold(name, owned) {
+				query.Del(name)
+			}
+		}
+	}
+	query.Set("X-Amz-Expires", fmt.Sprintf("%d", int(presignedURLExpiry/time.Second)))
+	httpReq.URL.RawQuery = query.Encode()
+	toSign, err := http.NewRequestWithContext(ctx, http.MethodGet, httpReq.URL.String(), nil)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error creating presign request", err)
+	}
+	signed, _, err := v4.NewSigner().PresignHTTP(ctx, creds, toSign, emptyPayloadSHA256, e.cfg.Auth.AWS.Service, e.awsRegion, time.Now().UTC())
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error presigning the websocket handshake", err)
+	}
+	signedURL, err := url.Parse(signed)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error presigning the websocket handshake", err)
+	}
+	httpReq.URL = signedURL
+	for _, name := range sigv4CallerHeaders {
+		httpReq.Header.Del(name)
+	}
+	return nil
 }
 
 // bedrockKeyConfig maps an endpoint AWS credential onto the Bedrock key config the signer reads.

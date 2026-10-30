@@ -78,6 +78,15 @@ func (s *relaySpan) end(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayR
 		if resp.Usage != nil {
 			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayCost, resp.Usage.Cost)
 		}
+		if resp.WebSocket {
+			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayWebSocket, true)
+			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayBytesIn, resp.BytesIn)
+			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayFramesIn, resp.FramesIn)
+			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayFramesOut, resp.FramesOut)
+			if resp.Socket != nil {
+				s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayCloseCode, resp.Socket.CloseCode)
+			}
+		}
 	} else {
 		// No reply was streamed: the start marked the span with the route's stream mode, so a call
 		// that failed before any reply would otherwise read as a stream in the overhead breakdown.

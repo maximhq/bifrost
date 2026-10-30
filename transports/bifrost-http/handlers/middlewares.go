@@ -1381,6 +1381,10 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 // isInferenceWSEndpoint returns true for WebSocket endpoints that should use
 // standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
 func isInferenceWSEndpoint(path string) bool {
+	// A relay is an inference route: its upgrades authenticate as its HTTP calls do.
+	if strings.HasPrefix(path, "/relay/") {
+		return true
+	}
 	for strings.HasPrefix(path, "/openai/") {
 		path = strings.TrimPrefix(path, "/openai")
 	}

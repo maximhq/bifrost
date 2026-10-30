@@ -306,3 +306,57 @@ func TestRelayRedactedMasksLiteralCredentialHeaders(t *testing.T) {
 	tenant := out.ExtraHeaders["X-Tenant"]
 	assert.Equal(t, "acme", tenant.GetValue(), "a plain header stays readable")
 }
+
+// TestRelayWebSocketValidation pins the rules for routes served as WebSocket sessions and for the
+// relay's websocket block.
+func TestRelayWebSocketValidation(t *testing.T) {
+	socket := func(route RelayRouteConfig) RelayRouteConfig {
+		route.WebSocket = Ptr(true)
+		return route
+	}
+	cases := []struct {
+		name    string
+		cfg     *RelayConfig
+		wantErr string
+	}{
+		{"get route", &RelayConfig{Routes: []RelayRouteConfig{socket(RelayRouteConfig{Method: "GET", Path: "/v1/listen"})}}, ""},
+		{"non-get route", &RelayConfig{Routes: []RelayRouteConfig{socket(RelayRouteConfig{Method: "POST", Path: "/v1/listen"})}}, "must use method GET"},
+		{"stream too", &RelayConfig{Routes: []RelayRouteConfig{socket(RelayRouteConfig{Method: "GET", Path: "/v1/listen", Stream: Ptr(true)})}}, "cannot also set stream"},
+		{"false is an http route", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/x", WebSocket: Ptr(false)}}}, ""},
+		{"request bytes", &RelayConfig{Routes: []RelayRouteConfig{socket(RelayRouteConfig{Method: "GET", Path: "/v1/listen", Usage: &RelayUsageConfig{UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsBodyBytes, CostPerUnit: Ptr(0.001)}})}}, ""},
+		{"request path inherited", &RelayConfig{Usage: &RelayUsageConfig{UnitsSource: RelayUnitsFromRequest, UnitsPath: "text", CostPerUnit: Ptr(0.001)}, Routes: []RelayRouteConfig{socket(RelayRouteConfig{Method: "GET", Path: "/v1/listen"})}}, "only by body_bytes or body_chars"},
+		{"route overrides measure", &RelayConfig{Usage: &RelayUsageConfig{UnitsSource: RelayUnitsFromRequest, UnitsPath: "text", CostPerUnit: Ptr(0.001)}, Routes: []RelayRouteConfig{socket(RelayRouteConfig{Method: "GET", Path: "/v1/listen", Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsBodyChars}})}}, ""},
+		{"negative window", &RelayConfig{WebSocket: &RelayWebSocketConfig{BillingWindowSeconds: Ptr(-1)}}, "must not be negative"},
+		{"negative frame bound", &RelayConfig{WebSocket: &RelayWebSocketConfig{MaxMessageBytes: -1}}, "must not be negative"},
+		{"bad subprotocol", &RelayConfig{WebSocket: &RelayWebSocketConfig{Subprotocols: []string{"two words"}}}, "not a valid subprotocol token"},
+		{"zero window settles at close", &RelayConfig{WebSocket: &RelayWebSocketConfig{BillingWindowSeconds: Ptr(0)}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+	assert.Equal(t, DefaultRelayWebSocketBillingWindowSeconds, (*RelayWebSocketConfig)(nil).BillingWindow(), "unset settles every default window")
+	assert.Equal(t, 0, (&RelayWebSocketConfig{BillingWindowSeconds: Ptr(0)}).BillingWindow())
+}
+
+// TestRelayWebSocketClone pins that a clone shares nothing mutable with the websocket settings.
+func TestRelayWebSocketClone(t *testing.T) {
+	cfg := &RelayConfig{
+		WebSocket: &RelayWebSocketConfig{BillingWindowSeconds: Ptr(30), Subprotocols: []string{"deepgram"}},
+		Routes:    []RelayRouteConfig{{Method: "GET", Path: "/v1/listen", WebSocket: Ptr(true)}},
+	}
+	clone := cfg.Clone()
+	*clone.WebSocket.BillingWindowSeconds = 5
+	clone.WebSocket.Subprotocols[0] = "other"
+	*clone.Routes[0].WebSocket = false
+	assert.Equal(t, 30, *cfg.WebSocket.BillingWindowSeconds)
+	assert.Equal(t, "deepgram", cfg.WebSocket.Subprotocols[0])
+	assert.True(t, *cfg.Routes[0].WebSocket)
+}

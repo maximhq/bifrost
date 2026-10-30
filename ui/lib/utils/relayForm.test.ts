@@ -10,8 +10,10 @@ import {
 	emptyRelayForm,
 	emptyUsageForm,
 	mergeUsage,
+	routeBillableByDefault,
 	toRelayConfig,
 	toRelayForm,
+	toWebSocketConfig,
 } from "./relayForm";
 
 const stored: Relay = {
@@ -315,5 +317,40 @@ describe("usage form defaults", () => {
 			units_path: "u",
 		});
 		expect(cleanUsage({ ...emptyUsageForm(), cost_per_unit: null, cost_per_request: 0 }, true)).toEqual({ cost_per_request: 0 });
+	});
+});
+describe("relay websocket form", () => {
+	const socketRelay: Relay = {
+		name: "deepgram",
+		base_url: "https://api.deepgram.com",
+		auth: { type: "header", header_name: "Authorization", value_prefix: "Token " },
+		credential: { value: { value: "dg-*******1234" } },
+		websocket: { billing_window_seconds: 0, subprotocols: ["token", "deepgram"] },
+		routes: [{ method: "GET", path: "/v1/listen", websocket: true }],
+	};
+
+	it("round-trips a WebSocket route and the relay's websocket settings, keeping a zero billing window", () => {
+		const back = toRelayConfig(toRelayForm(socketRelay));
+		expect(back.websocket).toEqual({ billing_window_seconds: 0, subprotocols: ["token", "deepgram"] });
+		const route = back.routes?.[0];
+		expect(route?.websocket).toBe(true);
+		expect(route?.stream).toBeUndefined();
+		expect(route?.billable, "a WebSocket route is billable by default, so the default is not sent").toBeUndefined();
+	});
+
+	it("sends only the websocket settings that are set", () => {
+		expect(toWebSocketConfig({ subprotocols: " , " })).toBeUndefined();
+		expect(toWebSocketConfig({ max_message_bytes: 0, max_session_seconds: 0 })).toBeUndefined();
+		expect(toWebSocketConfig({ max_session_seconds: 3600, subprotocols: "a, b" })).toEqual({
+			max_session_seconds: 3600,
+			subprotocols: ["a", "b"],
+		});
+	});
+
+	it("bills a WebSocket route by default although its method is GET", () => {
+		expect(routeBillableByDefault("GET")).toBe(false);
+		expect(routeBillableByDefault("GET", true)).toBe(true);
+		const optedOut: Relay = { ...socketRelay, routes: [{ method: "GET", path: "/v1/listen", websocket: true, billable: false }] };
+		expect(toRelayConfig(toRelayForm(optedOut)).routes?.[0].billable).toBe(false);
 	});
 });

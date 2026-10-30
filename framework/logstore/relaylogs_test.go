@@ -393,3 +393,62 @@ func TestUpdateRelayLogClearsColumnsWithNilPointers(t *testing.T) {
 	assert.Nil(t, got.UpstreamLatency)
 	assert.Equal(t, RelayLogStatusSuccess, got.Status)
 }
+
+// TestRelayLogSocketColumns pins the columns a WebSocket session is recorded with, their round trip,
+// and the websocket filter.
+func TestRelayLogSocketColumns(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-socket.db")}, testLogger{})
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	_, err = store.BatchCreateRelayLogsIfNotExists(ctx, []*RelayLog{
+		{ID: "sock", RequestID: "sock", Timestamp: now, RelayName: "stt", Status: RelayLogStatusSuccess, StatusCode: 101, Streamed: true,
+			WebSocket: true, BytesIn: 4000, BytesOut: 90, FramesIn: 40, FramesOut: 3,
+			SocketParsed: &schemas.RelaySocketSummary{Subprotocol: "token", CloseCode: 1000, ClosedBy: schemas.RelaySocketClosedByClient, Windows: 2}},
+		{ID: "http", RequestID: "http", Timestamp: now, RelayName: "stt", Status: RelayLogStatusSuccess, StatusCode: 200},
+	})
+	require.NoError(t, err)
+	got, err := store.FindRelayLog(ctx, "sock")
+	require.NoError(t, err)
+	assert.True(t, got.WebSocket)
+	assert.EqualValues(t, 4000, got.BytesIn)
+	assert.EqualValues(t, 40, got.FramesIn)
+	assert.EqualValues(t, 3, got.FramesOut)
+	require.NotNil(t, got.SocketParsed)
+	assert.Equal(t, schemas.RelaySocketSummary{Subprotocol: "token", CloseCode: 1000, ClosedBy: schemas.RelaySocketClosedByClient, Windows: 2}, *got.SocketParsed)
+	plain, err := store.FindRelayLog(ctx, "http")
+	require.NoError(t, err)
+	assert.False(t, plain.WebSocket)
+	assert.Nil(t, plain.SocketParsed)
+
+	for _, tc := range []struct {
+		websocket bool
+		want      string
+	}{{true, "sock"}, {false, "http"}} {
+		page, err := store.SearchRelayLogs(ctx, RelayLogFilters{WebSocket: schemas.Ptr(tc.websocket)}, PaginationOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, page.Logs, 1)
+		assert.Equal(t, tc.want, page.Logs[0].ID)
+	}
+}
+
+// TestRelayLogWebSocketColumnsMigration pins relay_logs_add_websocket_columns on an existing table
+// and its rerun.
+func TestRelayLogWebSocketColumnsMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "relay-ws-mig.db")}, testLogger{})
+	require.NoError(t, err)
+	db := store.db
+	columns := []string{"websocket", "bytes_in", "frames_in", "frames_out", "socket"}
+	for _, column := range columns {
+		require.True(t, db.Migrator().HasColumn(&RelayLog{}, column), "%s is created", column)
+		require.NoError(t, db.Migrator().DropColumn(&RelayLog{}, column))
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_websocket_columns").Error)
+	require.NoError(t, migrationAddRelayLogWebSocketColumns(ctx, db, testLogger{}))
+	for _, column := range columns {
+		assert.True(t, db.Migrator().HasColumn(&RelayLog{}, column), "%s is added to an existing table", column)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "relay_logs_add_websocket_columns").Error)
+	require.NoError(t, migrationAddRelayLogWebSocketColumns(ctx, db, testLogger{}), "a rerun over existing columns succeeds")
+}

@@ -163,6 +163,24 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						/>
 					</FilterSection>
 					<FilterSection
+						title={t("relayLogs.filters.transport")}
+						defaultOpen={filters.websocket !== undefined}
+						testId="relay-transport-filter-toggle"
+					>
+						<CheckboxFilterItem
+							label={t("relayLogs.fields.http")}
+							checked={filters.websocket === false}
+							onCheckedChange={() => onFiltersChange({ ...filters, websocket: filters.websocket === false ? undefined : false })}
+							testId="relay-transport-filter-checkbox-http"
+						/>
+						<CheckboxFilterItem
+							label={t("relayLogs.fields.websocket")}
+							checked={filters.websocket === true}
+							onCheckedChange={() => onFiltersChange({ ...filters, websocket: filters.websocket === true ? undefined : true })}
+							testId="relay-transport-filter-checkbox-websocket"
+						/>
+					</FilterSection>
+					<FilterSection
 						title={t("relayLogs.fields.kind")}
 						defaultOpen={(filters.kinds ?? []).length > 0}
 						testId="relay-kind-filter-toggle"

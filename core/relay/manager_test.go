@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/andybalholm/brotli"
+	ws "github.com/fasthttp/websocket"
 	"github.com/klauspost/compress/zstd"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -38,21 +40,25 @@ func testCtx(t testing.TB) *schemas.BifrostContext {
 type fakePipeline struct {
 	mu        sync.Mutex
 	pre       []*schemas.BifrostRelayRequest
+	preCtx    []*schemas.BifrostContext
 	post      []*schemas.BifrostRelayResponse
 	postErr   []*schemas.BifrostError
+	postCtx   []*schemas.BifrostContext
 	deny      *schemas.BifrostError
+	denyFrom  int                           // refuse pre-hook calls from this one on (1-based); 0 for none
 	denyAfter time.Duration                 // how long the refusing pre-hook takes
 	preDelay  time.Duration                 // how long an admitting pre-hook takes
 	recover   *schemas.BifrostRelayResponse // replaces an error in the post-hook
 	drop      bool                          // the post-hook clears the response
 }
 
-func (f *fakePipeline) RunRelayPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest, entered func(int)) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, int) {
+func (f *fakePipeline) RunRelayPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRelayRequest, entered func(int)) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pre = append(f.pre, req)
+	f.preCtx = append(f.preCtx, ctx)
 	entered(1)
-	if f.deny != nil {
+	if f.deny != nil && (f.denyFrom == 0 || len(f.pre) >= f.denyFrom) {
 		time.Sleep(f.denyAfter)
 		return req, &schemas.RelayPluginShortCircuit{Error: f.deny}, 1
 	}
@@ -60,11 +66,12 @@ func (f *fakePipeline) RunRelayPreHooks(_ *schemas.BifrostContext, req *schemas.
 	return req, nil, 1
 }
 
-func (f *fakePipeline) RunRelayPostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError, _ int) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
+func (f *fakePipeline) RunRelayPostHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError, _ int) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.post = append(f.post, resp)
 	f.postErr = append(f.postErr, bErr)
+	f.postCtx = append(f.postCtx, ctx)
 	if bErr != nil && f.recover != nil {
 		return f.recover, nil
 	}
@@ -1779,4 +1786,650 @@ func TestStreamUsagePanicAtEOFIsAnInternalError(t *testing.T) {
 	require.True(t, finished)
 	require.NotNil(t, gotErr)
 	assert.Equal(t, schemas.ErrorTypeBifrostInternal, schemas.ClassifyErrorType(gotErr, schemas.RelayRequest))
+}
+
+// BenchmarkServeBuffered measures one buffered HTTP relay call end to end through the hooks.
+func BenchmarkServeBuffered(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"results":[{"title":"a"}],"usage":{"credits":1}}`)
+	}))
+	defer upstream.Close()
+	cfg := bearerConfig("search", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/search"}}
+	m, pipeline := newTestManager(b, cfg)
+	ctx := testCtx(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, bErr := m.Serve(ctx, Request{Endpoint: "search", Method: "POST", Path: "/search", Headers: map[string]string{}, Body: []byte(`{"query":"q"}`)})
+		if bErr != nil {
+			b.Fatal(bErr)
+		}
+		_ = res
+		pipeline.mu.Lock()
+		pipeline.pre, pipeline.post, pipeline.postErr = pipeline.pre[:0], pipeline.post[:0], pipeline.postErr[:0]
+		pipeline.mu.Unlock()
+	}
+}
+
+// --- WebSocket sessions ---
+
+// socketFrame is one frame of a test session.
+type socketFrame struct {
+	messageType int
+	data        []byte
+}
+
+// fakeSocketClient is the caller's side of a test session: frames sent on in are read by the
+// relay; closing in is a normal close by the caller; what the relay writes lands on out.
+type fakeSocketClient struct {
+	in          chan socketFrame
+	out         chan socketFrame
+	closeOnce   sync.Once
+	interrupted chan struct{}
+	mu          sync.Mutex
+	closeCode   int
+	closeReason string
+	callerCode  int // the close code the caller ends with when in is closed
+}
+
+func newFakeSocketClient() *fakeSocketClient {
+	return &fakeSocketClient{in: make(chan socketFrame, 16), out: make(chan socketFrame, 64), interrupted: make(chan struct{}), callerCode: ws.CloseNormalClosure}
+}
+
+func (c *fakeSocketClient) ReadMessage() (int, []byte, error) {
+	select {
+	case f, ok := <-c.in:
+		if !ok {
+			return 0, nil, &ws.CloseError{Code: c.callerCode}
+		}
+		return f.messageType, f.data, nil
+	case <-c.interrupted:
+		return 0, nil, errors.New("read interrupted")
+	}
+}
+
+func (c *fakeSocketClient) WriteMessage(messageType int, data []byte) error {
+	c.out <- socketFrame{messageType: messageType, data: append([]byte(nil), data...)}
+	return nil
+}
+
+func (c *fakeSocketClient) WriteClose(code int, reason string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closeCode, c.closeReason = code, reason
+	return nil
+}
+
+func (c *fakeSocketClient) Interrupt() { c.closeOnce.Do(func() { close(c.interrupted) }) }
+
+func (c *fakeSocketClient) closed() (int, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeCode, c.closeReason
+}
+
+// next waits for the next frame the relay forwarded to the caller.
+func (c *fakeSocketClient) next(t *testing.T) socketFrame {
+	t.Helper()
+	select {
+	case f := <-c.out:
+		return f
+	case <-time.After(5 * time.Second):
+		t.Fatal("no frame forwarded to the caller")
+		return socketFrame{}
+	}
+}
+
+// wsUpstream serves one WebSocket upstream; handle runs per connection with the handshake request.
+func wsUpstream(t *testing.T, protocols []string, handle func(conn *ws.Conn, r *http.Request)) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var dials atomic.Int64
+	upgrader := ws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }, Subprotocols: protocols}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		handle(conn, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &dials
+}
+
+// echoUpstream echoes every frame until the caller closes.
+func echoUpstream(conn *ws.Conn, _ *http.Request) {
+	for {
+		messageType, data, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(messageType, data); err != nil {
+			return
+		}
+	}
+}
+
+// socketConfig is a relay with one WebSocket route at GET /v1/listen.
+func socketConfig(baseURL string) *schemas.RelayConfig {
+	cfg := bearerConfig("stt", baseURL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "GET", Path: "/v1/listen", WebSocket: schemas.Ptr(true)}}
+	return cfg
+}
+
+func openTestSocket(t *testing.T, m *Manager, ctx *schemas.BifrostContext, query string, protocols ...string) *Socket {
+	t.Helper()
+	sock, bErr := m.OpenSocket(ctx, SocketRequest{Request: Request{Endpoint: "stt", Method: "GET", Path: "/v1/listen", RawQuery: query, Headers: map[string]string{}}, Subprotocols: protocols})
+	require.Nil(t, bErr)
+	require.NotNil(t, sock)
+	return sock
+}
+
+// runSocket runs the session in the background and returns a func that waits for it to end.
+func runSocket(sock *Socket, client SocketClient) func(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sock.Run(client)
+	}()
+	return func(t *testing.T) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the session did not end")
+		}
+	}
+}
+
+// A session is relayed frame for frame with the relay's credential injected and the host pinned,
+// and its post-hooks run once, when the caller closes, with the session's counters.
+func TestOpenSocketRelaysFramesWithCredential(t *testing.T) {
+	var gotAuth, gotQuery atomic.Value
+	upstream, _ := wsUpstream(t, nil, func(conn *ws.Conn, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		gotQuery.Store(r.URL.RawQuery)
+		echoUpstream(conn, r)
+	})
+	cfg := socketConfig(upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{ModelSource: schemas.RelayModelFromQuery, ModelPath: "model"}
+	m, pipeline := newTestManager(t, cfg)
+	sock := openTestSocket(t, m, testCtx(t), "model=nova-3")
+	client := newFakeSocketClient()
+	wait := runSocket(sock, client)
+
+	client.in <- socketFrame{ws.TextMessage, []byte("hello")}
+	assert.Equal(t, "hello", string(client.next(t).data))
+	client.in <- socketFrame{ws.BinaryMessage, []byte{1, 2, 3}}
+	assert.Equal(t, []byte{1, 2, 3}, client.next(t).data)
+	close(client.in)
+	wait(t)
+
+	assert.Equal(t, "Bearer sk-endpoint", gotAuth.Load(), "the relay's credential is injected on the handshake")
+	assert.Equal(t, "model=nova-3", gotQuery.Load())
+	require.Len(t, pipeline.pre, 1, "a session is admitted once")
+	assert.True(t, pipeline.pre[0].WebSocket)
+	assert.Equal(t, "nova-3", pipeline.pre[0].Model, "the model is read from the query")
+	require.Len(t, pipeline.post, 1, "the post-hooks run once, at the end")
+	final := pipeline.post[0]
+	assert.Nil(t, pipeline.postErr[0], "a caller's normal close is a normal end")
+	assert.True(t, final.WebSocket)
+	assert.Equal(t, http.StatusSwitchingProtocols, final.StatusCode)
+	assert.EqualValues(t, 2, final.FramesIn)
+	assert.EqualValues(t, 2, final.FramesOut)
+	assert.EqualValues(t, 8, final.BytesIn)
+	assert.EqualValues(t, 8, final.BytesOut)
+	require.NotNil(t, final.Socket)
+	assert.Equal(t, schemas.RelaySocketClosedByClient, final.Socket.ClosedBy)
+}
+
+// A route not marked websocket refuses the upgrade before any hook runs or the upstream is dialed.
+func TestOpenSocketRequiresWebSocketRoute(t *testing.T) {
+	upstream, dials := wsUpstream(t, nil, echoUpstream)
+	cfg := bearerConfig("stt", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "GET", Path: "/v1/listen"}}
+	m, pipeline := newTestManager(t, cfg)
+	_, bErr := m.OpenSocket(testCtx(t), SocketRequest{Request: Request{Endpoint: "stt", Method: "GET", Path: "/v1/listen", Headers: map[string]string{}}})
+	require.NotNil(t, bErr)
+	assert.Equal(t, http.StatusBadRequest, *bErr.StatusCode)
+	assert.Empty(t, pipeline.pre)
+	assert.Zero(t, dials.Load())
+}
+
+// A pre-hook refusal (an access denial, an exhausted budget) answers the upgrade with its status and
+// never dials the upstream; the post-hooks still run for the plugins that ran.
+func TestOpenSocketRefusedByPreHookNeverDials(t *testing.T) {
+	upstream, dials := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	pipeline.deny = statusError(http.StatusForbidden, "relay not allowed")
+	_, bErr := m.OpenSocket(testCtx(t), SocketRequest{Request: Request{Endpoint: "stt", Method: "GET", Path: "/v1/listen", Headers: map[string]string{}}})
+	require.NotNil(t, bErr)
+	assert.Equal(t, http.StatusForbidden, *bErr.StatusCode)
+	assert.Zero(t, dials.Load(), "a refused session never reaches the upstream")
+	require.Len(t, pipeline.post, 1)
+	assert.NotNil(t, pipeline.postErr[0])
+}
+
+// An upstream that refuses the handshake is answered with its HTTP status before the caller is
+// upgraded, so the caller can act on it.
+func TestOpenSocketUpstreamHandshakeStatusIsReturned(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid api key", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	_, bErr := m.OpenSocket(testCtx(t), SocketRequest{Request: Request{Endpoint: "stt", Method: "GET", Path: "/v1/listen", Headers: map[string]string{}}})
+	require.NotNil(t, bErr)
+	assert.Equal(t, http.StatusUnauthorized, *bErr.StatusCode)
+	assert.Contains(t, bErr.Error.Message, "invalid api key")
+	require.Len(t, pipeline.post, 1, "the post-hooks record the refused handshake")
+}
+
+// Usage is read from the upstream's text frames, each one event, as SSE events are on an HTTP
+// stream: the flat fee plus the quantity the last frame reported.
+func TestSocketObservesUsageFromTextFrames(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, func(conn *ws.Conn, _ *http.Request) {
+		_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"Results","channel":{"alternatives":[{"transcript":"hi"}]}}`))
+		_ = conn.WriteMessage(ws.TextMessage, []byte(`{"type":"Metadata","duration":12.5}`))
+		_ = conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""))
+		_, _, _ = conn.ReadMessage()
+	})
+	cfg := socketConfig(upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01), UnitsPath: "duration", CostPerUnit: schemas.Ptr(0.002)}
+	m, pipeline := newTestManager(t, cfg)
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	client.next(t)
+	client.next(t)
+	wait(t)
+
+	require.Len(t, pipeline.post, 1)
+	usage := pipeline.post[0].Usage
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BilledUnits)
+	assert.InDelta(t, 12.5, *usage.BilledUnits, 1e-9)
+	assert.InDelta(t, 0.01+12.5*0.002, usage.Cost, 1e-12)
+	assert.Nil(t, pipeline.postErr[0], "an upstream's normal close is a normal end")
+	assert.Equal(t, schemas.RelaySocketClosedByUpstream, pipeline.post[0].Socket.ClosedBy)
+}
+
+// A request-side size quantity bills what the caller sends, the audio a speech-to-text API bills on.
+func TestSocketBillsInboundBytes(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	cfg := socketConfig(upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.001)}
+	m, pipeline := newTestManager(t, cfg)
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	client.in <- socketFrame{ws.BinaryMessage, make([]byte, 1000)}
+	client.next(t)
+	close(client.in)
+	wait(t)
+
+	usage := pipeline.post[0].Usage
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.BilledUnits)
+	assert.InDelta(t, 1000, *usage.BilledUnits, 1e-9, "the caller's bytes are the quantity")
+	assert.InDelta(t, 1.0, usage.Cost, 1e-12)
+}
+
+// An upstream close with an error code is forwarded to the caller and recorded as an error.
+func TestSocketForwardsUpstreamCloseCode(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, func(conn *ws.Conn, _ *http.Request) {
+		_ = conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(4001, "unsupported encoding"))
+		_, _, _ = conn.ReadMessage()
+	})
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	client := newFakeSocketClient()
+	runSocket(openTestSocket(t, m, testCtx(t), ""), client)(t)
+
+	code, reason := client.closed()
+	assert.Equal(t, 4001, code, "the upstream's close code reaches the caller")
+	assert.Equal(t, "unsupported encoding", reason)
+	require.NotNil(t, pipeline.postErr[0])
+	assert.Contains(t, pipeline.postErr[0].Error.Message, "4001")
+	assert.Equal(t, 4001, pipeline.post[0].Socket.CloseCode)
+}
+
+// The time a session stays open is time spent outside Bifrost, as the waits between a stream's
+// chunks are, so it counts as upstream latency and Bifrost's overhead stays its own work.
+func TestSocketOpenTimeIsUpstreamLatency(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	client.in <- socketFrame{ws.TextMessage, []byte("hello")}
+	client.next(t)
+	time.Sleep(300 * time.Millisecond)
+	close(client.in)
+	wait(t)
+
+	resp := pipeline.post[0]
+	assert.GreaterOrEqual(t, resp.UpstreamLatency, int64(300), "the open session counts as upstream")
+	assert.Less(t, resp.Latency-resp.UpstreamLatency, int64(100), "overhead is Bifrost's own work, not the session")
+}
+
+// A caller that closes the session records its own close code and reason on the row.
+func TestSocketRecordsCallerCloseCode(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	client := newFakeSocketClient()
+	client.callerCode = 4000
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	close(client.in)
+	wait(t)
+
+	require.Nil(t, pipeline.postErr[0])
+	assert.Equal(t, schemas.RelaySocketClosedByClient, pipeline.post[0].Socket.ClosedBy)
+	assert.Equal(t, 4000, pipeline.post[0].Socket.CloseCode)
+}
+
+// attrTracer records the attributes set on relay spans.
+type attrTracer struct {
+	schemas.NoOpTracer
+	mu    sync.Mutex
+	attrs map[string]any
+}
+
+func (a *attrTracer) StartSpan(ctx context.Context, _ string, _ schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	return ctx, struct{}{}
+}
+
+func (a *attrTracer) SetAttribute(_ schemas.SpanHandle, key string, value any) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.attrs == nil {
+		a.attrs = map[string]any{}
+	}
+	a.attrs[key] = value
+}
+
+func (a *attrTracer) get(key string) any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.attrs[key]
+}
+
+// A session's span carries the session's transport, counters and the close code the caller got.
+func TestSocketSpanCarriesSessionAttributes(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, func(conn *ws.Conn, _ *http.Request) {
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(4001, "done"))
+		_, _, _ = conn.ReadMessage()
+	})
+	m, _ := newTestManager(t, socketConfig(upstream.URL))
+	tracer := &attrTracer{}
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(tracer))
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, ctx, ""), client)
+	client.in <- socketFrame{ws.TextMessage, []byte("hello")}
+	wait(t)
+
+	assert.Equal(t, true, tracer.get(schemas.AttrBifrostRelayWebSocket))
+	assert.Equal(t, int64(5), tracer.get(schemas.AttrBifrostRelayBytesIn))
+	assert.Equal(t, int64(1), tracer.get(schemas.AttrBifrostRelayFramesIn))
+	assert.Equal(t, 4001, tracer.get(schemas.AttrBifrostRelayCloseCode))
+}
+
+// A caller that vanishes without a close is a hang-up, recorded as cancelled as on HTTP.
+func TestSocketCallerDropIsCancelled(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	client := newFakeSocketClient()
+	client.callerCode = ws.CloseAbnormalClosure
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	close(client.in)
+	wait(t)
+	require.NotNil(t, pipeline.postErr[0])
+	require.NotNil(t, pipeline.postErr[0].Error.Type)
+	assert.Equal(t, schemas.RequestCancelled, *pipeline.postErr[0].Error.Type)
+}
+
+// A session that carries no data frame for stream_idle_timeout_in_seconds ends as a timeout, as an
+// idle HTTP stream does.
+func TestSocketIdleTimeoutIsATimeout(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	cfg := socketConfig(upstream.URL)
+	cfg.Network = &schemas.RelayNetworkConfig{StreamIdleTimeoutInSeconds: 1}
+	m, pipeline := newTestManager(t, cfg)
+	client := newFakeSocketClient()
+	begin := time.Now()
+	runSocket(openTestSocket(t, m, testCtx(t), ""), client)(t)
+	assert.Less(t, time.Since(begin), 5*time.Second)
+	code, _ := client.closed()
+	assert.Equal(t, ws.CloseGoingAway, code)
+	require.NotNil(t, pipeline.postErr[0])
+	require.NotNil(t, pipeline.postErr[0].Error.Type)
+	assert.Equal(t, schemas.RequestTimedOut, *pipeline.postErr[0].Error.Type)
+}
+
+// With content capture on, the session's text frames are kept for the row in each direction, and
+// every frame refreshes the logging plugin's activity slot so a live session is never reaped.
+func TestSocketCapturesTextFramesAndTouchesActivity(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyRelayContentCapture, true)
+	var activity atomic.Int64
+	seed := time.Now().Add(-time.Hour).UnixNano()
+	activity.Store(seed)
+	ctx.SetValue(schemas.BifrostContextKeyRelayActivity, &activity)
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, ctx, ""), client)
+	client.in <- socketFrame{ws.TextMessage, []byte(`{"a":1}`)}
+	client.next(t)
+	client.in <- socketFrame{ws.BinaryMessage, []byte{0xff, 0x00}}
+	client.next(t)
+	client.in <- socketFrame{ws.TextMessage, []byte(`{"b":2}`)}
+	client.next(t)
+	close(client.in)
+	wait(t)
+	assert.Equal(t, "{\"a\":1}\n{\"b\":2}", string(pipeline.post[0].RequestBody), "the caller's text frames, one per line; binary frames are not kept")
+	assert.Equal(t, "{\"a\":1}\n{\"b\":2}", string(pipeline.post[0].Body))
+	assert.Greater(t, activity.Load(), seed)
+}
+
+// Without the capture flag nothing is kept.
+func TestSocketCapturesNothingByDefault(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	client.in <- socketFrame{ws.TextMessage, []byte("secret")}
+	client.next(t)
+	close(client.in)
+	wait(t)
+	assert.Nil(t, pipeline.post[0].Body)
+	assert.Nil(t, pipeline.post[0].RequestBody)
+}
+
+// An open session settles its usage in billing windows: each window is a continuation unit with its
+// own request id, charged the cost run up since the last window, and the final settlement carries
+// the whole session's usage with the part already charged, so nothing is charged twice.
+func TestSocketSettlesBillingWindows(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	cfg := socketConfig(upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5)}
+	cfg.WebSocket = &schemas.RelayWebSocketConfig{BillingWindowSeconds: schemas.Ptr(1)}
+	m, pipeline := newTestManager(t, cfg)
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "session-1")
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, ctx, ""), client)
+	require.Eventually(t, func() bool {
+		pipeline.mu.Lock()
+		defer pipeline.mu.Unlock()
+		return len(pipeline.post) >= 2
+	}, 5*time.Second, 50*time.Millisecond, "two windows settle while the session is open")
+	close(client.in)
+	wait(t)
+
+	pipeline.mu.Lock()
+	defer pipeline.mu.Unlock()
+	final := pipeline.post[len(pipeline.post)-1]
+	charged := 0.0
+	seen := map[string]struct{}{}
+	for i, resp := range pipeline.post[:len(pipeline.post)-1] {
+		unit := pipeline.postCtx[i]
+		continuation, _ := unit.Value(schemas.BifrostContextKeySessionContinuation).(bool)
+		requestType, _ := unit.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+		requestID, _ := unit.Value(schemas.BifrostContextKeyRequestID).(string)
+		assert.True(t, continuation, "a window is a continuation")
+		assert.Equal(t, schemas.RelayRequest, requestType)
+		assert.NotEqual(t, "session-1", requestID, "a window has its own request id")
+		seen[requestID] = struct{}{}
+		require.NotNil(t, resp.Usage)
+		charged += resp.Usage.Cost
+	}
+	assert.Len(t, seen, len(pipeline.post)-1, "every window has a distinct request id")
+	assert.InDelta(t, 0.5, charged, 1e-12, "the windows charge the fee once between them")
+	require.NotNil(t, final.Usage)
+	assert.InDelta(t, 0.5, final.Usage.Cost, 1e-12, "the row carries the session's whole cost")
+	assert.InDelta(t, 0.5, final.SettledCost, 1e-12, "the final settlement knows what the windows charged")
+	assert.GreaterOrEqual(t, final.Socket.Windows, 1)
+	finalID, _ := pipeline.postCtx[len(pipeline.postCtx)-1].Value(schemas.BifrostContextKeyRequestID).(string)
+	assert.Equal(t, "session-1", finalID, "the final settlement runs on the session's own context")
+}
+
+// A refused billing window ends the session with 1008 and the refusal as the row's error.
+func TestSocketWindowRefusalEndsSession(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	cfg := socketConfig(upstream.URL)
+	cfg.Usage = &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5)}
+	cfg.WebSocket = &schemas.RelayWebSocketConfig{BillingWindowSeconds: schemas.Ptr(1)}
+	m, pipeline := newTestManager(t, cfg)
+	pipeline.deny, pipeline.denyFrom = statusError(http.StatusTooManyRequests, "budget exceeded"), 2
+	client := newFakeSocketClient()
+	runSocket(openTestSocket(t, m, testCtx(t), ""), client)(t)
+
+	code, reason := client.closed()
+	assert.Equal(t, ws.ClosePolicyViolation, code)
+	assert.Equal(t, "budget exceeded", reason)
+	final := pipeline.postErr[len(pipeline.postErr)-1]
+	require.NotNil(t, final)
+	assert.Equal(t, http.StatusTooManyRequests, *final.StatusCode)
+	require.NotNil(t, pipeline.post[len(pipeline.post)-1].Usage, "what was forwarded is still charged at the end")
+}
+
+// A session reaching max_session_seconds is closed by the relay, which is a normal end.
+func TestSocketMaxSessionEndsSession(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	cfg := socketConfig(upstream.URL)
+	cfg.WebSocket = &schemas.RelayWebSocketConfig{MaxSessionSeconds: 1}
+	m, pipeline := newTestManager(t, cfg)
+	client := newFakeSocketClient()
+	runSocket(openTestSocket(t, m, testCtx(t), ""), client)(t)
+	code, _ := client.closed()
+	assert.Equal(t, ws.ClosePolicyViolation, code)
+	assert.Nil(t, pipeline.postErr[0])
+	assert.Equal(t, schemas.RelaySocketClosedByGateway, pipeline.post[0].Socket.ClosedBy)
+}
+
+// The caller's subprotocols are offered to the upstream only where the relay allows them.
+func TestSocketNegotiatesAllowedSubprotocols(t *testing.T) {
+	var offered atomic.Value
+	upstream, _ := wsUpstream(t, []string{"token", "deepgram"}, func(conn *ws.Conn, r *http.Request) {
+		offered.Store(r.Header.Get("Sec-WebSocket-Protocol"))
+		echoUpstream(conn, r)
+	})
+	cfg := socketConfig(upstream.URL)
+	cfg.WebSocket = &schemas.RelayWebSocketConfig{Subprotocols: []string{"deepgram"}}
+	m, _ := newTestManager(t, cfg)
+	sock := openTestSocket(t, m, testCtx(t), "", "token", "deepgram")
+	assert.Equal(t, "deepgram", offered.Load(), "a subprotocol the relay does not allow is never offered upstream")
+	assert.Equal(t, "deepgram", sock.Subprotocol())
+	client := newFakeSocketClient()
+	wait := runSocket(sock, client)
+	close(client.in)
+	wait(t)
+}
+
+// An aws_sigv4 relay presigns the handshake into the query, as AWS streaming APIs over WebSocket
+// require, and sends no Authorization header.
+func TestSocketPresignsSigV4Handshake(t *testing.T) {
+	var query, auth atomic.Value
+	upstream, _ := wsUpstream(t, nil, func(conn *ws.Conn, r *http.Request) {
+		query.Store(r.URL.Query())
+		auth.Store(r.Header.Get("Authorization"))
+		echoUpstream(conn, r)
+	})
+	cfg := socketConfig(upstream.URL)
+	cfg.Auth = schemas.RelayAuthConfig{Type: schemas.RelayAuthAWSSigV4, AWS: &schemas.RelayAWSAuthConfig{Service: "transcribe"}}
+	cfg.Credential = &schemas.RelayCredential{AWS: &schemas.RelayAWSCredential{
+		AccessKey: schemas.NewSecretVar("AKIDEXAMPLE"), SecretKey: schemas.NewSecretVar("secret"), Region: schemas.NewSecretVar("us-east-1"),
+	}}
+	m, _ := newTestManager(t, cfg)
+	sock := openTestSocket(t, m, testCtx(t), "language-code=en-US&X-Amz-Signature=forged")
+	client := newFakeSocketClient()
+	wait := runSocket(sock, client)
+	close(client.in)
+	wait(t)
+
+	q, _ := query.Load().(url.Values)
+	require.NotNil(t, q)
+	assert.Equal(t, "en-US", q.Get("language-code"), "the caller's own parameters are kept")
+	assert.Equal(t, "AWS4-HMAC-SHA256", q.Get("X-Amz-Algorithm"))
+	assert.Contains(t, q.Get("X-Amz-Credential"), "AKIDEXAMPLE/")
+	assert.Contains(t, q.Get("X-Amz-Credential"), "/us-east-1/transcribe/aws4_request")
+	assert.NotEqual(t, "forged", q.Get("X-Amz-Signature"), "a caller's signature parameter is replaced")
+	assert.Len(t, q["X-Amz-Signature"], 1)
+	assert.Equal(t, "300", q.Get("X-Amz-Expires"))
+	assert.Empty(t, auth.Load(), "a presigned handshake carries no Authorization header")
+}
+
+// Shutdown ends every open session with 1012; each runs its post-hooks as it ends.
+func TestCloseSocketsEndsOpenSessions(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	client := newFakeSocketClient()
+	wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+	m.CloseSockets()
+	wait(t)
+	code, _ := client.closed()
+	assert.Equal(t, ws.CloseServiceRestart, code)
+	require.NotNil(t, pipeline.postErr[0])
+	assert.Equal(t, schemas.RequestCancelled, *pipeline.postErr[0].Error.Type)
+}
+
+// Abort ends an admitted session whose caller was never upgraded: the upstream is closed and the
+// post-hooks run once with the reason.
+func TestSocketAbortRunsPostHooksOnce(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	m, pipeline := newTestManager(t, socketConfig(upstream.URL))
+	sock := openTestSocket(t, m, testCtx(t), "")
+	sock.Abort(statusError(http.StatusBadRequest, "upgrade failed"))
+	sock.Abort(statusError(http.StatusBadRequest, "upgrade failed"))
+	require.Len(t, pipeline.post, 1)
+	assert.Nil(t, pipeline.post[0])
+	require.NotNil(t, pipeline.postErr[0])
+}
+
+// A WebSocket route is billable by default although an upgrade is a GET; billable: false opts out.
+func TestSocketRouteIsBillableByDefault(t *testing.T) {
+	upstream, _ := wsUpstream(t, nil, echoUpstream)
+	for _, tc := range []struct {
+		name     string
+		billable *bool
+		want     bool
+	}{
+		{"default", nil, true},
+		{"opted out", schemas.Ptr(false), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := socketConfig(upstream.URL)
+			cfg.Routes[0].Billable = tc.billable
+			cfg.Usage = &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.25)}
+			m, pipeline := newTestManager(t, cfg)
+			client := newFakeSocketClient()
+			wait := runSocket(openTestSocket(t, m, testCtx(t), ""), client)
+			close(client.in)
+			wait(t)
+			assert.Equal(t, tc.want, pipeline.pre[0].Billable)
+			assert.Equal(t, tc.want, pipeline.post[0].Usage != nil)
+		})
+	}
 }

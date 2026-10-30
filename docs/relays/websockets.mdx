@@ -1,0 +1,150 @@
+---
+title: "WebSockets"
+description: "Relay a WebSocket API, such as live speech-to-text, through Bifrost with the same access checks, budgets and logs as an HTTP call."
+icon: "plug"
+---
+
+Some upstream APIs are WebSocket sessions rather than requests: live transcription, voice agents, and streaming translation. A relay route marked `websocket: true` serves those sessions. The caller opens a WebSocket to Bifrost, and Bifrost opens one to the upstream with the relay's credential. Frames are forwarded unchanged in both directions until either side closes.
+
+A session gets the same treatment as an HTTP relay call:
+
+- The caller's virtual key and its relay grant are checked before the upstream is dialled.
+- The session is priced with the relay's usage mapping and charged to the caller's budgets.
+- The session writes one row in [Relay Logs](./logs).
+
+## Add a WebSocket route
+
+A WebSocket route is a `GET` route, since every WebSocket handshake is a `GET`. It cannot also set `stream` or `job`.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open the relay and choose **Add Route**.
+2. Set **Streaming** to **WebSocket session**. The method is fixed to `GET`.
+3. Optionally, open **Edit Relay Config → Network → WebSocket Sessions** to set the session bounds and the billing window.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "relays": [
+    {
+      "name": "deepgram",
+      "base_url": "https://api.deepgram.com",
+      "auth": { "type": "header", "header_name": "Authorization", "value_prefix": "Token " },
+      "credential": { "value": "env.DEEPGRAM_API_KEY" },
+      "usage": {
+        "units_source": "request",
+        "units_measure": "body_bytes",
+        "cost_per_unit": 0.0000002
+      },
+      "websocket": {
+        "max_session_seconds": 3600,
+        "billing_window_seconds": 60
+      },
+      "routes": [
+        { "method": "GET", "path": "/v1/listen", "websocket": true }
+      ]
+    }
+  ]
+}
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `routes[].websocket` | `false` | Serve the route as WebSocket sessions. The route must use `GET`. |
+| `websocket.max_message_bytes` | `0` | Largest frame read in either direction. `0` sets no bound of the relay's own. |
+| `websocket.max_session_seconds` | `0` | Longest a session may stay open. `0` sets no bound. |
+| `websocket.billing_window_seconds` | `60` | How often an open session settles its usage to budgets. `0` settles only at close. |
+| `websocket.subprotocols` | none | Subprotocols (`Sec-WebSocket-Protocol`) a caller may offer to the upstream. |
+
+</Tab>
+</Tabs>
+
+The upstream URL is the relay's `base_url` with `https` replaced by `wss` and `http` by `ws`. The relay's `proxy_config`, `network.ca_cert_pem` and `network.insecure_skip_verify` apply to the handshake as they apply to HTTP calls.
+
+## Connect
+
+The caller connects to the same path an HTTP call would use, with a WebSocket scheme:
+
+```bash
+websocat -H "x-bf-vk: sk-bf-your-virtual-key" \
+  "ws://localhost:8080/relay/deepgram/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000"
+```
+
+The virtual key travels in a handshake header, as on every relay call. Browsers cannot set headers on a WebSocket, so a browser client connects through its own backend.
+
+The query string and the caller's other handshake headers are forwarded. The caller's `Sec-WebSocket-*` and `Origin` headers are not: Bifrost makes its own handshake. A browser `Origin` is checked against `client.allowed_origins`.
+
+### Subprotocols
+
+A caller's `Sec-WebSocket-Protocol` offer is forwarded only for protocols listed in `websocket.subprotocols`. The upstream's choice is returned to the caller. With no list, nothing is offered.
+
+## The handshake
+
+Bifrost dials the upstream **before** it accepts the caller's upgrade. A refusal from either side is therefore a plain HTTP status the caller can act on, not a `101` followed by a close:
+
+| Status | Cause |
+| --- | --- |
+| `400` | The route is not a WebSocket route, or the model could not be read from the query. |
+| `402` | A budget the caller draws on is exhausted. |
+| `403` | The virtual key has no grant for this relay. |
+| `404` | The relay or route does not exist, or the route is disabled. |
+| `429` | A rate limit is exhausted, or this Bifrost node already holds as many open relay sessions as `websocket.max_connections_per_user` allows (default `100`). |
+| Upstream's status | The upstream refused the handshake. The first bytes of its reply are included in the error. |
+
+The handshake is bounded by `network.timeout_seconds`. Under `aws_sigv4` auth, the handshake URL is presigned with the relay's credential, since a WebSocket handshake carries no signed body.
+
+## While the session is open
+
+Data frames pass unchanged: text frames stay text and binary frames stay binary. Ping and pong frames are answered at each hop and are not forwarded.
+
+A session ends with a close frame. Bifrost forwards the closing side's code to the other side where it can:
+
+| Event | Caller receives | Row status |
+| --- | --- | --- |
+| The upstream closes with `1000` or `1001` | The same code | `success` |
+| The upstream closes with another code | The same code | `error` |
+| The upstream connection drops without a close | `1011` | `error` |
+| The caller closes normally | | `success` |
+| The caller drops or closes abnormally | | `cancelled` |
+| No data frame either way for `network.stream_idle_timeout_in_seconds` | `1001` | `error` (timed out) |
+| `websocket.max_session_seconds` reached | `1008` | `success` |
+| A billing window is refused by a budget or rate limit | `1008` | `error` |
+| A frame exceeds `websocket.max_message_bytes` | `1009` | `error` |
+| Bifrost shuts down | `1012` | `cancelled` |
+
+## How a session is priced
+
+A session is counted when its route is billable. A WebSocket route is billable by default, unlike other `GET` routes, because a session is the unit of work the upstream bills. Set `billable: false` on the route to relay it free.
+
+Usage is read as frames pass:
+
+- **Each upstream text frame is one event**, as an SSE event is on a [stream](./streaming#how-a-stream-is-priced). Only frames that carry a mapped field are parsed, and each field keeps the last value any frame reported.
+- **`units_source: response`** with `body_bytes` or `body_chars` bills what the upstream sends.
+- **`units_source: request`** with `body_bytes` or `body_chars` bills what the caller sends, which is how audio sent for transcription is priced. A request-side `units_path` cannot be used: a session has no single request body to read it from.
+
+### Billing windows
+
+A long session is charged while it runs, not only at close. Every `billing_window_seconds`, Bifrost charges the usage the session has added since the previous window to the caller's budgets. A window that a budget or rate limit refuses closes the session with `1008`, so a session cannot run far past an exhausted budget.
+
+The windows charge cost only. The session counts as one request against request rate limits, at close. When the session ends, the remainder since the last window is charged, and the total charged is the session's whole cost. Set `billing_window_seconds: 0` to charge the whole session at close.
+
+## The session's log row
+
+A session writes one row, not one per frame or window. The row carries a **WebSocket** badge and, besides the usual call fields:
+
+- the bytes and frames received from the caller and sent to it
+- the close code and reason that ended the session, and which side closed it
+- the negotiated subprotocol and the number of billing windows charged
+
+The row's latency is the whole session, from the handshake to the close. The time the session stays open counts as **Upstream Latency**, as the waits between a stream's chunks do, because Bifrost only forwards frames while the caller and the upstream talk. **Bifrost Overhead** is Bifrost's own work: the access checks, the handshake setup and the logging hooks.
+
+When content logging is on, the row keeps the text frames each way, joined by newlines, as the request and response bodies. Binary frames are counted, not kept. Every frame counts as activity for the logging plugin's 15-minute idle sweep, so an active session of any length is written once, when it closes.
+
+## Next steps
+
+- **[Usage mapping and pricing](./pricing)**: the fields a session's frames are read with.
+- **[Relay Logs](./logs)**: filter by **Transport** to see only sessions.
+- **[Troubleshooting](./troubleshooting#websocket-sessions)**: handshake refusals and close codes.

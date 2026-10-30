@@ -64,6 +64,12 @@ describe("buildRelayLogQuery", () => {
 		expect(today.get("timezone")).toBeTruthy();
 	});
 
+	it("sends the transport filter, including false for HTTP calls only", () => {
+		expect(new URLSearchParams(buildRelayLogQuery({ websocket: true })).get("websocket")).toBe("true");
+		expect(new URLSearchParams(buildRelayLogQuery({ websocket: false })).get("websocket")).toBe("false");
+		expect(new URLSearchParams(buildRelayLogQuery({})).has("websocket")).toBe(false);
+	});
+
 	it("sends latency bounds and the session id", () => {
 		const params = new URLSearchParams(buildRelayLogQuery({ min_latency: 100, max_latency: 2500, session_id: "s-1" }));
 		expect(params.get("min_latency")).toBe("100");

@@ -444,6 +444,22 @@ test.describe("Relay Logs", () => {
     await page.expectUrlParam("kinds", null);
   });
 
+  test("filters by transport", async ({ relayLogsPage: page }) => {
+    await page.goto({ relay_names: relayName });
+
+    // Every seeded call is HTTP, so the HTTP filter keeps them all and the WebSocket one none.
+    await page.openSection("relay-transport-filter-toggle");
+    await page.page.getByTestId("relay-transport-filter-checkbox-http").click();
+    await page.expectUrlParam("websocket", "false");
+    await expect(page.rowsFor(relayName)).toHaveCount(5);
+    await page.page.getByTestId("relay-transport-filter-checkbox-websocket").click();
+    await page.expectUrlParam("websocket", "true");
+    await expect(page.noResultsRow).toBeVisible();
+    await page.page.getByTestId("relay-transport-filter-checkbox-websocket").click();
+    await page.expectUrlParam("websocket", null);
+    await expect(page.rowsFor(relayName)).toHaveCount(5);
+  });
+
   test("filters by a cost range committed on Enter or blur", async ({ relayLogsPage: page }) => {
     await page.goto({ relay_names: relayName });
     await page.openSection("relay-cost-filter-toggle");

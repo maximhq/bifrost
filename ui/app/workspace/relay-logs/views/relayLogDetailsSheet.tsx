@@ -337,13 +337,23 @@ export function RelayLogDetailSheet({
 											<Badge variant="outline" className={cn("rounded-sm px-2 py-0.5 font-medium", RELAY_KIND_PILL_CLASS)}>
 												{KIND_LABELS[display.kind]}
 											</Badge>
-											{display.streamed && (
+											{display.websocket ? (
 												<Badge
 													variant="outline"
-													className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200"
+													className="rounded-sm bg-indigo-100 px-2 py-0.5 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200"
+													data-testid="relay-log-websocket-badge"
 												>
-													{t("relayLogs.fields.streamed")}
+													{t("relayLogs.fields.websocket")}
 												</Badge>
+											) : (
+												display.streamed && (
+													<Badge
+														variant="outline"
+														className="rounded-sm bg-teal-100 px-2 py-0.5 text-teal-800 dark:bg-teal-900 dark:text-teal-200"
+													>
+														{t("relayLogs.fields.streamed")}
+													</Badge>
+												)
 											)}
 											<StatusPill status={display.status as Status} />
 											{!display.billable && (
@@ -596,6 +606,50 @@ export function RelayLogDetailSheet({
 												label={t("relayLogs.fields.streamed")}
 												value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
 											/>
+											{display.websocket && (
+												<>
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("relayLogs.detail.bytesIn")}
+														value={(display.bytes_in ?? 0).toLocaleString(getLocale())}
+													/>
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("relayLogs.detail.framesInOut")}
+														value={`${(display.frames_in ?? 0).toLocaleString(getLocale())} / ${(display.frames_out ?? 0).toLocaleString(getLocale())}`}
+													/>
+													{display.socket?.close_code != null && (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.closeCode")}
+															value={
+																display.socket.close_reason
+																	? `${display.socket.close_code} (${display.socket.close_reason})`
+																	: String(display.socket.close_code)
+															}
+														/>
+													)}
+													{display.socket?.closed_by && (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.closedBy")}
+															value={t(`relayLogs.detail.closedByValue.${display.socket.closed_by}`)}
+														/>
+													)}
+													{display.socket?.subprotocol && (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.subprotocol")}
+															value={display.socket.subprotocol}
+														/>
+													)}
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("relayLogs.detail.billingWindows")}
+														value={String(display.socket?.windows ?? 0)}
+													/>
+												</>
+											)}
 											{display.model && <LogEntryDetailsView className="w-full" label={t("labels.model")} value={display.model} />}
 											<CorrelationLink
 												label={t("relayLogs.fields.job")}

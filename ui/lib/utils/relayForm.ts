@@ -159,6 +159,7 @@ export function emptyRelayForm(): RelayFormValues {
 		proxy: { type: "inherit" },
 		usage: emptyUsageForm(),
 		streaming: { paths: [] },
+		websocket: {},
 		routes: [],
 		skip_route_check: false,
 		ignore_upstream_cost: false,
@@ -195,6 +196,12 @@ export function toRelayForm(e: Relay): RelayFormValues {
 		streaming: {
 			paths: e.streaming?.paths ?? [],
 		},
+		websocket: {
+			max_message_bytes: e.websocket?.max_message_bytes,
+			max_session_seconds: e.websocket?.max_session_seconds,
+			billing_window_seconds: e.websocket?.billing_window_seconds,
+			subprotocols: e.websocket?.subprotocols?.join(", "),
+		},
 		routes: (e.routes ?? []).map((r) => ({
 			method: r.method.toUpperCase() as RelayRouteConfig["method"], // the server accepts any case
 			path: r.path,
@@ -202,6 +209,7 @@ export function toRelayForm(e: Relay): RelayFormValues {
 			enabled: r.enabled ?? true,
 			billable: r.billable,
 			stream: r.stream,
+			websocket: r.websocket,
 			usage: r.usage ? { ...r.usage } : undefined,
 			job: r.job,
 		})),
@@ -255,6 +263,26 @@ export function withoutPricing<T extends Partial<Record<(typeof PRICING_FIELDS)[
 	return Object.values(rest).some((v) => v !== undefined && v !== null && v !== "") ? rest : undefined;
 }
 
+/**
+ * The websocket block the API takes, or undefined when nothing is set. A billing window of 0 is kept:
+ * it means "settle only at close", unlike an unset one, which takes the default.
+ */
+export function toWebSocketConfig(w: RelayFormValues["websocket"] | undefined): Relay["websocket"] {
+	if (!w) return undefined;
+	const set = (n: number | undefined) => n !== undefined && !Number.isNaN(n);
+	const subprotocols = (w.subprotocols ?? "")
+		.split(",")
+		.map((p) => p.trim())
+		.filter(Boolean);
+	const out: NonNullable<Relay["websocket"]> = {
+		...(set(w.max_message_bytes) && w.max_message_bytes! > 0 ? { max_message_bytes: w.max_message_bytes } : {}),
+		...(set(w.max_session_seconds) && w.max_session_seconds! > 0 ? { max_session_seconds: w.max_session_seconds } : {}),
+		...(set(w.billing_window_seconds) ? { billing_window_seconds: w.billing_window_seconds } : {}),
+		...(subprotocols.length ? { subprotocols } : {}),
+	};
+	return Object.keys(out).length ? out : undefined;
+}
+
 /** Turns form values into the endpoint body the API takes. */
 export function toRelayConfig(v: RelayFormValues): Relay {
 	const authType = v.auth.type;
@@ -293,6 +321,7 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 		),
 	);
 	const streamingSet = v.streaming.paths.length > 0;
+	const websocket = toWebSocketConfig(v.websocket);
 	return {
 		name: v.name.trim(),
 		description: v.description?.trim() || undefined,
@@ -315,6 +344,7 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 					},
 		usage: cleanUsage(v.usage, false),
 		streaming: streamingSet ? { ...v.streaming, paths: v.streaming.paths.filter((p) => p.trim()) } : undefined,
+		websocket,
 		routes: v.routes
 			.map((r) => {
 				const headers = Object.fromEntries(
@@ -323,14 +353,17 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 				// A route that is not billed is never priced and hides its pricing, so only the model and
 				// token mapping the gateway still reads on every call is sent.
 				const usage =
-					(r.billable ?? routeBillableByDefault(r.method)) ? cleanUsage(r.usage, true) : withoutPricing(cleanUsage(r.usage, true));
+					(r.billable ?? routeBillableByDefault(r.method, r.websocket))
+						? cleanUsage(r.usage, true)
+						: withoutPricing(cleanUsage(r.usage, true));
 				return {
 					method: r.method,
 					path: r.path.trim(),
 					...(Object.keys(headers).length ? { headers } : {}),
 					...(r.enabled === false ? { enabled: false } : {}),
-					...(r.billable !== undefined && r.billable !== routeBillableByDefault(r.method) ? { billable: r.billable } : {}),
-					...(r.stream !== undefined ? { stream: r.stream } : {}),
+					...(r.billable !== undefined && r.billable !== routeBillableByDefault(r.method, r.websocket) ? { billable: r.billable } : {}),
+					...(r.stream !== undefined && !r.websocket ? { stream: r.stream } : {}),
+					...(r.websocket ? { websocket: true } : {}),
 					...(usage ? { usage } : {}),
 					...(r.job ? { job: cleanJob(r.job) } : {}),
 				};

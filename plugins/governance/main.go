@@ -1686,7 +1686,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 		// A live session's continuation bills its usage but was already counted as a request at admission.
-		sessionContinuation := isLiveSessionContinuation(ctx)
+		sessionContinuation := isSessionContinuation(ctx)
 
 		p.wg.Add(1)
 		go func() {

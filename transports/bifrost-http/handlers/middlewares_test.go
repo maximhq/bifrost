@@ -771,6 +771,8 @@ func TestIsInferenceWSEndpoint(t *testing.T) {
 		"/openai/v1/realtime",
 		"/openai/realtime",
 		"/openai/openai/realtime",
+		// A relay upgrade authenticates as its HTTP calls do, never through the dashboard ticket.
+		"/relay/deepgram/v1/listen",
 	}
 
 	for _, path := range paths {

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -27,6 +28,7 @@ type endpoint struct {
 	cfg             *schemas.RelayConfig
 	client          *http.Client // unary client; Timeout bounds the whole response
 	streamingClient *http.Client // streaming client; no whole-response timeout
+	wsDialer        *ws.Dialer   // upstream WebSocket dialer for the routes served as sessions
 	operatorHeaders map[string]string
 	// operatorLogHeaders is operatorHeaders with every secret-backed value redacted, for the log row.
 	operatorLogHeaders map[string]string
@@ -52,6 +54,10 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 	if err != nil {
 		return nil, err
 	}
+	wsDialer, err := newWebSocketDialer(cfg.Network, proxy)
+	if err != nil {
+		return nil, err
+	}
 	usage := resolveUsage(cfg.Usage, nil)
 	usage.ignoreUpstreamCost = cfg.IgnoreUpstreamCost
 	usage.eventPaths = usage.collectEventPaths()
@@ -64,6 +70,7 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 		cfg:                cfg,
 		client:             client,
 		streamingClient:    providerUtils.BuildStreamingHTTPClient(client),
+		wsDialer:           wsDialer,
 		operatorHeaders:    lowerHeaderValues(cfg.ExtraHeaders),
 		operatorLogHeaders: loggableHeaderValues(cfg.ExtraHeaders),
 		usage:              usage,
@@ -89,6 +96,7 @@ type plan struct {
 	usage   resolvedUsage
 	billing bool
 	stream  streamMode
+	socket  bool // the matched route serves upgrade requests as WebSocket sessions
 }
 
 // readsReplyBody reports whether a billable call reads something from its reply's body: a priced
@@ -114,7 +122,7 @@ func (e *endpoint) plan(method, path string, headers map[string]string) plan {
 	// (or the relay-any-path fallback) priced differently.
 	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil)}
 	if route != nil {
-		p.usage, p.billing = route.usage, route.billable
+		p.usage, p.billing, p.socket = route.usage, route.billable, route.socket
 		for i := range e.routes {
 			if &e.routes[i] == route {
 				p.index = i
@@ -193,6 +201,7 @@ type upstreamRequest struct {
 	headers  map[string]string
 	body     []byte
 	internal bool // a job poll: the operator's own request, whose headers keep their x-amz-* names
+	socket   bool // a WebSocket upgrade: aws_sigv4 presigns the URL instead of signing headers
 }
 
 // buildRequest turns a request into the upstream net/http request: host-pinned URL, caller headers
@@ -256,6 +265,14 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 	// Accept-Encoding of its own; one set here would hand the caller compressed bytes with
 	// Content-Encoding stripped and leave usage unreadable. Removed before signing.
 	httpReq.Header.Del("Accept-Encoding")
+	if req.socket && e.cfg.Auth.Type == schemas.RelayAuthAWSSigV4 {
+		// A WebSocket handshake carries its SigV4 signature in the query (the AWS presigned-URL
+		// form Transcribe streaming takes), since the signature must survive the upgrade.
+		if bifrostErr := e.presignAWSRequest(ctx, httpReq); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return httpReq, nil
+	}
 	if bifrostErr := e.applyAuth(ctx, httpReq); bifrostErr != nil {
 		return nil, bifrostErr
 	}

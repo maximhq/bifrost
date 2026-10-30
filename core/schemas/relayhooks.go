@@ -20,15 +20,19 @@ type BifrostRelayRequest struct {
 	RouteHeaders map[string]string
 	Billable     bool // a 2xx reply on this call is counted and charged
 	Streams      bool // relayed as a stream
+	WebSocket    bool // served as a WebSocket session; Body is nil, the caller's frames arrive during the session
 }
 
-// BifrostRelayResponse is what PostRelayHook receives, once the reply (or the stream) has ended.
-// Body's content depends on how the reply arrived: a buffered (non-streamed) reply always carries
-// its full body here, regardless of content-capture policy, since it was already read into memory
-// to be forwarded. A streamed reply's Body is nil unless content capture was enabled for the call
-// (see BifrostContextKeyRelayContentLoggingEnabledByDefault), in which case it is a bounded prefix
-// of what was buffered as the reply was forwarded — not the whole reply the way a buffered one is.
+// BifrostRelayResponse is what PostRelayHook receives, once the reply (or the stream, or the
+// WebSocket session) has ended. A buffered reply always carries its full body here, since it was
+// read into memory to be forwarded. A streamed reply's Body, and a session's Body and RequestBody,
+// are nil unless content capture was enabled for the call (BifrostContextKeyRelayContentCapture),
+// in which case they hold the whole reply, or the session's text frames in each direction.
 // Usage is nil when the call is not counted: a route that is not billable, or a non-2xx reply.
+//
+// A WebSocket session settles its usage in billing windows while it is open (see
+// BifrostContextKeySessionContinuation). Its final response carries the whole session's Usage for
+// the log row and, in SettledCost, the part of Usage.Cost those windows already charged.
 type BifrostRelayResponse struct {
 	RelayName       string
 	StatusCode      int
@@ -41,7 +45,31 @@ type BifrostRelayResponse struct {
 	UpstreamLatency int64 // milliseconds blocked on the upstream socket, 0 when the upstream was never called
 	OversizedEvents int   // SSE events past the 10 MiB framing ceiling: forwarded, not read for usage
 	Usage           *RelayUsage
+
+	WebSocket   bool                // a WebSocket session; StatusCode is 101
+	RequestBody []byte              // a session's captured client text frames; nil otherwise
+	BytesIn     int64               // payload bytes the caller sent during a session
+	FramesIn    int64               // data frames the caller sent during a session
+	FramesOut   int64               // data frames forwarded to the caller during a session
+	SettledCost float64             // part of Usage.Cost already charged by the session's billing windows
+	Socket      *RelaySocketSummary // how a session ended; nil for an HTTP call
 }
+
+// RelaySocketSummary records how a relayed WebSocket session ended, for the log row.
+type RelaySocketSummary struct {
+	Subprotocol string `json:"subprotocol,omitempty"`  // negotiated with the upstream
+	CloseCode   int    `json:"close_code,omitempty"`   // the code that ended the session: sent to the caller, or the caller's own
+	CloseReason string `json:"close_reason,omitempty"` // the close reason the caller was sent
+	ClosedBy    string `json:"closed_by,omitempty"`    // client, upstream or gateway
+	Windows     int    `json:"windows,omitempty"`      // billing windows settled while the session was open
+}
+
+// Who ended a relayed WebSocket session.
+const (
+	RelaySocketClosedByClient   = "client"
+	RelaySocketClosedByUpstream = "upstream"
+	RelaySocketClosedByGateway  = "gateway"
+)
 
 // RelayUsage is what one counted call costs and what the mapping read to get there. Cost is the
 // figure governance charges to budgets; the other fields explain it on the log row.
