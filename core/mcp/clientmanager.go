@@ -914,6 +914,10 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	}
 
 	m.mu.Lock()
+	if m.ctx != nil && m.ctx.Err() != nil {
+		m.mu.Unlock()
+		return m.ctx.Err()
+	}
 
 	if _, ok := m.clientMap[config.ID]; ok {
 		m.mu.Unlock()
@@ -2848,6 +2852,10 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	var entry *schemas.MCPClientState
 
 	m.mu.Lock()
+	if m.ctx != nil && m.ctx.Err() != nil {
+		m.mu.Unlock()
+		return m.ctx.Err()
+	}
 	if existingClient, exists := m.clientMap[config.ID]; exists {
 		// If the client is disabled and the caller is not explicitly re-enabling it
 		// (EnableClient sets config.Disabled = false before calling here; ReconnectClient
@@ -2935,10 +2943,9 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	var longLivedCancel context.CancelFunc
 
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-		// Create long-lived context for the connection (subprocess lifetime)
-		// Use context.Background() to avoid inheriting deadline from m.ctx
-		// This prevents STDIO/SSE from being limited by HTTP request timeouts
-		longLivedCtx, longLivedCancel = context.WithCancel(context.Background())
+		// Preserve the deadline-free transport lifetime, but let Cleanup cancel
+		// startup even before this candidate has a registered CancelFunc.
+		longLivedCtx, longLivedCancel = context.WithCancel(m.connectionCtx)
 
 		// Use long-lived context for starting the transport (spawns subprocess)
 		// but create a timeout context for initialization to prevent hangs
