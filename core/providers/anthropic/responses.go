@@ -5861,6 +5861,38 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// already-emitted role:"system" messages (an effort-only override, an earlier reminder) is
 	// skipped before requiring the user turn; without that, the second member of a system
 	// group would be judged against its sibling and inlined, dropping its override.
+	// droppedAsEmpty reports whether a user/assistant input item leaves no message on the
+	// wire because all of its text is empty (convertBifrostMessageToAnthropicMessage returns
+	// nil for it). Turn-shape checks below must not count it. Pending thinking flushes at a
+	// system message, so it cannot attach to the item a lookahead skips.
+	droppedAsEmpty := func(m *schemas.ResponsesMessage) bool {
+		if m.Type != nil && *m.Type != schemas.ResponsesMessageTypeMessage {
+			return false
+		}
+		if m.Role != nil && (*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) {
+			return false
+		}
+		if m.Content == nil {
+			return true
+		}
+		if m.Content.ContentStr != nil {
+			return *m.Content.ContentStr == ""
+		}
+		for _, block := range m.Content.ContentBlocks {
+			// Text decides without converting, so the common prefill-trim check allocates nothing.
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeText || block.Type == schemas.ResponsesOutputMessageContentTypeText {
+				if block.Text != nil && *block.Text != "" {
+					return false
+				}
+				continue
+			}
+			if convertContentBlockToAnthropicWithCaps(caps, block) != nil {
+				return false
+			}
+		}
+		return true
+	}
+
 	midConvPlacementOK := func(i int) bool {
 		prev := len(anthropicMessages) - 1
 		for prev >= 0 && anthropicMessages[prev].Role == AnthropicMessageRoleSystem {
@@ -5886,9 +5918,10 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		// that will join this system section, then require end-of-messages or an assistant
 		// turn. Judging the first member by its system sibling would inline it.
 		next := i + 1
-		for next < len(bifrostMessages) && bifrostMessages[next].Role != nil &&
+		for next < len(bifrostMessages) && ((bifrostMessages[next].Role != nil &&
 			(*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleSystem ||
-				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper) {
+				*bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleDeveloper)) ||
+			droppedAsEmpty(&bifrostMessages[next])) {
 			next++
 		}
 		if next == len(bifrostMessages) {
@@ -6042,7 +6075,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	if isRequestMessage && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		for trimIndex > 0 {
 			m := bifrostMessages[trimIndex-1]
-			if m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant {
+			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || droppedAsEmpty(&m) {
 				trimIndex--
 			} else {
 				break
