@@ -627,5 +627,6 @@
 		"unexpected": "Ein unerwarteter Fehler ist aufgetreten",
 		"requestTimeout": "Zeitüberschreitung der Anfrage",
 		"network": "Netzwerkfehler"
-	}
+	},
+	"valueOrEnvVar": "{{value}} oder {{env}}"
 }

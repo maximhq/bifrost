@@ -231,7 +231,6 @@
 			"codeLanguage": "Code language",
 			"copyCode": "Copy code"
 		},
-		"moreActions": "More actions",
 		"exportCsv": "Export CSV",
 		"exportCsvDesc": "Download matching logs as CSV",
 		"recalc": {
