@@ -37,10 +37,28 @@ mcpchaos listening on http://127.0.0.1:8400
 ```
 
 Paths are derivable from a server's name, so a driver can compute a URL without
-asking the fleet: `/s/<name>/mcp` to connect, `/control/<name>/...` to mutate.
+asking the fleet: `/s/<name>/mcp` for streamable HTTP, `/s/<name>/sse` for the
+legacy transport, `/control/<name>/...` to mutate.
 
 `-seed <file.json>` builds a fleet with per-identity tool views, auth and
 starting faults in one step, for scenarios that need more than names.
+
+## Transports
+
+Both speak the protocol for real, and they are not interchangeable. The
+differences below are the point: a client that handles one correctly can still
+mishandle another.
+
+| Transport | Endpoint | What is distinct about it |
+|---|---|---|
+| Streamable HTTP | `/s/<name>/mcp` | Response returns in the reply to the POST. A `GET` on the same path opens the standalone listening stream, which only a client that opted in ever does. |
+| Legacy HTTP+SSE | `/s/<name>/sse` | Response arrives **out-of-band** on a stream opened separately; the POST is only acknowledged with 202. The stream is also the session, so it exists before `initialize` rather than being created by it. |
+
+The SSE split is what makes a dropped connection mean something different
+there. Under streamable HTTP a drop fails the request in flight; under SSE it
+**strands** it, because the POST already succeeded and the answer has nowhere
+to land. `sse_test.go` pins that a client gives up on its own deadline rather
+than being told.
 
 ## Control API
 

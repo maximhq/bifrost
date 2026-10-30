@@ -198,7 +198,7 @@ func (s *Server) Handle(req *request, sessionID, identity string) handleResult {
 
 	switch req.Method {
 	case MethodInitialize:
-		return s.handleInitialize(req, identity, f)
+		return s.handleInitialize(req, sessionID, identity, f)
 	case MethodInitialized:
 		// A notification. Nothing to answer, but it is counted above so a test
 		// can assert the handshake completed rather than merely started.
@@ -215,7 +215,7 @@ func (s *Server) Handle(req *request, sessionID, identity string) handleResult {
 	}
 }
 
-func (s *Server) handleInitialize(req *request, identity string, f Faults) handleResult {
+func (s *Server) handleInitialize(req *request, sessionID, identity string, f Faults) handleResult {
 	if f.InitFail {
 		s.counters.faulted()
 		return handleResult{Response: newError(req.ID, CodeInternalError, "initialize failed (injected)")}
@@ -241,9 +241,20 @@ func (s *Server) handleInitialize(req *request, identity string, f Faults) handl
 		s.counters.faulted()
 	}
 
-	sess := s.sessions.create(identity, version)
+	// A session the caller already holds is reused rather than replaced. The
+	// two transports arrive here differently: under streamable HTTP initialize
+	// is what mints the session, while under the legacy transport the stream
+	// itself is the session and already exists by the time initialize is sent.
+	// Minting unconditionally would double-count the second case and leave the
+	// client addressing a session the server no longer routes its responses to.
+	sess, existing := s.sessions.get(sessionID)
+	if existing {
+		s.sessions.negotiated(sess.ID, version)
+	} else {
+		sess = s.sessions.create(identity, version)
+		s.counters.session()
+	}
 	s.counters.initialize()
-	s.counters.session()
 
 	result := initializeResult{
 		ProtocolVersion: version,

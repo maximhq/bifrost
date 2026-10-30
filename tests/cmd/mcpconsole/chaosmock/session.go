@@ -69,6 +69,17 @@ func (s *sessionStore) create(identity, protocolVersion string) *Session {
 	return sess
 }
 
+// negotiated records the protocol version an initialize settled on, for a
+// session that already existed. Done through the store so the write is under
+// the same lock every reader takes.
+func (s *sessionStore) negotiated(id, protocolVersion string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.live[id]; ok {
+		sess.ProtocolVersion = protocolVersion
+	}
+}
+
 func (s *sessionStore) get(id string) (*Session, bool) {
 	if id == "" {
 		return nil, false
