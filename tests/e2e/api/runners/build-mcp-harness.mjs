@@ -8103,6 +8103,82 @@ const EP63 = folder("EP-63 Modern transport rules and read errors", `Setup: ${FL
   ...fleetTeardown("EP-63"),
 ]);
 
+// ================================================================ connection failures and recovery on the mock
+
+// afterSeconds holds a request back n seconds, for a step that asserts nothing happened in between.
+const afterSeconds = (n) => [`setTimeout(function () {}, ${n * 1000});`];
+const pingsAndListsMethods = "(function (m) { return (m.ping || 0) + ':' + (m['tools/list'] || 0); })(pm.response.json().counters.methods || {})";
+
+const FAIL09 = folder("FAIL-09 Initialize failure on a per-call client", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"], created healthy; then alpha fails every initialize (init_fail).", [
+  ...setClient("FAIL-09", {}),
+  saveMethods("FAIL-09", "alpha", "fail09"),
+  mockPost("FAIL-09", "alpha", "faults", "setup: alpha fails every initialize", { faults: { init_fail: true } }),
+  setExec("FAIL-09", "execute echo_tool", "echo_tool", [A.status(400), A.msgEquals("failed to establish ephemeral MCP connection: internal error: initialize failed (injected)")]),
+  mockGet("FAIL-09", "alpha", "initialize +4: the per-call connect is retried", [methodsPlus("fail09", 4, 0)]),
+  mockPost("FAIL-09", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-09", "fail-09-a"),
+]);
+
+const FAIL10 = folder("FAIL-10 Unsupported protocol version on a per-call client", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"], created healthy; then alpha answers initialize with protocol version 1999-01-01.", [
+  ...setClient("FAIL-10", {}),
+  saveMethods("FAIL-10", "alpha", "fail10"),
+  mockPost("FAIL-10", "alpha", "faults", "setup: alpha advertises protocol version 1999-01-01", { faults: { bad_version: "1999-01-01" } }),
+  setExec("FAIL-10", "execute echo_tool", "echo_tool", [A.status(400), A.msgEquals("failed to establish ephemeral MCP connection: unsupported protocol version: \"1999-01-01\""), responseTime(null, 1000)]),
+  mockGet("FAIL-10", "alpha", "initialize +1: an unsupported version is not retried", [methodsPlus("fail10", 1, 0)]),
+  mockPost("FAIL-10", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-10", "fail-10-a"),
+]);
+
+const FAIL23 = folder("FAIL-23 A stickiness flip that fails to dial", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha refuses connections; then PUT needs_session_stickiness true; then the fault clears.", [
+  ...setClient("FAIL-23", {}),
+  saveSessions("FAIL-23", "alpha", "fail23_s0"),
+  mockPost("FAIL-23", "alpha", "faults", "setup: alpha refuses connections", { faults: { refuse: true } }),
+  request("FAIL-23", "PUT needs_session_stickiness true", "PUT", "/api/mcp/client/fail-23-a", { body: { needs_session_stickiness: true }, asserts: [A.status(200), A.jsonEquals("status", "partial_success"), A.custom("the message says the shared connection failed", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('establishing the shared connection failed');"])] }),
+  getClient("FAIL-23", "fail-23-a", "the client is unstable at stage connect", [clientState("unstable"), clientField("last_failure.stage", "connect")]),
+  mockPost("FAIL-23", "alpha", "faults/clear", "setup: alpha accepts connections again"),
+  getClient("FAIL-23", "fail-23-a", "the client turns healthy within 30s", [clientState("healthy")], { pre: waitForClient("fail-23-a", "c.state === 'healthy'", 120) }),
+  mockGet("FAIL-23", "alpha", "sessions +2: the shared connection and its list_changed stream", [sessionsPlus("fail23_s0", 2)]),
+  deleteClient("FAIL-23", "fail-23-a"),
+]);
+
+// FAIL24_BODY is a 503 body of 40 lines, about 2000 characters.
+const FAIL24_BODY = Array.from({ length: 40 }, (_, i) => `line ${String(i).padStart(2, "0")} ${"x".repeat(41)}`).join("\n");
+const inStateList = (state, clientId, present) => request("FAIL-24", `?state=${state} ${present ? "lists" : "does not list"} ${clientId}`, "GET", `/api/mcp/clients?state=${state}&limit=100`, {
+  asserts: [A.status(200), A.custom(`${clientId} is ${present ? "" : "not "}listed`, [`var ids = (pm.response.json().clients || []).map(function (c) { return c.config.client_id; });`, `pm.expect(ids, 'body: ' + pm.response.text()).to.${present ? "" : "not."}include(${lit(clientId)});`])],
+});
+const FAIL24 = folder("FAIL-24 State filter and failure record shape", "Setup: alpha (echo_tool) as a healthy per-call client fail-24-h; beta (echo_tool) answering every request with 503 and a 40-line, about 2000-character body, with a per-call client fail-24-u on it.", [
+  ...freshServer("FAIL-24", "alpha", ["echo_tool"]),
+  createClient("FAIL-24", httpClient("fail-24-h", "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: create the healthy client"),
+  ...freshServer("FAIL-24", "beta", ["echo_tool"]),
+  mockPost("FAIL-24", "beta", "faults", "setup: beta answers 503 with a long multi-line body", { faults: { status: 503, message: FAIL24_BODY } }),
+  createClient("FAIL-24", httpClient("fail-24-u", "beta", "beta", { tools_to_execute: ["*"] }), "setup: create the client on beta"),
+  inStateList("healthy", "fail-24-h", true), inStateList("healthy", "fail-24-u", false),
+  inStateList("unstable", "fail-24-u", true), inStateList("unstable", "fail-24-h", false),
+  request("FAIL-24", "?state=bogus", "GET", "/api/mcp/clients?state=bogus", { asserts: [A.status(400), A.msgEquals("Invalid state parameter: must be 'healthy' or 'unstable'")] }),
+  getClient("FAIL-24", "fail-24-u", "last_failure.message is one line of at most 512 characters ending with an ellipsis", [A.custom("one line, at most 512 characters, ending with …", [
+    "var m = pm.response.json().clients[0].last_failure.message;",
+    "pm.expect(m, 'message: ' + m).to.not.include('\\n');",
+    "pm.expect(Array.from(m).length).to.be.at.most(512);",
+    "pm.expect(m.slice(-1)).to.equal('\\u2026');",
+  ])]),
+  mockPost("FAIL-24", "beta", "faults/clear", "teardown: clear beta's faults"),
+  deleteClient("FAIL-24", "fail-24-h"), deleteClient("FAIL-24", "fail-24-u"),
+]);
+
+const SET18 = folder("SET-18 Disable a sticky client", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then PUT disabled true.", [
+  ...setClient("SET-18", { needs_session_stickiness: true }),
+  request("SET-18", "PUT disabled true", "PUT", "/api/mcp/client/set-18-a", { body: { disabled: true }, asserts: [A.status(200)] }),
+  getClient("SET-18", "set-18-a", "the client is disabled with no tools", [clientState("disabled"), toolNamesAre([])]),
+  list("SET-18", "/mcp lists none of alpha's tools", "/mcp", [], [A.status(200), A.custom("no alpha-* tool", [`pm.expect(${mcpNames}.filter(function (n) { return n.indexOf('alpha-') === 0; }), 'body: ' + pm.response.text()).to.eql([]);`])]),
+  setExec("SET-18", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  list("SET-18", "/mcp/alpha", "/mcp/alpha", [], [A.status(403)]),
+  mockGet("SET-18", "alpha", "setup: record alpha's ping and tools/list counts", [], [`pm.collectionVariables.set('set18_pl', ${pingsAndListsMethods});`]),
+  request("SET-18", "15s later alpha saw no ping or tools/list", "GET", "/control/alpha", { base: CHAOS, noAuth: true, pre: afterSeconds(15), asserts: [A.status(200), A.custom("ping and tools/list counts are unchanged", [
+    `pm.expect(${pingsAndListsMethods}, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('set18_pl'));`,
+  ])] }),
+  deleteClient("SET-18", "set-18-a"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -8121,12 +8197,12 @@ const collection = {
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, CONN23, CONN24, CONN25, CONN27]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS40, OAS42]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22, SET26]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET26]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL25]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25]),
   ],
 };
 
