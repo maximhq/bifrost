@@ -2547,7 +2547,7 @@ func TestEvaluateRoutingRules_CurrentTime(t *testing.T) {
 				Scope:   "global",
 			}))
 
-			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), tt.at), &EvaluationContext{
+			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &EvaluationContext{
 				Provider: schemas.OpenAI,
 				Model:    tt.model,
 			})
@@ -2614,7 +2614,7 @@ func TestEvaluateRoutingRules_CurrentTimeSharedAcrossChain(t *testing.T) {
 	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
 	require.NoError(t, store.UpsertRule(context.Background(), ruleB))
 
-	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Unix(0, 0).UTC()), &EvaluationContext{
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &EvaluationContext{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4o",
 	})
@@ -2731,14 +2731,14 @@ func benchmarkEvaluateRoutingRules(b *testing.B, expr string) {
 	// Warm the compiled program and the complexity-identifier cache. A fresh
 	// context per iteration matches one request: routing logs carry a timestamp,
 	// so reusing one context grows that slice without bound.
-	warmup := schemas.NewBifrostContext(context.Background(), time.Unix(0, 0).UTC())
+	warmup := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	if _, err := engine.EvaluateRoutingRules(warmup, routingCtx); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		bg := schemas.NewBifrostContext(context.Background(), time.Unix(0, 0).UTC())
+		bg := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		decision, err := engine.EvaluateRoutingRules(bg, routingCtx)
 		if err != nil || decision == nil {
 			b.Fatalf("evaluate: decision=%v err=%v", decision, err)
