@@ -1069,6 +1069,442 @@ const EP26 = folder("EP-26 Argument handling", `Setup: ${FLEET}; alpha's add dec
   ...fleetTeardown("EP-26"),
 ]);
 
+// ================================================================ OAS consent, token and session tests
+
+// VERIFIER is the RFC 7636 appendix B verifier; its S256 challenge is CHALLENGE.
+const VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const FORM = { key: "Content-Type", value: "application/x-www-form-urlencoded" };
+// form builds an x-www-form-urlencoded body; every value used here is already form-safe.
+const form = (params) => Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => {
+  if (/[&+%# ]/.test(v)) throw new Error(`form value needs encoding: ${v}`);
+  return `${k}=${v}`;
+}).join("&");
+
+// oauthConfig turns the OAuth server on for one test: the given mode, issuer_url = base_url,
+// and the temp-token auth the consent page's #t= token needs. extra is ES5 run afterwards.
+const oauthConfig = (id, mode, extra = [], title, tempTokens = true) => putConfig(id, title || `setup: mcp_server_auth_mode ${mode}, issuer_url set to the base URL, temp-token auth on`, [
+  `cc.mcp_server_auth_mode = ${lit(mode)};`,
+  "cc.oauth2_server_config = { issuer_url: pm.variables.get('base_url') };",
+  `cc.mcp_enable_temp_token_auth = ${tempTokens};`,
+  ...extra,
+], [A.status(200)]);
+
+// cred picks how a consent API request authenticates: "temp" (the flow's temp token), "admin"
+// (Basic), "bearer" (Bearer base64(admin:pw)), "cookie" (the admin session cookie) or "none".
+const cred = (as, flow) => ({
+  temp: { noAuth: true, headers: [{ key: "X-Bifrost-Temp-Token", value: `{{${flow}_tt}}` }] },
+  admin: { noAuth: false, headers: [] },
+  bearer: { noAuth: true, headers: [{ key: "Authorization", value: "{{admin_bearer}}" }], pre: ["pm.variables.set('admin_bearer', pm.variables.get('admin_auth_header').replace(/^Basic /, 'Bearer '));"] },
+  cookie: { noAuth: true, headers: [{ key: "Cookie", value: "token={{admin_cookie}}" }], noCookies: true },
+  none: { noAuth: true, headers: [] },
+})[as];
+
+// authorize starts a flow and keeps its id and temp token from the consent Location; over replaces
+// authorize parameters, such as redirect_uri.
+const authorize = (id, clientVar, flow, title, over = {}) => request(id, title, "GET", goodAuthorize(clientVar, over), {
+  noAuth: true, noRedirect: true, asserts: [A.status(302)],
+  extraTests: [
+    "var loc = pm.response.headers.get('Location') || '';",
+    "var m = /[?&]flow=([^#&]+)#t=(.+)$/.exec(loc);",
+    `pm.collectionVariables.set(${lit(flow + "_id")}, m ? decodeURIComponent(m[1]) : '');`,
+    `pm.collectionVariables.set(${lit(flow + "_tt")}, m ? decodeURIComponent(m[2]) : '');`,
+  ],
+});
+const flowPath = (flow) => `/api/oauth2/consent/flows/{{${flow}_id}}`;
+const flowGet = (id, flow, title, as, asserts, opts = {}) => {
+  const c = cred(as, flow);
+  return request(id, title, "GET", opts.path || flowPath(flow), { noAuth: c.noAuth, headers: c.headers, noCookies: c.noCookies, pre: [...(c.pre || []), ...(opts.pre || [])], asserts });
+};
+// consent submits PUT /api/oauth2/consent/flows/{id}; body is an object or, with raw, the literal body.
+const consent = (id, flow, title, as, body, asserts, opts = {}) => {
+  const c = cred(as, flow);
+  return request(id, title, "PUT", opts.path || flowPath(flow), {
+    noAuth: c.noAuth, headers: c.headers, noCookies: c.noCookies, pre: [...(c.pre || []), ...(opts.pre || [])],
+    ...(opts.raw !== undefined ? { raw: opts.raw } : { body }), asserts, extraTests: opts.extraTests || [],
+  });
+};
+const vkBody = (id) => ({ mode: "vk", value: `{{${id.toLowerCase()}_full}}` });
+// saveCode keeps the authorization code from a successful consent's redirect_url.
+const saveCode = (flow) => [
+  "var u = (pm.response.json() || {}).redirect_url || '';",
+  "var m = /[?&]code=([^&]+)/.exec(u);",
+  `pm.collectionVariables.set(${lit(flow + "_code")}, m ? decodeURIComponent(m[1]) : '');`,
+];
+
+// REFRESHABLE is what a client registers to be allowed the refresh grant.
+const REFRESHABLE = ["authorization_code", "refresh_token"];
+const codeIssued = () => A.custom("redirect_url carries a code", ["var u = (pm.response.json() || {}).redirect_url || '';", "pm.expect(/[?&]code=[^&]+/.test(u), 'redirect_url: ' + u).to.equal(true);"]);
+const tokensIssued = () => A.custom("a JWT access token and a refresh token are issued", [
+  "var t = pm.response.json() || {};",
+  "pm.expect(t.access_token, 'body: ' + pm.response.text()).to.match(/^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$/);",
+  "pm.expect(t.refresh_token).to.be.a('string').and.not.empty;",
+]);
+const tokenReq = (id, title, params, asserts, { headers = [], pre = [], extraTests = [] } = {}) => request(id, title, "POST", "/oauth2/token", {
+  noAuth: true, raw: form(params), headers: [FORM, ...headers], pre, asserts, extraTests,
+});
+const codeParams = (flow, clientVar, over = {}) => ({ grant_type: "authorization_code", code: `{{${flow}_code}}`, code_verifier: VERIFIER, client_id: `{{${clientVar}}}`, redirect_uri: LOOPBACK_CB, ...over });
+const refreshParams = (rtVar, clientVar, over = {}) => ({ grant_type: "refresh_token", refresh_token: `{{${rtVar}}}`, client_id: `{{${clientVar}}}`, ...over });
+// saveTokens keeps a token response's access and refresh tokens as <prefix>_at and <prefix>_rt.
+const saveTokens = (prefix) => [
+  "var t = pm.response.json() || {};",
+  `pm.collectionVariables.set(${lit(prefix + "_at")}, t.access_token || '');`,
+  `pm.collectionVariables.set(${lit(prefix + "_rt")}, t.refresh_token || '');`,
+];
+// vkGrant runs a whole grant as setup: authorize, consent with the full-access VK through the
+// temp token, and exchange the code. The tokens land in <flow>_at and <flow>_rt.
+const vkGrant = (id, clientVar, flow, label) => [
+  authorize(id, clientVar, flow, `setup: authorize ${label}`),
+  consent(id, flow, `setup: consent ${label} with the full-access VK`, "temp", vkBody(id), [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+  tokenReq(id, `setup: exchange ${label}'s code`, codeParams(flow, clientVar), [A.status(200), tokensIssued()], { extraTests: saveTokens(flow) }),
+];
+// CLAIMS_FN decodes a JWT payload inside a test script.
+const CLAIMS_FN = "function claims(t) { var C = require('crypto-js'); var p = String(t || '').split('.')[1] || ''; p = p.replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) { p += '='; } return JSON.parse(C.enc.Base64.parse(p).toString(C.enc.Utf8)); }";
+// mcpWithToken sends tools/list to /mcp with an issued access token as the bearer.
+const mcpWithToken = (id, title, tokenVar, asserts, pre = []) => request(id, title, "POST", "/mcp", {
+  noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, { key: "Authorization", value: `Bearer {{${tokenVar}}}` }], asserts, pre,
+});
+const WAIT_3S = ["setTimeout(function () {}, 3000);"];
+const errorCode = (code) => A.custom(`error.code is ${lit(code)}`, ["var b = pm.response.json();", `pm.expect(b.error && b.error.code, 'body: ' + pm.response.text()).to.equal(${lit(code)});`]);
+const fleetGrantSetup = (id) => [readConfig(id), ...fleetSetup(id), createVK(id, "full")];
+const fleetGrantTeardown = (id) => [restoreConfig(id), deleteVK(id, "full"), ...fleetTeardown(id)];
+const GRANT_TEXT = `${FLEET}; the full-access VK (${VKS.full.text}); each grant registers a client with grant_types authorization_code and refresh_token, authorizes with S256, consents with that VK through the temp token and exchanges the code`;
+
+const vkCreate = (id, title, body, varPrefix) => request(id, title, "POST", "/api/governance/virtual-keys", {
+  body, asserts: [A.status(200)],
+  extraTests: [`pm.collectionVariables.set(${lit(varPrefix + "_id")}, pm.response.json().virtual_key.id);`, `pm.collectionVariables.set(${lit(varPrefix)}, pm.response.json().virtual_key.value);`],
+});
+const vkDelete = (id, title, varPrefix) => request(id, title, "DELETE", `/api/governance/virtual-keys/{{${varPrefix}_id}}`, { asserts: [A.status(200)] });
+const OAS15 = folder("OAS-15 Consent flow detail", `Setup: ${BOTH}, dashboard auth on, temp-token auth on; the request carries only the flow's temp token.`, [
+  readConfig("OAS-15"), oauthConfig("OAS-15", "both"),
+  register("OAS-15", "oas15_client"),
+  authorize("OAS-15", "oas15_client", "oas15_f", "setup: authorize"),
+  flowGet("OAS-15", "oas15_f", "GET the flow with its temp token", "temp", [A.status(200), A.custom("redirect_uri, client_name, expires_at in RFC 3339 UTC, available_modes [\"vk\"], no logged_in_user", [
+    "var b = pm.response.json();",
+    `pm.expect(b.redirect_uri, 'body: ' + pm.response.text()).to.equal(${lit(LOOPBACK_CB)});`,
+    "pm.expect(b.client_name).to.equal('OAS-15 client');",
+    "pm.expect(b.expires_at).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/);",
+    "pm.expect(b.available_modes).to.eql(['vk']);",
+    "pm.expect(b).to.not.have.property('logged_in_user');",
+  ])]),
+  restoreConfig("OAS-15"),
+]);
+
+const OAS16 = folder("OAS-16 Consent API auth gates", `Setup: ${BOTH}, dashboard auth on; temp-token auth off for the first two cases and on for the rest.`, [
+  readConfig("OAS-16"),
+  oauthConfig("OAS-16", "both", [], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth off", false),
+  register("OAS-16", "oas16_client"),
+  authorize("OAS-16", "oas16_client", "oas16_f1", "setup: authorize flow one"),
+  flowGet("OAS-16", "oas16_f1", "no token", "none", [A.status(401)]),
+  flowGet("OAS-16", "oas16_f1", "flow one's token with temp-token auth off", "temp", [A.status(401), errorCode("temp_token_auth_disabled")]),
+  oauthConfig("OAS-16", "both"),
+  flowGet("OAS-16", "oas16_f1", "control: flow one's token opens flow one", "temp", [A.status(200)]),
+  authorize("OAS-16", "oas16_client", "oas16_f2", "setup: authorize flow two"),
+  flowGet("OAS-16", "oas16_f1", "flow one's token on flow two", "temp", [A.status(401), errorCode("temp_token_rejected")], { path: flowPath("oas16_f2") }),
+  flowGet("OAS-16", "oas16_f1", "flow one's token on /api/oauth2/sessions", "temp", [A.status(401), errorCode("temp_token_rejected")], { path: "/api/oauth2/sessions" }),
+  restoreConfig("OAS-16"),
+]);
+
+const OAS18 = folder("OAS-18 Consent with a VK", `Setup: mcp_server_auth_mode both with issuer_url ${OTHER_ISS}, an origin other than the one requests go to; dashboard auth on, temp-token auth on; a virtual key with no MCP configs; the client authorizes with resource omitted.`, [
+  readConfig("OAS-18"), putConfig("OAS-18", `setup: mcp_server_auth_mode both, issuer_url ${OTHER_ISS}, temp-token auth on`, ["cc.mcp_server_auth_mode = 'both';", `cc.oauth2_server_config = { issuer_url: ${lit(OTHER_ISS)} };`, "cc.mcp_enable_temp_token_auth = true;"], [A.status(200)]),
+  vkCreate("OAS-18", "setup: create a virtual key", { name: "OAS-18 key" }, "oas18_key"),
+  register("OAS-18", "oas18_client"),
+  authorize("OAS-18", "oas18_client", "oas18_f", "setup: authorize", { resource: undefined }),
+  consent("OAS-18", "oas18_f", "consent with the key", "temp", { mode: "vk", value: "{{oas18_key}}" }, [A.status(200), A.custom("redirect_url carries a code, state s1 and iss set to the issuer", [
+    "var u = pm.response.json().redirect_url || '';",
+    `pm.expect(u.indexOf(${lit(LOOPBACK_CB + "?")}), 'redirect_url: ' + u).to.equal(0);`,
+    "var q = {}; u.split('?')[1].split('&').forEach(function (kv) { var p = kv.split('='); q[decodeURIComponent(p[0])] = decodeURIComponent(p[1] || ''); });",
+    "pm.expect(q.code, 'redirect_url: ' + u).to.be.a('string').and.not.empty;",
+    "pm.expect(q.state).to.equal('s1');",
+    `pm.expect(q.iss).to.equal(${lit(OTHER_ISS)});`,
+  ])]),
+  consent("OAS-18", "oas18_f", "the same temp token again", "temp", { mode: "vk", value: "{{oas18_key}}" }, [A.status(401), errorCode("temp_token_rejected")]),
+  consent("OAS-18", "oas18_f", "an admin retry", "admin", { mode: "vk", value: "{{oas18_key}}" }, [A.status(410), A.msgEquals("authorization flow has already been completed")]),
+  vkDelete("OAS-18", "teardown: delete the virtual key", "oas18_key"),
+  restoreConfig("OAS-18"),
+]);
+
+const oas19Cases = [
+  ["an empty value", { mode: "vk", value: "" }, null, A.msgEquals("virtual key value is required")],
+  ["an unknown key value", { mode: "vk", value: "sk-bf-oas19-no-such-key" }, null, A.msgEquals("virtual key not found")],
+  ["an inactive key", { mode: "vk", value: "{{oas19_inactive}}" }, null, A.msgEquals("virtual key is inactive")],
+  ["a rotated value in its cooldown", { mode: "vk", value: "{{oas19_rotated}}" }, null, A.msgStartsWith("this virtual key value has been rotated")],
+  ["mode user", { mode: "user", value: "" }, null, A.msgEquals("mode \"user\" is not available")],
+  ["mode foo", { mode: "foo", value: "" }, null, A.msgEquals("mode \"foo\" is not available")],
+  ["body \"x\"", null, "x", A.msgEquals("invalid request body")],
+];
+const OAS19 = folder("OAS-19 Consent rejections", `Setup: ${BOTH}, dashboard auth on, temp-token auth on, vk_rotation_cooldown 5m; a fresh flow per case; an inactive key, and a key rotated during the cooldown.`, [
+  readConfig("OAS-19"), oauthConfig("OAS-19", "both", ["cc.vk_rotation_cooldown = '5m';"], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth on, vk_rotation_cooldown 5m"),
+  register("OAS-19", "oas19_client"),
+  vkCreate("OAS-19", "setup: create an inactive key", { name: "OAS-19 inactive key", is_active: false }, "oas19_inactive"),
+  vkCreate("OAS-19", "setup: create a key to rotate", { name: "OAS-19 rotated key" }, "oas19_rotated"),
+  request("OAS-19", "setup: rotate it", "POST", "/api/governance/virtual-keys/{{oas19_rotated_id}}/rotate", { asserts: [A.status(200)] }),
+  ...oas19Cases.flatMap(([label, body, raw, assert], i) => [
+    authorize("OAS-19", "oas19_client", `oas19_f${i + 1}`, `setup: authorize a flow for ${label}`),
+    consent("OAS-19", `oas19_f${i + 1}`, label, "temp", body, [A.status(400), assert], raw !== null ? { raw } : {}),
+  ]),
+  vkDelete("OAS-19", "teardown: delete the inactive key", "oas19_inactive"),
+  vkDelete("OAS-19", "teardown: delete the rotated key", "oas19_rotated"),
+  restoreConfig("OAS-19"),
+]);
+
+const sessionBfMode = (mode) => A.custom(`the access token's bf_mode is ${lit(mode)}`, [CLAIMS_FN, `pm.expect(claims(pm.response.json().access_token).bf_mode, 'body: ' + pm.response.text()).to.equal(${lit(mode)});`]);
+// revokeGrants lists the OAuth sessions of a client and revokes each one; session-mode grants are not removed with a VK.
+const revokeGrants = (id, clientVar) => request(id, "teardown: revoke the client's OAuth sessions", "GET", `/api/oauth2/sessions?q={{${clientVar}}}`, {
+  asserts: [A.status(200)],
+  extraTests: [`(pm.response.json().sessions || []).filter(function (s) { return s.client_id === pm.collectionVariables.get(${lit(clientVar)}); }).forEach(function (s) { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/oauth2/sessions/' + s.id, method: 'DELETE', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { pm.test(${lit(id + " teardown: revoke session ")} + s.id, function () { pm.expect(res && res.code).to.equal(204); }); }); });`],
+});
+const OAS20 = folder("OAS-20 Session-mode consent", `Setup: ${BOTH}, dashboard auth on, temp-token auth on; enforce_auth_on_inference off, then on for the last case.`, [
+  readConfig("OAS-20"), oauthConfig("OAS-20", "both", ["cc.enforce_auth_on_inference = false;"], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth on, enforce_auth_on_inference off"),
+  register("OAS-20", "oas20_client"),
+  authorize("OAS-20", "oas20_client", "oas20_f1", "setup: authorize flow one"),
+  consent("OAS-20", "oas20_f1", "mode session with the temp token only", "temp", { mode: "session", value: "" }, [A.status(401), A.msgStartsWith("session mode requires an authenticated consenting user")]),
+  request("OAS-20", "setup: log in as the admin", "POST", "/api/session/login", {
+    noAuth: true, noCookies: true, raw: "{{login_body}}",
+    pre: ["var C = require('crypto-js'); var pair = C.enc.Base64.parse(pm.variables.get('admin_auth_header').replace(/^Basic /, '')).toString(C.enc.Utf8); var i = pair.indexOf(':');", "pm.variables.set('login_body', JSON.stringify({ username: pair.slice(0, i), password: pair.slice(i + 1) }));"],
+    asserts: [A.status(200)],
+    extraTests: ["var m = /(?:^|[;,\\s])token=([^;]+)/.exec(pm.response.headers.get('Set-Cookie') || '');", "pm.collectionVariables.set('admin_cookie', m ? m[1] : '');"],
+  }),
+  authorize("OAS-20", "oas20_client", "oas20_f2", "setup: authorize flow two"),
+  consent("OAS-20", "oas20_f2", "mode session with the admin cookie", "cookie", { mode: "session", value: "" }, [A.status(200)], { extraTests: saveCode("oas20_f2") }),
+  tokenReq("OAS-20", "exchange the cookie consent's code", codeParams("oas20_f2", "oas20_client"), [A.status(200), sessionBfMode("session")]),
+  authorize("OAS-20", "oas20_client", "oas20_f3", "setup: authorize flow three"),
+  consent("OAS-20", "oas20_f3", "mode session with Bearer base64(admin:pw)", "bearer", { mode: "session", value: "" }, [A.status(200)], { extraTests: saveCode("oas20_f3") }),
+  tokenReq("OAS-20", "exchange the Bearer consent's code", codeParams("oas20_f3", "oas20_client"), [A.status(200), sessionBfMode("session")]),
+  oauthConfig("OAS-20", "both", ["cc.enforce_auth_on_inference = true;"], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth on, enforce_auth_on_inference on"),
+  authorize("OAS-20", "oas20_client", "oas20_f4", "setup: authorize flow four"),
+  consent("OAS-20", "oas20_f4", "mode session with Bearer base64(admin:pw) and enforce_auth_on_inference on", "bearer", { mode: "session", value: "" }, [A.status(400), A.msgEquals("mode \"session\" is not available")]),
+  revokeGrants("OAS-20", "oas20_client"),
+  request("OAS-20", "teardown: log the admin session out", "POST", "/api/session/logout", { noAuth: true, noCookies: true, headers: [{ key: "Authorization", value: "Bearer {{admin_cookie}}" }], asserts: [A.status(200)] }),
+  restoreConfig("OAS-20"),
+]);
+
+const OAS21 = folder("OAS-21 Expired or unknown flow", `Setup: ${BOTH}, dashboard auth on, temp-token auth on, auth_code_ttl 2. The flow's temp token expires with it, so the requests after the wait carry admin credentials.`, [
+  readConfig("OAS-21"), oauthConfig("OAS-21", "both", ["cc.oauth2_server_config.auth_code_ttl = 2;"], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth on, auth_code_ttl 2"),
+  register("OAS-21", "oas21_client"),
+  authorize("OAS-21", "oas21_client", "oas21_f", "setup: authorize"),
+  flowGet("OAS-21", "oas21_f", "GET the flow after 3s", "admin", [A.status(410), A.msgEquals("authorization flow has expired")], { pre: WAIT_3S }),
+  consent("OAS-21", "oas21_f", "PUT the flow after 3s", "admin", { mode: "vk", value: "" }, [A.status(410), A.msgEquals("authorization flow has expired")]),
+  flowGet("OAS-21", "oas21_f", "GET a random flow id", "admin", [A.status(404), A.msgEquals("authorization flow not found or expired")], { path: "/api/oauth2/consent/flows/oas21-no-such-flow" }),
+  consent("OAS-21", "oas21_f", "PUT a random flow id", "admin", { mode: "vk", value: "" }, [A.status(404), A.msgEquals("authorization flow not found or expired")], { path: "/api/oauth2/consent/flows/oas21-no-such-flow" }),
+  restoreConfig("OAS-21"),
+]);
+
+const tokenResponseChecks = () => [A.status(200), A.custom("token_type \"Bearer\", expires_in 600, scope \"mcp\", a refresh_token", [
+  "var b = pm.response.json();",
+  "pm.expect(b.token_type, 'body: ' + pm.response.text()).to.equal('Bearer');",
+  "pm.expect(b.expires_in).to.equal(600);",
+  "pm.expect(b.scope).to.equal('mcp');",
+  "pm.expect(b.refresh_token).to.be.a('string').and.not.empty;",
+]), A.custom("Cache-Control no-store, Pragma no-cache", [
+  "pm.expect(pm.response.headers.get('Cache-Control')).to.equal('no-store');",
+  "pm.expect(pm.response.headers.get('Pragma')).to.equal('no-cache');",
+])];
+const OAS23 = folder("OAS-23 Exchange the code", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, access_token_ttl unset (600).`, [
+  ...fleetGrantSetup("OAS-23"), oauthConfig("OAS-23", "both"),
+  register("OAS-23", "oas23_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  authorize("OAS-23", "oas23_client", "oas23_f1", "setup: authorize grant one"),
+  consent("OAS-23", "oas23_f1", "setup: consent grant one with the full-access VK", "temp", vkBody("OAS-23"), [A.status(200), codeIssued()], { extraTests: saveCode("oas23_f1") }),
+  tokenReq("OAS-23", "exchange with client_id in the body", codeParams("oas23_f1", "oas23_client"), tokenResponseChecks()),
+  authorize("OAS-23", "oas23_client", "oas23_f2", "setup: authorize grant two"),
+  consent("OAS-23", "oas23_f2", "setup: consent grant two with the full-access VK", "temp", vkBody("OAS-23"), [A.status(200), codeIssued()], { extraTests: saveCode("oas23_f2") }),
+  tokenReq("OAS-23", "exchange with client_id in Basic auth", codeParams("oas23_f2", "oas23_client", { client_id: undefined }), tokenResponseChecks(), {
+    headers: [{ key: "Authorization", value: "{{oas23_client_basic}}" }],
+    pre: ["var C = require('crypto-js');", "pm.variables.set('oas23_client_basic', 'Basic ' + C.enc.Base64.stringify(C.enc.Utf8.parse(pm.collectionVariables.get('oas23_client') + ':')));"],
+  }),
+  ...fleetGrantTeardown("OAS-23"),
+]);
+
+const oas25Cases = [
+  ["no code_verifier", { code_verifier: undefined }, O.descEquals("code, code_verifier and client_id are required")],
+  ["a wrong code_verifier", { code_verifier: "oas25-wrong-verifier-0123456789abcdefghijklmn" }, O.descEquals("PKCE verification failed")],
+  ["another client's client_id", { client_id: "{{oas25_other}}" }, O.descEquals("client_id mismatch")],
+  ["a different redirect_uri", { redirect_uri: "http://127.0.0.1:1234/cb" }, O.descEquals("redirect_uri mismatch")],
+  ["a foreign resource", { resource: "https://other/mcp" }, O.descEquals("resource mismatch")],
+  ["grant_type password", { grant_type: "password" }, O.error("unsupported_grant_type")],
+  ["a random code", { code: "oas25-random-code" }, O.descEquals("authorization code not found or already used")],
+];
+const OAS25 = folder("OAS-25 Token request rejections", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; a freshly consented code per case, and a second registered client.`, [
+  ...fleetGrantSetup("OAS-25"), oauthConfig("OAS-25", "both"),
+  register("OAS-25", "oas25_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  register("OAS-25", "oas25_other", LOOPBACK_CB, "OAS-25 other client"),
+  ...oas25Cases.flatMap(([label, over, assert], i) => {
+    const flow = `oas25_f${i + 1}`;
+    return [
+      authorize("OAS-25", "oas25_client", flow, `setup: authorize a flow for ${label}`),
+      consent("OAS-25", flow, `setup: consent the flow for ${label}`, "temp", vkBody("OAS-25"), [A.status(200), codeIssued()], { extraTests: saveCode(flow) }),
+      tokenReq("OAS-25", label, codeParams(flow, "oas25_client", over), [A.status(400), assert]),
+    ];
+  }),
+  ...fleetGrantTeardown("OAS-25"),
+]);
+
+const OAS27 = folder("OAS-27 Refresh grant", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; a second registered client.`, [
+  ...fleetGrantSetup("OAS-27"), oauthConfig("OAS-27", "both"),
+  register("OAS-27", "oas27_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  register("OAS-27", "oas27_other", LOOPBACK_CB, "OAS-27 other client"),
+  ...vkGrant("OAS-27", "oas27_client", "oas27_f", "the grant"),
+  tokenReq("OAS-27", "refresh", refreshParams("oas27_f_rt", "oas27_client"), [A.status(200), A.custom("a new refresh token; sub (the VK's id), bf_mode \"vk\" and aud [<base URL>/mcp] unchanged", [
+    CLAIMS_FN,
+    "var b = pm.response.json();",
+    "pm.expect(b.refresh_token, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+    "pm.expect(b.refresh_token).to.not.equal(pm.collectionVariables.get('oas27_f_rt'));",
+    "var before = claims(pm.collectionVariables.get('oas27_f_at')), after = claims(b.access_token);",
+    "pm.expect(before.sub, 'first token sub').to.equal(pm.collectionVariables.get('oas-27_full_id'));",
+    "pm.expect(before.bf_mode).to.equal('vk');",
+    "pm.expect(before.aud).to.eql([pm.variables.get('base_url') + '/mcp']);",
+    "pm.expect(after.sub).to.equal(before.sub);",
+    "pm.expect(after.bf_mode).to.equal(before.bf_mode);",
+    "pm.expect(after.aud).to.eql(before.aud);",
+  ])], { extraTests: saveTokens("oas27_r") }),
+  tokenReq("OAS-27", "a foreign resource", refreshParams("oas27_r_rt", "oas27_client", { resource: "https://other/mcp" }), [A.status(400), O.descEquals("resource mismatch")]),
+  tokenReq("OAS-27", "another client's client_id", refreshParams("oas27_r_rt", "oas27_other"), [A.status(400), O.descEquals("client_id mismatch")]),
+  tokenReq("OAS-27", "no refresh_token", refreshParams("oas27_r_rt", "oas27_client", { refresh_token: undefined }), [A.status(400), O.descEquals("refresh_token and client_id are required")]),
+  tokenReq("OAS-27", "no client_id", refreshParams("oas27_r_rt", "oas27_client", { client_id: undefined }), [A.status(400), O.descEquals("refresh_token and client_id are required")]),
+  ...fleetGrantTeardown("OAS-27"),
+]);
+
+const sessionsOf = (clientVar) => [
+  `var cid = pm.collectionVariables.get(${lit(clientVar)});`,
+  "var list = (pm.response.json().sessions || []).filter(function (s) { return s.client_id === cid; });",
+];
+const OAS28 = folder("OAS-28 Rotated refresh token replay", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; the first refresh token is rotated to a second.`, [
+  ...fleetGrantSetup("OAS-28"), oauthConfig("OAS-28", "both"),
+  register("OAS-28", "oas28_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...vkGrant("OAS-28", "oas28_client", "oas28_f", "the grant"),
+  tokenReq("OAS-28", "setup: refresh, rotating the first refresh token", refreshParams("oas28_f_rt", "oas28_client"), [A.status(200), tokensIssued()], { extraTests: saveTokens("oas28_r") }),
+  request("OAS-28", "setup: the grant is listed in /api/oauth2/sessions", "GET", "/api/oauth2/sessions?q={{oas28_client}}", { asserts: [A.status(200), A.custom("one session for the client", [
+    ...sessionsOf("oas28_client"),
+    "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(1);",
+  ])] }),
+  tokenReq("OAS-28", "replay the first refresh token", refreshParams("oas28_f_rt", "oas28_client"), [A.status(400), O.descEquals("refresh token not found or revoked")]),
+  tokenReq("OAS-28", "the second refresh token", refreshParams("oas28_r_rt", "oas28_client"), [A.status(400), O.descEquals("refresh token not found or revoked")]),
+  request("OAS-28", "the grant is gone from /api/oauth2/sessions", "GET", "/api/oauth2/sessions?q={{oas28_client}}", { asserts: [A.status(200), A.custom("no session for the client", [
+    ...sessionsOf("oas28_client"),
+    "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(0);",
+  ])] }),
+  ...fleetGrantTeardown("OAS-28"),
+]);
+
+const OAS30 = folder("OAS-30 List OAuth sessions", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on; two clients, "OAS-30 client one" and "OAS-30 client two", one grant each; a second key "Second session key" with one grant for "Second key client".`, [
+  ...fleetGrantSetup("OAS-30"), oauthConfig("OAS-30", "both"),
+  register("OAS-30", "oas30_c1", LOOPBACK_CB, "OAS-30 client one", REFRESHABLE),
+  register("OAS-30", "oas30_c2", LOOPBACK_CB, "OAS-30 client two", REFRESHABLE),
+  ...vkGrant("OAS-30", "oas30_c1", "oas30_f1", "client one's grant"),
+  ...vkGrant("OAS-30", "oas30_c2", "oas30_f2", "client two's grant"),
+  // A second key and client, named without "OAS-30" so the q=OAS-30 list keeps exactly the two grants above.
+  vkCreate("OAS-30", "setup: create a second virtual key", { name: "Second session key" }, "oas30_vk2"),
+  register("OAS-30", "oas30_c3", LOOPBACK_CB, "Second key client", REFRESHABLE),
+  authorize("OAS-30", "oas30_c3", "oas30_f3", "setup: authorize the second key's grant"),
+  consent("OAS-30", "oas30_f3", "setup: consent with the second key", "temp", { mode: "vk", value: "{{oas30_vk2}}" }, [A.status(200), codeIssued()], { extraTests: saveCode("oas30_f3") }),
+  tokenReq("OAS-30", "setup: exchange the second key's code", codeParams("oas30_f3", "oas30_c3"), [A.status(200), tokensIssued()]),
+  request("OAS-30", "bf_mode=vk keeps both grants", "GET", "/api/oauth2/sessions?q=OAS-30&bf_mode=vk", { asserts: [A.status(200), A.custom("the two clients' grants", ["pm.expect((pm.response.json().sessions || []).map(function (s) { return s.client_id; }).sort(), 'body: ' + pm.response.text()).to.eql([pm.collectionVariables.get('oas30_c1'), pm.collectionVariables.get('oas30_c2')].sort());"])] }),
+  request("OAS-30", "list q=OAS-30", "GET", "/api/oauth2/sessions?q=OAS-30", { asserts: [A.status(200), A.jsonEquals("limit", 50), A.custom("client one has no last_used_at before the refresh", [
+    "var one = (pm.response.json().sessions || []).filter(function (r) { return r.client_id === pm.collectionVariables.get('oas30_c1'); })[0];",
+    "pm.expect(one, 'body: ' + pm.response.text()).to.be.an('object');",
+    "pm.expect(one).to.not.have.property('last_used_at');",
+  ]), A.custom("two sessions with id, client_id, client_name, bf_mode \"vk\", bf_sub, bf_sub_display and scope \"mcp\"", [
+    "var list = pm.response.json().sessions || [];",
+    "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(2);",
+    "var names = {}; names[pm.collectionVariables.get('oas30_c1')] = 'OAS-30 client one'; names[pm.collectionVariables.get('oas30_c2')] = 'OAS-30 client two';",
+    "list.forEach(function (r) {",
+    "  pm.expect(r.id).to.be.a('string').and.not.empty;",
+    "  pm.expect(names).to.have.property(r.client_id);",
+    "  pm.expect(r.client_name).to.equal(names[r.client_id]);",
+    "  pm.expect(r.bf_mode).to.equal('vk');",
+    "  pm.expect(r.bf_sub).to.equal(pm.collectionVariables.get('oas-30_full_id'));",
+    "  pm.expect(r.bf_sub_display).to.equal('OAS-30 full-access VK');",
+    "  pm.expect(r.scope).to.equal('mcp');",
+    "});",
+    "pm.expect(list[0].client_id).to.not.equal(list[1].client_id);",
+  ])], extraTests: [
+    "var one = (pm.response.json().sessions || []).filter(function (r) { return r.client_id === pm.collectionVariables.get('oas30_c1'); })[0] || {};",
+    "pm.collectionVariables.set('oas30_c1_session', one.id || '');",
+    "pm.collectionVariables.set('oas30_c1_created', one.created_at || '');",
+  ] }),
+  request("OAS-30", "q=OAS-30 client one narrows to client one", "GET", "/api/oauth2/sessions?q=OAS-30%20client%20one", { asserts: [A.status(200), A.custom("only client one's grant", [
+    "var list = pm.response.json().sessions || [];",
+    "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(list[0].client_id).to.equal(pm.collectionVariables.get('oas30_c1'));",
+  ])] }),
+  request("OAS-30", "bf_mode=session narrows to none", "GET", "/api/oauth2/sessions?q=OAS-30&bf_mode=session", { asserts: [A.status(200), A.custom("no sessions", [
+    "pm.expect((pm.response.json().sessions || []).length, 'body: ' + pm.response.text()).to.equal(0);",
+  ])] }),
+  request("OAS-30", "virtual_key_id narrows to the key's grants", "GET", "/api/oauth2/sessions?virtual_key_id={{oas-30_full_id}}", { asserts: [A.status(200), A.custom("exactly the two grants", [
+    "var ids = (pm.response.json().sessions || []).map(function (r) { return r.client_id; }).sort();",
+    "pm.expect(ids, 'body: ' + pm.response.text()).to.eql([pm.collectionVariables.get('oas30_c1'), pm.collectionVariables.get('oas30_c2')].sort());",
+  ])] }),
+  request("OAS-30", "virtual_key_id narrows to the second key's grant", "GET", "/api/oauth2/sessions?virtual_key_id={{oas30_vk2_id}}", { asserts: [A.status(200), A.custom("exactly the second key's grant", [
+    "var ids = (pm.response.json().sessions || []).map(function (r) { return r.client_id; });",
+    "pm.expect(ids, 'body: ' + pm.response.text()).to.eql([pm.collectionVariables.get('oas30_c3')]);",
+  ])] }),
+  tokenReq("OAS-30", "setup: refresh client one's grant", refreshParams("oas30_f1_rt", "oas30_c1"), [A.status(200), tokensIssued()]),
+  request("OAS-30", "after the refresh", "GET", "/api/oauth2/sessions?q=OAS-30%20client%20one", { asserts: [A.status(200), A.custom("the id changes, created_at stays, last_used_at is set", [
+    "var list = pm.response.json().sessions || [];",
+    "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(list[0].id).to.not.equal(pm.collectionVariables.get('oas30_c1_session'));",
+    "pm.expect(list[0].created_at).to.equal(pm.collectionVariables.get('oas30_c1_created'));",
+    "pm.expect(list[0].last_used_at).to.be.a('string').and.not.empty;",
+  ])] }),
+  vkDelete("OAS-30", "teardown: delete the second virtual key", "oas30_vk2"),
+  ...fleetGrantTeardown("OAS-30"),
+]);
+
+// oas32Pass runs OAS-32 in one mode: v prefixes its variables, p its request titles, label names its grant.
+const oas32Pass = (mode, v, p, label) => [
+  oauthConfig("OAS-32", mode),
+  register("OAS-32", `${v}_client`, LOOPBACK_CB, undefined, REFRESHABLE),
+  ...vkGrant("OAS-32", `${v}_client`, `${v}_f`, label),
+  request("OAS-32", `setup: find ${label}'s session`, "GET", `/api/oauth2/sessions?q={{${v}_client}}`, { asserts: [A.status(200), A.custom("one session for the client", [
+    ...sessionsOf(`${v}_client`),
+    "pm.expect(list.length, 'body: ' + pm.response.text()).to.equal(1);",
+  ])], extraTests: [
+    ...sessionsOf(`${v}_client`), `pm.collectionVariables.set('${v}_session', list.length ? list[0].id : '');`,
+  ] }),
+  request("OAS-32", `${p}revoke the session`, "DELETE", `/api/oauth2/sessions/{{${v}_session}}`, { asserts: [A.status(204)] }),
+  request("OAS-32", `${p}revoke it again`, "DELETE", `/api/oauth2/sessions/{{${v}_session}}`, { asserts: [A.status(404), A.msgEquals("session not found or already revoked")] }),
+  tokenReq("OAS-32", `${p}refresh with its refresh token`, refreshParams(`${v}_f_rt`, `${v}_client`), [A.status(400), O.error("invalid_grant")]),
+  mcpWithToken("OAS-32", `${p}its unexpired access token on /mcp`, `${v}_f_at`, [A.status(200)]),
+];
+const OAS32 = folder("OAS-32 Revoke a session", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on.`, [
+  ...fleetGrantSetup("OAS-32"),
+  ...oas32Pass("both", "oas32", "", "the grant"),
+  ...fleetGrantTeardown("OAS-32"),
+]);
+
+// oas34Pass runs OAS-34 in one mode: v prefixes its variables, p its request titles.
+const oas34Pass = (mode, v, p) => [
+  oauthConfig("OAS-34", mode, ["cc.oauth2_server_config.access_token_ttl = 2;"], `setup: mcp_server_auth_mode ${mode}, issuer_url set to the base URL, temp-token auth on, access_token_ttl 2`),
+  register("OAS-34", `${v}_client`, LOOPBACK_CB, undefined, REFRESHABLE),
+  authorize("OAS-34", `${v}_client`, `${v}_f`, `setup: ${p}authorize the grant`),
+  consent("OAS-34", `${v}_f`, `setup: ${p}consent the grant with the full-access VK`, "temp", vkBody("OAS-34"), [A.status(200), codeIssued()], { extraTests: saveCode(`${v}_f`) }),
+  tokenReq("OAS-34", `${p}exchange the code`, codeParams(`${v}_f`, `${v}_client`), [A.status(200), A.jsonEquals("expires_in", 2), tokensIssued()], { extraTests: saveTokens(`${v}_f`) }),
+  mcpWithToken("OAS-34", `${p}the access token on /mcp after 3s`, `${v}_f_at`, [A.status(401), A.msgStartsWith("invalid token"), A.msgContains("expired"), A.custom("WWW-Authenticate is set", [
+    "pm.expect(pm.response.headers.get('WWW-Authenticate'), 'WWW-Authenticate').to.be.a('string').and.not.empty;",
+  ])], WAIT_3S),
+  tokenReq("OAS-34", `setup: ${p}refresh`, refreshParams(`${v}_f_rt`, `${v}_client`), [A.status(200), tokensIssued()], { extraTests: saveTokens(`${v}_r`) }),
+  mcpWithToken("OAS-34", `${p}the refreshed access token on /mcp`, `${v}_r_at`, [A.status(200)]),
+];
+const OAS34 = folder("OAS-34 Access token expiry", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, access_token_ttl 2.`, [
+  ...fleetGrantSetup("OAS-34"),
+  ...oas34Pass("both", "oas34", ""),
+  ...fleetGrantTeardown("OAS-34"),
+]);
+
+const OAS38 = folder("OAS-38 disable_vk_identity without an identity provider", `Setup: ${FLEET}; the full-access VK (${VKS.full.text}); mcp_server_auth_mode oauth with issuer_url set to the base URL, disable_vk_identity on, temp-token auth on; no identity provider is configured.`, [
+  ...fleetGrantSetup("OAS-38"), oauthConfig("OAS-38", "oauth", ["cc.oauth2_server_config.disable_vk_identity = true;"], "setup: mcp_server_auth_mode oauth, issuer_url set to the base URL, disable_vk_identity on, temp-token auth on"),
+  request("OAS-38", "control: the config reads disable_vk_identity true in oauth mode", "GET", "/api/config", { asserts: [A.status(200), A.custom("disable_vk_identity true, mcp_server_auth_mode oauth", ["var cc = pm.response.json().client_config;", "pm.expect(cc.oauth2_server_config.disable_vk_identity, 'body: ' + pm.response.text()).to.equal(true);", "pm.expect(cc.mcp_server_auth_mode).to.equal('oauth');"])] }),
+  register("OAS-38", "oas38_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  authorize("OAS-38", "oas38_client", "oas38_f", "setup: authorize"),
+  flowGet("OAS-38", "oas38_f", "GET the flow with its temp token", "temp", [A.status(200), A.custom("available_modes is [\"vk\"]", [
+    "pm.expect(pm.response.json().available_modes, 'body: ' + pm.response.text()).to.eql(['vk']);",
+  ])]),
+  consent("OAS-38", "oas38_f", "consent with the full-access VK", "temp", vkBody("OAS-38"), [A.status(200)], { extraTests: saveCode("oas38_f") }),
+  tokenReq("OAS-38", "setup: exchange the code", codeParams("oas38_f", "oas38_client"), [A.status(200), tokensIssued()], { extraTests: saveTokens("oas38_f") }),
+  mcpWithToken("OAS-38", "the access token on /mcp", "oas38_f_at", [A.status(200)]),
+  tokenReq("OAS-38", "refresh", refreshParams("oas38_f_rt", "oas38_client"), [A.status(200)]),
+  ...fleetGrantTeardown("OAS-38"),
+]);
+
 // ================================================================ EP slugs, credentials and auth modes
 
 const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
@@ -1154,7 +1590,7 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM42, ADM44, ADM46, ADM51, ADM59, ADM62, ADM73, ADM83]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS31, OAS36]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
