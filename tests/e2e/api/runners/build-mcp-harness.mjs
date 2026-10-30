@@ -5270,6 +5270,271 @@ const INF47 = folder("INF-47 Code-mode client injects meta tools only", `Setup: 
   alphaGreetTeardown("INF-47"),
 ]);
 
+// ================================================================ agent mode on the mock LLM
+
+// Agent mode runs when a client auto-executes tools: Bifrost runs the model's calls itself and sends the results back
+// to the model until it stops calling. Each test scripts the model's turns on the mock LLM and reads both what the
+// caller got and every request the model saw.
+const AGENT_TEXT = (auto) => `alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ${lit(auto)}; ${LLM_TEXT}`;
+const agentSetup = (id, auto) => [...freshServer(id, "alpha", ["echo", "add", "greet"]), alphaClient(id, { tools_to_auto_execute: auto })];
+const agentTeardown = (id) => deleteClient(id, `${id.toLowerCase()}-alpha`);
+const llmCall = (callId, name, args = { text: "hi" }) => ({ id: callId, name, arguments: args });
+const ECHO_RESULT = (text) => `echo:${JSON.stringify({ text })}`;
+// infPost sends a body to an inference route with no admin credentials.
+const infPost = (id, title, path, body, asserts, { headers = [], extraTests = [], pre = [] } = {}) => request(id, title, "POST", path, { noAuth: true, noCookies: true, body, headers, asserts, extraTests, pre });
+const chatBody = (key, over = {}) => ({ model: MODEL, messages: [userMsg(key)], ...over });
+const finishIs = (v) => A.custom(`finish_reason is ${lit(v)}`, [`pm.expect(pm.response.json().choices[0].finish_reason, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+const chatContent = (v) => A.custom(`content is ${lit(v)}`, [`pm.expect(pm.response.json().choices[0].message.content, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+const toolCallNames = (names) => A.custom(names.length ? `tool_calls are ${lit(names)}` : "no tool_calls", [`pm.expect((pm.response.json().choices[0].message.tool_calls || []).map(function (c) { return c.function.name; }), 'body: ' + pm.response.text()).to.eql(${lit(names)});`]);
+const resetCounters = (id, server) => mockPost(id, server, "counters/reset", `setup: reset ${server}'s counters`, {});
+// toolMessages reads the tool messages of logged request i as {tool_call_id: content}.
+const TOOL_MSGS = (i) => `var tm = {}; (reqs[${i}].json.messages || []).forEach(function (m) { if (m.role === 'tool') { tm[m.tool_call_id] = m.content; } });`;
+
+// pollAsync re-reads an async job for up to about 10s until it leaves pending and processing.
+const pollAsync = (path) => [
+  "var left = 20;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '${path}', method: 'GET' }, function (err, res) {`,
+  "    var st = (!err && res.code === 200) ? res.json().status : '';",
+  "    if ((st && st !== 'pending' && st !== 'processing') || --left <= 0) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const INF08 = folder("INF-08 Async chat", `Setup: ${AGENT_TEXT(["echo"])}; turn 1 calls alpha-echo, turn 2 answers "done"; the chat is submitted to /v1/async/chat/completions.`, [
+  ...agentSetup("INF-08", ["echo"]),
+  llmScript("INF-08", "inf08", { turns: [{ tool_calls: [llmCall("t1", "alpha-echo")] }, { text: "done" }] }),
+  infPost("INF-08", "submit the async chat", "/v1/async/chat/completions", chatBody("inf08"), [A.status(202)], { extraTests: ["pm.collectionVariables.set('inf08_job', pm.response.json().id);"] }),
+  request("INF-08", "the job completes with \"done\"", "GET", "/v1/async/chat/completions/{{inf08_job}}", { noAuth: true, noCookies: true, pre: pollAsync("/v1/async/chat/completions/' + pm.collectionVariables.get('inf08_job') + '"), asserts: [A.status(200), A.custom("status \"completed\", content \"done\"", [
+    "var b = pm.response.json();",
+    "pm.expect(b.status, 'body: ' + pm.response.text()).to.equal('completed');",
+    "pm.expect(b.result.choices[0].message.content).to.equal('done');",
+  ])] }),
+  mockGet("INF-08", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
+  agentTeardown("INF-08"),
+]);
+
+const INF34 = folder("INF-34 Agent mode, chat", `Setup: ${AGENT_TEXT(["echo"])}; turn 1 calls alpha-echo with id t1, turn 2 answers "done".`, [
+  ...agentSetup("INF-34", ["echo"]),
+  llmScript("INF-34", "inf34", { turns: [{ tool_calls: [llmCall("t1", "alpha-echo")] }, { text: "done" }] }),
+  infPost("INF-34", "chat", "/v1/chat/completions", chatBody("inf34"), [A.status(200), chatContent("done"), toolCallNames([])]),
+  llmCaptured("INF-34", "two model requests; turn 2 has t1's echo", "inf34", [reqCount(2), A.custom("turn 2 has a tool message for t1 with the echo", [REQS, TOOL_MSGS(1), `pm.expect(tm.t1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(ECHO_RESULT("hi"))});`])]),
+  mockGet("INF-34", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
+  agentTeardown("INF-34"),
+]);
+
+const INF35 = folder("INF-35 Agent mode, Responses", `Setup: ${AGENT_TEXT(["echo"])}; on /v1/responses, turn 1 calls alpha-echo with id t1, turn 2 answers "done".`, [
+  ...agentSetup("INF-35", ["echo"]),
+  llmScript("INF-35", "inf35", { turns: [{ tool_calls: [llmCall("t1", "alpha-echo")] }, { text: "done" }] }),
+  infResponses("INF-35", "Responses request", "inf35", [A.status(200), A.custom("the output is the final message and no function_call", [
+    "var out = pm.response.json().output || [];",
+    "pm.expect(out.map(function (o) { return o.type; }), 'body: ' + pm.response.text()).to.eql(['message']);",
+    "pm.expect(out[0].content[0].text).to.equal('done');",
+  ])]),
+  llmCaptured("INF-35", "turn 2's input has the function_call_output for t1", "inf35", [reqCount(2), A.custom("a function_call_output with call_id t1", [REQS,
+    "var outs = (reqs[1].json.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+    "pm.expect(outs.map(function (o) { return o.call_id; }), JSON.stringify(reqs[1].json.input)).to.eql(['t1']);",
+  ])]),
+  agentTeardown("INF-35"),
+]);
+
+const INF36 = folder("INF-36 Nothing auto-executable", `Setup: ${AGENT_TEXT([])}; the model calls alpha-echo, then (in a second chat that declares the caller's own my_tool) my_tool.`, [
+  ...agentSetup("INF-36", []),
+  llmScript("INF-36", "inf36-mcp", { then: { tool_calls: [llmCall("t1", "alpha-echo")] } }),
+  infPost("INF-36", "chat where the model calls alpha-echo", "/v1/chat/completions", chatBody("inf36-mcp"), [A.status(200), finishIs("tool_calls"), toolCallNames(["alpha-echo"])]),
+  llmCaptured("INF-36", "one model request for the alpha-echo chat", "inf36-mcp", [reqCount(1)]),
+  llmScript("INF-36", "inf36-own", { then: { tool_calls: [llmCall("m1", "my_tool", {})] } }),
+  infPost("INF-36", "chat where the model calls my_tool", "/v1/chat/completions", chatBody("inf36-own", { tools: [MY_TOOL()] }), [A.status(200), finishIs("tool_calls"), toolCallNames(["my_tool"])]),
+  llmCaptured("INF-36", "one model request for the my_tool chat", "inf36-own", [reqCount(1)]),
+  mockGet("INF-36", "alpha", "alpha ran nothing", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls || {}, 'body: ' + pm.response.text()).to.eql({});"])]),
+  agentTeardown("INF-36"),
+]);
+
+const MIXED_PREFIX = "The Output from allowed tools calls is - {\"alpha-echo\":";
+const MIXED_SUFFIX = "Now I shall call these tools next...";
+const MIXED_TURN = { tool_calls: [llmCall("e1", "alpha-echo"), llmCall("a1", "alpha-add", { a: 1, b: 2 })] };
+const INF37 = folder("INF-37 Mixed auto and non-auto, chat", `Setup: ${AGENT_TEXT(["echo"])}; the model calls alpha-echo and alpha-add in one turn.`, [
+  ...agentSetup("INF-37", ["echo"]),
+  llmScript("INF-37", "inf37", { turns: [MIXED_TURN] }),
+  infPost("INF-37", "chat", "/v1/chat/completions", chatBody("inf37"), [A.status(200), finishIs("stop"), toolCallNames(["alpha-add"]), A.custom("content reports the echo output and the pending call", [
+    "var c = pm.response.json().choices[0].message.content;",
+    `pm.expect(c.indexOf(${lit(MIXED_PREFIX)}), 'content: ' + c).to.equal(0);`,
+    `pm.expect(c.slice(-${MIXED_SUFFIX.length}), 'content: ' + c).to.equal(${lit(MIXED_SUFFIX)});`,
+  ])]),
+  llmCaptured("INF-37", "one model request", "inf37", [reqCount(1)]),
+  agentTeardown("INF-37"),
+]);
+
+const INF38 = folder("INF-38 Mixed calls, Responses", `Setup: ${AGENT_TEXT(["echo"])}; on /v1/responses the model calls alpha-echo and alpha-add (call_id a1) in one turn.`, [
+  ...agentSetup("INF-38", ["echo"]),
+  llmScript("INF-38", "inf38", { turns: [MIXED_TURN] }),
+  infResponses("INF-38", "Responses request", "inf38", [A.status(200), A.custom("output[0] is the message, output[1] the alpha-add call a1, and no echo call", [
+    "var out = pm.response.json().output || [];",
+    "pm.expect(out.length, 'body: ' + pm.response.text()).to.equal(2);",
+    "pm.expect(out[0].type).to.equal('message');",
+    "var t = out[0].content[0].text;",
+    `pm.expect(t.indexOf(${lit(MIXED_PREFIX)}), t).to.equal(0);`,
+    `pm.expect(t.slice(-${MIXED_SUFFIX.length}), t).to.equal(${lit(MIXED_SUFFIX)});`,
+    "pm.expect(out[1].type).to.equal('function_call');",
+    "pm.expect(out[1].name).to.equal('alpha-add');",
+    "pm.expect(out[1].call_id).to.equal('a1');",
+  ])]),
+  agentTeardown("INF-38"),
+]);
+
+const INF39 = folder("INF-39 Max depth", `Setup: ${AGENT_TEXT(["echo"])}; mcp_agent_depth 2; the model always calls alpha-echo, reporting 10 input and 5 output tokens each turn.`, [
+  readConfig("INF-39"),
+  ...agentSetup("INF-39", ["echo"]),
+  putConfig("INF-39", "setup: mcp_agent_depth 2", ["cc.mcp_agent_depth = 2;"], [A.status(200)]),
+  llmScript("INF-39", "inf39", { then: { tool_calls: [llmCall("d1", "alpha-echo")], usage: { input: 10, output: 5 } } }),
+  infPost("INF-39", "chat", "/v1/chat/completions", chatBody("inf39"), [A.status(200), toolCallNames(["alpha-echo"]), A.custom("usage sums the three turns", ["var u = pm.response.json().usage;", "pm.expect(u.prompt_tokens, 'body: ' + pm.response.text()).to.equal(30);", "pm.expect(u.completion_tokens).to.equal(15);", "pm.expect(u.total_tokens).to.equal(45);"])]),
+  llmCaptured("INF-39", "three model requests", "inf39", [reqCount(3)]),
+  mockGet("INF-39", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  agentTeardown("INF-39"),
+  restoreConfig("INF-39"),
+]);
+
+const INF40 = folder("INF-40 Parallel calls in one turn", `Setup: ${AGENT_TEXT(["echo"])}; turn 1 calls alpha-echo twice (p1 with "a", p2 with "b"), turn 2 answers "done".`, [
+  ...agentSetup("INF-40", ["echo"]),
+  llmScript("INF-40", "inf40", { turns: [{ tool_calls: [llmCall("p1", "alpha-echo", { text: "a" }), llmCall("p2", "alpha-echo", { text: "b" })] }, { text: "done" }] }),
+  infPost("INF-40", "chat", "/v1/chat/completions", chatBody("inf40"), [A.status(200), chatContent("done")]),
+  llmCaptured("INF-40", "turn 2 has tool messages for p1 and p2", "inf40", [reqCount(2), A.custom("tool messages p1 and p2 with their echoes", [REQS, TOOL_MSGS(1),
+    `pm.expect(tm, JSON.stringify(reqs[1].json.messages)).to.eql({ p1: ${lit(ECHO_RESULT("a"))}, p2: ${lit(ECHO_RESULT("b"))} });`])]),
+  mockGet("INF-40", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  agentTeardown("INF-40"),
+]);
+
+const TOOL_FAILED = "Error executing tool alpha-echo: tool execution failed:";
+const INF41 = folder("INF-41 Tool failure inside the loop", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) with echo failing every call with a JSON-RPC error (err_kind protocol), registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["echo"]; on chat and on /anthropic, turn 1 calls alpha-echo, turn 2 answers "final".`, [
+  request("INF-41", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost("INF-41", "alpha", "tools/set", "setup: alpha serves echo (failing with a JSON-RPC error), add and greet", { tools: [{ name: "echo", fault: { err_rate: 1, err_kind: "protocol" } }, { name: "add" }, { name: "greet" }] }),
+  alphaClient("INF-41", { tools_to_auto_execute: ["echo"] }),
+  llmScript("INF-41", "inf41-chat", { turns: [{ tool_calls: [llmCall("f1", "alpha-echo")] }, { text: "final" }] }),
+  infPost("INF-41", "chat", "/v1/chat/completions", chatBody("inf41-chat"), [A.status(200), chatContent("final")]),
+  llmCaptured("INF-41", "turn 2's tool message reports the failure", "inf41-chat", [reqCount(2), A.custom(`the tool content starts ${lit(TOOL_FAILED)}`, [REQS, TOOL_MSGS(1), `pm.expect((tm.f1 || '').indexOf(${lit(TOOL_FAILED)}), JSON.stringify(reqs[1].json.messages)).to.equal(0);`])]),
+  llmScript("INF-41", "inf41-anth", { turns: [{ tool_calls: [llmCall("f2", "alpha-echo")] }, { text: "final" }] }),
+  request("INF-41", "Anthropic request", "POST", "/anthropic/v1/messages", { noAuth: true, noCookies: true, body: { model: "mock-model", max_tokens: 64, messages: [userMsg("inf41-anth")] }, asserts: [A.status(200), A.custom("the client gets the final text", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'final' }]);"])] }),
+  llmCaptured("INF-41", "turn 2's tool_result is marked is_error", "inf41-anth", [reqCount(2), A.custom("tool_result for f2 has is_error true", [REQS,
+    "var results = []; (reqs[1].json.messages || []).forEach(function (m) { (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b.type === 'tool_result') { results.push(b); } }); });",
+    "pm.expect(results.length, JSON.stringify(reqs[1].json.messages)).to.equal(1);",
+    "pm.expect(results[0].tool_use_id).to.equal('f2');",
+    "pm.expect(results[0].is_error).to.equal(true);",
+  ])]),
+  agentTeardown("INF-41"),
+]);
+
+const INF42 = folder("INF-42 Streaming does not run the agent loop", `Setup: ${AGENT_TEXT(["echo"])}; streamed chat and streamed Responses requests; the model calls alpha-echo.`, [
+  ...agentSetup("INF-42", ["echo"]),
+  llmScript("INF-42", "inf42-chat", { then: { tool_calls: [llmCall("s1", "alpha-echo")] } }),
+  infPost("INF-42", "streamed chat", "/v1/chat/completions", chatBody("inf42-chat", { stream: true }), [A.status(200), A.custom("the stream carries the alpha-echo call and finish_reason tool_calls", [
+    "var names = [], finish = [];",
+    "pm.response.text().split('\\n').forEach(function (l) { if (l.indexOf('data: {') !== 0) { return; } var d = JSON.parse(l.slice(6)); ((d.choices || [])[0] || {}).delta && (((d.choices[0].delta.tool_calls) || []).forEach(function (c) { if (c.function && c.function.name) { names.push(c.function.name); } })); if (d.choices && d.choices[0] && d.choices[0].finish_reason) { finish.push(d.choices[0].finish_reason); } });",
+    "pm.expect(names, pm.response.text()).to.eql(['alpha-echo']);",
+    "pm.expect(finish).to.eql(['tool_calls']);",
+  ])]),
+  llmCaptured("INF-42", "one model request for the streamed chat", "inf42-chat", [reqCount(1)]),
+  llmScript("INF-42", "inf42-resp", { then: { tool_calls: [llmCall("s2", "alpha-echo")] } }),
+  infPost("INF-42", "streamed Responses request", "/v1/responses", { model: MODEL, stream: true, input: `${marker("inf42-resp")} hi` }, [A.status(200), A.custom("the stream completes with the alpha-echo function call", [
+    "var calls = [], completed = false;",
+    "pm.response.text().split('\\n').forEach(function (l) { if (l.indexOf('data: {') !== 0) { return; } var d = JSON.parse(l.slice(6)); if (d.type === 'response.output_item.done' && d.item.type === 'function_call') { calls.push(d.item.name); } if (d.type === 'response.completed') { completed = true; } });",
+    "pm.expect(calls, pm.response.text()).to.eql(['alpha-echo']);",
+    "pm.expect(completed).to.equal(true);",
+  ])]),
+  llmCaptured("INF-42", "one model request for the streamed Responses request", "inf42-resp", [reqCount(1)]),
+  mockGet("INF-42", "alpha", "alpha ran nothing", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls || {}, 'body: ' + pm.response.text()).to.eql({});"])]),
+  agentTeardown("INF-42"),
+]);
+
+const INF43 = folder("INF-43 Continuation keeps text, usage and route", `Setup: ${AGENT_TEXT(["echo"])}; the chat names model openai/inf43-a with fallback anthropic/inf43-b; the first model request fails with 500, so the fallback serves turn 1 ("Checking" plus a call to alpha-echo, 10 and 5 tokens) and turn 2 ("Final", 20 and 7 tokens).`, [
+  ...agentSetup("INF-43", ["echo"]),
+  llmScript("INF-43", "inf43", { turns: [{ error: { status: 500, message: "primary down" } }, { text: "Checking", tool_calls: [llmCall("k1", "alpha-echo")], usage: { input: 10, output: 5 } }, { text: "Final", usage: { input: 20, output: 7 } }] }),
+  infPost("INF-43", "chat with a fallback", "/v1/chat/completions", { model: "openai/inf43-a", fallbacks: ["anthropic/inf43-b"], messages: [userMsg("inf43")] }, [A.status(200), chatContent("Checking\n\nFinal"), A.custom("usage is the sum of the two served turns", ["var u = pm.response.json().usage;", "pm.expect(u.prompt_tokens, 'body: ' + pm.response.text()).to.equal(30);", "pm.expect(u.completion_tokens).to.equal(12);", "pm.expect(u.total_tokens).to.equal(42);"])]),
+  llmCaptured("INF-43", "turn 2 goes to turn 1's provider and model", "inf43", [reqCount(3), A.custom("openai inf43-a (500), then anthropic inf43-b twice", [REQS, "pm.expect(reqs.map(function (r) { return r.format + ':' + r.model + ':' + r.status; })).to.eql(['openai.chat:inf43-a:500', 'anthropic.messages:inf43-b:200', 'anthropic.messages:inf43-b:200']);"])]),
+  agentTeardown("INF-43"),
+]);
+
+const INF44 = folder("INF-44 Agent on Anthropic and GenAI", `Setup: ${AGENT_TEXT(["echo"])}; on /anthropic and on /genai (bare model mock-model), turn 1 calls alpha-echo, turn 2 answers "done".`, [
+  ...agentSetup("INF-44", ["echo"]),
+  llmScript("INF-44", "inf44-anth", { turns: [{ tool_calls: [llmCall("x1", "alpha-echo")] }, { text: "done" }] }),
+  request("INF-44", "Anthropic request", "POST", "/anthropic/v1/messages", { noAuth: true, noCookies: true, body: { model: "mock-model", max_tokens: 64, messages: [userMsg("inf44-anth")] }, asserts: [A.status(200), A.custom("the client gets only the final text", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'done' }]);"])] }),
+  llmCaptured("INF-44", "two model requests on Anthropic", "inf44-anth", [reqCount(2)]),
+  mockGet("INF-44", "alpha", "alpha ran echo once for Anthropic", [callsIs("echo", 1)]),
+  resetCounters("INF-44", "alpha"),
+  llmScript("INF-44", "inf44-gen", { turns: [{ tool_calls: [llmCall("x2", "alpha-echo")] }, { text: "done" }] }),
+  request("INF-44", "generateContent", "POST", "/genai/v1beta/models/mock-model:generateContent", { noAuth: true, noCookies: true, body: GENAI_BODY("inf44-gen"), asserts: [A.status(200), A.custom("the client gets only the final text", ["pm.expect(pm.response.json().candidates[0].content.parts, 'body: ' + pm.response.text()).to.eql([{ text: 'done' }]);"])] }),
+  llmCaptured("INF-44", "two model requests on GenAI", "inf44-gen", [reqCount(2)]),
+  mockGet("INF-44", "alpha", "alpha ran echo once for GenAI", [callsIs("echo", 1)]),
+  agentTeardown("INF-44"),
+]);
+
+const INF45 = folder("INF-45 Per-user auth stops the loop", `Setup: ${LLM_TEXT}; fleet server u (echo) that accepts only X-Api-Key key-a; a per_user_headers client u on it with per_user_header_keys ["x-api-key"], sample key-a, tools_to_execute ["*"], tools_to_auto_execute ["*"]; the caller (x-bf-mcp-session-id inf45-s) has submitted no headers; the model calls u-echo.`, [
+  ...freshServer("INF-45", "u", ["echo"]),
+  mockAuth("INF-45", "u", "setup: u accepts only X-Api-Key key-a", { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": "key-a" } }),
+  createClient("INF-45", { client_id: "inf-45-u", name: "u", connection_type: "http", connection_string: `${CHAOS}/s/u/mcp`, auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "key-a" }, tools_to_execute: ["*"], tools_to_auto_execute: ["*"] }, "setup: create the per_user_headers client u"),
+  llmScript("INF-45", "inf45", { then: { tool_calls: [llmCall("u1", "u-echo")] } }),
+  infPost("INF-45", "chat", "/v1/chat/completions", chatBody("inf45"), [A.status(401), A.custom("error.type mcp_auth_required naming client u", [
+    "var b = pm.response.json();",
+    "pm.expect(b.error && b.error.type, 'body: ' + pm.response.text()).to.equal('mcp_auth_required');",
+    "pm.expect(b.extra_fields.mcp_auth_required.mcp_client_name).to.equal('u');",
+  ])], { headers: [{ key: "x-bf-mcp-session-id", value: "inf45-s" }] }),
+  deleteClient("INF-45", "inf-45-u"),
+]);
+
+// agentLogs reads the MCP log entries of model request R once count of them have landed.
+const agentLogs = (id, title, R, count, asserts) => request(id, title, "GET", `/api/mcp-logs?llm_request_ids=${R}`, { pre: pollLogCount(`llm_request_ids=${R}`, count), asserts: [A.status(200), ...asserts] });
+const LOG_LIST = "var logs = pm.response.json().logs || [];";
+const INF46 = folder("INF-46 Log entry for an agent call", `Setup: as INF-34 (${AGENT_TEXT(["echo"])}; turn 1 calls alpha-echo, turn 2 answers "done"), sent with x-request-id inf46-r.`, [
+  ...agentSetup("INF-46", ["echo"]),
+  llmScript("INF-46", "inf46", { turns: [{ tool_calls: [llmCall("t1", "alpha-echo")] }, { text: "done" }] }),
+  infPost("INF-46", "chat with x-request-id inf46-r", "/v1/chat/completions", chatBody("inf46"), [A.status(200)], { headers: [{ key: "x-request-id", value: "inf46-r" }] }),
+  agentLogs("INF-46", "the call's log entry", "inf46-r", 1, [A.custom("one entry: echo on alpha, success, llm_request_id inf46-r", [LOG_LIST,
+    "pm.expect(logs.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(logs[0].tool_name).to.equal('echo');",
+    "pm.expect(logs[0].server_label).to.equal('alpha');",
+    "pm.expect(logs[0].status).to.equal('success');",
+    "pm.expect(logs[0].llm_request_id).to.equal('inf46-r');",
+  ])]),
+  agentTeardown("INF-46"),
+]);
+
+const PARALLEL_TURN = { tool_calls: [llmCall("e1", "alpha-echo"), llmCall("a1", "alpha-add", { a: 1, b: 2 })] };
+const parallelEntries = (R) => A.custom(`2 entries, each llm_request_id ${R}, with distinct ids that are not ${R}`, [LOG_LIST,
+  "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(2);",
+  `logs.forEach(function (r) { pm.expect(r.llm_request_id).to.equal(${lit(R)}); pm.expect(r.id).to.not.equal(${lit(R)}); });`,
+  "pm.expect(logs[0].id).to.not.equal(logs[1].id);",
+]);
+const LOG06 = folder("LOG-06 Agent mode on chat: one log entry per tool call", `Setup: ${AGENT_TEXT(["*"])}; the model calls alpha-echo and alpha-add in parallel, then answers "done"; the chat is sent with x-request-id log06-r.`, [
+  ...agentSetup("LOG-06", ["*"]),
+  llmScript("LOG-06", "log06", { turns: [PARALLEL_TURN, { text: "done" }] }),
+  infPost("LOG-06", "chat with x-request-id log06-r", "/v1/chat/completions", chatBody("log06"), [A.status(200)], { headers: [{ key: "x-request-id", value: "log06-r" }] }),
+  agentLogs("LOG-06", "the log entries for log06-r", "log06-r", 2, [parallelEntries("log06-r")]),
+  agentTeardown("LOG-06"),
+]);
+
+const LOG07 = folder("LOG-07 Agent mode on Responses", `Setup: as LOG-06 (${AGENT_TEXT(["*"])}; parallel alpha-echo and alpha-add, then "done") on /v1/responses with x-request-id log07-r.`, [
+  ...agentSetup("LOG-07", ["*"]),
+  llmScript("LOG-07", "log07", { turns: [PARALLEL_TURN, { text: "done" }] }),
+  infPost("LOG-07", "Responses request with x-request-id log07-r", "/v1/responses", { model: MODEL, input: `${marker("log07")} hi` }, [A.status(200)], { headers: [{ key: "x-request-id", value: "log07-r" }] }),
+  agentLogs("LOG-07", "the log entries for log07-r", "log07-r", 2, [parallelEntries("log07-r")]),
+  agentTeardown("LOG-07"),
+]);
+
+const LOG08 = folder("LOG-08 Agent mode over two turns", `Setup: ${AGENT_TEXT(["*"])}; the model calls alpha-echo with "one", then alpha-echo with "two", then answers "done"; the chat is sent with x-request-id log08-r.`, [
+  ...agentSetup("LOG-08", ["*"]),
+  llmScript("LOG-08", "log08", { turns: [{ tool_calls: [llmCall("e1", "alpha-echo", { text: "one" })] }, { tool_calls: [llmCall("e2", "alpha-echo", { text: "two" })] }, { text: "done" }] }),
+  infPost("LOG-08", "chat with x-request-id log08-r", "/v1/chat/completions", chatBody("log08"), [A.status(200)], { headers: [{ key: "x-request-id", value: "log08-r" }] }),
+  agentLogs("LOG-08", "the log entries for log08-r", "log08-r", 2, [A.custom("both entries carry llm_request_id log08-r; the second turn's entry has a new request_id", [LOG_LIST,
+    "pm.expect(logs.length, 'body: ' + pm.response.text()).to.equal(2);",
+    "logs.forEach(function (r) { pm.expect(r.llm_request_id).to.equal('log08-r'); });",
+    "var second = logs.filter(function (r) { return JSON.stringify(r.arguments).indexOf('two') >= 0; });",
+    "pm.expect(second.length, 'logs: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(second[0].request_id).to.be.a('string').and.not.equal('log08-r');",
+    "pm.expect(second[0].request_id).to.not.equal('');",
+  ])]),
+  agentTeardown("LOG-08"),
+]);
+
 // ================================================================ provider-injected tools on the mock LLM
 
 const ONLY = process.env.TESTS ? new Set(process.env.TESTS.split(",").map((r) => r.trim())) : null;
@@ -5297,9 +5562,9 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18]),
   ],
 };
