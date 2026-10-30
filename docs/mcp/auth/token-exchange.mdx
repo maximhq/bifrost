@@ -235,6 +235,10 @@ The sign-in is your sign-in to Bifrost in the browser, the same one Bifrost Edge
 
 Sending both an identity token and a virtual key is fine: [`dual_credential_conflict_behavior`](../gateway-auth) decides which one governance attributes the request to, while the identity token is used for the exchange either way.
 
+<Warning>
+Using a stored sign-in is the default. Before v2.4.0, calls from Bifrost Edge and Bifrost CLI sessions and `/mcp` user tokens with no identity-provider token failed with `subject_token_missing`. From v2.4.0 they succeed as long as the user is signed in, so make sure your processes account for this default. A dashboard session, a Bifrost Edge or Bifrost CLI session, or a Bifrost-issued `/mcp` user token, including a [Cross App Access](./cross-app-access) token, is enough on its own to reach `token_exchange` servers as that user, within their tool permissions. Treat a stolen one as access to those servers too. Because Bifrost refreshes the sign-in itself, this keeps working after the original token expires, until the identity provider rejects the refresh, that sign-in is signed out, or it reaches 30 days. To cut a user off, delete them in Bifrost or remove their access to the MCP client.
+</Warning>
+
 ---
 
 ## Configuration reference
