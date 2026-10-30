@@ -199,7 +199,7 @@ export default function ProxyView() {
 											<FormLabel>{t("proxy.noProxyHosts")}</FormLabel>
 											<FormControl>
 												<Textarea
-													placeholder="localhost, 127.0.0.1, .internal.example.com"
+													placeholder="localhost, 127.0.0.1, .internal.example.com" // i18n-ignore
 													className="h-20"
 													disabled={!watchedEnabled}
 													{...field}
@@ -295,7 +295,7 @@ export default function ProxyView() {
 									<div className="space-y-0.5">
 										<div className="flex items-center gap-2">
 											<FormLabel className="text-sm font-medium">{t("proxy.scim")}</FormLabel>
-											<Badge variant="secondary">Enterprise</Badge>
+											<Badge variant="secondary">{t("featureFlags.enterpriseOnly")}</Badge>
 										</div>
 										<p className="text-muted-foreground text-sm">{t("proxy.scimHelp")}</p>
 									</div>

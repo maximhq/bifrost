@@ -1,4 +1,5 @@
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
+import { useTranslation } from "react-i18next";
 import { RelayFilterSidebar } from "@/components/filters/relayFilterSidebar";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useColumnConfig } from "@/components/table";
@@ -22,7 +23,7 @@ import { AlertCircle } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useMemo, useState, useRef } from "react";
 import { RelayEmptyState } from "./views/emptyState";
-import { createRelayColumns, RELAY_COLUMN_LABELS } from "./views/columns";
+import { createRelayColumns, getRelayColumnLabels } from "./views/columns";
 import { RelayHeaderView } from "./views/relayHeaderView";
 import { RelayLogDetailSheet } from "./views/relayLogDetailsSheet";
 import { RelayLogsDataTable } from "./views/relayLogsTable";
@@ -32,6 +33,7 @@ const arr = parseAsArrayOf(parseAsString).withDefault([]);
 
 /** Relay Logs: the same layout, header, filters, chart and table as the LLM and MCP log pages. */
 export default function RelayLogsPage() {
+	const { t } = useTranslation("observability");
 	const [error, setError] = useState<string | null>(null);
 	const hasDeleteAccess = useRbac(RbacResource.RelayLogs, RbacOperation.Delete);
 	const [deleteLogs] = useDeleteRelayLogsMutation();
@@ -276,8 +278,8 @@ export default function RelayLogsPage() {
 		return icons;
 	}, [userAgentMappingsData?.mappings]);
 	const columns = useMemo(
-		() => createRelayColumns(handleDelete, hasDeleteAccess, customAppIcons),
-		[customAppIcons, handleDelete, hasDeleteAccess],
+		() => createRelayColumns(handleDelete, hasDeleteAccess, customAppIcons, t),
+		[customAppIcons, handleDelete, hasDeleteAccess, t],
 	);
 	const columnIds = useMemo(
 		() => columns.map((c) => ("id" in c && c.id ? c.id : "accessorKey" in c ? String(c.accessorKey) : "")).filter(Boolean),
@@ -323,7 +325,7 @@ export default function RelayLogsPage() {
 							loading={logsIsFetching}
 							totalLogs={totalItems}
 							columnEntries={columnEntries}
-							columnLabels={RELAY_COLUMN_LABELS}
+							columnLabels={getRelayColumnLabels(t)}
 							onToggleColumnVisibility={toggleVisibility}
 							onResetColumns={reset}
 							currentPageLogs={logs}

@@ -831,9 +831,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				/>
 			</p>
 		) : isGovernedByOwnerProfile && owner ? (
-			<p data-testid="vk-owner-profile-notice">
-				Governed by the access profile of this {owner.label}. Its budgets, rate limits and providers apply to this key.
-			</p>
+			<p data-testid="vk-owner-profile-notice">{t("virtualKeys.ownerProfileNoticeUnnamed", { owner: owner.label })}</p>
 		) : null;
 
 	// Watch budget/rate-limit fields for conditional rendering of reset buttons

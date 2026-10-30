@@ -17,13 +17,7 @@ import { getErrorMessage } from "@/lib/store";
 import { useCancelRecalculateCostJobMutation, useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import type { LogEntry, LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
-import {
-	formatLogSearchInput,
-	isLogIdSearch,
-	LOG_SEARCH_MODE_LABELS,
-	type LogSearchMode,
-	parseLogSearchInput,
-} from "@/lib/utils/logSearch";
+import { formatLogSearchInput, isLogIdSearch, type LogSearchMode, parseLogSearchInput } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { Calculator, ChevronDown, Download, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
@@ -396,7 +390,7 @@ export function LogsHeaderView({
 							</Badge>
 						</TooltipTrigger>
 						<TooltipContent sideOffset={6} className="max-w-64">
-							Looking up this request ID exactly. The selected time range is ignored so the request is found wherever it falls.
+							{t("logs.exactIdSearchHint")}
 						</TooltipContent>
 					</Tooltip>
 				)}
@@ -406,23 +400,23 @@ export function LogsHeaderView({
 							variant="ghost"
 							size="sm"
 							className="text-muted-foreground h-7 shrink-0 rounded-none text-xs"
-							title="Choose whether the box searches log content or looks up a request ID"
+							title={t("logs.searchModeHint")}
 							data-testid="logs-search-mode-trigger"
 						>
-							{LOG_SEARCH_MODE_LABELS[searchMode]}
+							{t(`logs.searchModes.${searchMode}`)}
 							<ChevronDown className="size-3" />
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end" className="w-44">
 						<DropdownMenuRadioGroup value={searchMode} onValueChange={(value) => handleSearchModeChange(value as LogSearchMode)}>
 							<DropdownMenuRadioItem value="auto" className="text-xs" data-testid="logs-search-mode-auto">
-								Auto detect
+								{t("logs.searchModeOptions.auto")}
 							</DropdownMenuRadioItem>
 							<DropdownMenuRadioItem value="content" className="text-xs" data-testid="logs-search-mode-content">
-								Content search
+								{t("logs.searchModeOptions.content")}
 							</DropdownMenuRadioItem>
 							<DropdownMenuRadioItem value="request_id" className="text-xs" data-testid="logs-search-mode-request-id">
-								Request ID search
+								{t("logs.searchModeOptions.request_id")}
 							</DropdownMenuRadioItem>
 						</DropdownMenuRadioGroup>
 					</DropdownMenuContent>
@@ -462,8 +456,8 @@ export function LogsHeaderView({
 					<DropdownMenuItem className="cursor-pointer items-start" onSelect={() => setExportDialogOpen(true)} data-testid="logs-export-btn">
 						<Download className="mt-0.5" />
 						<div className="flex flex-col">
-							<span>{t("logs.exportCsv")}</span>
-							<span className="text-muted-foreground text-xs">{t("logs.exportCsvDesc")}</span>
+							<span>{t("logs.export.exportCsv")}</span>
+							<span className="text-muted-foreground text-xs">{t("logs.export.menuDescription")}</span>
 						</div>
 					</DropdownMenuItem>
 					{/* While a job runs this doubles as the cancel control, so the run can

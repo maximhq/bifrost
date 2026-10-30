@@ -61,7 +61,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					variant="ghost"
 					size="icon"
 					className="h-8 w-8"
-					aria-label={`Customer actions ${customer.name}`}
+					aria-label={t("customers.actionsAria", { name: customer.name })}
 					data-testid={`customer-actions-btn-${customer.id}`}
 					onClick={(e) => e.stopPropagation()}
 					onPointerDown={(e) => e.stopPropagation()}
@@ -371,7 +371,7 @@ export default function CustomersTable({
 																						</span>
 																					</div>
 																					<Progress
-																						aria-label="Budget usage"
+																						aria-label={t("usage.budgetAria")}
 																						value={pct}
 																						className={cn(
 																							"bg-muted/70 dark:bg-muted/30 h-1.5",
@@ -389,7 +389,7 @@ export default function CustomersTable({
 																					{formatCurrency(budget.current_usage)} / {formatCurrency(budget.max_limit)}
 																				</p>
 																				<p className="text-primary-foreground/80 text-xs">
-																					Resets {formatResetDuration(budget.reset_duration)}
+																					{t("usage.resets", { period: formatResetDuration(budget.reset_duration) })}
 																				</p>
 																			</TooltipContent>
 																		</Tooltip>
@@ -408,13 +408,15 @@ export default function CustomersTable({
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">{rateLimit.token_max_limit.toLocaleString()} tokens</span>
+																					<span className="font-medium">
+																						{t("usage.tokens", { value: rateLimit.token_max_limit.toLocaleString() })}
+																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(rateLimit.token_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
-																					aria-label="Token usage"
+																					aria-label={t("usage.tokenAria")}
 																					value={tokenPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -429,11 +431,13 @@ export default function CustomersTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{rateLimit.token_current_usage.toLocaleString()} / {rateLimit.token_max_limit.toLocaleString()}{" "}
-																				tokens
+																				{t("usage.tokenTooltip", {
+																					used: rateLimit.token_current_usage.toLocaleString(),
+																					max: rateLimit.token_max_limit.toLocaleString(),
+																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(rateLimit.token_reset_duration || "1h")}
+																				{t("usage.resets", { period: formatResetDuration(rateLimit.token_reset_duration || "1h") })}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
@@ -443,13 +447,15 @@ export default function CustomersTable({
 																		<TooltipTrigger asChild>
 																			<div className="space-y-1.5">
 																				<div className="flex items-center justify-between gap-4 text-xs">
-																					<span className="font-medium">{rateLimit.request_max_limit.toLocaleString()} req</span>
+																					<span className="font-medium">
+																						{t("usage.req", { value: rateLimit.request_max_limit.toLocaleString() })}
+																					</span>
 																					<span className="text-muted-foreground">
 																						{formatResetDuration(rateLimit.request_reset_duration || "1h")}
 																					</span>
 																				</div>
 																				<Progress
-																					aria-label="Request usage"
+																					aria-label={t("usage.requestAria")}
 																					value={requestPercentage}
 																					className={cn(
 																						"bg-muted/70 dark:bg-muted/30 h-1",
@@ -464,11 +470,13 @@ export default function CustomersTable({
 																		</TooltipTrigger>
 																		<TooltipContent>
 																			<p className="font-medium">
-																				{rateLimit.request_current_usage.toLocaleString()} / {rateLimit.request_max_limit.toLocaleString()}{" "}
-																				requests
+																				{t("usage.requestTooltip", {
+																					used: rateLimit.request_current_usage.toLocaleString(),
+																					max: rateLimit.request_max_limit.toLocaleString(),
+																				})}
 																			</p>
 																			<p className="text-primary-foreground/80 text-xs">
-																				Resets {formatResetDuration(rateLimit.request_reset_duration || "1h")}
+																				{t("usage.resets", { period: formatResetDuration(rateLimit.request_reset_duration || "1h") })}
 																			</p>
 																		</TooltipContent>
 																	</Tooltip>
@@ -481,7 +489,7 @@ export default function CustomersTable({
 													<TableCell>
 														{vkCount > 0 ? (
 															<Badge variant="outline" className="text-xs">
-																{vkCount} {vkCount === 1 ? "key" : "keys"}
+																{t("usage.keyCount", { count: vkCount })}
 															</Badge>
 														) : (
 															<span className="text-muted-foreground text-sm">-</span>
@@ -514,8 +522,11 @@ export default function CustomersTable({
 						{totalCount > 0 && (
 							<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
-									{(offset + 1).toLocaleString()}-{Math.min(offset + limit, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-									entries
+									{t("webhooks.pagination.entries", {
+										from: (offset + 1).toLocaleString(),
+										to: Math.min(offset + limit, totalCount).toLocaleString(),
+										total: totalCount.toLocaleString(),
+									})}
 								</div>
 
 								<div className="flex items-center gap-2">
@@ -525,15 +536,15 @@ export default function CustomersTable({
 										onClick={() => onOffsetChange(Math.max(0, offset - limit))}
 										disabled={offset === 0}
 										data-testid="customers-pagination-prev-btn"
-										aria-label="Previous page"
+										aria-label={t("webhooks.pagination.previousPage")}
 									>
 										<ChevronLeft className="size-3" />
 									</Button>
 
 									<div className="flex items-center gap-1">
-										<span>Page</span>
+										<span>{t("webhooks.pagination.page")}</span>
 										<span>{Math.floor(offset / limit) + 1}</span>
-										<span>of {Math.ceil(totalCount / limit)}</span>
+										<span>{t("webhooks.pagination.ofPages", { total: Math.ceil(totalCount / limit) })}</span>
 									</div>
 
 									<Button
@@ -542,7 +553,7 @@ export default function CustomersTable({
 										onClick={() => onOffsetChange(offset + limit)}
 										disabled={offset + limit >= totalCount}
 										data-testid="customers-pagination-next-btn"
-										aria-label="Next page"
+										aria-label={t("webhooks.pagination.nextPage")}
 									>
 										<ChevronRight className="size-3" />
 									</Button>

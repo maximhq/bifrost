@@ -14,7 +14,8 @@
 		"lint:a11y:enterprise": "oxlint -c .oxlintrc.a11y.json app/enterprise/",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
-		"format:enterprise": "oxfmt app/enterprise/"
+		"format:enterprise": "oxfmt app/enterprise/",
+		"i18n:check": "node scripts/i18nCheck.mjs"
 	},
 	"dependencies": {
 		"@bprogress/core": "1.3.4",

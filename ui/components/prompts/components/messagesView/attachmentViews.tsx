@@ -84,7 +84,11 @@ export function AttachmentDisplay({
 					return (
 						<div key={i} className="group/att relative max-w-full">
 							{/* eslint-disable-next-line jsx-a11y/alt-text */}
-							<img src={att.image_url.url} alt="Attachment" className="max-h-48 max-w-full rounded-sm border object-contain sm:max-w-xs" />
+							<img
+								src={att.image_url.url}
+								alt={t("promptRepo.attachmentAlt")}
+								className="max-h-48 max-w-full rounded-sm border object-contain sm:max-w-xs"
+							/>
 							{editable && onRemoveAttachment && (
 								<button
 									onClick={() => onRemoveAttachment(i)}

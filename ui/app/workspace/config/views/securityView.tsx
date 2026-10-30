@@ -18,7 +18,7 @@ import { parseArrayFromText } from "@/lib/utils/array";
 import { formatCooldown } from "@/lib/utils/duration";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { isSecretVarSet } from "@/lib/utils/secretVarForm";
-import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
+import { getPasswordPolicyFailures, type PasswordRequirementKey, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
@@ -256,7 +256,7 @@ export default function SecurityView() {
 	}, []);
 
 	const formatPasswordPolicyError = useCallback(
-		(failures: string[]) => {
+		(failures: PasswordRequirementKey[]) => {
 			if (failures.length === 0) return "";
 			return t("security.passwordMustInclude", {
 				requirements: failures.map((key) => t(`security.passwordRequirement.${key}`)).join(t("security.requirementSeparator")),
@@ -669,12 +669,9 @@ export default function SecurityView() {
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="skip-access-profile-user-virtual-key-creation" className="text-sm font-medium">
-								Don&apos;t Create User Virtual Keys for Access Profiles
+								{t("security.skipAccessProfileKeyCreation")}
 							</label>
-							<p className="text-muted-foreground text-sm">
-								When enabled, a user&apos;s first access profile doesn&apos;t create a virtual key for them. Keys the user already owns, or
-								that you add for them, are still governed by the profile while they hold one.
-							</p>
+							<p className="text-muted-foreground text-sm">{t("security.skipAccessProfileKeyCreationHelp")}</p>
 						</div>
 						<Switch
 							id="skip-access-profile-user-virtual-key-creation"
@@ -688,12 +685,9 @@ export default function SecurityView() {
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="skip-access-profile-user-virtual-key-deletion" className="text-sm font-medium">
-								Don&apos;t Delete User Virtual Keys When Access Profiles Are Removed
+								{t("security.skipAccessProfileKeyDeletion")}
 							</label>
-							<p className="text-muted-foreground text-sm">
-								When enabled, removing a user&apos;s last access profile keeps their virtual keys as ordinary keys, with none of the
-								profile&apos;s providers or access. Deleting the user still deletes their keys.
-							</p>
+							<p className="text-muted-foreground text-sm">{t("security.skipAccessProfileKeyDeletionHelp")}</p>
 						</div>
 						<Switch
 							id="skip-access-profile-user-virtual-key-deletion"

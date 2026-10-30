@@ -360,7 +360,11 @@
 			"followUp": "Fai una domanda di follow-up: viene inviata quando questa risposta finisce...",
 			"placeholder": "Chiedi sui tuoi dati Bifrost...",
 			"stop": "Interrompi",
-			"send": "Invia"
+			"send": "Invia",
+			"commandClear": "Inizia una nuova conversazione",
+			"settings": "Impostazioni di Warp",
+			"switchModel": "Cambia modello",
+			"defaultModel": "Predefinito"
 		},
 		"question": {
 			"label": "Domanda",
@@ -449,16 +453,17 @@
 			"render_chart": {
 				"running": "Creazione di un grafico",
 				"done": "Grafico creato"
+			},
+			"list_topics": {
+				"running": "Elenco degli argomenti in corso",
+				"done": "Argomenti elencati"
 			}
 		},
 		"errors": {
 			"not_configured": {
 				"summary": "Warp non è ancora configurato.",
 				"cause": "Nessun fornitore e modello impostati, oppure Warp è disattivato nelle impostazioni.",
-				"suggestions": [
-					"Apri le impostazioni Warp e scegli un fornitore e un modello.",
-					"Assicurati che Enable Warp sia attivo."
-				]
+				"suggestions": ["Apri le impostazioni Warp e scegli un fornitore e un modello.", "Assicurati che Enable Warp sia attivo."]
 			},
 			"max_iterations": {
 				"summary": "Warp non è riuscito a chiudere una risposta.",
@@ -504,10 +509,7 @@
 			"unknown": {
 				"summary": "Qualcosa è andato storto.",
 				"cause": "Warp ha restituito un errore senza un codice riconosciuto.",
-				"suggestions": [
-					"Riprova la domanda.",
-					"Se continua, segnalalo con i dettagli qui sotto."
-				]
+				"suggestions": ["Riprova la domanda.", "Se continua, segnalalo con i dettagli qui sotto."]
 			},
 			"access_denied": {
 				"summary": "Il tuo account non ha accesso al modello di Warp.",
@@ -543,6 +545,54 @@
 					"In alternativa, nelle impostazioni di Warp scegli un modello consentito per il tuo account."
 				]
 			}
+		},
+		"dock": {
+			"resize": "Ridimensiona il pannello Warp",
+			"description": "Fai domande a Warp sui log, sull'utilizzo e sulla spesa di questa distribuzione."
+		},
+		"chart": {
+			"openInLogs": "Apri nei log",
+			"empty": "Nessun dato in questo intervallo."
 		}
+	},
+	"rssSources": {
+		"newsOn": "Notizie attivate",
+		"newsOff": "Notizie disattivate per questo gateway",
+		"updateSettingsFailed": "Impossibile aggiornare le impostazioni delle notizie",
+		"updateFeedFailed": "Impossibile aggiornare {{name}}",
+		"updatedLogo": "Logo di {{name}} aggiornato",
+		"removedLogo": "Logo rimosso da {{name}}",
+		"updateLogoFailed": "Impossibile aggiornare il logo di {{name}}",
+		"removed": "{{name}} rimosso",
+		"removeFailed": "Impossibile rimuovere {{name}}",
+		"title": "Fonti di notizie",
+		"description": "Scegli quali feed RSS mostrare nella scheda Notizie del pannello delle notifiche per tutti gli utenti di questo gateway.",
+		"showNews": "Mostra notizie nel pannello delle notifiche",
+		"showNewsHelp": "Disattivando questa opzione, la scheda Notizie viene nascosta per tutti gli utenti di questo gateway e gli articoli non vengono più recuperati. Le fonti qui sotto vengono conservate.",
+		"settingLoadFailed": "Impossibile caricare questa impostazione.",
+		"tryAgain": "Riprova",
+		"loading": "Caricamento delle fonti",
+		"loadFailed": "Impossibile caricare le fonti.",
+		"builtinFeeds": "Feed integrati",
+		"customFeeds": "Feed personalizzati",
+		"noCustomFeeds": "Non ci sono ancora feed personalizzati. Aggiungi qui sotto un URL RSS o Atom.",
+		"removeAria": "Rimuovi {{name}}",
+		"disableAria": "Disattiva {{name}}",
+		"enableAria": "Attiva {{name}}",
+		"changeLogoAria": "Cambia il logo di {{name}}",
+		"uploadLogo": "Carica logo",
+		"removeLogo": "Rimuovi logo",
+		"addedFeed": "{{name}} aggiunto",
+		"addFeedTitle": "Aggiungi un feed",
+		"name": "Nome",
+		"namePlaceholder": "Versioni di Bifrost",
+		"feedUrl": "URL del feed",
+		"logo": "Logo",
+		"optional": "(facoltativo)",
+		"logoPreviewName": "Anteprima del logo",
+		"uploadedImage": "Immagine caricata",
+		"upload": "Carica",
+		"logoHelp": "Un URL immagine oppure un file PNG, JPEG, GIF, WebP, SVG o ICO fino a 96 KB. Per impostazione predefinita viene usata la favicon del sito.",
+		"addFeed": "Aggiungi feed"
 	}
 }

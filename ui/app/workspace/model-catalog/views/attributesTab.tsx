@@ -259,7 +259,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 													className="ml-6 h-7 w-7"
 													disabled={!hasUpdateAccess}
 													onClick={() => setEditing(m)}
-													aria-label={`Edit attributes for ${m.name}`}
+													aria-label={t("modelCatalog.editAttributesFor", { name: m.name })}
 													data-testid={`model-catalog-edit-${testKey}`}
 												>
 													<Edit className="h-4 w-4" />
@@ -276,8 +276,11 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 				{totalCount > 0 && (
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="model-catalog-pagination">
 						<div className="text-muted-foreground">
-							{(offset + 1).toLocaleString()}–{Math.min(offset + PAGE_SIZE, totalCount).toLocaleString()} of {totalCount.toLocaleString()}{" "}
-							entries
+							{t("modelCatalog.rangeOfEntries", {
+								from: (offset + 1).toLocaleString(),
+								to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(),
+								total: totalCount.toLocaleString(),
+							})}
 						</div>
 						<div className="flex items-center gap-2">
 							<Button
@@ -291,9 +294,9 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 								<ChevronLeft className="size-3" />
 							</Button>
 							<div className="flex items-center gap-1">
-								<span>Page</span>
+								<span>{t("modelCatalog.page")}</span>
 								<span>{Math.floor(offset / PAGE_SIZE) + 1}</span>
-								<span>of {Math.ceil(totalCount / PAGE_SIZE)}</span>
+								<span>{t("modelCatalog.pageOf", { total: Math.ceil(totalCount / PAGE_SIZE) })}</span>
 							</div>
 							<Button
 								variant="ghost"

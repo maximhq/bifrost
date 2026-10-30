@@ -4,9 +4,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { StatusBarColors } from "@/lib/constants/logs";
+import i18n from "@/lib/i18n";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import type { AgentLogStatus, AgentLogSummary, DisplayAgentLogSummary } from "@/lib/types/agentLogs";
 import type { ColumnDef, Row } from "@tanstack/react-table";
 import { format, formatDistanceToNow, isValid } from "date-fns";
+import type { TFunction } from "i18next";
 import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 
 // Coerce an unknown status string into one of the three states the backend
@@ -16,15 +19,26 @@ const getValidatedStatus = (status: string): AgentLogStatus => {
 	return "processing";
 };
 
+// English fallback; prefer getAgentColumnLabels(t) so labels follow the active locale.
 export const AGENT_COLUMN_LABELS: Record<string, string> = {
-	timestamp: "Time",
-	agent_name: "Agent",
-	operation: "Operation",
-	input: "Message",
-	context: "Context",
-	task: "Task",
-	duration: "Duration",
+	timestamp: "Time", // i18n-ignore
+	agent_name: "Agent", // i18n-ignore
+	operation: "Operation", // i18n-ignore
+	input: "Message", // i18n-ignore
+	context: "Context", // i18n-ignore
+	task: "Task", // i18n-ignore
+	duration: "Duration", // i18n-ignore
 };
+
+export const getAgentColumnLabels = (t: TFunction<"observability"> = i18n.getFixedT(null, "observability")): Record<string, string> => ({
+	timestamp: t("labels.time"),
+	agent_name: t("filters.agent"),
+	operation: t("agentLogs.columns.operation"),
+	input: t("labels.message"),
+	context: t("agentLogs.columns.context"),
+	task: t("agentLogs.columns.task"),
+	duration: t("logs.session.duration"),
+});
 
 function collectTextParts(value: unknown, result: string[]): void {
 	if (typeof value === "string") {
@@ -73,6 +87,7 @@ interface AgentSessionExpansion {
 export const createAgentColumns = (
 	handleDelete?: (log: AgentLogSummary) => Promise<void>,
 	sessions?: AgentSessionExpansion,
+	t: TFunction<"observability"> = i18n.getFixedT(null, "observability"),
 ): ColumnDef<AgentLogSummary>[] => [
 	...(sessions
 		? [
@@ -90,7 +105,7 @@ export const createAgentColumns = (
 								>
 									<span className={`bg-border absolute top-0 left-[11px] w-px ${log.__isLast ? "h-1/2" : "bottom-0"}`} />
 									<span className="bg-border absolute top-1/2 left-[11px] h-px w-1.5" />
-									<span className="truncate">operation {log.__sessionTurn}</span>
+									<span className="truncate">{t("agentLogs.columns.sessionTurn", { turn: log.__sessionTurn })}</span>
 								</div>
 							);
 						}
@@ -108,7 +123,7 @@ export const createAgentColumns = (
 										<button
 											type="button"
 											data-testid="agent-logs-session-expand-btn"
-											aria-label={expanded ? "Collapse this context" : `Expand ${count} more operations in this context`}
+											aria-label={expanded ? t("agentLogs.columns.collapseContext") : t("agentLogs.columns.expandContext", { count })}
 											aria-expanded={expanded}
 											className={`hover:text-foreground relative flex h-full w-full cursor-pointer items-center gap-1 overflow-hidden pl-1 text-[11px] whitespace-nowrap transition-colors ${expanded ? "text-foreground" : "text-muted-foreground"}`}
 											onClick={(event) => {
@@ -121,12 +136,10 @@ export const createAgentColumns = (
 											) : (
 												<ChevronRight className={`size-3.5 shrink-0 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`} />
 											)}
-											<span className="truncate tabular-nums">{count + 1} ops</span>
+											<span className="truncate tabular-nums">{t("agentLogs.columns.opsCount", { count: count + 1 })}</span>
 										</button>
 									</TooltipTrigger>
-									<TooltipContent>
-										Context of {count + 1} operations sharing a context_id. Expand to see the other {count} operations.
-									</TooltipContent>
+									<TooltipContent>{t("agentLogs.columns.contextTooltip", { total: count + 1, count })}</TooltipContent>
 								</Tooltip>
 							</>
 						);
@@ -148,7 +161,7 @@ export const createAgentColumns = (
 		accessorKey: "timestamp",
 		header: ({ column }) => (
 			<Button variant="ghost" className="-ml-3 h-8 px-2" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Time
+				{t("labels.time")}
 				<ArrowUpDown className="ml-2 size-3.5" />
 			</Button>
 		),
@@ -157,19 +170,23 @@ export const createAgentColumns = (
 			const timestamp = row.original.timestamp;
 			const date = timestamp ? new Date(timestamp) : null;
 			if (!date || !isValid(date)) {
-				return <div className="truncate text-xs">N/A</div>;
+				return <div className="truncate text-xs">{t("labels.nA")}</div>;
 			}
 			return (
 				<div className="flex flex-col leading-tight">
-					<span className="font-mono text-xs tabular-nums">{format(date, "MMM dd  HH:mm:ss")}</span>
-					<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(date, { addSuffix: true })}</span>
+					<span className="font-mono text-xs tabular-nums">
+						{format(date, "MMM dd  HH:mm:ss", { locale: dateFnsLocale(i18n.resolvedLanguage) })}
+					</span>
+					<span className="text-muted-foreground text-[10.5px] tabular-nums">
+						{formatDistanceToNow(date, { addSuffix: true, locale: dateFnsLocale(i18n.resolvedLanguage) })}
+					</span>
 				</div>
 			);
 		},
 	},
 	{
 		accessorKey: "agent_name",
-		header: "Agent",
+		header: t("filters.agent"),
 		size: 160,
 		cell: ({ row }) => (
 			<Badge variant="secondary" className="max-w-full font-mono">
@@ -179,7 +196,7 @@ export const createAgentColumns = (
 	},
 	{
 		accessorKey: "operation",
-		header: "Operation",
+		header: t("agentLogs.columns.operation"),
 		size: 220,
 		cell: ({ row }) => (
 			<div className="flex min-w-0 flex-col leading-tight">
@@ -190,7 +207,7 @@ export const createAgentColumns = (
 	},
 	{
 		accessorKey: "input",
-		header: "Message",
+		header: t("labels.message"),
 		size: 350,
 		cell: ({ row }) => {
 			const preview = getAgentInputPreview(row.original.input);
@@ -203,13 +220,13 @@ export const createAgentColumns = (
 	},
 	{
 		id: "context",
-		header: "Context",
+		header: t("agentLogs.columns.context"),
 		size: 130,
 		cell: ({ row }) => <TruncatedLabel className="block font-mono text-xs">{row.original.context_id || "—"}</TruncatedLabel>,
 	},
 	{
 		id: "task",
-		header: "Task",
+		header: t("agentLogs.columns.task"),
 		size: 130,
 		cell: ({ row }) => <TruncatedLabel className="block font-mono text-xs">{row.original.task_id || "—"}</TruncatedLabel>,
 	},
@@ -218,7 +235,7 @@ export const createAgentColumns = (
 		accessorKey: "latency",
 		header: ({ column }) => (
 			<Button variant="ghost" className="-ml-3 h-8 px-2" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Duration
+				{t("logs.session.duration")}
 				<ArrowUpDown className="ml-2 size-3.5" />
 			</Button>
 		),
@@ -240,7 +257,7 @@ export const createAgentColumns = (
 							<div className="flex justify-center">
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label={t("logs.logActions")} className="h-7 w-7">
 											<MoreHorizontal className="h-4 w-4" />
 										</Button>
 									</DropdownMenuTrigger>
@@ -255,7 +272,7 @@ export const createAgentColumns = (
 											}}
 										>
 											<Trash2 className="h-4 w-4" />
-											Delete
+											{t("labels.delete")}
 										</DropdownMenuItem>
 									</DropdownMenuContent>
 								</DropdownMenu>

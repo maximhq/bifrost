@@ -360,7 +360,11 @@
 			"followUp": "Faça uma pergunta de seguimento; é enviada quando esta resposta terminar...",
 			"placeholder": "Pergunte sobre os seus dados do Bifrost...",
 			"stop": "Parar",
-			"send": "Enviar"
+			"send": "Enviar",
+			"commandClear": "Iniciar uma nova conversa",
+			"settings": "Definições do Warp",
+			"switchModel": "Mudar de modelo",
+			"defaultModel": "Predefinido"
 		},
 		"question": {
 			"label": "Pergunta",
@@ -449,16 +453,17 @@
 			"render_chart": {
 				"running": "A desenhar um gráfico",
 				"done": "Gráfico desenhado"
+			},
+			"list_topics": {
+				"running": "Listando tópicos",
+				"done": "Tópicos listados"
 			}
 		},
 		"errors": {
 			"not_configured": {
 				"summary": "O Warp ainda não está configurado.",
 				"cause": "Não há fornecedor nem modelo definidos, ou o Warp está desativado nas definições.",
-				"suggestions": [
-					"Abra as definições do Warp e escolha um fornecedor e um modelo.",
-					"Certifique-se de que Ativar Warp está ligado."
-				]
+				"suggestions": ["Abra as definições do Warp e escolha um fornecedor e um modelo.", "Certifique-se de que Ativar Warp está ligado."]
 			},
 			"max_iterations": {
 				"summary": "O Warp não conseguiu chegar a uma resposta.",
@@ -504,10 +509,7 @@
 			"unknown": {
 				"summary": "Algo correu mal.",
 				"cause": "O Warp devolveu um erro sem um código reconhecido.",
-				"suggestions": [
-					"Tente a pergunta novamente.",
-					"Se continuar a acontecer, reporte-o com os detalhes abaixo."
-				]
+				"suggestions": ["Tente a pergunta novamente.", "Se continuar a acontecer, reporte-o com os detalhes abaixo."]
 			},
 			"access_denied": {
 				"summary": "A sua conta não tem acesso ao modelo do Warp.",
@@ -543,6 +545,54 @@
 					"Em alternativa, nas definições do Warp, escolha um modelo que a sua conta esteja autorizada a usar."
 				]
 			}
+		},
+		"dock": {
+			"resize": "Redimensionar o painel do Warp",
+			"description": "Faça perguntas ao Warp sobre os registos, a utilização e os gastos desta implementação."
+		},
+		"chart": {
+			"openInLogs": "Abrir nos registos",
+			"empty": "Sem dados nesta janela."
 		}
+	},
+	"rssSources": {
+		"newsOn": "Notícias ativadas",
+		"newsOff": "Notícias desativadas para este gateway",
+		"updateSettingsFailed": "Não foi possível atualizar as definições de notícias",
+		"updateFeedFailed": "Não foi possível atualizar {{name}}",
+		"updatedLogo": "Logótipo de {{name}} atualizado",
+		"removedLogo": "Logótipo de {{name}} removido",
+		"updateLogoFailed": "Não foi possível atualizar o logótipo de {{name}}",
+		"removed": "{{name}} removido",
+		"removeFailed": "Não foi possível remover {{name}}",
+		"title": "Fontes de notícias",
+		"description": "Escolha que feeds RSS aparecem no separador Notícias do painel de notificações para todos os utilizadores deste gateway.",
+		"showNews": "Mostrar notícias no painel de notificações",
+		"showNewsHelp": "Ao desativar esta opção, o separador Notícias é ocultado para todos os utilizadores deste gateway e deixa de se obter itens de notícias. As suas fontes abaixo são mantidas.",
+		"settingLoadFailed": "Não foi possível carregar esta definição.",
+		"tryAgain": "Tentar novamente",
+		"loading": "A carregar fontes",
+		"loadFailed": "Não foi possível carregar as fontes.",
+		"builtinFeeds": "Feeds integrados",
+		"customFeeds": "Feeds personalizados",
+		"noCustomFeeds": "Ainda não há feeds personalizados. Adicione abaixo qualquer URL RSS ou Atom.",
+		"removeAria": "Remover {{name}}",
+		"disableAria": "Desativar {{name}}",
+		"enableAria": "Ativar {{name}}",
+		"changeLogoAria": "Alterar o logótipo de {{name}}",
+		"uploadLogo": "Carregar logótipo",
+		"removeLogo": "Remover logótipo",
+		"addedFeed": "{{name}} adicionado",
+		"addFeedTitle": "Adicionar um feed",
+		"name": "Nome",
+		"namePlaceholder": "Versões do Bifrost",
+		"feedUrl": "URL do feed",
+		"logo": "Logótipo",
+		"optional": "(opcional)",
+		"logoPreviewName": "Pré-visualização do logótipo",
+		"uploadedImage": "Imagem carregada",
+		"upload": "Carregar",
+		"logoHelp": "Um URL de imagem ou um PNG, JPEG, GIF, WebP, SVG ou ICO até 96 KB. Por predefinição, usa o favicon do site.",
+		"addFeed": "Adicionar feed"
 	}
 }

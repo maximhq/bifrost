@@ -51,7 +51,15 @@
 			"updateAction": "Mettre à jour le client",
 			"createAction": "Créer le client",
 			"calendarAlignHelp": "L’activation de l’alignement calendaire réinitialisera l’usage budgétaire à <bold0>$0.00</bold0> et les compteurs de limite de débit jetons/requêtes à <bold1>0</bold1> pour ce client, puis calera chaque date de réinitialisation sur le début de sa période en cours (par ex. début du jour, de la semaine, du mois ou de l’année). La réinitialisation de l’usage est irréversible, mais l’alignement calendaire peut être désactivé plus tard. Cela prendra effet à l’enregistrement."
-		}
+		},
+		"detail": {
+			"title": "Détails du client",
+			"description": "Détails d’utilisation de ce client.",
+			"info": "Infos",
+			"name": "Nom",
+			"noBudgets": "Aucun budget configuré"
+		},
+		"actionsAria": "Actions du client {{name}}"
 	},
 	"teams": {
 		"title": "Équipes",
@@ -98,10 +106,13 @@
 			"updateAction": "Mettre à jour l’équipe",
 			"createAction": "Créer l’équipe",
 			"calendarAlignHelp": "L’activation de l’alignement calendaire réinitialisera l’usage budgétaire à <bold0>$0.00</bold0> et les compteurs de limite de débit jetons/requêtes à <bold1>0</bold1> pour cette équipe, puis calera chaque date de réinitialisation sur le début de sa période en cours (par ex. début du jour, de la semaine, du mois ou de l’année). La réinitialisation de l’usage est irréversible, mais l’alignement calendaire peut être désactivé plus tard. Cela prendra effet à l’enregistrement."
-		}
+		},
+		"actionsAria": "Actions de l’équipe {{name}}"
 	},
 	"virtualKeys": {
-		"loadFailed": "Échec du chargement des clés virtuelles : {{message}}"
+		"loadFailed": "Échec du chargement des clés virtuelles : {{message}}",
+		"metadataFilterInvalid": "La clé du filtre de métadonnées dans ce lien n’est pas valide, elle n’est donc pas appliquée. Les clés comptent de 1 à 256 lettres, chiffres, « . », « _ » ou « - ».",
+		"clearFilter": "Effacer le filtre"
 	},
 	"plugins": {
 		"title": "Modules d’extension",
@@ -353,7 +364,26 @@
 			"filterEvent": "Événement",
 			"filterResponseStatus": "Statut de réponse",
 			"filterWebhooks": "Points de terminaison webhook",
-			"searchWebhooks": "Rechercher des webhooks…"
+			"searchWebhooks": "Rechercher des webhooks…",
+			"table": {
+				"waiting": "En attente de nouvelles livraisons…",
+				"empty": "Aucune livraison trouvée. Essayez d’ajuster vos filtres et/ou la période.",
+				"range": "{{from}}-{{to}} sur {{total}} livraisons"
+			},
+			"header": {
+				"searchByDeliveryId": "Rechercher par ID de livraison",
+				"switchLookup": "Basculer entre la recherche par ID de requête et par ID de livraison"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "ID de livraison",
+				"actions": "Actions",
+				"collapseSends": "Réduire les envois",
+				"expandSends": "Développer les envois",
+				"noPermission": "Vous n’avez pas la permission de re-livrer",
+				"openInLogs": "{{id}} — ouvrir dans les journaux"
+			},
+			"copyRequestId": "Copier l’ID de requête {{id}}"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "Débloquez les classements utilisateurs pour une meilleure visibilité"
 	},
 	"promptDeployments": {
-		"unlockTitle": "Débloquez les déploiements d’invites pour un meilleur versionnement et des tests A/B."
+		"unlockTitle": "Débloquez les déploiements d’invites pour un meilleur versionnement et des tests A/B.",
+		"accordionTitle": "Déploiements"
 	},
 	"connectorsUnlock": {
 		"splunk": "Débloquez l’ingestion native de données Splunk pour une meilleure observabilité",
@@ -389,7 +420,8 @@
 		"datadog": "Débloquez l’ingestion native de données Datadog pour une meilleure observabilité",
 		"bigquery": "Débloquez l’ingestion native de données BigQuery pour l’analytique",
 		"kafka": "Débloquez le streaming natif de journaux Kafka pour une observabilité en temps réel",
-		"kafkaDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Diffusez les traces de requêtes terminées en JSON vers un topic Kafka pour l’analytique en temps réel, les alertes et le traitement en aval."
+		"kafkaDescription": "Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Diffusez les traces de requêtes terminées en JSON vers un topic Kafka pour l’analytique en temps réel, les alertes et le traitement en aval.",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "Débloquez les profils d’accès pour de meilleures performances",
@@ -439,7 +471,9 @@
 		"reset": "Réinitialiser",
 		"addBudgetButton": "Ajouter un budget",
 		"maximumSpend": "Dépense maximale (USD)",
-		"noBudgetLimits": "Aucune limite de budget configurée."
+		"noBudgetLimits": "Aucune limite de budget configurée.",
+		"removeBudgetAria": "Supprimer le budget {{number}}",
+		"duplicateResetPeriod": "Période de réinitialisation en double ; chaque ligne de budget doit utiliser un intervalle différent."
 	},
 	"filters": {
 		"filters": "Filtres",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} motifs",
 		"removeAria": "Retirer {{name}}",
 		"noneLeftClick": "Plus de fournisseurs à configurer. Cliquez pour ajouter"
+	},
+	"orgChart": {
+		"unlockTitle": "Débloquez l’organigramme",
+		"unlockDescription": "Visualisez les budgets, les dépenses, les modèles et les outils des unités commerciales, équipes et utilisateurs dans un seul arbre. Cette fonctionnalité fait partie de la licence Enterprise de Bifrost."
+	},
+	"usage": {
+		"budgetAria": "Utilisation du budget",
+		"tokenAria": "Utilisation des jetons",
+		"requestAria": "Utilisation des requêtes",
+		"resets": "Réinitialisation {{period}}",
+		"tokens": "{{value}} jetons",
+		"req": "{{value}} req.",
+		"tokenTooltip": "{{used}} / {{max}} jetons",
+		"requestTooltip": "{{used}} / {{max}} requêtes",
+		"keyCount_one": "{{count}} clé",
+		"keyCount_other": "{{count}} clés"
+	},
+	"budgetOverride": {
+		"updated": "Dérogation budgétaire mise à jour",
+		"added": "Dérogation budgétaire ajoutée",
+		"removed": "Dérogation budgétaire supprimée",
+		"invalidInput": "Saisie invalide",
+		"editOverride": "Modifier la dérogation",
+		"addOverride": "Ajouter une dérogation",
+		"editTitle": "Modifier la dérogation budgétaire",
+		"addTitle": "Ajouter une dérogation budgétaire",
+		"description": "Ajoutez temporairement de la capacité de dépense sans modifier le budget {{budget}} de base.",
+		"additionalBudget": "Budget supplémentaire",
+		"duration": "Durée",
+		"modeCycles": "Pour un nombre de cycles de réinitialisation",
+		"modeForever": "Jusqu’à suppression",
+		"resetCycles": "Cycles de réinitialisation",
+		"cycleHint": "Le cycle de réinitialisation en cours compte comme le premier cycle.",
+		"validUntil": "Valable jusqu’au <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "Limite effective actuelle : <b0>{{limit}}</b0>",
+		"removeOverride": "Supprimer la dérogation",
+		"updateOverride": "Mettre à jour la dérogation",
+		"managerDescription": "Ajoutez temporairement de la capacité de dépense à un budget sans modifier sa limite de base.",
+		"rowActive": "+{{amount}} de dérogation · effectif {{effective}}",
+		"rowBase": "Base {{amount}}",
+		"edit": "Modifier",
+		"remove": "Supprimer",
+		"update": "Mettre à jour",
+		"add": "Ajouter"
 	}
 }

@@ -4,6 +4,7 @@ import { Image, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImageMessage } from "@/components/chat/ImageMessage";
 import { Button } from "@/components/ui/button";
 import { RequestTypeLabels } from "@/lib/constants/logs";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 
 interface ImageGenerationInput {
@@ -28,7 +29,7 @@ function getImageSrc(b64: string): string {
 }
 
 // Helper function to get method type label from request type
-function getMethodTypeLabel(requestType: string | undefined, t: (key: string) => string): string {
+function getMethodTypeLabel(requestType: string | undefined, t: TFunction<"observability">): string {
 	if (!requestType) return t("logs.media.imageGeneration");
 
 	const normalizedType = requestType.toLowerCase();
