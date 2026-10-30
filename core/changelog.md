@@ -1,1 +1,1 @@
-[fix]: cancel pending MCP connections during cleanup [@Xytronix](https://github.com/Xytronix)
+[fix]: cancel pending MCP discovery and prevent recovery after cleanup [@Xytronix](https://github.com/Xytronix)

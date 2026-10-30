@@ -352,3 +352,48 @@ func TestClientConnectionChecker_KickChecksAheadOfTheTimer(t *testing.T) {
 
 	m.checkerManager.Kick("no-such-client") // no checker: nothing happens
 }
+
+func TestConnectConfiguredClientsAfterCleanupDoesNotRecover(t *testing.T) {
+	config := &schemas.MCPClientConfig{
+		ID: "cleaned-up-boot", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1"), NeedsSessionStickiness: schemas.Ptr(true),
+	}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{config}}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(t, m.Cleanup())
+
+	m.ConnectConfiguredClients(context.Background())
+
+	_, exists := snapshotClientState(m, config.ID)
+	assert.False(t, exists, "boot recovery must not restore a client after cleanup")
+	assert.Nil(t, registeredChecker(m, config.ID), "boot recovery must not restart a checker after cleanup")
+}
+
+func TestClientConnectionCheckerDoesNotStartAfterCleanup(t *testing.T) {
+	for _, mode := range []string{"registration", "start after StopAll"} {
+		t.Run(mode, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			t.Cleanup(func() { _ = m.Cleanup() })
+			state, config := newSyncTestClientState("cleaned-up-checker", "matrix", schemas.MCPAuthTypeHeaders, nil)
+			m.clientMap[config.ID] = state
+			checker := NewClientConnectionChecker(m, config.ID, time.Hour, false, &MockLogger{})
+			t.Cleanup(checker.Stop)
+			if mode == "start after StopAll" {
+				m.checkerManager.checkers[config.ID] = checker
+			}
+			// Model cleanup between canceling its contexts and clearing clientMap,
+			// including a registered checker whose Start call was delayed until after StopAll.
+			m.cancel()
+			m.checkerManager.StopAll()
+
+			if mode == "registration" {
+				m.checkerManager.StartChecking(checker)
+			} else {
+				checker.Start()
+			}
+
+			assert.Nil(t, registeredChecker(m, config.ID), "cleanup must prevent late checker registration")
+			assert.False(t, checkerRunning(checker), "cleanup must prevent a delayed checker start")
+		})
+	}
+}
