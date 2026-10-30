@@ -33,6 +33,11 @@ const behaviours = {
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-520-once answers a model's first hit as Cloudflare does when it gets nothing from the origin, a plain-text
+// 520, and every later hit as upstream-ok does, so a retried request succeeds on its second attempt.
+behaviours["upstream-520-once"] = (model) => (hits[model] === 1
+	? { status: 520, headers: { "Content-Type": "text/plain" }, body: "error code: 520" }
+	: behaviours["upstream-ok"]());
 // upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
@@ -219,7 +224,7 @@ const server = http.createServer((req, res) => {
 		if (path === "/v1/responses") {
 			// A Responses request whose model names an error behaviour gets that error; any other model gets the
 			// fixed reasoning response below.
-			const failing = Object.hasOwn(behaviours, name) ? behaviours[name]() : undefined;
+			const failing = Object.hasOwn(behaviours, name) ? behaviours[name](model) : undefined;
 			if (failing && failing.status !== 200) {
 				return send(failing.status, failing.headers, failing.body);
 			}
@@ -234,7 +239,7 @@ const server = http.createServer((req, res) => {
 		if (!behaviour) {
 			return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 		}
-		const r = behaviour();
+		const r = behaviour(model);
 		const answer = () => {
 			if (r.cut) {
 				if (parsed.stream !== true) {

@@ -1,0 +1,1 @@
+- [fix]: Cloudflare 520-524 origin errors from providers behind Cloudflare, such as OpenAI, now retry on the same key as transient instead of reaching the caller (#8967) [@wangrat](https://github.com/wangrat)
