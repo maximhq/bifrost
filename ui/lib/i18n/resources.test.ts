@@ -7,28 +7,19 @@ import { ENTERPRISE_NAMESPACES, enterpriseResources } from "../../app/_fallbacks
 
 const OSS_NAMESPACES = ["common", "shell", "login", "observability", "models", "mcp", "governance", "config"];
 const LOCALES_DIR = path.resolve(__dirname, "../../locales");
-const localeDirs = fs
+const otherLocales = fs
 	.readdirSync(LOCALES_DIR, { withFileTypes: true })
-	.filter((entry) => entry.isDirectory())
+	.filter((entry) => entry.isDirectory() && entry.name !== "en")
 	.map((entry) => entry.name)
 	.sort();
 
-// The enterprise repo supplies this file in real builds; here it is a stand-in with one namespace.
-const agentCatalog = {
-	en: { agent: { title: "Agent sign-in" } },
-	ja: { agent: { title: "エージェントのサインイン" } },
-	de: { agent: { title: "Agent-Anmeldung" } },
-};
+const readCatalog = (lang: string, ns: string) => JSON.parse(fs.readFileSync(path.join(LOCALES_DIR, lang, `${ns}.json`), "utf8"));
 
-// Stand-in namespaces are not part of the typed catalog, so look the key up through an untyped t().
-const translate = (instance: ReturnType<typeof createInstance>) =>
-	(instance.t as unknown as (key: string, options: object) => string)("title", { ns: "agent" });
-
-async function loadResourcesWith(enterprise: { namespaces: readonly string[]; byLocale: Record<string, object> }) {
+async function loadResourcesWith(enterprise: { namespaces: readonly string[]; en: object }) {
 	vi.resetModules();
 	vi.doMock("@enterprise/lib/i18n/resources", () => ({
 		ENTERPRISE_NAMESPACES: enterprise.namespaces,
-		enterpriseResources: Object.fromEntries(localeDirs.map((lang) => [lang, enterprise.byLocale[lang] ?? {}])),
+		enterpriseResources: { en: enterprise.en },
 	}));
 	return import("./resources");
 }
@@ -39,47 +30,71 @@ afterEach(() => {
 });
 
 describe("OSS enterprise fallback", () => {
-	it("registers no namespaces", () => {
+	it("registers no namespaces and no English catalogs", () => {
 		expect(ENTERPRISE_NAMESPACES).toEqual([]);
+		expect(enterpriseResources).toEqual({ en: {} });
 	});
 
-	it("has an empty entry for every locale directory", () => {
-		expect(Object.keys(enterpriseResources).sort()).toEqual(localeDirs);
-		for (const lang of localeDirs) expect(enterpriseResources[lang as keyof typeof enterpriseResources]).toEqual({});
-	});
-
-	it("leaves the OSS namespaces untouched", async () => {
-		const { NAMESPACES, resources } = await loadResourcesWith({ namespaces: [], byLocale: {} });
+	it("bundles only the English OSS namespaces", async () => {
+		const { NAMESPACES, resources } = await loadResourcesWith({ namespaces: [], en: {} });
 		expect([...NAMESPACES]).toEqual(OSS_NAMESPACES);
-		for (const lang of localeDirs)
-			expect(Object.keys(resources[lang as keyof typeof resources]).sort()).toEqual([...OSS_NAMESPACES].sort());
+		expect(Object.keys(resources)).toEqual(["en"]);
+		expect(Object.keys(resources.en).sort()).toEqual([...OSS_NAMESPACES].sort());
 	});
 });
 
 describe("enterprise catalogs", () => {
-	it("appends enterprise namespaces after the OSS ones", async () => {
-		const { NAMESPACES } = await loadResourcesWith({ namespaces: ["agent"], byLocale: agentCatalog });
+	it("appends enterprise namespaces after the OSS ones and bundles their English", async () => {
+		const agent = { title: "Agent sign-in" };
+		const { NAMESPACES, resources } = await loadResourcesWith({ namespaces: ["agent"], en: { agent } });
 		expect([...NAMESPACES]).toEqual([...OSS_NAMESPACES, "agent"]);
+		expect((resources.en as Record<string, unknown>).agent).toEqual(agent);
+	});
+});
+
+describe("loadCatalog", () => {
+	it("loads every non-English OSS catalog from disk", async () => {
+		const { loadCatalog } = await import("./resources");
+		for (const lang of otherLocales) for (const ns of OSS_NAMESPACES) expect(await loadCatalog(lang, ns)).toEqual(readCatalog(lang, ns));
 	});
 
-	it("merges enterprise namespaces into each locale without dropping OSS ones", async () => {
-		const { resources } = await loadResourcesWith({ namespaces: ["agent"], byLocale: agentCatalog });
-		for (const lang of ["en", "ja", "de"] as const) {
-			expect(Object.keys(resources[lang])).toEqual(expect.arrayContaining([...OSS_NAMESPACES, "agent"]));
-		}
-		expect(Object.keys(resources.ru)).not.toContain("agent");
+	it("rejects a language or namespace that has no catalog", async () => {
+		const { loadCatalog } = await import("./resources");
+		await expect(loadCatalog("xx", "common")).rejects.toThrow();
+		await expect(loadCatalog("ja", "nope")).rejects.toThrow();
 	});
+});
 
-	it("serves the translated string after a language switch and falls back to English", async () => {
-		const { NAMESPACES, resources } = await loadResourcesWith({ namespaces: ["agent"], byLocale: agentCatalog });
+describe("lazy language switch", () => {
+	it("serves the translated string after a switch and falls back to English for a missing catalog", async () => {
+		const { NAMESPACES, loadCatalog, resources } = await import("./resources");
 		const instance = createInstance();
-		await instance.init({ resources, ns: [...NAMESPACES], defaultNS: "common", nsSeparator: false, fallbackLng: "en", lng: "en" });
-		expect(translate(instance)).toBe("Agent sign-in");
+		await instance
+			.use({
+				type: "backend",
+				init: () => {},
+				read: (lng: string, ns: string, cb: (err: unknown, data: unknown) => void) =>
+					loadCatalog(lng, ns).then(
+						(data) => cb(null, data),
+						(err) => cb(err, false),
+					),
+			})
+			.init({
+				resources,
+				partialBundledLanguages: true,
+				ns: [...NAMESPACES],
+				defaultNS: "common",
+				nsSeparator: false,
+				fallbackLng: "en",
+				lng: "en",
+			});
+		const save = () => (instance.t as unknown as (key: string) => string)("save");
+		expect(save()).toBe(readCatalog("en", "common").save);
 
 		await instance.changeLanguage("ja");
-		expect(translate(instance)).toBe("エージェントのサインイン");
+		expect(save()).toBe(readCatalog("ja", "common").save);
 
-		await instance.changeLanguage("ru");
-		expect(translate(instance)).toBe("Agent sign-in");
+		await instance.changeLanguage("xx");
+		expect(save()).toBe(readCatalog("en", "common").save);
 	});
 });

@@ -1,8 +1,8 @@
-import i18n from "i18next";
+import i18n, { type BackendModule } from "i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
 import { initReactI18next } from "react-i18next";
 
-import { NAMESPACES, resources } from "./resources";
+import { NAMESPACES, loadCatalog, resources } from "./resources";
 
 export const LOCALE_STORAGE_KEY = "bifrost.locale";
 
@@ -35,24 +35,40 @@ export function getLocale(): SupportedLocale {
 	return isSupportedLocale(current) ? current : DEFAULT_LOCALE;
 }
 
+// The language detector persists the choice to localStorage on every change.
 export async function changeLocale(locale: SupportedLocale): Promise<SupportedLocale> {
 	await i18n.changeLanguage(locale);
-	if (typeof window !== "undefined") {
-		try {
-			window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
-		} catch {
-			// Storage blocked or full: the language still applies for this session.
-		}
-	}
 	return getLocale();
 }
 
+const lazyCatalogBackend: BackendModule = {
+	type: "backend",
+	init: () => {},
+	read: (language, namespace, callback) => {
+		loadCatalog(language, namespace).then(
+			(catalog) => callback(null, catalog),
+			(error: Error) => callback(error, false),
+		);
+	},
+};
+
+// Uses the resolved language, so a failed catalog load does not label English text with the requested language.
+function syncDocumentLanguage() {
+	if (typeof document !== "undefined") document.documentElement.lang = getLocale();
+}
+
+let ready: Promise<unknown> = Promise.resolve();
+
 if (!i18n.isInitialized) {
-	void i18n
+	i18n.on("languageChanged", syncDocumentLanguage);
+	ready = i18n
+		.use(lazyCatalogBackend)
 		.use(LanguageDetector)
 		.use(initReactI18next)
 		.init({
 			resources,
+			// English is bundled; other languages come from lazyCatalogBackend.
+			partialBundledLanguages: true,
 			ns: [...NAMESPACES],
 			defaultNS: "common",
 			// Namespaces are chosen via useTranslation(ns) or { ns }, never a "ns:key" prefix.
@@ -75,6 +91,9 @@ if (!i18n.isInitialized) {
 			},
 		});
 }
+
+// Resolves once the detected language's catalogs are loaded, so the first render is not English.
+export const i18nReady = ready.catch(() => undefined);
 
 export { NAMESPACES };
 export type { I18nNamespace } from "./resources";
