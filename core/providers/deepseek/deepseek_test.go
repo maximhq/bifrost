@@ -647,6 +647,62 @@ func TestSearch_SendsDocumentedContractAndReportsPerRequestCost(t *testing.T) {
 	}
 }
 
+// Every result field DeepSeek documents has to survive the mapping, including the values that sit
+// at the edge of their range: rerank_score 0 is a real score rather than a missing one, and
+// authority -1 is the upstream's "unknown" tier, carried through as sent.
+func TestSearch_MapsDocumentedResultFieldEdges(t *testing.T) {
+	t.Parallel()
+
+	server := newToolsServer(t, http.StatusOK, `{"results":[`+
+		`{"title":"Unscored","url":"https://example.com/unscored","snippet":"s","rerank_score":0,"authority":-1},`+
+		`{"title":"NoFields","url":"https://example.com/bare"},`+
+		`{"title":"Top","url":"https://example.com/top","site_name":"Example","site_icon":"https://example.com/favicon.ico","authority":4,"rerank_score":3,"date":null}`+
+		`]}`, nil)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{
+		Provider: schemas.DeepSeek,
+		Query:    "edge values",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Search: %v", bifrostErr.Error.Message)
+	}
+	if len(resp.Results) != 3 {
+		t.Fatalf("results = %d, want 3", len(resp.Results))
+	}
+
+	lowest := resp.Results[0]
+	if lowest.Score == nil || *lowest.Score != 0 {
+		t.Fatalf("score = %v, want the upstream rerank_score 0 kept as a real score", lowest.Score)
+	}
+	if lowest.ProviderFields["authority"] != -1 {
+		t.Fatalf("provider_fields = %v, want authority -1 passed through as the upstream's unknown tier", lowest.ProviderFields)
+	}
+
+	bare := resp.Results[1]
+	if bare.Score != nil {
+		t.Fatalf("score = %v, want nil when the upstream sends no rerank_score", *bare.Score)
+	}
+	if _, present := bare.ProviderFields["authority"]; present || bare.ProviderFields != nil {
+		t.Fatalf("provider_fields = %v, want nil when DeepSeek returned no extra field", bare.ProviderFields)
+	}
+
+	top := resp.Results[2]
+	if top.Score == nil || *top.Score != 3 {
+		t.Fatalf("score = %v, want the upstream rerank_score 3", top.Score)
+	}
+	if top.ProviderFields["site_icon"] != "https://example.com/favicon.ico" || top.ProviderFields["authority"] != 4 {
+		t.Fatalf("provider_fields = %v, want site_icon and authority under DeepSeek's names", top.ProviderFields)
+	}
+	if top.PublishedAt != nil {
+		t.Fatalf("published_at = %v, want nil for a null upstream date", *top.PublishedAt)
+	}
+}
+
 func TestSearch_EmptyResultsIsASuccessfulAnswer(t *testing.T) {
 	t.Parallel()
 

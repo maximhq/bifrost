@@ -1,3 +1,4 @@
+- [fix]: DeepSeek Search keeps `rerank_score` 0 as a real score and passes `authority` -1 through as DeepSeek's unknown tier, with the mapping comments stating what the upstream contract means [@jimaldon](https://github.com/jimaldon)
 - [fix]: a crawled page Exa could not read stays a failed Fetch, keeping the page's own status in the message instead of surfacing as an Exa credential or rate-limit failure [@jimaldon](https://github.com/jimaldon)
 - [feat]: Exa provider for Search (`/search`) and Fetch (`/contents`), priced at Exa's reported cost [@Radiergummi](https://github.com/Radiergummi)
 - [fix]: decode DeepSeek tools responses into an owned body, including compressed ones [@Radiergummi](https://github.com/Radiergummi)

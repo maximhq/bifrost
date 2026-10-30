@@ -56,7 +56,7 @@ type deepseekSearchWireResponse struct {
 
 // deepseekSearchResult is one upstream result. Date is kept as the upstream RFC 3339 string so a
 // result is never silently re-zoned; Authority and RerankScore are pointers because the upstream
-// uses -1 and 0 to mean "unknown" and "not scored" rather than a real measurement.
+// marks an absent measurement by sending no field at all, and 0 is a real rerank_score.
 type deepseekSearchResult struct {
 	Title       string   `json:"title,omitempty"`
 	URL         string   `json:"url,omitempty"`
@@ -70,8 +70,10 @@ type deepseekSearchResult struct {
 	RerankScore *float64 `json:"rerank_score,omitempty"`
 }
 
-// toBifrost maps a result onto the neutral shape. RerankScore is DeepSeek's relevance score;
-// what has no neutral field is kept in ProviderFields under DeepSeek's own names.
+// toBifrost maps a result onto the neutral shape. RerankScore is DeepSeek's relevance score and
+// 0 is a real one, so only an absent rerank_score leaves Score nil. What has no neutral field is
+// kept in ProviderFields under DeepSeek's own names; authority is passed through as upstream
+// sends it, including -1, which is the upstream's "unknown" tier rather than an absent field.
 func (r deepseekSearchResult) toBifrost() schemas.BifrostSearchResult {
 	fields := map[string]interface{}{}
 	if r.Summary != "" {
