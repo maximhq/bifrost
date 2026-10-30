@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Bifrost Routing Wiring Test Runner
 # Drives the routing wiring collection: each scenario gates real providers with keys

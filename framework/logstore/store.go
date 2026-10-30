@@ -233,6 +233,8 @@ type LogStore interface {
 	// Relay log methods (Relay Logs).
 	BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error)
 	FindRelayLog(ctx context.Context, id string) (*RelayLog, error)
+	FindRelayLogsForDeletion(ctx context.Context, ids []string) ([]*RelayLog, error)
+	UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error
 	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
 	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)
 	GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error)
