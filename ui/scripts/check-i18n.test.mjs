@@ -683,6 +683,37 @@ describe("removed call evidence", () => {
 		expect(findings).toEqual([]);
 	});
 
+	it("accepts an equivalent migration using short keys under keyPrefix", () => {
+		const repoRoot = makeGitRepo();
+		const baselineText = `import { useTranslation } from "react-i18next";\nexport const Old = () => { const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" }); return <button data-testid="save-button" onClick={save}>{tcpx("saveChanges")}</button>; };\n`;
+		const migratedText = `import { useTranslation } from "react-i18next";\nexport const New = () => { const { t: tcpx } = useTranslation("models", { keyPrefix: "routing.complexityUi" }); return <button data-testid="save-button" onClick={save}>{tcpx("save")}</button>; };\n`;
+		writeRepoFile(repoRoot, file, baselineText);
+		const baseline = commitAll(repoRoot, "baseline");
+		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
+		writeRepoFile(repoRoot, file, migratedText);
+		const currentEntries = inventoryAtRef(repoRoot, null, file);
+		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, "--", file));
+		const source = baselineEntries.find((entry) => entry.key === "routing.complexityUi.saveChanges");
+		const target = currentEntries.find((entry) => entry.key === "routing.complexityUi.save");
+		const prefixedResources = { models: { routing: { complexityUi: { saveChanges: "Save changes", save: "Save" } } } };
+		const findings = auditRemovedCalls({
+			repoRoot,
+			baseline,
+			baselineEntries,
+			currentEntries,
+			currentResources: prefixedResources,
+			baselineResources: prefixedResources,
+			removedCalls: [
+				{
+					source: sourceIdentity(source),
+					reason: "equivalent-migration",
+					target: { ...sourceIdentity(target), diffHeader, behaviorAnchor: "save-button" },
+				},
+			],
+		});
+		expect(findings).toEqual([]);
+	});
+
 	it("accepts a newly added dynamic migration target using its AST span", () => {
 		const repoRoot = makeGitRepo();
 		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);

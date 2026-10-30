@@ -529,11 +529,17 @@ export function analyzeTranslationCalls(sourceFile) {
 		const keys = staticKeyValues(keyExpression);
 		if (keys) {
 			for (const key of keys) {
-				entries.push({ ...base, key: applyKeyPrefix(keyPrefix, key), dynamic: false, prefix: null });
+				entries.push({ ...base, key: applyKeyPrefix(keyPrefix, key), rawKey: key, dynamic: false, prefix: null });
 			}
 			return;
 		}
-		entries.push({ ...base, key: null, dynamic: true, prefix: applyKeyPrefix(keyPrefix, dynamicPrefix(keyExpression)) });
+		entries.push({
+			...base,
+			key: null,
+			dynamic: true,
+			prefix: applyKeyPrefix(keyPrefix, dynamicPrefix(keyExpression)),
+			rawPrefix: dynamicPrefix(keyExpression),
+		});
 	}
 
 	function visit(node, scope) {
@@ -1006,7 +1012,7 @@ function diffLineRecords(hunk) {
 }
 
 function hunkContainsAddedCall(hunk, target) {
-	const targetText = target.dynamic ? target.prefix : target.key;
+	const targetText = target.dynamic ? (target.rawPrefix ?? target.prefix) : (target.rawKey ?? target.key);
 	return diffLineRecords(hunk).some(
 		(record) =>
 			record.type === "added" &&
@@ -1027,7 +1033,7 @@ function hunkAddsBehaviorText(hunk, source, copy) {
 	return diffLineRecords(hunk).some(
 		(record) =>
 			record.type === "added" &&
-			((typeof source.key === "string" && record.line.includes(source.key)) || (copy && record.line.includes(copy))),
+			((typeof source.key === "string" && record.line.includes(source.rawKey ?? source.key)) || (copy && record.line.includes(copy))),
 	);
 }
 
