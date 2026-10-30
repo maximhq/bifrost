@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { buildProviderUpdatePayload } from "../views/utils";
 import { AllowedRequestsFields } from "./allowedRequestsFields";
+import { withToolsFlagDefaults } from "./apiStructureForm.utils";
 
 // Type for form data
 type FormCustomProviderConfig = z.infer<typeof formCustomProviderConfigSchema>;
@@ -76,7 +77,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 	}, [form.formState.isDirty]);
 
 	useEffect(() => {
-		form.reset(provider.custom_provider_config);
+		form.reset(withToolsFlagDefaults(provider.custom_provider_config));
 	}, [form, provider.name, provider.custom_provider_config]);
 
 	const onSubmit = (data: FormCustomProviderConfig) => {
