@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/maximhq/bifrost/tests/cmd/mcpconsole/chaosmock"
@@ -183,4 +184,86 @@ func TestKilledSessionForcesReinitialization(t *testing.T) {
 	if srv.SessionCount() != 0 {
 		t.Errorf("expected no live sessions, got %d", srv.SessionCount())
 	}
+}
+
+func TestInjectedStatusReachesTheClient(t *testing.T) {
+	fleet, srv := newFleetWithTools(t, chaosmock.Tool{Name: "some_tool"})
+	c, ctx := connect(t, fleet.ServerURL("alpha"))
+
+	srv.SetFaults(chaosmock.Faults{Status: 429, RetryAfter: "3"})
+
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err == nil {
+		t.Fatalf("expected tools/list to fail while a 429 is injected")
+	}
+
+	// Clearing the fault has to restore service without any client-side action,
+	// which is what makes a transient upstream failure testable at all.
+	srv.ClearFaults()
+	if _, err := c.ListTools(ctx, mcp.ListToolsRequest{}); err != nil {
+		t.Fatalf("tools/list should succeed once the fault is cleared: %v", err)
+	}
+}
+
+func TestPerIdentityOverlayServesDifferentTools(t *testing.T) {
+	fleet := chaosmock.NewFleet()
+	srv := fleet.Add("alpha")
+	srv.Tools().Set([]chaosmock.Tool{{Name: "shared_tool"}})
+	srv.SetAuth(chaosmock.Auth{Bearer: map[string]string{
+		"token-a": "user-a",
+		"token-b": "user-b",
+	}})
+	// Only user-a sees a private tool. Two callers against one server seeing
+	// two tool lists is the shape per-user auth has to reproduce.
+	srv.Tools().SetOverlay("user-a", []chaosmock.Tool{
+		{Name: "shared_tool"}, {Name: "private_tool"},
+	})
+	fleet.Start()
+	t.Cleanup(fleet.Stop)
+
+	for _, tc := range []struct {
+		token string
+		want  int
+	}{{"token-a", 2}, {"token-b", 1}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		c, err := client.NewStreamableHttpClient(fleet.ServerURL("alpha"),
+			transportHeaders(map[string]string{"Authorization": "Bearer " + tc.token}))
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("failed to start client: %v", err)
+		}
+		var req mcp.InitializeRequest
+		req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		req.Params.ClientInfo = mcp.Implementation{Name: "chaosmock-compat", Version: "1.0.0"}
+		if _, err := c.Initialize(ctx, req); err != nil {
+			t.Fatalf("initialize failed for %s: %v", tc.token, err)
+		}
+		res, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		if err != nil {
+			t.Fatalf("tools/list failed for %s: %v", tc.token, err)
+		}
+		if len(res.Tools) != tc.want {
+			t.Errorf("token %s: expected %d tools, got %d", tc.token, tc.want, len(res.Tools))
+		}
+		_ = c.Close()
+		cancel()
+	}
+
+	// Revoking one token must leave the other working. This asymmetry is the
+	// whole point of per-identity credentials, and a shared-state
+	// implementation fails exactly here.
+	if !srv.RevokeToken("token-a") {
+		t.Fatalf("expected token-a to be revokable")
+	}
+	if _, ok := srv.Auth().Bearer["token-b"]; !ok {
+		t.Errorf("revoking token-a must not remove token-b")
+	}
+}
+
+// transportHeaders is a thin alias for the mcp-go option that bakes static
+// headers onto a client, named locally so the tests above read as being about
+// identity rather than about transport plumbing.
+func transportHeaders(h map[string]string) transport.StreamableHTTPCOption {
+	return transport.WithHTTPHeaders(h)
 }

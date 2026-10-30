@@ -30,12 +30,22 @@ type Fleet struct {
 	// baseURL is set when Serve binds its own listener, since there is no
 	// httptest.Server to read an address from in that mode.
 	baseURL string
+
+	conns *connTracker
 }
 
 // NewFleet creates an empty fleet with no listener. Call Start to bind one.
 func NewFleet() *Fleet {
-	return &Fleet{servers: map[string]*Server{}}
+	return &Fleet{servers: map[string]*Server{}, conns: newConnTracker()}
 }
+
+// Connections reports the fleet's TCP-level accounting, which is the leak and
+// reconnect-storm signal. It is fleet-wide because one listener serves every
+// virtual server; see connTracker for why that is the honest scope.
+func (f *Fleet) Connections() ConnectionStats { return f.conns.stats() }
+
+// ResetConnectionStats zeroes the tallies while preserving the live open count.
+func (f *Fleet) ResetConnectionStats() { f.conns.reset() }
 
 // Add creates and registers a virtual server. Re-adding an existing name
 // replaces it, which is how a scenario models a server being torn down and
@@ -56,14 +66,16 @@ func (f *Fleet) Get(name string) (*Server, bool) {
 	return s, ok
 }
 
-// Remove deregisters a server. A request for it afterwards is a 404 rather
-// than a refused connection, and the difference is visible to a client: one
-// reads as gone, the other as unreachable.
+// Remove deregisters a server and drops its open streams, so a client holding
+// one learns immediately rather than at its next request.
 func (f *Fleet) Remove(name string) bool {
 	f.mu.Lock()
-	_, ok := f.servers[name]
+	s, ok := f.servers[name]
 	delete(f.servers, name)
 	f.mu.Unlock()
+	if ok {
+		s.DropStreams()
+	}
 	return ok
 }
 
@@ -83,7 +95,9 @@ func (f *Fleet) Names() []string {
 // by the OS so a fleet never collides with a development server or another
 // fleet in a parallel test.
 func (f *Fleet) Start() string {
-	f.ts = httptest.NewServer(f.Handler())
+	f.ts = httptest.NewUnstartedServer(f.Handler())
+	f.ts.Config.ConnState = f.conns.hook()
+	f.ts.Start()
 	return f.ts.URL
 }
 
@@ -96,7 +110,7 @@ func (f *Fleet) Serve(addr string) (string, func(context.Context) error, error) 
 	if err != nil {
 		return "", nil, err
 	}
-	srv := &http.Server{Handler: f.Handler()}
+	srv := &http.Server{Handler: f.Handler(), ConnState: f.conns.hook()}
 	go func() {
 		// A closed listener is the normal way this ends, so it is not news.
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -108,12 +122,22 @@ func (f *Fleet) Serve(addr string) (string, func(context.Context) error, error) 
 	f.baseURL = url
 	f.mu.Unlock()
 	return url, func(ctx context.Context) error {
+		f.mu.RLock()
+		for _, s := range f.servers {
+			s.DropStreams()
+		}
+		f.mu.RUnlock()
 		return srv.Shutdown(ctx)
 	}, nil
 }
 
-// Stop shuts the listener down.
+// Stop shuts the listener down and drops every open stream.
 func (f *Fleet) Stop() {
+	f.mu.RLock()
+	for _, s := range f.servers {
+		s.DropStreams()
+	}
+	f.mu.RUnlock()
 	if f.ts != nil {
 		f.ts.Close()
 	}
