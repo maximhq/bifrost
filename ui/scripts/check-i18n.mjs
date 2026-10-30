@@ -398,7 +398,7 @@ function namespaceFromType(typeNode, typeAliases = new Map(), seen = new Set()) 
 	const typeName = typeNode.typeName.getText();
 	if (typeName !== "TFunction") {
 		if (seen.has(typeName) || !typeAliases.has(typeName)) {
-			return null;
+			return undefined;
 		}
 		seen.add(typeName);
 		return namespaceFromType(typeAliases.get(typeName), typeAliases, seen);

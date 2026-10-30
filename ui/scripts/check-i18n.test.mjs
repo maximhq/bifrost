@@ -358,6 +358,13 @@ describe("analyzeTranslationCalls", () => {
 		expect(validateCall(entry, { observability: { labels: { time: "Time" } } })).toEqual([]);
 	});
 
+	it("ignores unrelated named callback types", () => {
+		const entries = analyzeTranslationCalls(
+			makeSourceFile(`function render(setForm: Dispatch<SetStateAction<FormState>>) { setForm({}); }`),
+		);
+		expect(entries).toEqual([]);
+	});
+
 	it("reports an unresolved TFunction namespace instead of assuming common", () => {
 		const entries = analyzeTranslationCalls(makeSourceFile(`function render(t: TFunction<Namespace>) { return t("title"); }`));
 		expect(entries).toHaveLength(1);
