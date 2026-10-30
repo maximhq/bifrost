@@ -55006,6 +55006,24 @@
                               }
                             }
                           },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
                           "mcp_configs": {
                             "type": "array",
                             "items": {
@@ -55480,6 +55498,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays that keys governed by this profile may call. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -55919,6 +55955,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -56421,6 +56475,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -56941,6 +57013,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Replaces the profile's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -57380,6 +57470,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -57951,6 +58059,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -58440,6 +58566,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -58954,6 +59098,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -59129,10 +59291,14 @@
                         "provider_configs",
                         "budgets",
                         "rate_limit",
-                        "mcp_tool_groups",
+                        "virtual_mcps",
+                        "mcp_configs",
+                        "agent_grants",
+                        "relay_grants",
                         "mcp_servers",
                         "mcp_tool_overrides"
-                      ]
+                      ],
+                      "description": "mcp_configs is the current MCP field; mcp_servers and mcp_tool_overrides are retired aliases for it, accepted for back-compat. An unrecognized value, including the removed mcp_tool_groups, is refused."
                     },
                     "minItems": 1
                   },
@@ -61137,6 +61303,24 @@
                               "additionalProperties": false
                             }
                           },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
                           "members": {
                             "type": "array",
                             "readOnly": true,
@@ -62197,6 +62381,24 @@
                       },
                       "additionalProperties": false
                     }
+                  },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays that requests scoped to this project may call. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "additionalProperties": false
@@ -62871,6 +63073,24 @@
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
                               }
                             },
                             "additionalProperties": false
@@ -63949,6 +64169,24 @@
                             "additionalProperties": false
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "members": {
                           "type": "array",
                           "readOnly": true,
@@ -65010,6 +65248,25 @@
                       "additionalProperties": false
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "nullable": true,
+                    "description": "Replaces the project's relay grants. Omit to leave them unchanged; [] clears them.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "reset_budget_usage": {
                     "type": "boolean",
                     "description": "Clears recorded spend on the budgets this body restates that the project already held, and on each member's slice of them. A budget the edit introduces has no spend to clear, and one the body does not name is left alone."
@@ -65687,6 +65944,24 @@
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
                               }
                             },
                             "additionalProperties": false
@@ -68437,6 +68712,24 @@
                                   "type": "integer",
                                   "minimum": 1,
                                   "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that requests scoped to this project may call. With access_rule intersect, no grants allow no relay; with union, the caller's own relay access remains available and these grants only add to it.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
                                 }
                               },
                               "additionalProperties": false
@@ -73070,6 +73363,24 @@
                               }
                             }
                           },
+                          "relay_grants": {
+                            "type": "array",
+                            "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                            "items": {
+                              "type": "object",
+                              "description": "One relay the holder may call at /relay/{relay_name}/....",
+                              "required": [
+                                "relay_name"
+                              ],
+                              "properties": {
+                                "relay_name": {
+                                  "type": "string",
+                                  "description": "Name of an existing relay."
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
                           "mcp_configs": {
                             "type": "array",
                             "items": {
@@ -73547,6 +73858,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Relays that keys governed by this profile may call. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -73986,6 +74315,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -74491,6 +74838,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -75014,6 +75379,24 @@
                       }
                     }
                   },
+                  "relay_grants": {
+                    "type": "array",
+                    "description": "Replaces the profile's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must name an existing relay.",
+                    "items": {
+                      "type": "object",
+                      "description": "One relay the holder may call at /relay/{relay_name}/....",
+                      "required": [
+                        "relay_name"
+                      ],
+                      "properties": {
+                        "relay_name": {
+                          "type": "string",
+                          "description": "Name of an existing relay."
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
                   "mcp_configs": {
                     "type": "array",
                     "items": {
@@ -75453,6 +75836,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -76030,6 +76431,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -76522,6 +76941,24 @@
                                 "description": "Virtual MCP ID, as an alternative to virtual_mcp_name. Wins when both are set."
                               }
                             }
+                          }
+                        },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
                           }
                         },
                         "mcp_configs": {
@@ -77039,6 +77476,24 @@
                             }
                           }
                         },
+                        "relay_grants": {
+                          "type": "array",
+                          "description": "Relays that keys governed by this profile may call. With no grants, they may call no relay.",
+                          "items": {
+                            "type": "object",
+                            "description": "One relay the holder may call at /relay/{relay_name}/....",
+                            "required": [
+                              "relay_name"
+                            ],
+                            "properties": {
+                              "relay_name": {
+                                "type": "string",
+                                "description": "Name of an existing relay."
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
                         "mcp_configs": {
                           "type": "array",
                           "items": {
@@ -77217,10 +77672,14 @@
                         "provider_configs",
                         "budgets",
                         "rate_limit",
-                        "mcp_tool_groups",
+                        "virtual_mcps",
+                        "mcp_configs",
+                        "agent_grants",
+                        "relay_grants",
                         "mcp_servers",
                         "mcp_tool_overrides"
-                      ]
+                      ],
+                      "description": "mcp_configs is the current MCP field; mcp_servers and mcp_tool_overrides are retired aliases for it, accepted for back-compat. An unrecognized value, including the removed mcp_tool_groups, is refused."
                     },
                     "minItems": 1
                   },

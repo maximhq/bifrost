@@ -443,6 +443,96 @@ Inline batches (`requests`) are checked per item and are unaffected, as are keys
 
 A passthrough route forwards the request body as the provider reads it. When a key restricts models on the provider, every model the body names is checked: the `model` of a JSON object body, or the `model` of each task in a task array (Runware). A passthrough request that names no model anywhere, neither in its path nor in its body, is refused with `403` (`model_blocked`) under such a key, since the provider would still run a model the key never allowed. Keys that allow every model of the provider forward every passthrough body as before.
 
+### Relay access
+
+A virtual key can call a [relay](/relays/overview) only after you grant it that relay. A new key has no relay access, and each relay is granted separately. Relay access is separate from provider, MCP and agent access: a key that may call the `web-search` relay gains nothing on `/v1/chat/completions`, and the other way round.
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Virtual Keys** and create or edit a key.
+2. Find **Relay access**.
+3. Pick each relay the key may call from **Select a relay to add**. Each granted relay appears as a row with its address (`/relay/<name>`), which you can remove again.
+4. Save the key.
+
+The key's details show the granted relays under **Relay access**, or **No relays granted**.
+
+To grant relay access over the API, send `relay_grants` with [Create virtual key](/api-reference/governance/create-virtual-key) or [Update virtual key](/api-reference/governance/update-virtual-key). On update, `relay_grants` replaces the key's list: leave it out to keep the current grants, or send `[]` to remove them all. A name that matches no relay, or the same relay listed twice, is refused with `400`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-research",
+        "name": "research-assistant",
+        "value": "env.RESEARCH_VK",
+        "relay_grants": [
+          { "relay_name": "web-search" },
+          { "relay_name": "translate" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Relays in the same file are loaded before virtual keys, so a key can be granted a relay declared next to it. A grant that names an unknown relay is skipped with a warning; the rest of the key is loaded.
+
+When the key's entry is synced from the file, `relay_grants` is its whole list: leaving it out or setting `[]` leaves the key with no relays, and grants made in the dashboard are replaced. An entry is synced when it changes, and on every start when `config.json` is the [source of truth](/deployment-guides/config-json/source-of-truth).
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  governance:
+    virtualKeys:
+      - id: vk-research
+        name: research-assistant
+        value: "env.RESEARCH_VK"
+        relay_grants:
+          - relay_name: web-search
+          - relay_name: translate
+
+# Load RESEARCH_VK into the pod from a Kubernetes Secret.
+# The value must start with sk-bf-, for example sk-bf-$(openssl rand -hex 24).
+envFrom:
+  - secretRef:
+      name: research-virtual-key
+```
+
+`relay_grants` follows the same sync rules as `config.json`.
+
+</Tab>
+</Tabs>
+
+The key is sent on relay calls the same way as on model calls (`x-bf-vk`, `Authorization: Bearer sk-bf-...` and so on). Bifrost reads it and never forwards it; the relay signs in to the API with its [own credential](/relays/configuration#authentication). See [Relay a POST request](/api-reference/relays/relay-a-post-request) in the API reference.
+
+A key without access is refused before the API is called, with `403` and the type `relay_blocked` (see [Error Responses](#error-responses)).
+
+**What applies to a relay call.** A relay has no provider or model, so only the key-wide rules apply:
+
+| Applies | Does not apply |
+| --- | --- |
+| The key, team and customer budgets (and business unit, access profile and project budgets in Enterprise — a project with `accounting_mode: project_only` is the one exception: the project's budget alone is charged, and the caller's own budgets are skipped) | Provider access, model budgets and model rate limits |
+| The key's request rate limit | Token rate limits (a relay call has no tokens to count) |
+| Key status and expiry | Model restrictions, even when the relay [records a model](/relays/pricing#model-and-token-fields) |
+| [Required headers](/features/governance/required-headers) | Routing rules and fallbacks |
+
+Every call that reaches the API counts as one request against the rate limit, whether or not it is charged. Only [charged calls](/relays/routes#which-calls-are-charged) add their [price](/relays/pricing) to the budgets.
+
+<Note>
+On Bifrost Enterprise, a key whose team, customer or user holds an [access profile](/enterprise/access-profiles#configure-relay-access) takes its relays from that profile, and the key's own `relay_grants` are not used. Grant the relay on the profile instead.
+</Note>
+
+<Warning>
+Relay calls use the same authentication as model calls. With `client.enforce_auth_on_inference` on, a call without a valid credential is refused. With it off, a call that sends **no** credential at all is forwarded without any access check. New deployments have it on by default; an existing deployment keeps its stored value, so check it before you expose a relay.
+</Warning>
+
 ## User Groups
 
 ### Teams
@@ -1116,6 +1206,17 @@ message. A client branching on the refusal reads `type`, not `error.type`.
   "status_code": 403,
   "error": {
     "message": "MCP tool 'filesystem-write_file' is not allowed for virtual key 'my-key'"
+  }
+}
+```
+
+- Relay Not Allowed (403), see [Relay access](#relay-access)
+```json
+{
+  "type": "relay_blocked",
+  "status_code": 403,
+  "error": {
+    "message": "Relay 'web-search' is not allowed for virtual key 'my-key'"
   }
 }
 ```
