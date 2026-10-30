@@ -53,6 +53,8 @@ import {
 	isA2APushConversationOperation,
 } from "./agentContextDetailsSheet";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import { getLocale } from "@/lib/i18n";
 
 interface AgentLogDetailSheetProps {
 	log: AgentLogSummary | null;
@@ -948,14 +950,14 @@ export function AgentLogDetailSheet({
 												<LogEntryDetailsView
 													className="w-full"
 													label={t("logs.detail.startTimestamp")}
-													value={format(timestampDate!, "yyyy-MM-dd hh:mm:ss aa")}
+													value={format(timestampDate!, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })}
 												/>
 											)}
 											{endTimestamp && (
 												<LogEntryDetailsView
 													className="w-full"
 													label={t("logs.detail.endTimestamp")}
-													value={format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa")}
+													value={format(endTimestamp, "yyyy-MM-dd hh:mm:ss aa", { locale: dateFnsLocale(getLocale()) })}
 												/>
 											)}
 											{hasValidLatency && (

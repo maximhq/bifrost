@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
 import OverriddenPrice from "./overriddenPrice";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 // The filter spells "no provider filter" as a sentinel, since the control needs a value to
 // show for it. Module level so its identity is stable across renders.
@@ -275,9 +276,9 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="model-catalog-pagination">
 						<div className="text-muted-foreground">
 							{t("modelCatalog.rangeOfEntries", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 						<div className="flex items-center gap-2">
