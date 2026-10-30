@@ -43,7 +43,7 @@ export function LogDetailSheet({
 		data: fullLog,
 		isLoading,
 		isError,
-	} = useGetLogByIdQuery(log?.id ?? "", {
+	} = useGetLogByIdQuery(log ? { id: log.id, timestamp: log.timestamp } : "", {
 		skip: !open || !log?.id,
 		pollingInterval,
 	});
@@ -77,7 +77,7 @@ export function LogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col overflow-x-hidden border p-0 sm:max-w-[60%] 2xl:max-w-[40%] gap-2">
+			<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%] 2xl:max-w-[40%]">
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">Loading log details</SheetTitle>
