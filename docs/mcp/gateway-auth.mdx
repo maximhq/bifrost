@@ -40,7 +40,7 @@ In `oauth` mode, clients that authenticate with a virtual key or API key header 
 </Warning>
 
 <Warning>
-`oauth` mode also blocks [Token Exchange (`token_exchange`)](./auth/token-exchange) MCP clients: that auth type needs the caller's own identity-provider token to reach `/mcp`, but `oauth` mode accepts Bifrost-issued JWTs only and rejects everything else, including the caller's IdP token. Use `headers` or `both` for any deployment using `token_exchange`.
+In `oauth` mode, `/mcp` accepts Bifrost-issued JWTs only, so callers cannot send their own identity-provider token to [Token Exchange (`token_exchange`)](./auth/token-exchange) MCP clients through it. On Enterprise with SSO, callers who connect in **user** mode still reach them: Bifrost exchanges the access token from that user's Bifrost sign-in. Virtual-key and session-mode tokens carry nothing to exchange. Use `headers` or `both` if callers send their identity-provider token directly.
 </Warning>
 
 ---
@@ -92,7 +92,7 @@ During the consent step, Bifrost shows the user how they can identify themselves
 
 - **Virtual key** carries the same governance (budgets, rate limits, tool scoping) the key already has — the JWT simply represents that key.
 - **Session** is an anonymous identity for development and open deployments. Because the grant itself carries no identity, Bifrost only lets a signed-in person hand it out: the consent page offers session mode when the browser has a valid dashboard session (or an SSO user), and `PUT /api/oauth2/consent/flows/{id}` answers `401` to a session-mode submit that arrives with only the consent link's token. Running with dashboard auth disabled does not count as being signed in. Session mode is unavailable altogether once `enforce_auth_on_inference` is on.
-- **User** binds the grant to the authenticated person, so per-user upstream tool authorizations unify under one identity.
+- **User** binds the grant to the authenticated person, so per-user upstream tool authorizations unify under one identity. It is also the only consent mode that reaches [Token Exchange](./auth/token-exchange) servers, which exchange the access token from the user's Bifrost sign-in. It needs the user's own sign-in: a request authenticated with a management API key cannot complete it.
 
 <Info>
 **User mode requires SSO/SCIM** (enterprise). When no identity provider is configured, the consent page offers virtual key mode, plus session mode when the consenting person is signed in to the dashboard.
@@ -105,10 +105,11 @@ During the consent step, Bifrost shows the user how they can identify themselves
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Open **Config** and go to the **MCP** settings.
-2. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
-3. When using `both` or `oauth`, set the **OAuth Server** settings: an **Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header), and the **Authorization Code** and **Access Token** lifetimes.
-4. Click **Save**.
+1. When using `both` or `oauth`, first open **Config → Security** and set the **OAuth Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header). It lives under Security because Cross App Access uses the same issuer. Click **Save Changes**.
+2. Open **Config** and go to the **MCP** settings.
+3. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
+4. When using `both` or `oauth`, set the **Authorization Code** and **Access Token** lifetimes. The issuer is shown read-only, with a link back to Security.
+5. Click **Save**.
 
 ![MCP server auth mode and OAuth server settings](/media/ui-mcp-server-auth-mode.png)
 
@@ -248,6 +249,11 @@ Client registration bounds its free-text fields: `client_name` up to 2048 bytes,
 **Symptom:** A request with a valid virtual key gets `403` with `virtual key is inactive` or `virtual key has expired`.
 **Cause:** The key authenticated, but governance refuses it, exactly as it would on an inference request.
 **Fix:** Reactivate the key or extend its expiry; the change applies on the next `/mcp` request.
+
+### Browser app refused with 403 on /mcp
+**Symptom:** A browser-based MCP client on another origin gets `403` saying the origin is refused, while the same server works from a CLI or desktop client.
+**Cause:** Browser requests to the MCP gateway must come from an allowed origin. While inference auth is off (`enforce_auth_on_inference: false`), only localhost origins and origins listed in `allowed_origins` by name or pattern are allowed; the `"*"` entry does not count. With inference auth on, `allowed_origins` applies as configured.
+**Fix:** List the app's origin in `allowed_origins` (for example `https://inspector.example.com` or `https://*.example.com`). If `allowed_origins` already contains `"*"`, turning on inference auth also works. Clients that send no `Origin` header are never affected.
 
 ### Conflicting credentials on /mcp
 **Symptom:** `conflicting credentials: an OAuth token and a virtual key header were both provided`.

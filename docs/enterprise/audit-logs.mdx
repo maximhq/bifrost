@@ -20,10 +20,12 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | -------------------- | --------------------------------------------------------------------------------------------- |
 | **Signed events**    | Configure an HMAC key so audit entries can be verified.                                       |
 | **Dashboard review** | View audit entries from the **Audit Logs** workspace page.                                    |
-| **Filtering**        | Filter by search text, action, outcome, and date range.                                       |
+| **Filtering**        | Filter by search text, action, outcome, severity, event name, and date range.                 |
+| **Change diffs**     | Each management change records a named event and a before/after diff, with secrets redacted.  |
 | **Export**           | Export matching entries as JSON, JSON Lines, or Syslog when the user has download permission. |
 | **Retention**        | Configure how long audit log entries are kept.                                                |
 | **IP omission**      | Keep the audit trail without recording client IP addresses.                                   |
+| **Legacy view**     | Read audit events recorded in the config store before they moved to the log store. |
 | **Object storage archival** | Periodically archive audit events to S3/GCS in time-windowed, size-bounded JSONL objects for long-term, off-box, compliance-grade retention. |
 
 ---
@@ -45,16 +47,19 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | Field            | Type    | Description                                                                                                                                |
 | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `disabled`       | boolean | When `true`, audit logging is turned off. Default: `false`.                                                                                |
-| `hmac_key`       | string  | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). |
+| `hmac_key`       | string  | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). Acts as the key with ID `default`. See [Signing keys](#signing-keys). |
+| `hmac_keys`      | array   | Named signing keys, each `{ "id": "...", "key": "..." }`. `id` is 1 to 32 letters, digits, `-` or `_`. `key` is at least 32 bytes and supports `env.`. Keep retired keys here so their rows still verify. |
+| `active_key_id`  | string  | ID of the key that signs new rows. Required when more than one key is configured. |
 | `retention_days` | integer | Days to retain audit log entries **in the database**. `0` disables retention-based cleanup. Does not affect archived objects (see [Archiving to Object Storage](#archiving-to-object-storage)). |
 | `omit_ip_addresses` | boolean | When `true`, audit logs stop recording client IP addresses and never return them. Every other field is kept. Default: `false`. See [Omitting IP Addresses](#omitting-ip-addresses). |
+| `include_reads` | boolean | When `true`, every GET request is audited. When `false`, reads are audited only when they disclose a secret or export data. Default: `false`. See [What gets recorded](#what-gets-recorded). |
 | `object_storage` | object  | Optional. When set, archives audit events to S3/GCS in addition to the database. Setting it is what enables archival — there is no separate on/off flag. See [Archiving to Object Storage](#archiving-to-object-storage). |
 | `archive_interval` | string | Archival window size, as a Go duration string (e.g. `"6h"`). Also the nominal period of the archival job. Default: `"24h"`. Minimum: `"5m"` (lower values are clamped up). |
 | `archive_grace_period` | string | How long a window is held open past its end before it may be archived, absorbing clock skew and late inserts. Must be **strictly less than** `archive_interval`. Default: `"15m"`. |
 | `archive_max_object_bytes` | integer | Uncompressed JSONL size at which a new part object is started. Default: `134217728` (128 MiB). Minimum 1 MiB, maximum 4 GiB. |
 
 <Note>
-The three `archive_*` fields only take effect when `object_storage` is configured.
+The `archive_*` fields only take effect when `object_storage` is configured.
 
 `config.schema.json` constrains these fields, so an editor wired to it (via `$schema`) will flag a malformed duration like `"6 hours"` or an out-of-range `archive_max_object_bytes` as you type. The gateway itself does **not** reject such values at startup: each field is normalized independently at runtime, so a value that gets past the schema **falls back to its default or is clamped into range rather than failing startup**. A typo like `"6 hours"` silently yields the 24h default, and `archive_interval: "10s"` is quietly raised to the 5m floor.
 
@@ -64,6 +69,422 @@ Because a bad value fails quietly rather than loudly, confirm what actually took
 audit log archive routine started (interval: 24h0m0s, grace: 15m0s, max part size: 134217728 bytes)
 ```
 </Note>
+
+## What gets recorded
+
+Every create, update and delete on the management API writes an audit event, including changes to `/api/config`.
+
+Reads are not recorded by default, since dashboard polling would bury the changes. These reads are still recorded:
+
+- Revealing or copying a virtual key (`/reveal`, `/copy`).
+- Exporting audit logs and downloading skill bundles.
+- SSO login callbacks, and any request a handler tags with an explicit action or a high severity.
+
+Set `include_reads` to `true` to record every GET as before.
+
+Each event also carries what changed, who acted and how:
+
+| Field          | Description                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------ |
+| `eventName`    | Named event in the form `<resource>.<verb>`, such as `virtual_key.updated`. Filterable.                       |
+| `changes`      | Before/after diff of the changed fields. Returned by get-by-id and exports, left out of list responses.      |
+| `severity`     | `info` for routine changes, `high` for admin actions with a large blast radius. Filterable.                  |
+| `requestID`    | The request's `X-Request-ID`. Bifrost generates one when the caller sends none and returns it on the response. |
+| `authMethod`   | `sso_login`, `sso_session`, `idp_token`, `auth_proxy`, `agent_token` or `api_key`.                           |
+| `sessionID`    | A one-way hash of the dashboard session. It links events from one session without exposing the session itself. |
+| `onBehalfOfId` | For API keys, the user who created the key. For system jobs, the user who queued the job.                    |
+
+### Event names and diffs
+
+Bifrost records each management change as a named event and stores a diff of the fields that changed:
+
+```json
+{
+  "eventName": "virtual_key.updated",
+  "severity": "info",
+  "changes": {
+    "fields": [
+      { "path": "budget.max_limit", "old": 100, "new": 250 },
+      { "path": "keys[0].value", "redacted": true }
+    ]
+  }
+}
+```
+
+Every named event, with what it means and when it occurs, is listed in the [event reference](#event-reference).
+
+Sign-in routes are named whether they succeed or fail: `auth.login` (password and SSO), `auth.logout`, `auth.session_refreshed`, `auth.setup_session_started`, and `auth.agent_token_issued`, `auth.agent_token_refreshed` and `auth.agent_logout` for the edge agent. A sign-in that also provisions a new user writes both rows.
+
+Changes your identity provider pushes over SCIM are recorded as system events (`scim.user_created`, `scim.user_updated`, `scim.user_deactivated`, `scim.user_deleted` and the matching `scim.group_*` events) with initiator `system:scim`.
+
+A request that has no named event still gets a name derived from the route. A write below an entity is named after the sub-route with action `update`, so it never reads as the entity itself being deleted. Route-derived names are not listed in the [event reference](#event-reference).
+
+POST routes that only test or preview something are recorded with action `read`, so a dry run never reads as a change. `POST /api/cluster/diagnostic` reads `cluster.diagnostic_run`, and webhook tests, previews, verify and discovery calls read `.tested`, `.previewed`, `.verified` and `.config_discovered` (or `.endpoints_discovered`, `.claims_discovered`).
+
+Role assignment, role permission changes, API key creation and updates, identity provider changes, license uploads, SCIM provisioning token rotation, trusted network changes, Edge app approvals and changes to the Edge legacy CA key cutoff are recorded at severity `high`.
+
+Diffs leave out secret values. A field whose name looks like a secret shows up with `redacted: true` and no values. That covers `value`, `key`, `secret`, `token`, `password`, `api_key`, `client_secret`, `private_key`, `authorization`, `cookie`, `credential`, `credentials`, and any name ending in `_key`, `_secret`, `_token` or `_password`. Provider configs, provider keys, MCP clients, identity providers and guardrail configs are diffed from their redacted forms. URLs have their credentials and query values masked, but not their path. So one gap remains: a secret embedded in a URL path, such as a Slack incoming webhook or an MCP library entry's connection URL, shows up in the diff, the same way it shows up in the API response. Fields that change on every write without anyone choosing to change them are left out: `created_at`, `updated_at`, usage counters, reset times, config hashes, and the row IDs and owner keys of nested records. Adding a budget to a virtual key reports its limit and reset window, not a dozen bookkeeping fields. A diff stops at 200 fields or 16 KB and sets `truncated: true`.
+
+### System events
+
+Background jobs write events too. Their initiator has type `system` and ID `system:<job>`. When a user queued the job, `onBehalfOfId` names that user.
+
+| Event                                | When                                                                                          |
+| ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `directory.synced`                   | A directory or SCIM sync job finishes.                                                        |
+| `identity.reconciled`                | An identity reconcile job runs.                                                               |
+| `access_profile.propagated`          | An access profile propagation job finishes.                                                   |
+| `role.profile_applied`               | A job applies an access profile to every user with a role.                                    |
+| `role.profile_revoked`               | A job removes an access profile from every user with a role.                                  |
+| `access_profile.vk_rotated`          | Scheduled virtual key rotation runs. The outcome is `failure` if any key failed to rotate.     |
+| `user.role_synced`                   | A role is synced from the identity provider. Severity `high`.                                 |
+| `user.status_reconciled`             | Status reconcile deprovisions a user. Severity `high`.                                        |
+| `audit.retention_purged`             | Retention deletes old audit rows.                                                             |
+| `config.file_applied`                | At startup, `config.json` sections for client config, providers or MCP clients overwrite the stored config. |
+| `audit.settings_changed`             | The `audit_logs` settings differ from the previous boot. Severity `high`.                     |
+| `audit.logging_disabled`             | The first boot with audit logging turned off. Written once. Severity `high`.                  |
+
+At every boot Bifrost compares the `audit_logs` settings with those of the previous boot. If they differ, it records `audit.settings_changed` with the diff. Signing keys appear only as key IDs and a short fingerprint of `hmac_key`, never the key itself. Audit settings are read at startup, so turning logging off takes effect on the next boot. That first boot with `disabled: true` writes `audit.logging_disabled` straight to the store and records nothing after it. Someone who turns audit logging off to hide their tracks still leaves that event as the last row.
+
+## Event reference
+
+Every event Bifrost records by name, grouped by area. Events marked "System event" are written by Bifrost itself, with initiator `system:<job>`; the rest are written when someone calls the management API. Requests that have no named event get a name derived from the route, as described in [Event names and diffs](#event-names-and-diffs), and are not listed here.
+
+### Sign-in and sessions
+
+| Event                        | What it means and when it occurs                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `auth.login`                 | A user signs in with a password or completes an SSO callback. Failed sign-ins are recorded too, with outcome `failure`. |
+| `auth.logout`                | A user signs out of the dashboard or ends an SSO session.                                          |
+| `auth.session_refreshed`     | The dashboard refreshes an SSO session token.                                                      |
+| `auth.setup_session_started` | The setup token is exchanged for a setup session while a new install is locked for setup.          |
+| `auth.agent_token_issued`    | An edge agent exchanges its enrollment credentials for an access token.                            |
+| `auth.agent_token_refreshed` | An edge agent refreshes its access token.                                                          |
+| `auth.agent_logout`          | An edge agent signs out and gives up its token.                                                    |
+
+### Virtual keys
+
+| Event                                 | What it means and when it occurs                                                         |
+| ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `virtual_key.created`                 | A virtual key is created, either directly or for a user through their access profile.    |
+| `virtual_key.updated`                 | A virtual key's settings change: budgets, rate limits, allowed models, providers or keys. |
+| `virtual_key.deleted`                 | A virtual key is deleted.                                                                |
+| `virtual_key.rotated`                 | A virtual key's value is replaced with a new one. Neither key value is stored.          |
+| `virtual_key.user_attached`           | One or more users are given access to a virtual key.                                     |
+| `virtual_key.user_detached`           | A user's access to a virtual key is removed.                                             |
+| `virtual_key.budget_override_updated` | A temporary budget override is set on a virtual key.                                     |
+| `virtual_key.budget_override_removed` | A virtual key's budget override is cleared.                                              |
+
+### Providers, models and pricing
+
+| Event                           | What it means and when it occurs                                                        |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| `provider.created`              | A model provider is added.                                                              |
+| `provider.updated`              | A provider's configuration changes, such as network settings or concurrency.           |
+| `provider.deleted`              | A provider is removed.                                                                  |
+| `provider.models_refreshed`     | The model list for every key of a provider is fetched again from the provider.          |
+| `provider_key.created`          | An API key is added to a provider. The key value is never stored in the event.         |
+| `provider_key.updated`          | A provider key's settings change, such as weight, models or the key value itself.      |
+| `provider_key.deleted`          | A provider key is removed.                                                              |
+| `provider_key.models_refreshed` | The model list for one provider key is fetched again.                                   |
+| `provider_governance.updated`   | Budgets or rate limits that apply to a whole provider are set or changed.               |
+| `provider_governance.deleted`   | Provider-level budgets and rate limits are removed.                                     |
+| `model_config.created`          | Budgets or rate limits are set for a specific model.                                    |
+| `model_config.updated`          | A model's budgets or rate limits change.                                                |
+| `model_config.deleted`          | A model's budgets and rate limits are removed.                                          |
+| `model_catalog.updated`         | Entries in the model catalog, such as pricing attributes, are edited.                   |
+| `pricing_override.created`      | A custom price is set for a model, overriding the synced pricing data.                  |
+| `pricing_override.updated`      | A custom price changes.                                                                 |
+| `pricing_override.deleted`      | A custom price is removed and the model goes back to synced pricing.                    |
+| `pricing.synced`                | An admin forces an immediate sync of pricing data.                                      |
+
+### Routing
+
+| Event                                 | What it means and when it occurs                                                    |
+| ------------------------------------- | ----------------------------------------------------------------------------------- |
+| `routing_rule.created`                | A routing rule is created.                                                          |
+| `routing_rule.updated`                | A routing rule changes.                                                             |
+| `routing_rule.deleted`                | A routing rule is deleted.                                                          |
+| `complexity_analyzer_config.updated`  | The complexity analyzer used for complexity-based routing is reconfigured.          |
+| `complexity_analyzer_config.reset`    | The complexity analyzer goes back to its default configuration.                    |
+| `complexity_analyzer.warmup_retried`  | A failed semantic warmup of the complexity analyzer is started again.               |
+| `complexity_generation.deleted`       | A stored complexity analyzer generation that is no longer serving is deleted.       |
+| `adaptive_routing_config.updated`     | Adaptive load balancing settings change.                                            |
+| `adaptive_routing.conditions_cleared` | The conditions adaptive routing learned are cleared, so it starts fresh.            |
+| `circuit_breaker_policy.created`      | A circuit breaker policy is created.                                                |
+| `circuit_breaker_policy.updated`      | A circuit breaker policy changes.                                                   |
+| `circuit_breaker_policy.deleted`      | A circuit breaker policy is deleted.                                                |
+
+### Teams, customers, business units and projects
+
+| Event                              | What it means and when it occurs                                                  |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
+| `team.created`                     | A team is created.                                                                |
+| `team.updated`                     | A team's settings or budget change, or a member is added or removed.              |
+| `team.deleted`                     | A team is deleted.                                                                |
+| `team.customer_attached`           | A team is placed under a customer.                                                |
+| `team.customer_detached`           | A team is removed from its customer.                                              |
+| `customer.created`                 | A customer is created.                                                            |
+| `customer.updated`                 | A customer's settings or budget change.                                           |
+| `customer.deleted`                 | A customer is deleted.                                                            |
+| `business_unit.created`            | A business unit is created.                                                       |
+| `business_unit.updated`            | A business unit's name or settings change.                                        |
+| `business_unit.deleted`            | A business unit is deleted.                                                       |
+| `business_unit.governance_updated` | A business unit's budget or rate limits are set, changed or removed.              |
+| `business_unit.user_added`         | A user is added to a business unit.                                               |
+| `business_unit.user_removed`       | A user is removed from a business unit.                                           |
+| `business_unit.customer_attached`  | A customer is placed under a business unit.                                       |
+| `business_unit.customer_detached`  | A customer is removed from a business unit.                                       |
+| `project.created`                  | A project is created.                                                             |
+| `project.updated`                  | A project's settings change.                                                      |
+| `project.deleted`                  | A project is deleted.                                                             |
+| `project.member_updated`           | A project member is added or removed, or their project role changes.              |
+| `budget_request.created`           | A user asks for more budget.                                                      |
+| `budget_request.approved`          | An admin approves a budget request and the new limit applies.                     |
+| `budget_request.denied`            | An admin denies a budget request.                                                 |
+| `budget_request.cancelled`         | The requester withdraws a pending budget request.                                 |
+
+### Users, roles and access profiles
+
+| Event                                | What it means and when it occurs                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `user.created`                       | A user is created by an admin, or provisioned on their first sign-in.                             |
+| `user.deleted`                       | A user is deleted.                                                                                |
+| `user.role_assigned`                 | A user is given a different role. Severity `high`.                                                |
+| `user.teams_updated`                 | The set of teams a user belongs to changes.                                                       |
+| `user.access_profile_detached`       | An access profile is detached from a user.                                                        |
+| `user.budget_override_updated`       | A budget override is set on a user's copy of an access profile.                                   |
+| `user.budget_override_removed`       | A user's budget override is cleared.                                                              |
+| `user.role_synced`                   | System event. A user's role is updated from the identity provider's claims. Severity `high`.      |
+| `user.status_reconciled`             | System event. Users no longer active in the identity provider are deprovisioned. Severity `high`. |
+| `role.created`                       | A custom role is created.                                                                         |
+| `role.updated`                       | A role's name or description changes.                                                             |
+| `role.deleted`                       | A role is deleted.                                                                                |
+| `role.permissions_updated`           | The permissions granted by a role change. Severity `high`.                                        |
+| `role.profile_applied`               | System event. A job applies an access profile to every user with a role.                          |
+| `role.profile_revoked`               | System event. A job removes an access profile from every user with a role.                        |
+| `api_key.created`                    | An admin API key is created. Severity `high`.                                                     |
+| `api_key.updated`                    | An API key's name, scopes or expiry change. Severity `high`.                                      |
+| `api_key.deleted`                    | An API key is revoked.                                                                            |
+| `access_profile.created`             | An access profile is created.                                                                     |
+| `access_profile.updated`             | An access profile's limits, models or settings change.                                            |
+| `access_profile.deleted`             | An access profile is deleted.                                                                     |
+| `access_profile.cloned`              | A new access profile is created as a copy of an existing one.                                     |
+| `access_profile.role_attached`       | An access profile is linked to a role, so users with that role get it.                            |
+| `access_profile.role_detached`       | An access profile is unlinked from a role.                                                        |
+| `access_profile.propagation_started` | An admin starts pushing access profile changes out to the users who have it.                      |
+| `access_profile.propagated`          | Propagation finishes. Also written as a system event when the propagation job ends.               |
+| `access_profile.vk_rotated`          | System event. Scheduled rotation of the virtual keys an access profile manages runs. The outcome is `failure` if any key failed to rotate. |
+
+### Identity providers and directory sync
+
+| Event                            | What it means and when it occurs                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `identity_provider.created`      | An SSO identity provider is configured. Severity `high`.                                                |
+| `identity_provider.updated`      | An identity provider's settings change. Severity `high`.                                                |
+| `identity_provider.deleted`      | An identity provider is removed. Severity `high`.                                                       |
+| `scim.provisioning_token_rotated` | The SCIM provisioning token is replaced. Severity `high`.                                              |
+| `directory.sync_started`         | An admin starts a directory sync of users, teams or business units.                                     |
+| `directory.import_started`       | An admin starts importing users from the identity provider.                                             |
+| `directory.reconcile_started`    | An admin starts an identity reconcile against the identity provider.                                    |
+| `directory.synced`               | System event. A directory sync, import or SCIM group membership job finishes.                           |
+| `identity.reconciled`            | System event. An identity reconcile job finishes.                                                       |
+| `scim.user_created`              | System event. The identity provider creates a user over SCIM.                                           |
+| `scim.user_updated`              | System event. The identity provider updates a user over SCIM.                                           |
+| `scim.user_deactivated`          | System event. The identity provider marks a user inactive over SCIM.                                    |
+| `scim.user_deleted`              | System event. The identity provider deletes a user over SCIM.                                           |
+| `scim.group_created`             | System event. The identity provider creates a group over SCIM.                                          |
+| `scim.group_updated`             | System event. The identity provider renames a group or changes its members over SCIM.                   |
+| `scim.group_deleted`             | System event. The identity provider deletes a group over SCIM.                                          |
+
+### MCP
+
+| Event                                | What it means and when it occurs                                                          |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `mcp_client.created`                 | An MCP server connection is added.                                                        |
+| `mcp_client.updated`                 | An MCP server connection's settings change.                                               |
+| `mcp_client.deleted`                 | An MCP server connection is removed.                                                      |
+| `mcp_client.reconnected`             | An admin reconnects an MCP server.                                                        |
+| `mcp_client.tools_refreshed`         | The tool list of an MCP server is fetched again.                                          |
+| `mcp_client.oauth_completed`         | The OAuth flow for an MCP server finishes and the connection is authorized.               |
+| `mcp_client.reauthorization_started` | An admin starts a new OAuth authorization for an MCP server.                              |
+| `mcp_client.reregistered`            | Bifrost registers itself again as an OAuth client with an MCP server before reauthorizing. |
+| `mcp_client.verification_initiated`  | An admin starts verifying a new MCP server's OAuth setup.                                 |
+| `mcp_client.headers_verified`        | Custom headers for an MCP server are checked against the server.                          |
+| `mcp_client.exchange_verified`       | A token exchange setup for an MCP server is checked against the server.                   |
+| `mcp_tool_group.created`             | An MCP tool group is created.                                                             |
+| `mcp_tool_group.updated`             | An MCP tool group's tools or settings change.                                             |
+| `mcp_tool_group.deleted`             | An MCP tool group is deleted.                                                             |
+| `virtual_mcp.created`                | A virtual MCP server is created.                                                          |
+| `virtual_mcp.updated`                | A virtual MCP server's tools or settings change.                                          |
+| `virtual_mcp.deleted`                | A virtual MCP server is deleted.                                                          |
+| `virtual_mcp.virtual_key_attached`   | A virtual key is given access to a virtual MCP server.                                    |
+| `virtual_mcp.virtual_key_detached`   | A virtual key's access to a virtual MCP server is removed.                                |
+| `mcp_library_entry.created`          | An entry is added to the MCP server library.                                              |
+| `mcp_library_entry.deleted`          | An entry is removed from the MCP server library.                                          |
+| `mcp_library.synced`                 | An admin forces an immediate sync of the MCP server library catalog.                      |
+| `mcp_session.revoked`                | A user's MCP OAuth session is revoked.                                                    |
+| `mcp_session.reauth_started`         | A user starts signing in again to an MCP server.                                          |
+| `mcp_header_credential.submitted`    | A user submits their own header credentials for an MCP server.                            |
+| `mcp_header_credential.revoked`      | A user's MCP header credentials are revoked.                                              |
+| `oauth_config.token_revoked`         | An OAuth configuration and its token are revoked.                                         |
+
+### Guardrails
+
+| Event                      | What it means and when it occurs                          |
+| -------------------------- | --------------------------------------------------------- |
+| `guardrail_rule.created`   | A guardrail rule is created.                              |
+| `guardrail_rule.updated`   | A guardrail rule changes.                                 |
+| `guardrail_rule.deleted`   | A guardrail rule is deleted.                              |
+| `guardrail_rule.enabled`   | A disabled guardrail rule is turned on.                   |
+| `guardrail_rule.disabled`  | A guardrail rule is turned off.                           |
+| `guardrail_config.created` | A guardrail provider configuration is added.              |
+| `guardrail_config.updated` | A guardrail provider configuration changes.               |
+| `guardrail_config.deleted` | A guardrail provider configuration is removed.            |
+
+### Prompts
+
+| Event                       | What it means and when it occurs                                     |
+| --------------------------- | -------------------------------------------------------------------- |
+| `prompt.created`            | A prompt is created.                                                 |
+| `prompt.updated`            | A prompt's name or folder changes.                                   |
+| `prompt.deleted`            | A prompt is deleted.                                                 |
+| `prompt_folder.created`     | A prompt folder is created.                                          |
+| `prompt_folder.updated`     | A prompt folder is renamed or changed.                               |
+| `prompt_folder.deleted`     | A prompt folder is deleted.                                          |
+| `prompt_version.created`    | A new version of a prompt is saved.                                  |
+| `prompt_version.deleted`    | A prompt version is deleted.                                         |
+| `prompt_session.created`    | A prompt playground session is started.                              |
+| `prompt_session.updated`    | A playground session's messages or settings change.                  |
+| `prompt_session.renamed`    | A playground session is renamed.                                     |
+| `prompt_session.committed`  | A playground session is saved as a new prompt version.               |
+| `prompt_session.deleted`    | A playground session is deleted.                                     |
+| `prompt_deployment.created` | A prompt version is deployed.                                        |
+| `prompt_deployment.updated` | A prompt deployment changes, such as the version it serves.          |
+| `prompt_deployment.deleted` | A prompt deployment is removed.                                      |
+
+### Skills and agents
+
+| Event                        | What it means and when it occurs                                         |
+| ---------------------------- | ------------------------------------------------------------------------ |
+| `skill.created`              | A skill is created.                                                      |
+| `skill.updated`              | A skill's content or settings change.                                    |
+| `skill.deleted`              | A skill is deleted.                                                      |
+| `skill.version_shifted`      | A skill is moved to a given version.                                     |
+| `skills_version.bumped`      | The shared version number of all skills is bumped.                       |
+| `skill_file.uploaded`        | A file is uploaded to a skill.                                           |
+| `skill_file.orphans_deleted` | Uploaded skill files that no skill references are cleaned up.            |
+| `agent.created`              | An agent is registered with the agent gateway.                           |
+| `agent.updated`              | An agent's settings change.                                              |
+| `agent.deleted`              | An agent is removed.                                                     |
+| `agent_push_config.deleted`  | A push notification config for an agent task is removed.                 |
+| `agent_logs.deleted`         | Agent gateway history is deleted.                                        |
+
+### Edge
+
+| Event                                  | What it means and when it occurs                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `device.deleted`                       | An enrolled device is removed.                                                                    |
+| `edge_config.updated`                  | Edge settings change. Severity `high` when the legacy CA key cutoff changes.                      |
+| `edge_config.domain_added`             | A domain is added to the Edge domain list.                                                        |
+| `edge_config.domain_removed`           | A domain is removed from the Edge domain list.                                                    |
+| `edge_config.interception_updated`     | The interception kill switch is turned on or off, or its scope changes.                           |
+| `edge_config.virtual_key_auth_updated` | Virtual key authentication for Edge traffic is turned on or off.                                  |
+| `edge_ca.generated`                    | A new Edge CA certificate is generated.                                                           |
+| `edge_ca.imported`                     | An existing CA certificate is imported for Edge.                                                  |
+| `edge_ca.rotated`                      | The Edge CA certificate is rotated.                                                               |
+| `network_trust.added`                  | A network range is added to the trusted networks list. Severity `high`.                           |
+| `network_trust.removed`                | A network range is removed from the trusted networks list. Severity `high`.                       |
+| `app.approval_updated`                 | An app is approved or blocked for Edge devices, one at a time or in a batch. Severity `high`.     |
+| `mcp_server.approval_updated`          | An MCP server is approved or blocked for Edge devices, one at a time or in a batch.               |
+
+### Logs, alerts and webhooks
+
+| Event                               | What it means and when it occurs                                            |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| `logs.deleted`                      | Request logs are deleted.                                                   |
+| `mcp_logs.deleted`                  | MCP tool call logs are deleted.                                             |
+| `logs.cost_recalculation_started`   | An admin starts recalculating the cost of stored logs.                      |
+| `logs.cost_recalculation_cancelled` | A running cost recalculation is cancelled.                                  |
+| `user_agent_mapping.created`        | A rule that maps a user agent to an app name in the logs is created.        |
+| `user_agent_mapping.updated`        | A user agent mapping changes.                                               |
+| `user_agent_mapping.deleted`        | A user agent mapping is deleted.                                            |
+| `alert_channel.created`             | An alert channel, such as Slack or a webhook, is added.                     |
+| `alert_channel.updated`             | An alert channel changes.                                                   |
+| `alert_channel.deleted`             | An alert channel is removed.                                                |
+| `alert_rule.created`                | An alert rule is created.                                                   |
+| `alert_rule.updated`                | An alert rule changes.                                                      |
+| `alert_rule.deleted`                | An alert rule is deleted.                                                   |
+| `webhook.created`                   | A webhook endpoint is added.                                                |
+| `webhook.updated`                   | A webhook endpoint changes.                                                 |
+| `webhook.deleted`                   | A webhook endpoint is removed.                                              |
+| `webhook.secret_rotated`            | A webhook endpoint's signing secret is replaced.                            |
+| `webhook.redelivered`               | A past webhook delivery is sent again.                                      |
+| `warp_config.updated`               | Warp settings change.                                                       |
+| `warp_backfill.started`             | A Warp backfill over existing logs is started.                              |
+| `warp_backfill.cancelled`           | A running Warp backfill is cancelled.                                       |
+| `notification.published`            | An admin publishes a notification to dashboard users.                       |
+
+### Configuration and platform
+
+| Event                          | What it means and when it occurs                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `config.updated`               | The gateway's client configuration changes through `/api/config`.                                 |
+| `config_metadata.updated`      | Dashboard preferences stored with the config change, such as onboarding state.                    |
+| `config.file_applied`          | System event. At startup, a `config.json` section overwrites the stored config.                   |
+| `proxy_config.updated`         | Outbound proxy settings change.                                                                   |
+| `large_payload_config.updated` | Settings for handling large request payloads change.                                              |
+| `feature_flag.updated`         | A feature flag is turned on or off.                                                               |
+| `plugin.created`               | A plugin is added.                                                                                |
+| `plugin.updated`               | A plugin's configuration changes or it is turned on or off.                                       |
+| `plugin.deleted`               | A plugin is removed.                                                                              |
+| `cache.cleared`                | Cached responses are cleared, all at once or for one key.                                         |
+| `vault.cache_flushed`          | Secrets cached from the vault are flushed, so they are read again.                                |
+| `branding.updated`             | Custom branding, such as the logo or colors, changes.                                             |
+| `branding.reset`               | Custom branding goes back to the default.                                                         |
+| `license.uploaded`             | A new license is uploaded. Severity `high`.                                                       |
+| `cluster.ghost_nodes_removed`  | Nodes that stopped responding are removed from the cluster member list.                           |
+| `sidekiq_job.cancelled`        | A background job is cancelled.                                                                    |
+
+### Audit logging
+
+| Event                    | What it means and when it occurs                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| `audit.settings_changed` | System event. The `audit_logs` settings differ from the previous boot. Severity `high`. |
+| `audit.logging_disabled` | System event. Bifrost boots with audit logging turned off. Written once, on the first such boot. Severity `high`. |
+| `audit.retention_purged` | System event. Retention deletes audit rows older than the retention period.           |
+
+## Signing keys
+
+Bifrost signs every audit row with HMAC-SHA256. New rows use the v2 format, `v2:<key id>:<hex>`, and the signature covers every field except `tags`, `attachments` and `reason` (handlers may set these after insert), the request IP and initiator host (`omit_ip_addresses` blanks these), and `created_at`. Rows written before v2 keep their v1 signatures and still verify.
+
+`GET /api/governance/audit-logs/{id}/verify` returns `valid`, the `algorithm` (`hmac-sha256-v1` or `hmac-sha256-v2`), the `key_id`, and a `reason` when the check fails. It no longer returns the computed and stored signatures, since a reader holding the expected HMAC could forge a matching row.
+
+If you configure no key, Bifrost generates one, encrypts it, and stores it in the config store under the ID `generated`. Every node uses that key and it survives restarts. Earlier versions generated a random key per node on every boot, so signatures from before a restart never verified.
+
+### Rotating the signing key
+
+Add the new key to `hmac_keys`, point `active_key_id` at it, and keep the old key in the list:
+
+```json
+{
+  "audit_logs": {
+    "hmac_keys": [
+      { "id": "2025-q4", "key": "env.AUDIT_HMAC_KEY_2025_Q4" },
+      { "id": "2026-q1", "key": "env.AUDIT_HMAC_KEY_2026_Q1" }
+    ],
+    "active_key_id": "2026-q1"
+  }
+}
+```
+
+New rows are signed with `2026-q1`. Rows signed with `2025-q4` keep verifying as long as that key stays in the list. Remove a key and its rows can no longer be verified. The verify endpoint then returns `valid: false` with a `reason` naming the missing key.
+
+An existing `hmac_key` keeps working as the key with ID `default`. To rotate away from it, leave `hmac_key` set, add the new key to `hmac_keys`, and set `active_key_id` to the new key's ID. Don't reuse the ID `default` in `hmac_keys`.
+
+Bifrost refuses to start if a key is shorter than 32 bytes, a key ID is invalid, `active_key_id` names no configured key, or several keys are configured without `active_key_id`.
+
+Rows signed with the generated key keep verifying after you configure `hmac_key` or `hmac_keys`: Bifrost still loads the generated key, under the ID `generated`, but only to verify. New rows are signed with your configured key.
 
 ## Omitting IP Addresses
 
@@ -102,6 +523,7 @@ The table shows:
 | Column        | Description                                                                                          |
 | ------------- | ---------------------------------------------------------------------------------------------------- |
 | **Time**      | When the event occurred.                                                                             |
+| **Event**     | The event name, such as `virtual_key.updated`. A shield marks events with severity `high`.           |
 | **Action**    | The operation performed, such as create, update, delete, authenticate, authorize, export, or import. |
 | **Outcome**   | The result of the operation: success, failure, or pending.                                           |
 | **Initiator** | The user, API key, or system actor that initiated the action.                                        |
@@ -110,11 +532,22 @@ The table shows:
 | **IP**        | The request IP address, when available. Always empty when `omit_ip_addresses` is on.                 |
 | **Duration**  | Request duration in milliseconds, when available.                                                    |
 
-You can search by initiator, target, IP, or path, and filter by action, outcome, start date, and end date. With `omit_ip_addresses` on, search skips IPs and the IP filter disappears.
+You can search by initiator, target, IP, or path, and filter by event, action, outcome, severity, start date, and end date. With `omit_ip_addresses` on, search skips IPs and the IP filter disappears. The API filters by event name with `event_name` or `event_names`.
+
+### Viewing an event
+
+Click a row to open the event. The event ID goes into the page URL as `audit_log=`, so you can share a link that opens straight to it. The event view shows:
+
+- **Changes.** Each changed field with its value before and after. Paths read as labels, such as "Budgets › 1 › Max limit", with the raw path on hover. Secret fields read "Changed, value hidden". Events recorded before Bifrost dropped bookkeeping fields from diffs keep those fields behind a "Show internal fields" toggle.
+- **Who.** The initiator, auth method, on-behalf-of user, session reference and IP address.
+- **Target and request.** The target's name and type, and the request path, request ID, duration, user agent and event ID. IDs have copy buttons.
+- **Integrity.** A **Verify signature** button that checks the event's signature and reports the key it was signed with, or why it couldn't be verified.
+
+Press the up and down arrow keys, or K and J, to move to the previous or next event. At either end of the page the view loads the neighbouring page.
 
 ## Exporting Audit Logs
 
-Users with `AuditLogs:Download` permission can export the currently filtered audit log results from the dashboard.
+Users with `AuditLogs:Download` permission can export the currently filtered audit log results from the dashboard. The export endpoint enforces the same permission, so a role with only `AuditLogs:View` gets a 403 from the API as well.
 
 Supported export formats:
 
@@ -124,7 +557,92 @@ Supported export formats:
 | JSON Lines        | Line-delimited ingestion pipelines.                          |
 | Syslog (RFC 5424) | SIEM or log-forwarding pipelines that accept syslog records. |
 
-With `omit_ip_addresses` on, exports contain no IP addresses in any format. The syslog `clientIP` parameter is left out.
+Exported events include the `changes` diff. With `omit_ip_addresses` on, exports contain no IP addresses in any format. The syslog `clientIP` parameter is left out.
+
+## Where audit logs are stored
+
+From v2.3.3, Bifrost writes audit events to the log store when the log store is Postgres or ClickHouse. They go to the `enterprise_audit_events` table, which keeps a growing audit trail out of the database that holds your gateway configuration.
+
+Events recorded before the upgrade stay where they were, in the config store's `enterprise_audit_logs` table. Bifrost does not copy or move them.
+
+If the log store is disabled or uses SQLite, nothing changes. Audit events stay in the config store and the dashboard shows no legacy view. Bifrost skips SQLite because each node keeps its own file, so no single node would see the whole audit trail.
+
+### Legacy view
+
+The **Legacy view** switch on the Audit Logs page reads the config store's table instead of the log store's. It is off by default.
+
+With the switch off, you see events in the log store's `enterprise_audit_events` table. With it on, you see events in the config store's `enterprise_audit_logs` table. The two never mix in one list.
+
+The split is by table, not by time. Events recorded during a rolling upgrade by nodes still on an older version land in the legacy view too. See [Upgrading a cluster](#upgrading-a-cluster).
+
+The switch appears only when audit events go to the log store and the config store's table still holds at least one event. On a fresh install, or once retention has removed the last legacy event, it is gone.
+
+The switch applies to the whole page: the list, search, filters, the event view, **Verify signature** and export. Turning it on or off returns you to the first page and closes any open event.
+
+Each viewer has their own setting, saved in their browser. Turning it on changes nothing for other users or for the gateway.
+
+| The legacy view does | The legacy view does not |
+| --- | --- |
+| Show events stored in the config store's `enterprise_audit_logs` table. | Show events stored in the log store's `enterprise_audit_events` table, or merge both tables into one list. |
+| Verify signatures with the same signing keys. Rows keep their original signatures. | Copy, move or change any event. |
+| Export legacy events in every format, for users with `AuditLogs:Download`. | Change where new events are written. They always go to the log store. |
+| Respect the same permissions and data access scopes as the default view. | Appear when the log store is disabled or SQLite. |
+
+### Retention and archival
+
+`retention_days` applies to both tables. Legacy events age out on the same schedule as new ones. With retention on, the legacy view empties by itself once the last event in the config store's table passes the retention window, and the switch disappears.
+
+Archival to object storage reads both tables, so a window that spans the upgrade is archived with events from both. That holds only when `object_storage` is configured and the window's rows are still in the database when the archiver gets to it. Retention does not wait for archival, so a short `retention_days` such as `1` can delete rows first. See [the warning on retention and archival](#database-vs-object-storage) for the safe minimum.
+
+### Migrating older audit events
+
+#### Why audit events moved
+
+The config store holds the gateway's own configuration: providers, keys, users, roles and settings. Audit events are different. They are written on every management change, never updated, and on a busy deployment the audit table grows into the largest table in that database. Backups, restores and schema migrations of the config store then take longer because of data the gateway never reads to serve a request.
+
+The log store is built for that kind of data. It already holds request logs, which are append-only and read by time range, and on ClickHouse it stores large volumes cheaply. Moving audit events there keeps the config store small.
+
+#### What changed
+
+| | Before v2.3.3 | From v2.3.3 |
+| --- | --- | --- |
+| Database | Config store | Log store (Postgres or ClickHouse) |
+| Table | `enterprise_audit_logs` | `enterprise_audit_events` |
+
+The new table has the same columns as the old one, with the same names and meanings:
+
+`id`, `type_uri`, `event_type`, `event_time`, `event_name`, `action`, `outcome`, `severity`, `initiator_id`, `initiator_type`, `initiator_name`, `initiator_host`, `target_id`, `target_type`, `target_name`, `observer_id`, `observer_name`, `reason_code`, `reason_type`, `reason_message`, `attachments`, `changes`, `tags`, `request_method`, `request_path`, `request_ip`, `user_agent`, `request_id`, `session_id`, `auth_method`, `on_behalf_of_id`, `duration`, `signature`, `created_at`.
+
+Event names, actions, outcomes, severities and the `changes` diff format are unchanged, so the [event reference](#event-reference) applies to both tables. A row moved from one table to the other keeps its signature, and **Verify signature** checks it against the same signing keys.
+
+A few details differ by database:
+
+- On Postgres, the indexes have different names from the old table's. Postgres index names are unique per schema, and the config store and log store can share one database.
+- On ClickHouse, `event_time` and `created_at` are `DateTime64(6, 'UTC')`. Signatures cover `event_time` to the microsecond, so a coarser column would fail verification. The table also has a `ver` column for ClickHouse's own deduplication, partitions by month and has no TTL. Retention stays under `retention_days`.
+
+#### Moving older events
+
+Bifrost does not move older events on its own, and nothing is lost if you never move them. They stay readable in the legacy view until retention removes them.
+
+To bring them into the default view, so you can search or export the whole trail in one place, contact the Bifrost team for the audit log migration script. Tell us which databases your config store and log store use, whether they share a database, and roughly how many audit events you have. We will help you plan the move for your deployment.
+
+### Upgrading a cluster
+
+During a rolling upgrade, nodes still on an older version keep writing to the config store. Those events show only in the legacy view. Once every node runs v2.3.3, all new events go to the log store.
+
+### API
+
+Pass `source=legacy` to read the config store's table:
+
+- `GET /api/governance/audit-logs`
+- `GET /api/governance/audit-logs/filterdata`
+- `GET /api/governance/audit-logs/export`
+- `GET /api/governance/audit-logs/{id}`
+- `GET /api/governance/audit-logs/{id}/verify`
+
+Without it, or with any other value, these endpoints read the log store's table. When there is no separate legacy table, `source=legacy` is ignored.
+
+`GET /api/governance/audit-logs/sources` returns `{"legacy": true}` when a legacy table with events can be read, and `{"legacy": false}` otherwise.
 
 ## Event type URI
 

@@ -53,6 +53,24 @@ func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddMethodColumnToMCPToolLogs verifies the read-method column is additive, idempotent,
+// and leaves existing rows (tool calls) null.
+func TestMigrationAddMethodColumnToMCPToolLogs(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	for range 2 {
+		require.NoError(t, migrationAddMethodColumnToMCPToolLogs(ctx, db, testLogger{}))
+	}
+	require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, "method"))
+	var method *string
+	require.NoError(t, db.Table("mcp_tool_logs").Select("method").Where("id = ?", "mcp-existing").Scan(&method).Error)
+	assert.Nil(t, method)
+}
+
 // TestMigrationAddSessionIDColumn verifies that the session lookup
 // column is additive, indexed, and preserves pre-existing request logs.
 func TestMigrationAddSessionIDColumn(t *testing.T) {
@@ -734,6 +752,34 @@ func TestMigrationAddWarpConversationTables_NonRollbackable(t *testing.T) {
 	var surviving int64
 	require.NoError(t, db.Model(&WarpConversation{}).Count(&surviving).Error)
 	assert.EqualValues(t, 1, surviving, "the saved conversation must survive")
+}
+
+// TestMigrationAddWarpTopicTables_NonRollbackable pins that rolling the topic
+// tables back is refused while warp_topics holds anything. Topics outlive the
+// requests they were built from, and their names came from a model call, so a
+// populated table cannot be rebuilt from the logs. Empty tables still drop.
+func TestMigrationAddWarpTopicTables_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpTopicTables(ctx, db, testLogger{}))
+	require.NoError(t, rollbackWarpTopicTables(db))
+	require.False(t, db.Migrator().HasTable(&WarpTopic{}), "empty topic tables are safe to drop")
+
+	require.NoError(t, db.AutoMigrate(&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{}))
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&WarpTopic{
+		ID: "t-1", Kind: WarpTopicKindTopic, Label: "Refunds", Status: WarpTopicStatusActive,
+		EmbeddingSignature: "sig", CreatedAt: now, UpdatedAt: now,
+	}).Error)
+
+	err = rollbackWarpTopicTables(db)
+	require.Error(t, err, "rollback must refuse while topics exist")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range []any{&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{}} {
+		assert.True(t, db.Migrator().HasTable(model), "a refused rollback leaves every topic table intact")
+	}
 }
 
 // TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage pins

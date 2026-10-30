@@ -56,6 +56,9 @@ type LogStore interface {
 	// rather than in the config store because they are user-generated content
 	// that grows with use, not settings an install depends on.
 	WarpConversationStore
+	// WarpTopicStore is where Warp's topics, and each request's place among
+	// them, are kept. See warptopics.go.
+	WarpTopicStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
@@ -124,6 +127,16 @@ type LogStore interface {
 	// read for jobs that rank every user by spend.
 	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
+	// GetDimensionUsage returns each entity's requests, tokens and cost on a rollup
+	// dimension in one read, attributed exactly as GetDimensionRankings attributes
+	// them. It skips what the rankings add for the dashboard (ordering, row limit,
+	// request totals, the "Other" bucket); with compare set, the same read covers
+	// the previous window and fills each entry's Trend.
+	GetDimensionUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension, compare bool) ([]DimensionUsageEntry, error)
+	// GetDimensionModelUsage returns requests and cost per (entity, model,
+	// provider) on a rollup dimension in one read, for callers that need the model
+	// mix of many entities at once.
+	GetDimensionModelUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension) ([]DimensionModelUsageEntry, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
 	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
@@ -171,6 +184,9 @@ type LogStore interface {
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
 	GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error)
 	GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error)
+	// GetMCPToolCountsByDimension returns how many distinct tools each user,
+	// team, customer or business unit called, in one read.
+	GetMCPToolCountsByDimension(ctx context.Context, filters MCPToolLogSearchFilters, dimension RankingDimension) (map[string]int, error)
 
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error
@@ -213,6 +229,20 @@ type LogStore interface {
 	// outlive the aggregate request row shown in the UI.
 	DeleteAgentLogs(ctx context.Context, ids []string) error
 	FlushAgentLogs(ctx context.Context, since time.Time) error
+
+	// Relay log methods (Relay Logs).
+	BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error)
+	FindRelayLog(ctx context.Context, id string) (*RelayLog, error)
+	FindRelayLogsForDeletion(ctx context.Context, ids []string) ([]*RelayLog, error)
+	UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error
+	SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error)
+	GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error)
+	GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error)
+	GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error)
+	GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error)
+	HasRelayLogs(ctx context.Context) (bool, error)
+	DeleteRelayLogs(ctx context.Context, ids []string) error
+	DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error

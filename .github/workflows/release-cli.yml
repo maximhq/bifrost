@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-version:
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       tag_exists: ${{ steps.check-tag.outputs.exists }}
@@ -35,12 +35,14 @@ jobs:
 
       - name: Get version from file
         id: get-version
-        run: echo "version=$(cat cli/version)" >> "$GITHUB_OUTPUT"
+        run: ./.github/workflows/scripts/read-version-file.sh cli/version
 
       - name: Check if tag exists
         id: check-tag
+        env:
+          VERSION: ${{ steps.get-version.outputs.version }}
         run: |
-          if git rev-parse "cli/v${{ steps.get-version.outputs.version }}" >/dev/null 2>&1; then
+          if git rev-parse "cli/v${VERSION}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -49,7 +51,7 @@ jobs:
   test-cli:
     needs: [check-version]
     if: needs.check-version.outputs.tag_exists == 'false'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: read
     steps:
@@ -76,7 +78,7 @@ jobs:
   release-cli:
     needs: [check-version, test-cli]
     if: needs.check-version.outputs.tag_exists == 'false'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     outputs:
@@ -112,12 +114,13 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: ./.github/workflows/scripts/release-cli.sh "${{ needs.check-version.outputs.version }}"
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: ./.github/workflows/scripts/release-cli.sh "$VERSION"
 
   push-mintlify-changelog:
     needs: [check-version, release-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.release-cli.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: builder-8-32
     permissions:
       contents: write
     steps:
@@ -134,5 +137,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Push Mintlify changelog
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
-          ./.github/workflows/scripts/push-cli-mintlify-changelog.sh "${{ needs.check-version.outputs.version }}"
+          ./.github/workflows/scripts/push-cli-mintlify-changelog.sh "$VERSION"

@@ -146,12 +146,12 @@ type Key struct {
 	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration
 	BedrockKeyConfig       *BedrockKeyConfig       `json:"bedrock_key_config,omitempty"`        // AWS Bedrock-specific key configuration
 	BedrockMantleKeyConfig *BedrockMantleKeyConfig `json:"bedrock_mantle_key_config,omitempty"` // Bedrock Mantle-specific key configuration
+	SageMakerKeyConfig     *SageMakerKeyConfig     `json:"sagemaker_key_config,omitempty"`      // AWS SageMaker-specific key configuration
 	VLLMKeyConfig          *VLLMKeyConfig          `json:"vllm_key_config,omitempty"`           // vLLM-specific key configuration
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
-	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
@@ -200,9 +200,12 @@ func (mf *ModelFamily) IsValid() bool {
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
 // Each field, when non-nil, overrides the corresponding key-level default.
 type AzureAliasCfg struct {
-	APIVersion       *string    `json:"api_version,omitempty"`       // overrides the Azure OpenAI api-version query param for this alias
-	AnthropicVersion *string    `json:"anthropic_version,omitempty"` // overrides the anthropic-version header for Claude-on-Azure deployments
-	Endpoint         *SecretVar `json:"endpoint,omitempty"`          // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
+	APIVersion         *string    `json:"api_version,omitempty"`          // overrides the Azure OpenAI api-version query param for this alias
+	AnthropicVersion   *string    `json:"anthropic_version,omitempty"`    // overrides the anthropic-version header for Claude-on-Azure deployments
+	Endpoint           *SecretVar `json:"endpoint,omitempty"`             // overrides AzureKeyConfig.Endpoint for this alias — lets one credential span deployments on multiple Azure resources
+	UseSpeechEndpoints *bool      `json:"use_speech_endpoints,omitempty"` // overrides AzureKeyConfig.UseSpeechEndpoints for this alias
+
+	UseVoiceLiveEndpoints *bool `json:"use_voice_live_endpoints,omitempty"` // overrides AzureKeyConfig.UseVoiceLiveEndpoints for this alias
 }
 
 // VertexAliasCfg holds Vertex-specific overrides that apply to a single alias.
@@ -214,9 +217,58 @@ type AzureAliasCfg struct {
 // here only so Go code that constructs VertexAliasCfg directly keeps compiling;
 // the Vertex resolver reads AliasConfig.ProjectID first and falls back to this.
 type VertexAliasCfg struct {
-	ProjectID         *SecretVar `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
-	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
-	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
+	ProjectID         *SecretVar      `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
+	ProjectNumber     *SecretVar      `json:"project_number,omitempty"`
+	ForceSingleRegion *bool           `json:"force_single_region,omitempty"`
+	VertexEndpoint    *VertexEndpoint `json:"vertex_endpoint,omitempty"`
+}
+
+// VertexEndpoint routes an alias to a custom Vertex endpoint. Format is the body
+// the deployment accepts and Method the Vertex route that carries it, so the wire
+// shape never depends on the model name. AliasConfig.ModelID is the served model
+// name, not the endpoint ID. An omitted Method uses the format's default (raw
+// prediction for openai_chat). Project and region inherit from the key.
+type VertexEndpoint struct {
+	EndpointID string               `json:"endpoint_id"`
+	Format     VertexEndpointFormat `json:"format"`
+	Method     VertexEndpointMethod `json:"method,omitempty"`
+}
+
+type VertexEndpointFormat string
+
+const (
+	VertexEndpointOpenAIChat VertexEndpointFormat = "openai_chat"
+)
+
+type VertexEndpointMethod string
+
+const (
+	VertexEndpointRawPredict      VertexEndpointMethod = "raw_predict"
+	VertexEndpointChatCompletions VertexEndpointMethod = "chat_completions"
+)
+
+// Validate rejects unknown formats, methods the format cannot use, and endpoint
+// IDs that could alter the URL.
+func (e *VertexEndpoint) Validate() error {
+	if e == nil {
+		return nil
+	}
+	if e.EndpointID == "" || strings.IndexFunc(e.EndpointID, func(c rune) bool {
+		return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-')
+	}) >= 0 {
+		return fmt.Errorf("vertex_endpoint.endpoint_id must contain only letters, digits, underscores or hyphens")
+	}
+	switch e.Format {
+	case VertexEndpointOpenAIChat:
+		switch e.Method {
+		case "", VertexEndpointRawPredict, VertexEndpointChatCompletions:
+			return nil
+		default:
+			return fmt.Errorf("invalid vertex_endpoint.method %q for format %q: expected raw_predict or chat_completions", e.Method, e.Format)
+		}
+	default:
+		return fmt.Errorf("invalid vertex_endpoint.format %q: expected openai_chat", e.Format)
+	}
 }
 
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
@@ -271,6 +323,10 @@ func (ac AliasConfig) Redacted() AliasConfig {
 		// MarshalJSON promotes the deprecated ProjectID to the shared field.
 		vertex.ProjectID = vertex.ProjectID.RedactedIfSecret()
 		vertex.ProjectNumber = vertex.ProjectNumber.RedactedIfSecret()
+		if vertex.VertexEndpoint != nil {
+			endpoint := *vertex.VertexEndpoint
+			vertex.VertexEndpoint = &endpoint
+		}
 		ac.VertexAliasCfg = &vertex
 	}
 	if ac.BedrockAliasCfg != nil {
@@ -367,6 +423,11 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		if ac.VertexAliasCfg != nil && providerKey != Vertex {
 			return fmt.Errorf("alias %q: vertex sub-config is only valid on Vertex keys (got provider %q)", from, providerKey)
 		}
+		if ac.VertexAliasCfg != nil {
+			if err := ac.VertexEndpoint.Validate(); err != nil {
+				return fmt.Errorf("alias %q: %w", from, err)
+			}
+		}
 		if ac.BedrockAliasCfg != nil && providerKey != Bedrock {
 			return fmt.Errorf("alias %q: bedrock sub-config is only valid on Bedrock keys (got provider %q)", from, providerKey)
 		}
@@ -425,6 +486,15 @@ func GetResolvedAlias(ctx *BifrostContext) *ResolvedAlias {
 	}
 	ra, _ := v.(*ResolvedAlias)
 	return ra
+}
+
+// GetVertexEndpoint returns the explicit serving configuration for this
+// attempt. It describes the wire format independently of the underlying family.
+func GetVertexEndpoint(ctx *BifrostContext) *VertexEndpoint {
+	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil {
+		return ra.Config.VertexEndpoint
+	}
+	return nil
 }
 
 // ResolveFamily returns the model family for the current attempt, walking
@@ -738,6 +808,10 @@ type AzureKeyConfig struct {
 	ClientSecret *SecretVar `json:"client_secret,omitempty"` // Azure client secret for authentication
 	TenantID     *SecretVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
 	Scopes       []string   `json:"scopes,omitempty"`
+
+	UseSpeechEndpoints bool `json:"use_speech_endpoints,omitempty"` // sends speech and transcription requests to Azure AI Speech instead of Azure OpenAI
+
+	UseVoiceLiveEndpoints bool `json:"use_voice_live_endpoints,omitempty"` // sends realtime sessions to Azure Voice Live instead of Azure OpenAI
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
@@ -932,6 +1006,34 @@ type BedrockMantleKeyConfig struct {
 
 // NOTE: To use Bedrock Mantle IAM role authentication, set both AccessKey and SecretKey to empty
 // strings. To use Bedrock Mantle API Key authentication, set Value in the Key struct instead.
+
+// SageMakerKeyConfig holds the AWS credentials and routing options for SageMaker real-time
+// endpoints. Empty AccessKey and SecretKey use the default AWS credential chain.
+type SageMakerKeyConfig struct {
+	AccessKey       SecretVar  `json:"access_key,omitempty"`    // AWS access key used to mint bearer tokens
+	SecretKey       SecretVar  `json:"secret_key,omitempty"`    // AWS secret access key
+	SessionToken    *SecretVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region          *SecretVar `json:"region,omitempty"`        // Endpoint region (required); a model id region prefix overrides it per request
+	RoleARN         *SecretVar `json:"role_arn,omitempty"`      // IAM role for STS AssumeRole
+	ExternalID      *SecretVar `json:"external_id,omitempty"`
+	RoleSessionName *SecretVar `json:"session_name,omitempty"`
+
+	Endpoints *SageMakerEndpoints `json:"endpoints,omitempty"` // Runtime host override (VPC endpoint, FIPS, dual-stack)
+}
+
+// SageMakerEndpoints overrides the SageMaker runtime host.
+type SageMakerEndpoints struct {
+	Runtime *SecretVar `json:"runtime,omitempty"` // e.g. vpce-....runtime.sagemaker.{region}.vpce.amazonaws.com
+}
+
+// Redacted copies the endpoints, preserving a literal host while masking a resolved env/vault
+// value. A nil endpoint configuration stays nil.
+func (e *SageMakerEndpoints) Redacted() *SageMakerEndpoints {
+	if e == nil {
+		return nil
+	}
+	return &SageMakerEndpoints{Runtime: e.Runtime.RedactedIfSecret()}
+}
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.
 // It allows each key to target a different vLLM server URL and model name,
@@ -1182,25 +1284,6 @@ func (c *OAuthKeyConfig) Validate() error {
 		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
 	}
 	return nil
-}
-
-// GithubCopilotKeyConfig holds GitHub App credentials for server-to-server Copilot access.
-//
-// A GitHub App carrying the "Copilot Requests" permission mints short-lived installation
-// tokens, and Copilot usage is billed to the account that owns the installation. No
-// individual Copilot seat is involved, which is what makes this the correct auth mode for
-// a shared gateway.
-//
-// The organization must also have the "Allow use of Copilot CLI billed to the
-// organization" policy enabled, and the installation needs All repositories access.
-//
-// See https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens
-type GithubCopilotKeyConfig struct {
-	AppID          SecretVar `json:"app_id"`                  // GitHub App ID or Client ID; the App JWT issuer (required)
-	InstallationID SecretVar `json:"installation_id"`         // Installation to mint tokens for; digits only (required)
-	RepositoryID   SecretVar `json:"repository_id"`           // Repository the installation token is scoped to; digits only (required)
-	PrivateKey     SecretVar `json:"private_key"`             // GitHub App private key, PKCS#1 or PKCS#8 PEM (required)
-	GithubDomain   SecretVar `json:"github_domain,omitempty"` // GitHub Enterprise domain, e.g. "acme.ghe.com". Empty means github.com.
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

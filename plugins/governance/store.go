@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1349,6 +1350,9 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 // connectors are handed the finished trace without the request context, so the span is the only
 // place they can read the decision from. The mark is one-directional: a key that keeps content on
 // says nothing to a connector, whose own disable_content_logging stays in charge.
+//
+// A project the request is scoped to can override the key's decision once it is admitted, on the
+// context and on the span alike.
 func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
 	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
 		return
@@ -1379,6 +1383,50 @@ func stampVirtualKeyMetadata(ctx *schemas.BifrostContext, virtualKey *configstor
 		return
 	}
 	ctx.SetValue(VirtualKeyMetadataContextKey, maps.Clone(virtualKey.Metadata))
+	stampVirtualKeyDimensions(ctx, virtualKey.Metadata)
+}
+
+// stampVirtualKeyDimensions adds the key's metadata to the request's dimensions, where metrics and
+// connectors read x-bf-dim-* labels: the context, the trace and the root span, the same three places
+// the transport puts header dimensions. The key's value wins over a header of the same name. "path"
+// and "method" are skipped, as for headers, since they name the root span's http attributes.
+func stampVirtualKeyDimensions(ctx *schemas.BifrostContext, metadata map[string]string) {
+	// May be the stored key's shared map: everything below copies it, never keeps it.
+	added := metadata
+	_, hasPath := metadata["path"]
+	_, hasMethod := metadata["method"]
+	if hasPath || hasMethod {
+		added = maps.Clone(metadata)
+		delete(added, "path")
+		delete(added, "method")
+		if len(added) == 0 {
+			return
+		}
+	}
+	existing, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	dims := make(map[string]string, len(existing)+len(added))
+	maps.Copy(dims, existing)
+	maps.Copy(dims, added)
+	// A new map: other readers of the request may hold the previous one.
+	ctx.SetValue(schemas.BifrostContextKeyDimensions, dims)
+
+	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if tracer == nil || traceID == "" {
+		return
+	}
+	tracer.MergeTraceDimensions(traceID, added)
+	root := tracer.SpanFromHandle(tracer.GetSpanHandleByID(traceID, nil))
+	for key, value := range added {
+		// Never replace an attribute Bifrost set on the root span (the content-logging flag, http.*,
+		// identity); only a header dimension's value, which the key's value overrides.
+		if current, set := root.GetAttribute(key); set {
+			if header, isHeader := existing[key]; !isHeader || current != header {
+				continue
+			}
+		}
+		root.SetAttribute(key, value)
+	}
 }
 
 // recordVirtualKeyIdentity completes the request's identity with what the presented key resolved to:
@@ -1526,7 +1574,13 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		agentPermits = append(agentPermits, agentGrant.AgentName)
 	}
 
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits, grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders))
+	endpointPermits := make([]string, 0, len(vk.RelayGrants))
+	for _, endpointGrant := range vk.RelayGrants {
+		endpointPermits = append(endpointPermits, endpointGrant.RelayName)
+	}
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits,
+		grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders),
+		grant.WithRelayPermits(endpointPermits))
 }
 
 // virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.
@@ -1756,6 +1810,28 @@ func (gs *LocalGovernanceStore) DetachVirtualMCPInMemory(vkID string, vmcpID uin
 		return
 	}
 	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+// SetVirtualMCPAssignmentsInMemory replaces a VK's whole assignment set in one write, under
+// virtualMCPAssignMu like Attach/Detach. A key reload uses it to converge the index on what the
+// database holds after a write that changed the assignments by other means (adoption into an
+// access profile strips them). An empty set drops the VK.
+func (gs *LocalGovernanceStore) SetVirtualMCPAssignmentsInMemory(vkID string, vmcpIDs []uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	if len(vmcpIDs) == 0 {
+		gs.virtualMCPIDsByVK.Delete(vkID)
+		return
+	}
+	next := slices.Clone(vmcpIDs)
+	slices.Sort(next)
+	gs.virtualMCPIDsByVK.Store(vkID, slices.Compact(next))
+}
+
+// VirtualMCPAssignmentsInMemory returns a copy of the Virtual MCP IDs the in-memory index assigns a
+// VK directly, sorted, or nil. Callers that converge the index use it to check what it holds.
+func (gs *LocalGovernanceStore) VirtualMCPAssignmentsInMemory(vkID string) []uint {
+	return slices.Clone(gs.assignedVirtualMCPIDs(vkID))
 }
 
 // virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store
@@ -4773,6 +4849,10 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 // store resolves one permit per credential, so there is nothing to pick between, and one limit
 // reached twice is still one limit once the list is settled.
 func (gs *LocalGovernanceStore) GatherLimits(ctx *schemas.BifrostContext, access schemas.Access, provider schemas.ModelProvider, model string) (budgets []schemas.Limit, rateLimits []schemas.Limit, err error) {
+	// A request naming no provider and no model (a relay call, an MCP tool execution) still walks
+	// the model-config scopes: only the all-models, all-providers tier can match then, and that
+	// tier is where a key's own budget and rate limit live since the model-config migration.
+	// Provider- and model-specific tiers cannot match an empty pair, so they never reach it.
 	budgets, rateLimits = gs.GlobalProviderLimits(ctx, provider)
 	globalModelBudgets, globalModelRateLimits := gs.GlobalModelLimits(ctx, provider, model)
 	budgets = append(budgets, globalModelBudgets...)

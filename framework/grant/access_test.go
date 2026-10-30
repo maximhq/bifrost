@@ -1722,3 +1722,30 @@ func assertPermitsAre(t *testing.T, got []schemas.Permit, want ...schemas.Permit
 		assert.Same(t, want[i], got[i], "permit %d", i)
 	}
 }
+
+func TestIsRelayAllowed(t *testing.T) {
+	named := NewPermit(PermitVirtualKey, "vk-1", "named", true, false, nil, nil, WithRelayPermits([]string{"tavily"}))
+	// Relays have no allow-all on any holder, as agents have none: a wide permit names every relay.
+	all := NewPermit(PermitAccessProfile, "ap-2", "all", true, false, nil, nil, WithRelayPermits([]string{"tavily", "textract"}))
+	none := NewPermit(PermitVirtualKey, "vk-3", "none", true, false, nil, nil)
+
+	access := NewAccess(held(named), nil, "", nil)
+	if !access.IsRelayAllowed("tavily") || access.IsRelayAllowed("textract") {
+		t.Fatalf("a named grant allows exactly that endpoint")
+	}
+	if denied := access.DeniedPermitsForRelay("textract"); len(denied) != 1 || denied[0] != named {
+		t.Fatalf("the refusal names the permit that denied it, got %v", denied)
+	}
+	if !NewAccess(held(all), nil, "", nil).IsRelayAllowed("textract") {
+		t.Fatalf("a permit naming the endpoint grants it")
+	}
+	if NewAccess(held(none), nil, "", nil).IsRelayAllowed("tavily") {
+		t.Fatalf("no grant denies by default")
+	}
+	if NewAccess(held(all), none, Intersect, nil).IsRelayAllowed("tavily") {
+		t.Fatalf("an intersecting scope without the endpoint denies it")
+	}
+	if !NewAccess(held(none), named, Union, nil).IsRelayAllowed("tavily") {
+		t.Fatalf("a union scope with the endpoint allows it")
+	}
+}

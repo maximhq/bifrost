@@ -91,10 +91,15 @@ export default function NotificationCenter() {
 	// Poll quickly while the tray is open or a job is active, slowly otherwise so a job started
 	// elsewhere still lights up the badge. The interval follows the data, hence the effect.
 	const [pollMs, setPollMs] = useState(() => sidekiqPollInterval({ open: false, activeCount: 0 }));
-	const { data: jobsData, error: jobsError } = useGetSidekiqJobsQuery(undefined, { pollingInterval: pollMs });
+	// Without BackgroundJobs:View the poll is skipped outright instead of drawing a 403 every interval.
+	const hasBackgroundJobsAccess = useRbac(RbacResource.BackgroundJobs, RbacOperation.View);
+	const { data: jobsData, error: jobsError } = useGetSidekiqJobsQuery(undefined, {
+		pollingInterval: pollMs,
+		skip: !hasBackgroundJobsAccess,
+	});
 	const [cancelJob, { originalArgs: cancellingId, isLoading: isCancelling }] = useCancelSidekiqJobMutation();
 	// A 403/503 means this caller never gets jobs; drop the section rather than show an error.
-	const jobsAvailable = !isSidekiqJobsUnavailable(jobsError);
+	const jobsAvailable = hasBackgroundJobsAccess && !isSidekiqJobsUnavailable(jobsError);
 	const jobs = useMemo(
 		() => (jobsAvailable ? visibleSidekiqJobs(jobsData?.jobs ?? [], dismissedIds) : []),
 		[jobsAvailable, jobsData, dismissedIds],

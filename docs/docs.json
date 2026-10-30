@@ -151,6 +151,7 @@
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/byteplus",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
@@ -163,6 +164,7 @@
                   "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
@@ -216,7 +218,8 @@
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
-                  "mcp/auth/token-exchange"
+                  "mcp/auth/token-exchange",
+                  "mcp/auth/cross-app-access"
                 ]
               },
               "mcp/sessions",
@@ -244,6 +247,20 @@
               "features/agent-gateway/push-notifications",
               "features/agent-gateway/connectors",
               "features/agent-gateway/troubleshooting"
+            ]
+          },
+          {
+            "group": "Relays",
+            "icon": "waypoints",
+            "pages": [
+              "relays/overview",
+              "relays/configuration",
+              "relays/routes",
+              "relays/pricing",
+              "relays/access",
+              "relays/streaming",
+              "relays/logs",
+              "relays/troubleshooting"
             ]
           },
           {
@@ -1274,7 +1291,8 @@
                   "GET /api/models",
                   "GET /api/models/details",
                   "GET /api/models/parameters",
-                  "GET /api/models/base"
+                  "GET /api/models/base",
+                  "GET /api/models/newest"
                 ]
               },
               {
@@ -1371,6 +1389,33 @@
                   "DELETE /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
                   "GET /agents/a2a/{name}/rest/extendedAgentCard",
                   "POST /agents/a2a/{name}/push/callback"
+                ]
+              },
+              {
+                "group": "Relays",
+                "expanded": false,
+                "pages": [
+                  "GET /api/relays",
+                  "POST /api/relays",
+                  "GET /api/relays/{name}",
+                  "PUT /api/relays/{name}",
+                  "DELETE /api/relays/{name}",
+                  "POST /api/relays/usage-preview",
+                  "POST /api/relays/openapi-spec",
+                  "GET /api/relays/{name}/access-profiles",
+                  "GET /api/relay-logs",
+                  "DELETE /api/relay-logs",
+                  "GET /api/relay-logs/{id}",
+                  "GET /api/relay-logs/stats",
+                  "GET /api/relay-logs/filterdata",
+                  "GET /api/relay-logs/histogram",
+                  "GET /api/relay-logs/top-endpoints",
+                  "GET /relay/{endpoint}/{path}",
+                  "POST /relay/{endpoint}/{path}",
+                  "PUT /relay/{endpoint}/{path}",
+                  "PATCH /relay/{endpoint}/{path}",
+                  "DELETE /relay/{endpoint}/{path}",
+                  "HEAD /relay/{endpoint}/{path}"
                 ]
               },
               {
@@ -1558,6 +1603,9 @@
                   "POST /api/warp/log-index/backfill",
                   "GET /api/warp/log-index/backfill/status",
                   "POST /api/warp/log-index/backfill/cancel",
+                  "POST /api/warp/log-index/topics",
+                  "GET /api/warp/log-index/topics/status",
+                  "POST /api/warp/log-index/topics/cancel",
                   "POST /api/warp/chat",
                   "GET /api/warp/log-index/status",
                   "GET /api/warp/conversations",
@@ -2003,6 +2051,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.4.0",
               "changelogs/v2.3.2",
               "changelogs/v2.3.1",
               "changelogs/v2.3.0",
@@ -2408,6 +2457,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",

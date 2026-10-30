@@ -96,7 +96,8 @@ func TestAdmission_DirectKeyGoesUpstream(t *testing.T) {
 	requireFake(t)
 	t.Parallel()
 	forEachTransport(t, func(t *testing.T, tr transport) {
-		session := sessionFor(t, voiceModel, backendModel, nil)
+		// A direct key names no provider, and a bare voice model may resolve to azure.
+		session := sessionFor(t, "openai/"+voiceModel, backendModel, nil)
 		headers := map[string]string{"x-bf-direct-key": "true", "Authorization": "Bearer sk-direct-live"}
 		c := openLive(t, tr, clientOptions{headers: headers, session: session})
 		s := fake.WaitSession(t, session["instructions"].(string))
@@ -117,6 +118,85 @@ func TestAdmission_OpenAIIntegrationRouteServesSessions(t *testing.T) {
 		s := fake.WaitSession(t, session["instructions"].(string))
 		assert.Equal(t, s.ID(), c.ProviderSessionID)
 		c.CloseSession()
+	})
+}
+
+// On /openai a model without a provider prefix runs where the session's attach and content routes
+// default to, as file and batch creates do: Azure for the Azure OpenAI SDK, whose later attach then
+// finds the session on Azure, else OpenAI. An Azure-only key names Azure with the azure/ prefix.
+func TestAdmission_OpenAIRouteResolvesBareModelsAsControlRoutesDo(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	const azureSDK = "AzureOpenAI/Python 1.109.1"
+	for _, tc := range []struct {
+		name      string
+		spec      virtualKeySpec
+		userAgent string
+		upstream  string // empty: refused, the route's OpenAI default is not allowed for the key
+	}{
+		{name: "an Azure-only key must name Azure", spec: virtualKeySpec{provider: "azure"}},
+		{name: "OpenAI is the default when the key allows both", spec: virtualKeySpec{alsoProviders: []string{"azure"}}, upstream: "openai"},
+		{name: "the Azure OpenAI SDK prefers Azure", spec: virtualKeySpec{alsoProviders: []string{"azure"}}, userAgent: azureSDK, upstream: "azure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forEachTransport(t, func(t *testing.T, tr transport) {
+				vk := createVirtualKey(t, tc.spec)
+				headers := vkHeaders(vk)
+				if tc.userAgent != "" {
+					headers["User-Agent"] = tc.userAgent
+				}
+				session := sessionFor(t, voiceModel, backendModel, nil)
+				opts := clientOptions{path: "/openai/v1/live/sessions", headers: headers, session: session}
+				if tc.upstream == "" {
+					assert.Contains(t, errorMessage(openRefused(t, tr, opts)), "Provider 'openai' is not allowed")
+					return
+				}
+				c := openLive(t, tr, opts)
+				s := fake.WaitSession(t, session["instructions"].(string))
+				assert.Equal(t, tc.upstream, s.Upstream())
+				if tr == webrtcTransport && tc.userAgent != "" {
+					sideband, status, err := dialLive(t, "/openai/v1/live/sessions/"+s.ID()+"/attach", headers)
+					require.NoError(t, err, "HTTP %d", status)
+					assert.Equal(t, s.ID(), sideband.WaitFor("session.started").Get("session.id").Str, "the attach finds the session where it was created")
+				}
+				c.CloseSession()
+				assert.Equal(t, tc.upstream, findLiveLog(t, s.ID()).Get("provider").Str)
+			})
+		})
+	}
+}
+
+// An Azure session runs on the key's resource, under the deployment names the key's aliases give
+// both models, and bills both.
+func TestAdmission_AzureSessionRunsOnTheResourceDeployments(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		budget := 10.0
+		vk := createVirtualKey(t, virtualKeySpec{provider: "azure", budgetUSD: &budget})
+		session := sessionFor(t, "azure/"+voiceModel, backendModel, nil)
+		c := openLive(t, tr, clientOptions{headers: vkHeaders(vk), session: session})
+		s := fake.WaitSession(t, session["instructions"].(string))
+		assert.Equal(t, s.ID(), c.ProviderSessionID)
+		assert.Equal(t, "azure", s.Upstream(), "the session is created under /openai/v1/live on the resource")
+		assert.Equal(t, "api-key fake-azure-key", s.Auth(), "the resource's api-key goes upstream")
+		assert.Equal(t, azureVoiceDeployment, s.StartModel())
+		assert.Equal(t, azureBackendDeployment, s.StartBackend(), "a bare backend model is the session provider's deployment")
+
+		s.Play(delegation{ID: "item_1", ResponseID: "resp_1", Model: backendModel, Created: true, Input: 1000, Output: 100, Items: []string{messageItem("msg_1", "Done.")}})
+		c.WaitFor("response.event")
+		s.EmitUsage(42)
+		c.WaitFor("session.usage.updated")
+		settle()
+		c.CloseSession()
+
+		row := findLiveLog(t, s.ID())
+		assert.Equal(t, "azure", row.Get("provider").Str)
+		assert.Equal(t, 42.0, row.Get("live_session.voice_seconds").Float())
+		require.Len(t, row.Get("live_session.delegations").Array(), 1)
+		cost := 42*fakeVoiceCostPerSecond + 1000*fakeInputCostPerToken + 100*fakeOutputCostPerToken
+		assert.InDelta(t, cost, row.Get("cost").Float(), 1e-9)
+		waitBudgetUsage(t, vk.BudgetID, cost)
 	})
 }
 

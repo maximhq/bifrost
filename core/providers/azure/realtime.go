@@ -21,6 +21,24 @@ import (
 // and output extraction can be reused without modification.
 var openAIEventHelper = &openaiProvider.OpenAIProvider{}
 
+// azureVoiceLiveAPIVersion is the Voice Live api-version sent unless the alias sets api_version.
+const azureVoiceLiveAPIVersion = "2026-04-10"
+
+// useVoiceLiveEndpoints reports whether realtime sessions go to Azure Voice Live rather than
+// Azure OpenAI. A per-alias value wins over the key's.
+func useVoiceLiveEndpoints(ctx *schemas.BifrostContext, key schemas.Key) bool {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.AzureAliasCfg != nil && ra.Config.AzureAliasCfg.UseVoiceLiveEndpoints != nil {
+		return *ra.Config.AzureAliasCfg.UseVoiceLiveEndpoints
+	}
+	return key.AzureKeyConfig != nil && key.AzureKeyConfig.UseVoiceLiveEndpoints
+}
+
+// newAzureVoiceLiveWebSocketOnlyError rejects the WebRTC and client-secret routes, which Voice Live
+// serves through its own WebSocket signaling and whose usage the gateway would never see.
+func newAzureVoiceLiveWebSocketOnlyError() *schemas.BifrostError {
+	return newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure voice live is served over the realtime websocket only", nil)
+}
+
 // ---------------------------------------------------------------------------
 // RealtimeProvider interface
 // ---------------------------------------------------------------------------
@@ -29,7 +47,25 @@ func (provider *AzureProvider) SupportsRealtimeAPI() bool {
 	return true
 }
 
-func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model, intent string) (string, *schemas.BifrostError) {
+func (provider *AzureProvider) RealtimeWebSocketURL(ctx *schemas.BifrostContext, key schemas.Key, model, intent string) (string, *schemas.BifrostError) {
+	if useVoiceLiveEndpoints(ctx, key) {
+		// A Voice Live alias can name its own resource, so its endpoint wins over the key's.
+		endpoint := strings.TrimRight(strings.TrimSpace(resolveAzureEndpoint(ctx, key)), "/")
+		if endpoint == "" {
+			return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure realtime requires a configured endpoint", nil)
+		}
+		endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
+		endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
+		if intent != "" {
+			return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure voice live does not take a realtime intent", nil)
+		}
+		// Voice Live turns are priced at the model's _voice_live rates.
+		if ctx != nil {
+			ctx.SetValue(schemas.BifrostContextKeyRealtimePricingSurface, schemas.PricingSurfaceVoiceLive)
+		}
+		return fmt.Sprintf("%s/voice-live/realtime?api-version=%s&model=%s", endpoint, url.QueryEscape(resolveAPIVersion(ctx, azureVoiceLiveAPIVersion)), url.QueryEscape(model)), nil
+	}
+
 	endpoint, endpointErr := azureRealtimeEndpoint(key)
 	if endpointErr != nil {
 		return "", endpointErr
@@ -78,6 +114,9 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 	sdp string,
 	session json.RawMessage,
 ) (string, *schemas.BifrostError) {
+	if useVoiceLiveEndpoints(ctx, key) {
+		return "", newAzureVoiceLiveWebSocketOnlyError()
+	}
 	endpoint, endpointErr := azureRealtimeEndpoint(key)
 	if endpointErr != nil {
 		return "", endpointErr
@@ -207,6 +246,9 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 	key schemas.Key,
 	rawRequest json.RawMessage,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if useVoiceLiveEndpoints(ctx, key) {
+		return nil, newAzureVoiceLiveWebSocketOnlyError()
+	}
 	normalizedBody, _, bifrostErr := openaiProvider.NormalizeRealtimeClientSecretRequest(rawRequest, schemas.Azure)
 	if bifrostErr != nil {
 		return nil, bifrostErr

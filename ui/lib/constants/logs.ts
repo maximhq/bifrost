@@ -4,6 +4,7 @@ export const KnownProvidersNames = [
 	"azure",
 	"bedrock",
 	"bedrock_mantle",
+	"sagemaker",
 	"cerebras",
 	"cohere",
 	"deepseek",
@@ -31,6 +32,8 @@ export const KnownProvidersNames = [
 	"sarvam",
 	"wafer",
 	"exa",
+	"minimax",
+	"byteplus",
 	"databricks",
 	"cloudflare",
 	"github-copilot",
@@ -46,8 +49,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 // "Add Provider" picker and the first-party-integration nudge so users cannot configure
 // them from the UI. Everything else (types, schemas, icons, labels) still resolves, so a
 // provider configured via config.json continues to render correctly.
-// TODO: remove "github-copilot" once the integration has been tested and released.
-export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>(["github-copilot"]);
+export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>([]);
 
 // Known providers that users can add from the UI.
 export const VisibleProviderNames: readonly ProviderName[] = KnownProvidersNames.filter((name) => !HiddenProviders.has(name));
@@ -72,6 +74,8 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"vllm",
 	"databricks",
 	"cloudflare",
+	"byteplus",
+	"github-copilot",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -92,8 +96,6 @@ export const RequestTypes = [
 	"responses_input_items",
 	"embedding",
 	"rerank",
-	"search",
-	"fetch",
 	"decisions",
 	"speech",
 	"speech_stream",
@@ -158,6 +160,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	azure: "Azure",
 	bedrock: "AWS Bedrock",
 	bedrock_mantle: "AWS Bedrock Mantle",
+	sagemaker: "AWS SageMaker",
 	cohere: "Cohere",
 	deepseek: "DeepSeek",
 	vertex: "Vertex AI",
@@ -184,6 +187,8 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
 	exa: "Exa",
+	minimax: "MiniMax",
+	byteplus: "BytePlus",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
@@ -318,8 +323,6 @@ export const RequestTypeLabels = {
 
 	embedding: "Embedding",
 	rerank: "Rerank",
-	search: "Web Search",
-	fetch: "Page Fetch",
 	decisions: "Decisions",
 
 	speech: "Speech",
@@ -415,8 +418,6 @@ export const RequestTypeColors = {
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
-	search: "bg-sky-100 text-sky-800",
-	fetch: "bg-emerald-100 text-emerald-800",
 	decisions: "bg-cyan-100 text-cyan-800",
 
 	speech: "bg-purple-100 text-purple-800",

@@ -1,0 +1,74 @@
+---
+title: "Troubleshooting"
+description: "Work from the status the caller received to the relay, route, grant or mapping that produced it."
+icon: "wrench"
+---
+
+Start from the status the caller got back. Refusals before the hooks (`404`, `400` from the relay itself) write no Relay Logs row; everything from governance onwards does (when Relay Logs are enabled), so a missing row is itself a clue.
+
+## 404 `relay "name" not found`
+
+The name in `/relay/{name}/...` matches no live relay. Check the spelling against **Relays**, and that the relay compiled: a relay whose CA certificate or proxy URL fails to parse is skipped at startup with a warning in the server log (`relays skipped: ...`). Names are case-sensitive.
+
+If the config store is disabled, no relay is served at all and the `/api/relays` management API is not registered, so it answers `404`.
+
+## 404 `no route for POST /path on relay "name"`
+
+No route matched the method, path and headers, and **Relay Any Path** is off. Compare the request with the route list: a trailing slash is an extra segment that only a `/**` glob admits, `*` does not cross a `/`, and a header matcher must be satisfied too. Run the request through **Test Pricing**, which reports the matched route index or the reason none matched.
+
+## 404 `route POST /path on relay "name" is disabled`
+
+A route matched but its **Enabled** switch is off. Disabled routes refuse their requests even with Relay Any Path on, and even when a broader route lower in the list would have matched.
+
+## 403 `Relay 'name' is not allowed for virtual key '...'`
+
+The key holds no grant for this relay. Add the relay under **Relay access** on the key ([virtual key access](./access)). In Enterprise the message names the access profile or project that refused.
+
+## 400 refusals before relaying
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| `this route bills on <path> in the request body, which must be JSON` | A route prices request-side units at a path and the body is not JSON. | Send JSON, or switch the mapping to `body_bytes` or `body_chars`. |
+| `the request body names a key more than once (case-insensitively) ...` | The body repeats a key, so the billed quantity is ambiguous. | Send each key once. |
+| `the request body names <path> with different letter case` | The body spells the key as `text` while `units_path` says `Text`. | Match the key exactly. |
+| `relay request body must carry the model key at most once` | The body repeats the `model_path` key. | Send it once. |
+| `header X is set under two spellings; send it once` | The same header was sent as `X-Amz-Target` and `x-amz-target`. | Send one spelling. |
+| `query string cannot be parsed: a ; separator is ambiguous under query auth` | Query auth is on and the query uses `;`. | Use `&`. |
+| `invalid passthrough path: ...` | The path starts with `//`, contains `\` or a scheme. | Send a plain rooted path. |
+
+## 502 `relay response is too large to buffer`
+
+A buffered reply exceeded 64 MB. Set `stream: true` on the route or add the path to `streaming.paths` so the reply is forwarded without being held.
+
+## Timeouts
+
+A buffered call that outlasts `network.timeout_seconds` (default 60) returns a timeout error. For a stream, the same bound applies to receiving the upstream's headers; after that `network.stream_idle_timeout_in_seconds` (default 60) closes a stream that stays silent. Raise either on the **Network** tab.
+
+## The call succeeded but the cost is 0 or wrong
+
+Open the row in **Relay Logs → More details → Cost** and compare the terms with the mapping, or replay the bodies through **Test Pricing**, whose notes say which field read nothing and why. Common causes:
+
+- **Not counted.** The method is not `POST` and the route does not set `billable: true`, or the upstream answered a non-`2xx` status. The row shows **Not billable** or the error status.
+- **Wrong body.** `units_source` points at the response while the quantity is in the request, or the other way round.
+- **Path mismatch.** gjson paths are case-sensitive and dot-separated: `usage.credits`, not `Usage.Credits` or `usage/credits`. An array of objects needs `#.field`.
+- **Content type.** Token, cost and `value` paths are read only from bodies whose content type contains `json` (or has none and parses as JSON). Whole-body measures read any body.
+- **Reported cost ignored.** `ignore_upstream_cost` is on, so `cost_path` is dropped by design.
+- **Route override.** A route sets a field to `0`, which waives it on that route; the route table shows the effective price and an **override** badge.
+- **Stream read nothing.** An SSE event carried none of the mapped paths. Each field keeps the last value reported; a non-SSE stream is forwarded unread unless priced by size.
+
+Token counts never change the cost; they are logged only.
+
+## The upstream rejects the request
+
+- **401 from the upstream.** Check the credential and auth type: a `header` type needs the exact header name the upstream expects and, for some APIs, a `value_prefix` such as `Token `. Remember that a caller's `Authorization` is dropped; only the relay's credential reaches the upstream.
+- **Missing header.** The caller sent a header the relay also sets in **Extra Headers**; the operator's value wins and the caller's copy is dropped. Under `aws_sigv4`, caller `x-amz-*` headers other than `X-Amz-Target` are dropped.
+- **SigV4 signature mismatch.** `auth.aws.service` must be the signing name (`textract`, `translate`), `credential.aws.region` the region the `base_url` host belongs to, and the base URL the regional endpoint.
+- **Wrong host or base path.** The caller's path is appended to `base_url`; a base URL that already ends in `/v1` plus a route of `/v1/search` sends `/v1/v1/search`.
+
+## The row is missing bodies or headers
+
+Content logging is off for the request through `client.disable_content_logging`, the virtual key, the project or the `x-bf-disable-content-logging` header (honoured when `client.allow_per_request_content_storage_override` is on), and the row says **Content logging has been disabled for this request**. Bodies over 64 KB are truncated and binary bodies are not kept. See [content logging](/features/observability/content-logging).
+
+## A relay from config.json did not appear
+
+The server log says why: `skipping relay "name" from config file: ...` with the validation error, `skipping duplicate relay` when two entries share a name, or `config store is disabled` when there is no store to reconcile into. Validate the entry against `transports/config.schema.json`; the Web UI and `POST /api/relays` return the same validation messages.

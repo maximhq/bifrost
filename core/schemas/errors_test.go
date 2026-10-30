@@ -462,6 +462,7 @@ var modelAddressingByRequestType = map[string]bool{
 	"PassthroughRequest":       false,
 	"PassthroughStreamRequest": false,
 	"MCPToolExecutionRequest":  false,
+	"RelayRequest":             false,
 	"UnknownRequest":           false,
 
 	// Internal, or session-oriented surfaces that do not 404 per call.

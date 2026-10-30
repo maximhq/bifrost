@@ -187,6 +187,19 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Open a new GitHub Copilot key and start Sign in with GitHub. The caller mocks the gateway's
+   * sign-in endpoints and saves the key.
+   */
+  async startCopilotSignIn(config: { name: string }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('copilot-sign-in-button').click()
+  }
+
+  /**
    * Add a key that mints its bearer with the RFC 7523 JWT bearer grant.
    * Only fields the caller sets are filled, so the form's defaults (RS256, subject = issuer,
    * 300s lifetime) are exercised when they are left out.
@@ -290,6 +303,32 @@ export class ProvidersPage extends BasePage {
       await this.page.getByTestId('key-input-oauth-scopes').fill(scope)
       await this.page.getByTestId('key-input-oauth-scopes').press('Enter')
     }
+  }
+
+  /**
+   * Add a SageMaker key with explicit AWS credentials to the currently selected sagemaker provider.
+   * Bifrost mints the endpoint bearer token from these locally, so no AWS call is made at save time.
+   */
+  async addSageMakerKey(config: {
+    name: string
+    accessKey: string
+    secretKey: string
+    region: string
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name', { exact: true }).fill(config.name)
+    await this.page.getByTestId('apikey-sagemaker-explicit-credentials-tab').click()
+    await this.page.getByTestId('apikey-sagemaker-access-key-input').fill(config.accessKey)
+    await this.page.getByTestId('apikey-sagemaker-secret-key-input').fill(config.secretKey)
+    await this.page.getByTestId('apikey-sagemaker-region-input').fill(config.region)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
   }
 
   /**

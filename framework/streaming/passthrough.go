@@ -104,6 +104,9 @@ func (a *Accumulator) processPassthroughStreamingResponse(ctx *schemas.BifrostCo
 	if passthroughUsage != nil && passthroughUsage.LLMUsage != nil {
 		data.TokenUsage = passthroughUsage.LLMUsage
 	}
+	if passthroughUsage != nil && passthroughUsage.ServiceTier != nil {
+		data.ServiceTier = passthroughUsage.ServiceTier
+	}
 
 	// Set error status if there was an error
 	if bifrostErr != nil {

@@ -311,6 +311,185 @@ func TestChromemStore_Pagination(t *testing.T) {
 	assert.Len(t, results, 4, "an oversized limit returns the remainder, not a panic")
 }
 
+// A paged read enumerates the namespace once and pages through what that
+// matched. Re-enumerating on every page cost a full similarity scan per page,
+// and an offset into a namespace that shrank between pages skipped documents
+// that were still there. Documents deleted mid-read are skipped without
+// leaving a page short, and one added mid-read is not read, as a snapshot
+// would have it.
+func TestChromemStore_GetAllPagesFromOneSnapshot(t *testing.T) {
+	ts := NewChromemTestSetup(t)
+	defer ts.Cleanup(t)
+	store := ts.Store
+
+	for i := 0; i < 10; i++ {
+		require.NoError(t, store.Add(ts.ctx, ChromemTestNamespace, fmt.Sprintf("snap-doc-%02d", i), generateTestEmbedding(ChromemTestDimension), map[string]interface{}{"key": i}))
+	}
+	first, cursor, err := store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, nil, 3)
+	require.NoError(t, err)
+	require.Len(t, first, 3)
+	require.NotNil(t, cursor)
+	require.Len(t, store.snapshots, 1, "the first page keeps what it matched for the rest")
+
+	require.NoError(t, store.Delete(ts.ctx, ChromemTestNamespace, "snap-doc-01"))
+	require.NoError(t, store.Delete(ts.ctx, ChromemTestNamespace, "snap-doc-04"))
+	require.NoError(t, store.Delete(ts.ctx, ChromemTestNamespace, "snap-doc-05"))
+	require.NoError(t, store.Add(ts.ctx, ChromemTestNamespace, "snap-doc-10", generateTestEmbedding(ChromemTestDimension), map[string]interface{}{"key": 99}))
+
+	seen := map[string]bool{}
+	for _, result := range first {
+		seen[result.ID] = true
+	}
+	var sizes []int
+	for cursor != nil {
+		var page []SearchResult
+		page, cursor, err = store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, cursor, 3)
+		require.NoError(t, err)
+		sizes = append(sizes, len(page))
+		for _, result := range page {
+			require.False(t, seen[result.ID], "read twice: %s", result.ID)
+			seen[result.ID] = true
+		}
+	}
+	for _, id := range []string{"snap-doc-02", "snap-doc-03", "snap-doc-06", "snap-doc-07", "snap-doc-08", "snap-doc-09"} {
+		require.True(t, seen[id], "%s was in the namespace throughout and was skipped", id)
+	}
+	require.False(t, seen["snap-doc-04"] || seen["snap-doc-05"], "a document deleted mid-read is not returned")
+	require.False(t, seen["snap-doc-10"], "a document added mid-read is not in the snapshot")
+	require.Equal(t, []int{3, 2}, sizes, "a deletion does not leave a page short before the end")
+	require.Empty(t, store.snapshots, "the last page drops the snapshot")
+
+	// A snapshot that has gone - expired, evicted, or another process's - is
+	// rebuilt and read from the same offset.
+	gone := "no-such-snapshot:2"
+	page, _, err := store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, &gone, 2)
+	require.NoError(t, err)
+	require.Equal(t, []string{"snap-doc-03", "snap-doc-06"}, []string{page[0].ID, page[1].ID})
+
+	// Reads abandoned after their first page are bounded in what they keep.
+	for i := 0; i < chromemMaxSnapshots+4; i++ {
+		_, next, err := store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, nil, 1)
+		require.NoError(t, err)
+		require.NotNil(t, next)
+	}
+	require.Len(t, store.snapshots, chromemMaxSnapshots)
+}
+
+// A paging read hands back the stored vectors only when it is asked to, the
+// same opt-in the Weaviate backend honours: a listing that wants ids must not
+// carry a vector per row, and a caller that needs them must get what was
+// stored.
+func TestChromemStore_GetAllIncludesVectorsOnRequest(t *testing.T) {
+	ts := NewChromemTestSetup(t)
+	defer ts.Cleanup(t)
+
+	stored := map[string][]float32{}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("vector-doc-%d", i)
+		embedding := make([]float32, ChromemTestDimension)
+		embedding[i] = 1
+		stored[id] = append([]float32(nil), embedding...)
+		require.NoError(t, ts.Store.Add(ts.ctx, ChromemTestNamespace, id, embedding, map[string]interface{}{"key": id}))
+	}
+
+	plain, _, err := ts.Store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, plain, 3)
+	for _, result := range plain {
+		assert.Nil(t, result.Vector, "vectors are opt-in")
+	}
+
+	withVectors, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, withVectors, 3)
+	for _, result := range withVectors {
+		assert.Equal(t, stored[result.ID], result.Vector)
+	}
+
+	// A caller that writes into a returned vector must not reach the stored
+	// embedding.
+	for _, result := range withVectors {
+		for index := range result.Vector {
+			result.Vector[index] = 42
+		}
+	}
+	again, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, again, 3)
+	for _, result := range again {
+		assert.Equal(t, stored[result.ID], result.Vector, "a returned vector aliases the stored embedding")
+	}
+
+	// Vectors are copied per page, so a page reached by cursor is copied too,
+	// and the page cannot be resliced into the uncopied rows past it.
+	first, cursor, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 1)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.NotNil(t, cursor)
+	assert.Equal(t, 1, cap(first), "the page's capacity ends at the page")
+	second, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, cursor, 1)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+	for index := range second[0].Vector {
+		second[0].Vector[index] = 42
+	}
+	again, _, err = ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	for _, result := range again {
+		assert.Equal(t, stored[result.ID], result.Vector, "a vector from a later page aliases the stored embedding")
+	}
+}
+
+// BenchmarkChromemStore_GetAllPageWithVectors pages a large namespace with
+// vectors, the shape of the topic clustering run: only the page's vectors
+// should be copied, not every matching document's.
+func BenchmarkChromemStore_GetAllPageWithVectors(b *testing.B) {
+	ctx := context.Background()
+	store, err := newChromemStore(ctx, &ChromemConfig{}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(b, err)
+	require.NoError(b, store.CreateNamespace(ctx, ChromemTestNamespace, ChromemTestDimension, nil))
+	for i := 0; i < 2000; i++ {
+		require.NoError(b, store.Add(ctx, ChromemTestNamespace, fmt.Sprintf("doc-%05d", i), generateTestEmbedding(ChromemTestDimension), map[string]interface{}{"key": i}))
+	}
+	vectorCtx := WithIncludeVectors(ctx)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, _, err := store.GetAll(vectorCtx, ChromemTestNamespace, nil, nil, nil, 100); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkChromemStore_GetAllFullReadWithVectors reads a whole namespace page
+// by page, as a topics run on Chromem does. Its cost should grow with the
+// namespace, not with the namespace times the number of pages.
+func BenchmarkChromemStore_GetAllFullReadWithVectors(b *testing.B) {
+	ctx := context.Background()
+	store, err := newChromemStore(ctx, &ChromemConfig{}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(b, err)
+	require.NoError(b, store.CreateNamespace(ctx, ChromemTestNamespace, ChromemTestDimension, nil))
+	for i := 0; i < 2000; i++ {
+		require.NoError(b, store.Add(ctx, ChromemTestNamespace, fmt.Sprintf("doc-%05d", i), generateTestEmbedding(ChromemTestDimension), map[string]interface{}{"key": i}))
+	}
+	vectorCtx := WithIncludeVectors(ctx)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var cursor *string
+		for {
+			_, next, err := store.GetAll(vectorCtx, ChromemTestNamespace, nil, nil, cursor, 200)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if next == nil {
+				break
+			}
+			cursor = next
+		}
+	}
+}
+
 func TestChromemStore_DimensionHandling(t *testing.T) {
 	ts := NewChromemTestSetup(t)
 	defer ts.Cleanup(t)

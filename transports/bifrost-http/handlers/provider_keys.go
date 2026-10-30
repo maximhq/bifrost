@@ -222,6 +222,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", redactedKey.ID, redactedKey.Name, nil, redactedKey)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -261,6 +262,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
 		return
+	}
+	var before json.RawMessage
+	if oldRedactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID); err == nil {
+		before = lib.AuditSnapshot(oldRedactedKey)
 	}
 
 	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
@@ -354,6 +359,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", redactedKey.ID, redactedKey.Name, before, redactedKey)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -406,6 +412,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
+	lib.RecordAuditChange(ctx, "provider_key.deleted", "provider_key", redactedKey.ID, redactedKey.Name, redactedKey, nil)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -445,6 +452,7 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider.models_refreshed", "provider", string(provider), string(provider), nil, map[string]any{"key_count": len(keys)})
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
 }
 
@@ -488,6 +496,7 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider_key.models_refreshed", "provider_key", keyID, refreshedKey.Name, nil, map[string]any{"provider": string(provider), "key_id": keyID})
 	SendJSON(ctx, refreshedKey)
 }
 
@@ -511,12 +520,12 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"vertex_key_config":         func() { updateKey.VertexKeyConfig = oldRawKey.VertexKeyConfig },
 		"bedrock_key_config":        func() { updateKey.BedrockKeyConfig = oldRawKey.BedrockKeyConfig },
 		"bedrock_mantle_key_config": func() { updateKey.BedrockMantleKeyConfig = oldRawKey.BedrockMantleKeyConfig },
+		"sagemaker_key_config":      func() { updateKey.SageMakerKeyConfig = oldRawKey.SageMakerKeyConfig },
 		"vllm_key_config":           func() { updateKey.VLLMKeyConfig = oldRawKey.VLLMKeyConfig },
 		"replicate_key_config":      func() { updateKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig },
 		"ollama_key_config":         func() { updateKey.OllamaKeyConfig = oldRawKey.OllamaKeyConfig },
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
-		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
 		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
 		"oauth_key_config":          func() { updateKey.OAuthKeyConfig = oldRawKey.OAuthKeyConfig },
 		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
@@ -674,6 +683,36 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.SageMakerKeyConfig != nil {
+		var accessKey, secretKey, sessionToken, region, roleARN, externalID, sessionName *schemas.SecretVar
+		if oldRawKey.SageMakerKeyConfig != nil {
+			accessKey = &oldRawKey.SageMakerKeyConfig.AccessKey
+			secretKey = &oldRawKey.SageMakerKeyConfig.SecretKey
+			sessionToken = oldRawKey.SageMakerKeyConfig.SessionToken
+			region = oldRawKey.SageMakerKeyConfig.Region
+			roleARN = oldRawKey.SageMakerKeyConfig.RoleARN
+			externalID = oldRawKey.SageMakerKeyConfig.ExternalID
+			sessionName = oldRawKey.SageMakerKeyConfig.RoleSessionName
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.SageMakerKeyConfig.AccessKey, accessKey, "sagemaker_key_config.access_key"},
+			{&mergedKey.SageMakerKeyConfig.SecretKey, secretKey, "sagemaker_key_config.secret_key"},
+			{mergedKey.SageMakerKeyConfig.SessionToken, sessionToken, "sagemaker_key_config.session_token"},
+			{mergedKey.SageMakerKeyConfig.Region, region, "sagemaker_key_config.region"},
+			{mergedKey.SageMakerKeyConfig.RoleARN, roleARN, "sagemaker_key_config.role_arn"},
+			{mergedKey.SageMakerKeyConfig.ExternalID, externalID, "sagemaker_key_config.external_id"},
+			{mergedKey.SageMakerKeyConfig.RoleSessionName, sessionName, "sagemaker_key_config.session_name"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+	}
+
 	if mergedKey.VLLMKeyConfig != nil {
 		var stored *schemas.SecretVar
 		if oldRawKey.VLLMKeyConfig != nil {
@@ -740,29 +779,6 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			}
 		}
 	}
-	if mergedKey.GithubCopilotKeyConfig != nil {
-		var old *schemas.GithubCopilotKeyConfig
-		if oldRawKey.GithubCopilotKeyConfig != nil {
-			old = oldRawKey.GithubCopilotKeyConfig
-		}
-		for _, field := range []struct {
-			name    string
-			updated *schemas.SecretVar
-			stored  *schemas.SecretVar
-		}{
-			{"app_id", &mergedKey.GithubCopilotKeyConfig.AppID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.AppID })},
-			{"installation_id", &mergedKey.GithubCopilotKeyConfig.InstallationID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.InstallationID })},
-			{"repository_id", &mergedKey.GithubCopilotKeyConfig.RepositoryID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.RepositoryID })},
-			{"private_key", &mergedKey.GithubCopilotKeyConfig.PrivateKey, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.PrivateKey })},
-			{"github_domain", &mergedKey.GithubCopilotKeyConfig.GithubDomain, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.GithubDomain })},
-		} {
-			if err := preserve(field.updated, field.stored, "github_copilot_key_config."+field.name); err != nil {
-
-				return schemas.Key{}, err
-			}
-		}
-	}
-
 	if mergedKey.OAuthKeyConfig != nil {
 		var tokenURL, clientID, clientSecret, privateKey *schemas.SecretVar
 		if old := oldRawKey.OAuthKeyConfig; old != nil {
@@ -816,80 +832,6 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	}
 
 	return mergedKey, nil
-}
-
-// validateGithubCopilotLiteral applies a format check to a credential field, but only when
-// the operator supplied a literal. A secret reference resolves elsewhere and at another
-// time, so its shape cannot be judged here.
-func validateGithubCopilotLiteral(name string, value *schemas.SecretVar, ok func(string) bool) error {
-	if value.IsFromSecret() {
-		return nil
-	}
-	if !ok(strings.TrimSpace(value.GetValue())) {
-		return fmt.Errorf("github_copilot_key_config.%s is not valid for GitHub Copilot keys", name)
-	}
-	return nil
-}
-
-// isDigits reports whether s is a non-empty run of ASCII digits. GitHub installation and
-// repository IDs are numeric, and the installation ID is interpolated into an
-// api.github.com path, so a non-numeric value is a path-injection shape as well as a typo.
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// isPEMPrivateKey reports whether s is an RSA private key Bifrost can actually sign an App
-// JWT with. GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them
-// to PKCS#8 ("PRIVATE KEY").
-//
-// The DER payload is parsed, not just the envelope. A envelope-only check accepts an EC key,
-// a passphrase-encrypted key and a block of random base64 alike, none of which can produce
-// an RS256 signature, so each would pass setup and fail at the first inference call.
-//
-// Literal backslash-n is repaired first, because that is how a PEM most often arrives from a
-// JSON config or an environment variable.
-func isPEMPrivateKey(s string) bool {
-	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
-		s = strings.ReplaceAll(s, `\n`, "\n")
-	}
-
-	block, rest := pem.Decode([]byte(strings.TrimSpace(s)))
-	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
-		return false
-	}
-
-	switch block.Type {
-	case "RSA PRIVATE KEY":
-		_, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-		return err == nil
-	case "PRIVATE KEY":
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return false
-		}
-		// PKCS#8 is a container: it can hold an EC or Ed25519 key just as happily.
-		_, isRSA := key.(*rsa.PrivateKey)
-		return isRSA
-	default:
-		return false
-	}
-}
-
-// fieldOrNil selects a field from a possibly-nil stored config, so a masked update against
-// a key that never had this section behaves the same as one against a missing field.
-func fieldOrNil(config *schemas.GithubCopilotKeyConfig, pick func(*schemas.GithubCopilotKeyConfig) *schemas.SecretVar) *schemas.SecretVar {
-	if config == nil {
-		return nil
-	}
-	return pick(config)
 }
 
 func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
@@ -980,6 +922,9 @@ func validateProviderKeyRegions(key schemas.Key) error {
 	if c := key.BedrockMantleKeyConfig; c != nil && c.Region != nil {
 		regions = append(regions, region{"bedrock_mantle_key_config.region", c.Region})
 	}
+	if c := key.SageMakerKeyConfig; c != nil && c.Region != nil {
+		regions = append(regions, region{"sagemaker_key_config.region", c.Region})
+	}
 	for alias, cfg := range key.Aliases {
 		if cfg.Region != nil {
 			regions = append(regions, region{"aliases." + alias + ".region", cfg.Region})
@@ -1015,50 +960,6 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if key.CloudflareKeyConfig == nil || !key.CloudflareKeyConfig.AccountID.IsSet() {
 			return fmt.Errorf("cloudflare_key_config.account_id is required for Cloudflare keys")
 		}
-	case schemas.GithubCopilot:
-		// A Copilot API token in value is a valid alternative to the GitHub App bundle. But a
-		// supplied App config is checked either way: a half-filled block sitting behind a
-		// token persists silently and only surfaces later, when the token expires or is
-		// removed and the key falls back to credentials that were never valid.
-		if key.GithubCopilotKeyConfig == nil {
-			if key.Value.IsSet() {
-				return nil
-			}
-			return fmt.Errorf("github_copilot_key_config is required for GitHub Copilot keys without a value")
-		}
-		for _, field := range []struct {
-			name  string
-			value schemas.SecretVar
-		}{
-			{"app_id", key.GithubCopilotKeyConfig.AppID},
-			{"installation_id", key.GithubCopilotKeyConfig.InstallationID},
-			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID},
-			{"private_key", key.GithubCopilotKeyConfig.PrivateKey},
-		} {
-			if !field.value.IsSet() {
-				return fmt.Errorf("github_copilot_key_config.%s is required for GitHub Copilot keys", field.name)
-			}
-		}
-		// Check the shape of literal values too, not just their presence. A non-numeric
-		// installation ID or a mangled PEM otherwise persists and fails at the first
-		// inference call, where it reads as a runtime fault rather than a typo.
-		//
-		// Environment and vault references are exempt: their values are not resolvable
-		// here, so checking them would reject every legitimate headless configuration.
-		if err := validateGithubCopilotLiteral("installation_id", &key.GithubCopilotKeyConfig.InstallationID, isDigits); err != nil {
-			return err
-		}
-		if err := validateGithubCopilotLiteral("repository_id", &key.GithubCopilotKeyConfig.RepositoryID, isDigits); err != nil {
-			return err
-		}
-		if err := validateGithubCopilotLiteral("private_key", &key.GithubCopilotKeyConfig.PrivateKey, isPEMPrivateKey); err != nil {
-			return err
-		}
-		// app_id is deliberately not digit-checked. GitHub documents the App JWT issuer as
-		// "the client ID or application ID" and says "use of the client ID is recommended",
-		// and client IDs look like Iv1.b507a08c87ecfe98. A digits-only rule here would reject
-		// the configuration GitHub itself recommends.
-		// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 	case schemas.Azure:
 		if key.AzureKeyConfig == nil || !key.AzureKeyConfig.Endpoint.IsSet() {
 			return fmt.Errorf("azure_key_config.endpoint is required for Azure keys")
@@ -1070,6 +971,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 	case schemas.BedrockMantle:
 		if key.BedrockMantleKeyConfig == nil || key.BedrockMantleKeyConfig.Region == nil || !key.BedrockMantleKeyConfig.Region.IsSet() {
 			return fmt.Errorf("bedrock_mantle_key_config.region is required for Bedrock Mantle keys")
+		}
+	case schemas.SageMaker:
+		if key.SageMakerKeyConfig == nil || key.SageMakerKeyConfig.Region == nil || !key.SageMakerKeyConfig.Region.IsSet() {
+			return fmt.Errorf("sagemaker_key_config.region is required for SageMaker keys")
 		}
 	case schemas.VLLM:
 		if key.VLLMKeyConfig == nil || !key.VLLMKeyConfig.URL.IsSet() {
@@ -1147,7 +1052,8 @@ func isHTTPSOrLoopbackURL(raw string) bool {
 
 // parseAsymmetricPEMPrivateKey parses s as an RSA or EC private key Bifrost can sign a
 // JWT bearer assertion with: PKCS#1, SEC 1, or a PKCS#8 container holding either. Literal
-// backslash-n is repaired first, as in isPEMPrivateKey.
+// backslash-n is repaired first, because that is how a PEM most often arrives from a JSON
+// config or an environment variable.
 func parseAsymmetricPEMPrivateKey(s string) (crypto.PrivateKey, bool) {
 	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
 		s = strings.ReplaceAll(s, `\n`, "\n")
@@ -1207,8 +1113,8 @@ func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
 // credentials, keyed by its JSON path. It reads every provider's config block, not just the
 // key's own provider: an unused block is harmless to include and fails closed, while a
 // provider-type list silently misses new fields (Databricks workspace_url, Bedrock endpoints,
-// Copilot github_domain, the per-alias Azure endpoint and the Vertex credential JSON were all
-// missed that way). Unset values are omitted.
+// the per-alias Azure endpoint and the Vertex credential JSON were all missed that way). Unset
+// values are omitted.
 //
 // A Vertex auth_credentials JSON is a dial target as a whole, not only a secret: the Google
 // client takes its destinations from it (a service account's token_uri, an impersonated
@@ -1249,9 +1155,6 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	if c := key.DatabricksKeyConfig; c != nil {
 		add("databricks_key_config.workspace_url", &c.WorkspaceURL)
 	}
-	if c := key.GithubCopilotKeyConfig; c != nil {
-		add("github_copilot_key_config.github_domain", &c.GithubDomain)
-	}
 	if c := key.OAuthKeyConfig; c != nil {
 		add("oauth_key_config.token_url", &c.TokenURL)
 	}
@@ -1263,6 +1166,9 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.BedrockMantleKeyConfig; c != nil {
 		addBedrockEndpoints("bedrock_mantle_key_config.endpoints", c.Endpoints)
+	}
+	if c := key.SageMakerKeyConfig; c != nil && c.Endpoints != nil {
+		add("sagemaker_key_config.endpoints.runtime", c.Endpoints.Runtime)
 	}
 	for alias, cfg := range key.Aliases {
 		if cfg.AzureAliasCfg != nil {
