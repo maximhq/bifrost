@@ -562,7 +562,32 @@
 			"proxyUrlRequired": "URL прокси обязателен",
 			"rootedPathSearch": "Введите путь от корня, например /v1/search",
 			"statusRange": "Статус должен быть от 100 до 599"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "Для http/socks5 необходимо указать URL прокси",
+		"usernameAndPasswordMustBothBeProvided": "Укажите и имя пользователя, и пароль",
+		"maxRetriesCannotBeNegative": "Максимальное число повторов не может быть отрицательным",
+		"endpointIsRequiredForAzureKeys": "Для ключей Azure необходимо указать эндпоинт",
+		"projectIdIsRequiredForVertexKeys": "Для ключей Vertex AI необходимо указать ID проекта",
+		"regionIsRequiredForVertexKeys": "Для ключей Vertex AI необходимо указать регион",
+		"authCredentialsMustBeValidJsonOrEnvVar": "Если учётные данные указаны, они должны быть корректным JSON-объектом или в формате env.VAR",
+		"enterTheVpcEndpointDnsName": "Введите DNS-имя эндпоинта из консоли VPC, а не его ID",
+		"regionIsRequiredForBedrockKeys": "Для ключей Bedrock необходимо указать регион",
+		"bedrockAccessKeyPair": "Для Bedrock укажите и Access Key, и Secret Key или оставьте оба поля пустыми для аутентификации через роль IAM",
+		"regionIsRequiredForBedrockMantleKeys": "Для ключей Bedrock Mantle необходимо указать регион",
+		"bedrockMantleAccessKeyPair": "Для Bedrock Mantle укажите и Access Key, и Secret Key или оставьте оба поля пустыми для аутентификации через роль IAM",
+		"regionIsRequiredForSagemakerKeys": "Для ключей SageMaker необходимо указать регион",
+		"sagemakerAccessKeyPair": "Для SageMaker укажите и Access Key, и Secret Key или оставьте оба поля пустыми, чтобы использовать стандартную цепочку учётных данных AWS",
+		"keyNameIsRequired": "Укажите название ключа",
+		"keyWeightsMustBeBetween01And1": "Вес ключа должен быть от 0,1 до 1",
+		"deploymentsMustHaveAModelIdOnEveryRow": "В каждой строке развёртываний должен быть указан ID модели",
+		"pleaseSelectAProvider": "Выберите провайдера",
+		"customProviderNameFormat": "Название пользовательского провайдера может содержать только строчные латинские буквы, цифры, '-' и '_' (без пробелов)",
+		"baseProviderTypeIsRequiredForCustomProviders": "Для пользовательского провайдера необходимо указать тип базового провайдера",
+		"customProviderNameCannotMatchAStandardProvider": "Название пользовательского провайдера не может совпадать с названием стандартного провайдера",
+		"baseUrlIsRequiredForThisProvider": "Для этого провайдера необходимо указать базовый URL",
+		"baseUrlMustStartWithHttpOrHttps": "Базовый URL должен начинаться с http:// или https://",
+		"atLeastOneApiKeyIsRequired": "Необходимо указать хотя бы один API-ключ",
+		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым"
 	},
 	"permissionDenied": {
 		"create": "У вас нет разрешения на создание: {{entity}}.",
@@ -630,5 +655,11 @@
 	},
 	"badges": {
 		"beta": "БЕТА"
+	},
+	"apiErrors": {
+		"networkUnreachable": "Ошибка сети: не удаётся подключиться к серверу",
+		"unexpected": "Произошла непредвиденная ошибка",
+		"requestTimeout": "Время ожидания запроса истекло",
+		"network": "Ошибка сети"
 	}
 }

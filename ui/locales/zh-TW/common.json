@@ -340,7 +340,32 @@
 			"proxyUrlRequired": "代理 URL 為必填",
 			"rootedPathSearch": "請輸入以 / 開頭的路徑，例如 /v1/search",
 			"statusRange": "狀態碼必須介於 100 到 599 之間"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "http/socks5 需要填寫代理 URL",
+		"usernameAndPasswordMustBothBeProvided": "使用者名稱和密碼必須同時填寫",
+		"maxRetriesCannotBeNegative": "最大重試次數不能為負數",
+		"endpointIsRequiredForAzureKeys": "Azure 金鑰需要填寫端點",
+		"projectIdIsRequiredForVertexKeys": "Vertex AI 金鑰需要填寫專案 ID",
+		"regionIsRequiredForVertexKeys": "Vertex AI 金鑰需要填寫區域",
+		"authCredentialsMustBeValidJsonOrEnvVar": "填寫的驗證憑證必須是有效的 JSON 物件或 env.VAR 格式",
+		"enterTheVpcEndpointDnsName": "請輸入 VPC 主控台中端點的 DNS 名稱，而不是其 ID",
+		"regionIsRequiredForBedrockKeys": "Bedrock 金鑰需要填寫區域",
+		"bedrockAccessKeyPair": "Bedrock：請同時填寫 Access Key 和 Secret Key，或兩者都留空以使用 IAM 角色驗證",
+		"regionIsRequiredForBedrockMantleKeys": "Bedrock Mantle 金鑰需要填寫區域",
+		"bedrockMantleAccessKeyPair": "Bedrock Mantle：請同時填寫 Access Key 和 Secret Key，或兩者都留空以使用 IAM 角色驗證",
+		"regionIsRequiredForSagemakerKeys": "SageMaker 金鑰需要填寫區域",
+		"sagemakerAccessKeyPair": "SageMaker：請同時填寫 Access Key 和 Secret Key，或兩者都留空以使用預設的 AWS 憑證鏈",
+		"keyNameIsRequired": "金鑰名稱為必填項",
+		"keyWeightsMustBeBetween01And1": "金鑰權重必須介於 0.1 到 1 之間",
+		"deploymentsMustHaveAModelIdOnEveryRow": "部署的每一列都必須設定模型 ID",
+		"pleaseSelectAProvider": "請選擇供應商",
+		"customProviderNameFormat": "自訂供應商名稱只能包含小寫字母、數字、'-' 或 '_'（不能有空格）",
+		"baseProviderTypeIsRequiredForCustomProviders": "自訂供應商需要填寫基礎供應商類型",
+		"customProviderNameCannotMatchAStandardProvider": "自訂供應商名稱不能與標準供應商名稱相同",
+		"baseUrlIsRequiredForThisProvider": "此供應商需要填寫基礎 URL",
+		"baseUrlMustStartWithHttpOrHttps": "基礎 URL 必須以 http:// 或 https:// 開頭",
+		"atLeastOneApiKeyIsRequired": "至少需要一個 API 金鑰",
+		"apiKeyValueCannotBeEmpty": "API 金鑰值不能為空"
 	},
 	"permissionDenied": {
 		"create": "你沒有許可權建立{{entity}}。",
@@ -596,5 +621,11 @@
 	},
 	"badges": {
 		"beta": "BETA"
+	},
+	"apiErrors": {
+		"networkUnreachable": "網路錯誤：無法連線到伺服器",
+		"unexpected": "發生非預期的錯誤",
+		"requestTimeout": "請求逾時",
+		"network": "網路錯誤"
 	}
 }
