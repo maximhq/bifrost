@@ -294954,6 +294954,124 @@
           ]
         }
       ]
+    },
+    {
+      "name": "286. Anthropic non-streaming interleaved thinking keeps wire order (#9156 / PR #9212)",
+      "description": "Bug: a non-streaming Claude response with interleaved thinking came back with its thinking blocks hoisted into one reasoning item at the front of the turn, so a client replaying that assistant turn on /anthropic/v1/messages was rejected ('thinking blocks ... cannot be modified'). Production path: /anthropic/v1/messages and /v1/responses -> Anthropic provider -> AnthropicMessageResponse.ToBifrostResponsesResponse -> (messages route) ToAnthropicResponsesResponse. The same converter serves Vertex and Bedrock InvokeModel, covered by the unit table TestToBifrostResponsesResponseThinkingOrderByModelID. Cases: the messages-route replay (rejected before the fix, accepted after, when the model interleaves) and the /v1/responses output shape (a reasoning item per thinking run, in position). Both need a model that returns two tool calls with interleaved thinking.",
+      "item": [
+        {
+          "name": "anthropic/claude-opus-4-7 /anthropic/v1/messages replay of interleaved thinking turn - #9156",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var res = pm.response.json();",
+                  "pm.test('first turn succeeded: ' + pm.response.text(), function () { pm.expect(pm.response.code).to.be.below(400); });",
+                  "var blocks = res.content || [];",
+                  "var uses = blocks.filter(function (b) { return b.type === 'tool_use'; });",
+                  "pm.test('Claude called a tool so the turn can be replayed', function () { pm.expect(uses.length).to.be.above(0); });",
+                  "// Replay the assistant turn verbatim with its tool results: Anthropic rejects the request ('thinking blocks ... cannot be modified') if a thinking block moved.",
+                  "var first = JSON.parse(pm.request.body.raw);",
+                  "var replay = {",
+                  "  model: first.model, max_tokens: first.max_tokens, thinking: first.thinking, tools: first.tools,",
+                  "  messages: first.messages.concat([",
+                  "    { role: 'assistant', content: blocks },",
+                  "    { role: 'user', content: uses.map(function (u) { return { type: 'tool_result', tool_use_id: u.id, content: 'sunny, 20C' }; }) }",
+                  "  ])",
+                  "};",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/anthropic/v1/messages', method: 'POST', header: { 'Content-Type': 'application/json', 'anthropic-beta': 'interleaved-thinking-2025-05-14' }, body: { mode: 'raw', raw: JSON.stringify(replay) } }, function (err, r) {",
+                  "  pm.test('replaying the assistant turn with unmodified thinking blocks is accepted', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(r.code, 'replay failed: ' + r.text()).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "interleaved-thinking-2025-05-14"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"max_tokens\": 2048,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024\n  },\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the weather for a city\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather once for each of Paris and Tokyo, one call per turn, then compare them.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-4-7 /v1/responses reasoning items keep wire position - #9156",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var res = pm.response.json();",
+                  "pm.test('succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var out = res.output || [];",
+                  "var calls = out.filter(function (o) { return o.type === 'function_call'; });",
+                  "pm.test('output has reasoning and a function_call', function () {",
+                  "  pm.expect(out.some(function (o) { return o.type === 'reasoning'; })).to.equal(true);",
+                  "  pm.expect(calls.length).to.be.above(0);",
+                  "});",
+                  "// With interleaved thinking, reasoning items stay between the function_call items they sit between instead of all being hoisted to the front.",
+                  "pm.test('reasoning items keep their wire positions', function () {",
+                  "  if (calls.length < 2) { return; }",
+                  "  var firstCall = out.findIndex(function (o) { return o.type === 'function_call'; });",
+                  "  var late = out.slice(firstCall + 1).some(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(late, 'reasoning was hoisted ahead of the first function_call: ' + JSON.stringify(out.map(function (o) { return o.type; }))).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-4-7\",\n  \"max_output_tokens\": 2048,\n  \"reasoning\": {\n    \"effort\": \"medium\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": \"Call get_weather once for each of Paris and Tokyo, one call per turn, then compare them.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

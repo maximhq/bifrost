@@ -633,6 +633,23 @@ func TestOrderedConversionKeepsEmbeddedReasoningIDsPerRun(t *testing.T) {
 	}
 }
 
+// outputKinds names each Responses output item by kind, so the /v1/responses output
+// shape can be pinned directly.
+func outputKinds(msgs []schemas.ResponsesMessage) []string {
+	var out []string
+	for _, m := range msgs {
+		switch {
+		case m.Type != nil && *m.Type == schemas.ResponsesMessageTypeReasoning:
+			out = append(out, "reasoning")
+		case m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCall:
+			out = append(out, "function_call")
+		default:
+			out = append(out, "message")
+		}
+	}
+	return out
+}
+
 // A non-streaming response is converted to Responses and back before the client sees it
 // on /anthropic/v1/messages. Claude's thinking blocks must come back where it wrote them,
 // or replaying the turn is rejected as a modified thinking block (issue #9156).
@@ -647,11 +664,73 @@ func TestResponsesRoundTripKeepsInterleavedThinkingOrder(t *testing.T) {
 	}
 
 	bifrostResp := resp.ToBifrostResponsesResponse(ctx)
-	bifrostResp.Model = resp.Model
 	back := ToAnthropicResponsesResponse(ctx, bifrostResp)
 
 	got, want := blockLabels(back.Content), blockLabels(resp.Content)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("block order changed:\n got  %v\n want %v", got, want)
+	}
+
+	// /v1/responses sees the same split: a reasoning item per thinking run (the redacted
+	// block with its own id is a separate item), each between the message and
+	// function_call items it sits between.
+	wantKinds := []string{"reasoning", "message", "function_call", "reasoning", "reasoning", "message", "function_call", "reasoning", "function_call"}
+	if kinds := outputKinds(bifrostResp.Output); !reflect.DeepEqual(kinds, wantKinds) {
+		t.Fatalf("output item kinds = %v, want %v", kinds, wantKinds)
+	}
+}
+
+// Vertex and Bedrock InvokeModel decode the provider body into the same
+// AnthropicMessageResponse and call the same converter, so the wire model id they report
+// decides the gate. All of them keep the turn in wire order; a non-Claude model id behind
+// an Anthropic-compatible endpoint keeps the previous grouping on purpose.
+func TestToBifrostResponsesResponseThinkingOrderByModelID(t *testing.T) {
+	wireOrder := []string{"reasoning", "message", "function_call", "reasoning", "reasoning", "message", "function_call", "reasoning", "function_call"}
+	grouped := []string{"reasoning", "reasoning", "message", "function_call", "reasoning", "message", "function_call", "function_call"}
+	cases := []struct {
+		name  string
+		model string
+		want  []string
+	}{
+		{"anthropic", "claude-opus-5-5", wireOrder},
+		{"vertex", "claude-opus-5-5@20261001", wireOrder},
+		{"bedrock invoke", "anthropic.claude-opus-5-5-v1:0", wireOrder},
+		{"compatible third party", "glm-5", grouped},
+		{"empty model", "", grouped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &AnthropicMessageResponse{ID: "msg_1", Type: "message", Role: "assistant", Model: tc.model, Content: interleavedThinkingTurn()}
+			got := outputKinds(resp.ToBifrostResponsesResponse(&schemas.BifrostContext{}).Output)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("output item kinds = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The Responses->Chat fallback buffers each reasoning item and attaches it to the next
+// assistant message, so with the wire-ordered output every thinking run lands on the
+// message that follows it, with its signature.
+func TestInterleavedThinkingOutputToChatMessagesAttachesRunsInOrder(t *testing.T) {
+	resp := &AnthropicMessageResponse{ID: "msg_1", Type: "message", Role: "assistant", Model: "claude-opus-5-5", Content: interleavedThinkingTurn()}
+	chat := schemas.ToChatMessages(resp.ToBifrostResponsesResponse(&schemas.BifrostContext{}).Output)
+
+	var sigs [][]string
+	for _, m := range chat {
+		if m.Role != schemas.ChatMessageRoleAssistant || m.ChatAssistantMessage == nil {
+			continue
+		}
+		var run []string
+		for _, d := range m.ChatAssistantMessage.ReasoningDetails {
+			if d.Signature != nil {
+				run = append(run, *d.Signature)
+			}
+		}
+		sigs = append(sigs, run)
+	}
+	want := [][]string{nil, {"sig-1"}, {"sig-2"}}
+	if !reflect.DeepEqual(sigs, want) {
+		t.Fatalf("signatures per assistant message = %v, want %v", sigs, want)
 	}
 }
