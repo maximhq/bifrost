@@ -298484,7 +298484,7 @@
       ]
     },
     {
-      "name": "297. Gemini embeddings batches use asyncBatchEmbedContent (gemini embeddings batch) (PR #9320)",
+      "name": "297. Gemini embeddings batches use asyncBatchEmbedContent (gemini embeddings batch) (PR #9320) [SERIAL]",
       "description": "Batch jobs for Gemini embedding models used to be sent to batchGenerateContent, which Gemini rejects for them (\"not supported for batchGenerateContent\"). Batches created with endpoint /v1/embeddings (or an embedding model) now go to asyncBatchEmbedContent. The first case creates a two-line embeddings batch with inline requests and must be accepted, the next two retrieve and cancel it so the run costs nothing, and the last pins the early 400 when an embeddings batch names no model. Result parsing and the accounting endpoint are pinned by the Go tests in core/providers/gemini; settled results are not asserted here because a batch only completes asynchronously.",
       "item": [
         {

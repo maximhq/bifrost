@@ -367,6 +367,16 @@ func geminiFileResultToBatchResultItem(resultLine GeminiBatchFileResultLine, fal
 		}
 		return item, nil
 	}
+	if resultLine.Embedding != nil && (len(resultLine.Response) == 0 || strings.TrimSpace(string(resultLine.Response)) == "null") {
+		item.Response = &schemas.BatchResultResponse{
+			StatusCode: http.StatusOK,
+			Body: geminiEmbeddingToBatchResultBody(&GeminiEmbeddingResponse{
+				Embedding:     resultLine.Embedding,
+				UsageMetadata: resultLine.UsageMetadata,
+			}),
+		}
+		return item, nil
+	}
 	if len(resultLine.Response) == 0 || strings.TrimSpace(string(resultLine.Response)) == "null" {
 		return schemas.BatchResultItem{}, fmt.Errorf("gemini batch result line has neither response nor error")
 	}

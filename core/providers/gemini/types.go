@@ -3081,6 +3081,9 @@ type GeminiBatchFileResultLine struct {
 	Key      string                 `json:"key,omitempty"`
 	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
 	Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
+	// Embeddings batch lines may carry the embed response directly, with no response wrapper.
+	Embedding     *GeminiEmbedding                      `json:"embedding,omitempty"`
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"`
 }
 
 // GeminiFileResponseLine represents the response field inside a Gemini batch

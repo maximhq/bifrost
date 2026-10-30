@@ -616,6 +616,21 @@ func TestGeminiEmbeddingBatchResults(t *testing.T) {
 		assert.Equal(t, 0, data[0]["index"])
 	})
 
+	t.Run("FileLineWithoutResponseWrapper", func(t *testing.T) {
+		var line GeminiBatchFileResultLine
+		require.NoError(t, sonic.Unmarshal([]byte(`{"key":"p4","embedding":{"values":[2,3]},"usageMetadata":{"promptTokenCount":4}}`), &line))
+		item, err := geminiFileResultToBatchResultItem(line, "fallback")
+		require.NoError(t, err)
+		assert.Equal(t, "p4", item.CustomID)
+		require.NotNil(t, item.Response)
+		data, ok := item.Response.Body["data"].([]map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, []float64{2, 3}, data[0]["embedding"])
+		usage, ok := item.Response.Body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, 4, usage["prompt_tokens"])
+	})
+
 	t.Run("InlineResponse", func(t *testing.T) {
 		var inline GeminiInlinedResponse
 		require.NoError(t, sonic.Unmarshal([]byte(`{"metadata":{"key":"p1"},"response":{"embedding":{"values":[1,2]}}}`), &inline))
