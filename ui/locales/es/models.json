@@ -1891,6 +1891,8 @@
 			"layaNoteOther": "Laya lee 512 tokens por solicitud (mantén breve la guía de niveles).",
 			"decisionMaxMessagesTip": "Mensajes del usuario enviados al modelo de decisión además de la solicitud actual, del más antiguo al más reciente. Ampliar este valor permite que un seguimiento corto como “y hazlo más rápido” herede la intención anterior, pero envía más tokens de entrada por solicitud. Las respuestas del asistente nunca se envían. El valor predeterminado es 1.",
 			"decisionTimeoutTip": "Espera máxima para la llamada a la API del modelo de decisión. Si se supera el límite, se omite y se vuelve al modelo de la solicitud original. Typesafe Jev suele responder en unos 600 - 800 ms.",
+			"confidenceThreshold": "Umbral de confianza",
+			"decisionMinConfidenceTip": "La confianza que debe alcanzar una respuesta para publicar su nivel, de 0 a 1. Una respuesta por debajo no publica ningún nivel, así que la solicitud se queda en su modelo original salvo que el estado de la sesión aporte uno, y la llamada de decisión se factura igualmente. Si el modelo no informa de confianza, se deriva de las probabilidades de los niveles; una respuesta sin ninguna de las dos se acepta. 0 acepta todas las respuestas.",
 			"guidanceNote": "Recomendamos empezar con estos valores predeterminados y luego ajustarlos a lo que significa cada nivel para ti.",
 			"guidanceUsage": "La definición, las señales y los ejemplos de cada nivel se envían al modelo de decisión con cada solicitud.",
 			"signalsLabel": "Señales",

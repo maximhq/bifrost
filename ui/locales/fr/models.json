@@ -1888,6 +1888,8 @@
 			"layaNoteOther": "Laya lit 512 jetons par requête (gardez les indications de niveau courtes).",
 			"decisionMaxMessagesTip": "Messages utilisateur envoyés au modèle de décision en plus de la requête en cours, du plus ancien au plus récent. L’élargir permet à un suivi court comme « et rends-le plus rapide » d’hériter de l’intention précédente, mais envoie plus de jetons d’entrée par requête. Les réponses de l’assistant ne sont jamais envoyées. Valeur par défaut : 1.",
 			"decisionTimeoutTip": "Attente maximale pour l’appel d’API du modèle de décision. Si la limite est dépassée, nous l’ignorons et revenons au modèle de la requête d’origine. Typesafe Jev répond généralement en 600 à 800 ms environ.",
+			"confidenceThreshold": "Seuil de confiance",
+			"decisionMinConfidenceTip": "La confiance qu’une réponse doit atteindre pour publier son niveau, de 0 à 1. Une réponse en dessous ne publie aucun niveau : la requête reste sur son modèle d’origine sauf si l’état de session en fournit un, et l’appel de décision est tout de même facturé. Si le modèle n’indique aucune confiance, elle est déduite des probabilités des niveaux ; une réponse sans l’une ni l’autre est conservée. 0 conserve toutes les réponses.",
 			"guidanceNote": "Nous recommandons de commencer avec ces valeurs par défaut, puis de les affiner selon ce que chaque niveau signifie pour vous.",
 			"guidanceUsage": "La définition, les signaux et les exemples de chaque niveau sont envoyés au modèle de décision avec chaque requête.",
 			"signalsLabel": "Signaux",

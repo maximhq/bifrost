@@ -2997,6 +2997,7 @@
                     "model": {"type": "string", "description": "Decision model on that provider, e.g. jev-latest, nimble-latest, english, clef. Set together with provider; leave both empty for typesafe/jev-latest."},
                     "previous_message_count": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1, "description": "Number of preceding user messages sent with the current request. Assistant messages are excluded."},
                     "timeout": {"description": "Maximum decision-model classification latency; duration string or milliseconds (default: 1500ms).", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"}, {"type": "number", "minimum": 0}], "default": "1500ms"},
+                    "min_confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0, "description": "Confidence an answer must reach to publish its tier. An answer below it publishes no tier. A missing confidence is derived from the tier probabilities; an answer with neither is kept. 0 keeps every answer."},
                     "criteria": {
                       "type": "object",
                       "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",

@@ -242,7 +242,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	cfg := complexity.DefaultAnalyzerConfig()
 	cfg.Classifier = complexity.ClassifierDecision
 	count := 1
-	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond}
+	cfg.Decision = &complexity.DecisionConfig{PreviousMessageCount: &count, Timeout: 400 * time.Millisecond, MinConfidence: 0.7}
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
 	handler.updateComplexityAnalyzerConfig(ctx)
 
@@ -255,6 +255,7 @@ func TestComplexityAnalyzerConfigPutPersistsDecision(t *testing.T) {
 	require.NotNil(t, stored.Decision.PreviousMessageCount)
 	require.Equal(t, 1, *stored.Decision.PreviousMessageCount)
 	require.Equal(t, 400*time.Millisecond, stored.Decision.Timeout)
+	require.Equal(t, 0.7, stored.Decision.MinConfidence)
 	require.Equal(t, 1, manager.reloadCalls)
 }
 
@@ -294,6 +295,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
 		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
+		{name: "decision min_confidence out of range", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"decision":{"min_confidence":1.5}}`, want: "decision min_confidence must be between 0 and 1"},
 	}
 
 	for _, tt := range tests {

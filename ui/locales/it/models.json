@@ -1903,6 +1903,8 @@
 			"layaNoteOther": "Laya legge 512 token per richiesta (mantieni brevi le indicazioni per il livello).",
 			"decisionMaxMessagesTip": "Messaggi utente inviati al modello decisionale oltre alla richiesta corrente, dal più vecchio al più recente. Aumentando questo valore, un breve seguito come “e rendilo più veloce” eredita l'intento precedente, ma invia più token di input per richiesta. Le risposte dell'assistente non vengono mai inviate. Il valore predefinito è 1.",
 			"decisionTimeoutTip": "Tempo massimo di attesa per la chiamata API del modello decisionale. Se il limite viene superato, la richiesta viene saltata e si torna al modello originale. Jev di Typesafe risponde in genere in circa 600-800 ms.",
+			"confidenceThreshold": "Soglia di confidenza",
+			"decisionMinConfidenceTip": "La confidenza che una risposta deve raggiungere per pubblicare il suo livello, da 0 a 1. Una risposta al di sotto non pubblica alcun livello, quindi la richiesta resta sul modello originale a meno che lo stato della sessione ne fornisca uno, e la chiamata di decisione viene comunque addebitata. Se il modello non riporta una confidenza, viene ricavata dalle probabilità dei livelli; una risposta priva di entrambe viene mantenuta. 0 mantiene ogni risposta.",
 			"guidanceNote": "Ti consigliamo di iniziare con questi valori predefiniti e poi perfezionarli in base al significato che attribuisci a ciascun livello.",
 			"guidanceUsage": "La definizione, i segnali e gli esempi di ciascun livello vengono inviati al modello decisionale a ogni richiesta.",
 			"signalsLabel": "Segnali",
