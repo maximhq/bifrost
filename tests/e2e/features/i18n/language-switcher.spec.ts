@@ -24,6 +24,7 @@ async function selectLanguage(page: Page, locale: string) {
 
 async function expectLanguage(page: Page, locale: string) {
   const expected = strings(locale)
+  await expect(page.locator('html')).toHaveAttribute('lang', locale)
   await expect(page.getByTestId('language-switcher')).toHaveAttribute('aria-label', expected.language)
   await expect(page.getByRole('button', { name: expected.observability, exact: true })).toBeVisible()
 }
@@ -59,5 +60,14 @@ test.describe('Language switcher', () => {
     await expect(page.getByTestId('language-option-ja').locator('svg')).toHaveCount(1)
     await expect(page.getByTestId('language-option-en').locator('svg')).toHaveCount(0)
     await page.keyboard.press('Escape')
+  })
+
+  test('renders a saved non-English language on first load', async ({ page }) => {
+    await page.addInitScript((key) => localStorage.setItem(key, 'ja'), LOCALE_STORAGE_KEY)
+    await page.goto('/workspace/logs')
+    await expectLanguage(page, 'ja')
+
+    await selectLanguage(page, 'zh-CN')
+    await expectLanguage(page, 'zh-CN')
   })
 })
