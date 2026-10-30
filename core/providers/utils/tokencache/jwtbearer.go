@@ -219,12 +219,19 @@ func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, for
 
 // postToken scrubs the submitted values from any error the endpoint returns.
 func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byte, contentType string, submitted []string) (string, time.Time, *schemas.BifrostError) {
-	if contentType == "application/x-www-form-urlencoded" {
-		// An endpoint may echo a value as it arrived, form-encoded.
-		for _, v := range submitted {
-			if encoded := url.QueryEscape(v); encoded != v {
-				submitted = append(submitted, encoded)
+	// An endpoint may echo a value as it arrived, encoded.
+	for _, v := range submitted {
+		encoded := v
+		switch contentType {
+		case "application/x-www-form-urlencoded":
+			encoded = url.QueryEscape(v)
+		case "application/json":
+			if b, err := schemas.MarshalSorted(v); err == nil {
+				encoded = string(b[1 : len(b)-1])
 			}
+		}
+		if encoded != v {
+			submitted = append(submitted, encoded)
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
