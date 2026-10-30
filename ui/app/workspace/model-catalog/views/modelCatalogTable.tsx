@@ -77,7 +77,7 @@ export default function ModelCatalogTable({
 				<PageTitle title={t("modelCatalog.title")}>{t("modelCatalog.subtitle")}</PageTitle>
 				<ProviderSelector
 					data-testid="model-catalog-provider-trigger"
-					ariaLabel="Filter by provider"
+					ariaLabel={t("modelCatalog.filterProviderAria")}
 					className="w-[200px]"
 					allOption={allProvidersOption}
 					value={providerFilter || ALL_PROVIDERS_VALUE}

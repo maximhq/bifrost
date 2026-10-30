@@ -43,7 +43,7 @@ import {
 import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
 import {
 	mcpClientUpdateSchema,
-	RESOURCE_CREDENTIAL_RESEND_MESSAGE,
+	resourceCredentialResendMessage,
 	resourceCredentialResendRequired,
 	type MCPClientUpdateSchema,
 } from "@/lib/types/schemas";
@@ -581,13 +581,13 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-					audience: mcpClient.config.token_exchange?.audience,
-					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
-					client_id: mcpClient.config.token_exchange?.client_id,
-					client_secret: mcpClient.config.token_exchange?.client_secret,
-					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
-				}
+						audience: mcpClient.config.token_exchange?.audience,
+						use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
+						client_id: mcpClient.config.token_exchange?.client_id,
+						client_secret: mcpClient.config.token_exchange?.client_secret,
+						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+						...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
+					}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
@@ -659,13 +659,13 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-					audience: mcpClient.config.token_exchange?.audience,
-					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
-					client_id: mcpClient.config.token_exchange?.client_id,
-					client_secret: mcpClient.config.token_exchange?.client_secret,
-					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
-				}
+						audience: mcpClient.config.token_exchange?.audience,
+						use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
+						client_id: mcpClient.config.token_exchange?.client_id,
+						client_secret: mcpClient.config.token_exchange?.client_secret,
+						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+						...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
+					}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
@@ -768,7 +768,7 @@ export default function MCPClientSheet({
 					? resourceCredentialResendRequired(mcpClient.config.token_exchange, data.token_exchange)
 					: undefined;
 			if (resendField) {
-				form.setError(`token_exchange.${resendField}`, { message: RESOURCE_CREDENTIAL_RESEND_MESSAGE });
+				form.setError(`token_exchange.${resendField}`, { message: resourceCredentialResendMessage() });
 				return;
 			}
 			// A replacement document must have been parsed (and not edited since)
@@ -925,16 +925,16 @@ export default function MCPClientSheet({
 						: undefined,
 					token_exchange: shouldUpdateTokenExchange
 						? {
-							audience: data.token_exchange?.audience?.trim() || "",
-							use_idp_credentials: exchangesAsSSOApplication(data.token_exchange),
-							client_id: exchangesAsSSOApplication(data.token_exchange)
-								? undefined
-								: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
-							client_secret: exchangesAsSSOApplication(data.token_exchange) ? undefined : data.token_exchange?.client_secret,
-							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-							scopes: tokenExchangeScopes,
-							...tokenExchangeProfilePayload(data.token_exchange),
-						}
+								audience: data.token_exchange?.audience?.trim() || "",
+								use_idp_credentials: exchangesAsSSOApplication(data.token_exchange),
+								client_id: exchangesAsSSOApplication(data.token_exchange)
+									? undefined
+									: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
+								client_secret: exchangesAsSSOApplication(data.token_exchange) ? undefined : data.token_exchange?.client_secret,
+								authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+								scopes: tokenExchangeScopes,
+								...tokenExchangeProfilePayload(data.token_exchange),
+							}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
@@ -1509,10 +1509,16 @@ export default function MCPClientSheet({
 																			</Tooltip>
 																		</TooltipProvider>
 																	</div>
-																	{field.value === "" && <p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobalSetting")}</p>}
+																	{field.value === "" && (
+																		<p className="text-muted-foreground text-xs">{t("registry.sheet.usingGlobalSetting")}</p>
+																	)}
 																</div>
 																<FormControl>
-																	<MaxProtocolVersionSelect value={field.value ?? ""} onChange={field.onChange} globalValue={globalMaxProtocolVersion} />
+																	<MaxProtocolVersionSelect
+																		value={field.value ?? ""}
+																		onChange={field.onChange}
+																		globalValue={globalMaxProtocolVersion}
+																	/>
 																</FormControl>
 															</FormItem>
 														)}
@@ -2115,12 +2121,16 @@ export default function MCPClientSheet({
 																				<div className="flex min-w-0 items-start gap-2">
 																					<MCPToolIconImage tool={tool} />
 																					<div className="min-w-0">
-																						<div className="text-foreground truncate text-sm font-medium" data-testid={`mcp-tool-title-${tool.name}`}>
+																						<div
+																							className="text-foreground truncate text-sm font-medium"
+																							data-testid={`mcp-tool-title-${tool.name}`}
+																						>
 																							{tool.title || tool.annotations?.title || tool.name}
 																						</div>
-																						{(tool.title || tool.annotations?.title) && (tool.title || tool.annotations?.title) !== tool.name && (
-																							<div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>
-																						)}
+																						{(tool.title || tool.annotations?.title) &&
+																							(tool.title || tool.annotations?.title) !== tool.name && (
+																								<div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>
+																							)}
 																						{tool.description && (
 																							<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
 																						)}
@@ -2236,7 +2246,9 @@ export default function MCPClientSheet({
 																						)}
 																						{tool.output_schema && (
 																							<div data-testid={`mcp-tool-output-schema-${tool.name}`}>
-																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">{t("registry.sheet.outputSchema")}</div>
+																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">
+																									{t("registry.sheet.outputSchema")}
+																								</div>
 																								<CodeEditor
 																									className="z-0 w-full rounded-sm border"
 																									shouldAdjustInitialHeight={true}

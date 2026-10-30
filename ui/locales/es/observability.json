@@ -124,7 +124,10 @@
 			"barChart": "Gráfico de barras",
 			"lineChart": "Gráfico de líneas",
 			"directValue": "Directo: {{value}}",
-			"semanticValue": "Semántico: {{value}}"
+			"semanticValue": "Semántico: {{value}}",
+			"tokensPerSecValue": "{{value}} tokens/s",
+			"moreCount_one": "+{{count}} más",
+			"moreCount_other": "+{{count}} más"
 		},
 		"rankings": {
 			"topDimension": "Top{{dimension}}s",
@@ -136,7 +139,10 @@
 			"avgLatency": "Latencia media",
 			"noData": "No hay datos de uso{{dimension}}disponibles para este período de tiempo.",
 			"attributedTooltipShort": "Atribuido - una solicitud cuenta hacia cada{{dimension}}que pertenece, por lo que esto puede exceder el recuento de solicitud real.",
-			"attributedTooltipLong": "Una solicitud cuenta con cada{{dimension}}que pertenece, por lo que esto puede exceder el recuento total de solicitud."
+			"attributedTooltipLong": "Una solicitud cuenta con cada{{dimension}}que pertenece, por lo que esto puede exceder el recuento total de solicitud.",
+			"newBadge": "nuevo",
+			"requestsCount_one": "{{formattedCount}} solicitud",
+			"requestsCount_other": "{{formattedCount}} solicitudes"
 		},
 		"noModelUsage": "No hay datos de uso de modelos disponibles para este período de tiempo."
 	},
@@ -144,7 +150,24 @@
 		"fallbackChain": {
 			"openFinalAttempt": "Abrir el intento final",
 			"title": "Cadena de respaldo",
-			"viewing": "Viendo"
+			"viewing": "Viendo",
+			"outcome": {
+				"succeeded": "Solicitud correcta",
+				"failed": "Todos los intentos fallaron",
+				"inProgress": "Aún en ejecución"
+			},
+			"summary": {
+				"attempt": "Intento {{position}} de {{total}}",
+				"fellBack": "Intento {{position}} de {{total}}. Este intento falló y la solicitud pasó a {{label}}.",
+				"later": "Intento {{position}} de {{total}}. Después de este se ejecutaron más intentos."
+			},
+			"attempts_other": "{{count}} intentos",
+			"attempts_one": "{{count}} intento",
+			"attemptsWithTotal_other": "{{count}} intentos · {{latency}} en total",
+			"attemptsWithTotal_one": "{{count}} intento · {{latency}} en total",
+			"keyName": "clave {{name}}",
+			"retries_other": "{{count}} reintentos",
+			"retries_one": "{{count}} reintento"
 		},
 		"searchPlaceholder": "Registros de búsqueda o pegar un ID de solicitud",
 		"loggingSettings": "Ajustes de registro",
@@ -241,7 +264,13 @@
 			"toastCancelled": "Recalculación de costos cancelada",
 			"toastComplete": "Costo de recalculación completo",
 			"toastProgress": "Recalculando los costos de registro...",
-			"errorGeneric": "No se han recalculado los costos"
+			"errorGeneric": "No se han recalculado los costos",
+			"noLogsMatch": "Ningún registro coincide con los filtros actuales.",
+			"toastStopped": "Detenido tras {{updated}} actualizados y {{skipped}} omitidos",
+			"toastUpdatedSkipped": "{{updated}} actualizados, {{skipped}} omitidos",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} comprobados, {{updated}} actualizados, {{skipped}} omitidos",
+			"toastChecked": "{{processed}} comprobados, {{updated}} actualizados, {{skipped}} omitidos",
+			"errorGenericStatus": "No se pudieron recalcular los costos ({{status}})"
 		},
 		"session": {
 			"logs": "Registros",
@@ -548,7 +577,12 @@
 				"monitoredWouldTransform": "La regla solo monitorea: habría transformado esto, pero la solicitud continuó sin cambios.",
 				"monitored": "La regla solo monitorea: la solicitud continuó sin cambios.",
 				"detected": "La regla marcó la solicitud y la dejó continuar sin cambios."
-			}
+			},
+			"unknown": "Desconocido",
+			"sourceEventInitiated": "Iniciado por evento",
+			"sourceLanguageModel": "Modelo de lenguaje",
+			"batchItemResult": "Elemento del lote {{type}}",
+			"providerReturnedHttp": "El proveedor devolvió HTTP {{status}}"
 		},
 		"media": {
 			"pause": "Pausa",
@@ -764,9 +798,21 @@
 				"virtualKeys": "claves virtuales ({{total}})",
 				"teams": "equipos ({{total}})",
 				"customers": "clientes ({{total}})",
-				"period": "período {{value}}"
+				"period": "período {{value}}",
+				"relays": "relés ({{total}})",
+				"methods": "métodos ({{total}})",
+				"kinds": "tipos ({{total}})",
+				"users": "usuarios ({{total}})",
+				"businessUnits": "unidades de negocio ({{total}})",
+				"projects": "proyectos ({{total}})",
+				"apps": "aplicaciones ({{total}})",
+				"billableOnly": "solo facturables",
+				"nonBillableOnly": "solo no facturables",
+				"minCost": "costo mín. {{value}}",
+				"maxCost": "costo máx. {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "mixto"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1122,8 @@
 			"overheadLatencySpans": "Latigazos de latencia general",
 			"overheadLatencySpansHelp": "Los intervalos de tiempo interno (configuración, selección clave, fases de tuberías).",
 			"configJsonPrecedence": "Si<filter>plugin_span_filter</filter>se establece en el plugin<plugin>{{pluginName}}</plugin>config en config.json, tiene precedencia sobre estos ajustes después de reiniciar Bifrost.",
-			"destinationOtel": "el recolector OTEL"
+			"destinationOtel": "el recolector OTEL",
+			"noChangePermission": "No tienes permiso para cambiar la configuración de observabilidad"
 		},
 		"savePrometheus": "Guardar configuración Prometheus",
 		"saveOtel": "Guardar configuración de OTEL",
@@ -1233,7 +1280,12 @@
 		"passthrough_stream": "Corriente de paso",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "En tiempo real",
-		"realtime_turn": "En tiempo real"
+		"realtime_turn": "En tiempo real",
+		"model_retrieve": "Obtener modelo",
+		"live": "En vivo",
+		"live_session": "Sesión en vivo",
+		"live_content": "Grabación en vivo",
+		"live_sideband": "Sideband en vivo"
 	},
 	"celBuilder": {
 		"copied": "Copiado",
@@ -1260,7 +1312,8 @@
 		"value": "Valor",
 		"enterValue": "Introduce el valor...",
 		"commaSeparated": "Introduce valores separados por coma o array JSON",
-		"celPlaceholder": "p. ej., model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "p. ej., model == \"claude-sonnet-4-6\"",
+		"remove": "Quitar"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Regla de Routing",
@@ -1717,6 +1770,12 @@
 			"stepRegister": "Registra y habilita el agente upstream en Agent Gateway.",
 			"stepReplace": "Reemplaza <code>{{agentName}}</code> por su nombre registrado.",
 			"stepVirtualKey": "Usa una clave virtual que pueda acceder al agente, o elimina el header <code>x-bf-vk</code> cuando la autenticación esté desactivada."
+		},
+		"interactive": {
+			"copied": "Copiado",
+			"filterBy": "Filtrar por {{label}}",
+			"clickToFilter": "Clic para filtrar · Clic derecho para copiar",
+			"rightClickToCopy": "Clic derecho para copiar"
 		}
 	},
 	"overhead": {

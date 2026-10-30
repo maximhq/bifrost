@@ -22,7 +22,11 @@
 		"toTime": "Hasta",
 		"timezone": "Zona horaria",
 		"selectTimezone": "Seleccionar zona horaria",
-		"time": "Hora"
+		"time": "Hora",
+		"am": "a. m.",
+		"pm": "p. m.",
+		"hourPlaceholder": "HH",
+		"minutePlaceholder": "MM"
 	},
 	"timePeriods": {
 		"1h": "Última hora",
@@ -70,7 +74,10 @@
 		"agents": "agentes",
 		"providers": "proveedores",
 		"webhookEndpoints": "endpoints de webhook",
-		"modelLimits": "límites de modelos"
+		"modelLimits": "límites de modelos",
+		"agent": "agente",
+		"relay": "relé",
+		"relays": "relés"
 	},
 	"aboutField": "Acerca de {{field}}",
 	"thisField": "este campo",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}, seleccionado{{disabled}}",
 		"optionNotSelectedAria": "{{label}}, no seleccionado{{disabled}}",
 		"disabledSuffix": ", deshabilitado",
-		"clear": "Borrar"
+		"clear": "Borrar",
+		"moreCount": "+ {{count}} más"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "El año fiscal empieza en",
@@ -195,7 +203,8 @@
 		"failedToLoad": "Error al cargar."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "Período de restablecimiento"
+		"resetPeriod": "Período de restablecimiento",
+		"noLimit": "Sin límite"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "El valor resuelto aparecerá después de guardar"
@@ -204,7 +213,9 @@
 		"label": "Acceso a agentes",
 		"tooltip": "Concede a esta clave acceso a los agentes registrados. Entonces la clave podrá llamar a cada agente en <path0>{{path}}</path0>. Los agentes marcados como abiertos a todas las claves no necesitan concesión.",
 		"selectPlaceholder": "Selecciona un agente para añadir",
-		"removeAria": "Quitar {{name}}"
+		"removeAria": "Quitar {{name}}",
+		"openToAll": "Abierto a todas las claves",
+		"disabled": "Desactivado"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} usará ventanas móviles durante toda su duración. La alineación con el calendario solo se aplica a 1d, 1w, 1M, 1Q y 1Y."
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "Mantén {{label}} entre {{min}} y {{max}}.",
 		"addString": "Añadir cadena",
-		"select": "Seleccionar"
+		"select": "Seleccionar",
+		"clear": "Borrar {{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "Debe ser una URL válida",
 		"validEmail": "Debe ser un correo electrónico válido",
 		"grpcHostPortFormat": "Debe tener el formato <host>:<port> para gRPC (p. ej., {{example}})",
-		"invalidInput": "Entrada no válida"
+		"invalidInput": "Entrada no válida",
+		"vertexEndpointId": "Introduce un ID de endpoint de Vertex o pega una URL de endpoint compatible",
+		"mcp": {
+			"privateKeyRequired": "Se requiere una clave privada para private_key_jwt",
+			"secretRequiredForMethod": "Se requiere un secreto de cliente para elegir cómo se envía",
+			"credentialResend": "Vuelve a introducirlo: la audiencia, el endpoint de token upstream o la audiencia de la aserción cambiaron, por lo que el valor guardado no se envía al nuevo destino"
+		},
+		"relays": {
+			"costPerRequestNegative": "El costo por solicitud no puede ser negativo",
+			"costPerUnitNegative": "El costo por unidad no puede ser negativo",
+			"blockSizePositive": "El tamaño de bloque debe ser mayor que cero",
+			"minimumUnitsNegative": "Las unidades mínimas no pueden ser negativas",
+			"unitsPathRequiredRoute": "Se requiere la ruta de unidades: esta ruta cobra por unidad y ni ella ni el relay indican una ruta",
+			"unitsPathRequired": "Se requiere la ruta de unidades, salvo que la medida lea todo el cuerpo",
+			"unitsPathRequiredInherited": "Se requiere la ruta de unidades: la ruta {{method}} {{path}} cobra por unidad y la hereda del relay",
+			"absoluteUrl": "Introduce una URL http(s) absoluta",
+			"pathRequired": "La ruta es obligatoria",
+			"pathMustStartWithSlash": "La ruta debe empezar por /",
+			"doubleStarLast": "** solo se permite como último segmento",
+			"headerNameRequired": "Se requiere el nombre del encabezado para la autenticación por encabezado",
+			"queryParamRequired": "Se requiere el parámetro de consulta para la autenticación por consulta",
+			"awsServiceRequired": "Se requiere el servicio de AWS para la autenticación SigV4",
+			"awsServiceFormat": "El servicio de AWS debe coincidir con [a-z0-9-]+",
+			"headerNameNoSpecial": "El nombre del encabezado no puede contener espacios, dos puntos ni barras",
+			"matcherNeedsValue": "Un comparador de encabezado necesita un glob de valor",
+			"matcherNeedsName": "Un comparador de encabezado necesita un nombre de encabezado",
+			"jobIdPath": "Indica dónde la respuesta de inicio incluye el ID del trabajo",
+			"pollPathRequired": "Introduce la ruta de sondeo",
+			"pollPathRooted": "Introduce una ruta absoluta como {{example}}",
+			"statusPathRequired": "Indica dónde la respuesta de sondeo incluye el estado",
+			"succeededRequired": "Introduce al menos un estado de éxito",
+			"atLeastOneSecond": "Al menos 1 segundo",
+			"headerMatchedDup": "Este encabezado ya se compara en esta ruta",
+			"relayNameFormat": "Usa de 1 a 64 letras, dígitos, puntos, guiones o guiones bajos",
+			"relayNameDots": "Un relay no puede llamarse . ni ..",
+			"baseUrlFormat": "Introduce una URL http(s) absoluta sin consulta, fragmento ni información de usuario",
+			"headerValueRequired": "Introduce un valor para este encabezado",
+			"headerNameEnter": "Introduce un nombre de encabezado",
+			"headerAlreadySet": "Este encabezado ya está definido",
+			"lineError": "Línea {{line}}: {{message}}",
+			"invalidPath": "ruta no válida",
+			"regionSigV4": "Se requiere la región para SigV4",
+			"credentialRequired": "Se requiere la credencial para este tipo de autenticación",
+			"proxyUrlRequired": "La URL del proxy es obligatoria",
+			"rootedPathSearch": "Introduce una ruta absoluta como /v1/search",
+			"statusRange": "El estado debe estar entre 100 y 599"
+		}
 	},
 	"permissionDenied": {
 		"create": "No tienes permiso para crear {{entity}}.",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}} trimestres",
 		"year_one": "{{count}} año",
 		"year_other": "{{count}} años"
+	},
+	"viewToggle": {
+		"more": "Ver más",
+		"less": "Ver menos"
+	},
+	"baseProviderSelector": {
+		"placeholder": "Seleccionar formato base",
+		"searchPlaceholder": "Buscar formatos..."
+	},
+	"commandDialog": {
+		"title": "Paleta de comandos",
+		"description": "Busca un comando para ejecutar..."
+	},
+	"copyToClipboard": {
+		"success": "Copiado al portapapeles",
+		"failed": "No se pudo copiar"
+	},
+	"agentCard": {
+		"unnamedSkill": "Habilidad sin nombre",
+		"unknown": "Desconocido"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} +{{count}} más"
+	},
+	"badges": {
+		"beta": "BETA"
 	}
 }

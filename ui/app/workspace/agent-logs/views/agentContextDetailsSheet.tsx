@@ -12,6 +12,7 @@ import type { ParseKeys } from "i18next";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { toast } from "sonner";
 import { A2AConversationMessage as ConversationMessage, A2APayloadView, TaskStateBadge } from "./a2aPayloadView";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
@@ -327,7 +328,7 @@ function latestTaskState(log: AgentLogOperation) {
 }
 
 function ProtocolActivity({ log, showTimestamp }: { log: AgentLogOperation; showTimestamp: boolean }) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const definition = protocolActivityDefinition(log.operation);
 	const taskState = definition.showsTaskState ? latestTaskState(log) : undefined;
 	const timestamp = new Date(log.timestamp);
@@ -343,7 +344,7 @@ function ProtocolActivity({ log, showTimestamp }: { log: AgentLogOperation; show
 					<span className="text-xs font-semibold">{t("agentLogs.contextSheet.event")}</span>
 					{showTimestamp ? (
 						<span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px]">
-							{isValid(timestamp) ? format(timestamp, "MMM d, HH:mm:ss") : log.timestamp}
+							{isValid(timestamp) ? format(timestamp, "MMM d, HH:mm:ss", { locale: dateFnsLocale(i18n.language) }) : log.timestamp}
 						</span>
 					) : null}
 				</div>
@@ -379,7 +380,7 @@ export function A2AOperationConversation({
 	showTimestamp?: boolean;
 	allowPushConversation?: boolean;
 }) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const timestamp = new Date(log.timestamp);
 	const conversationOperation =
 		isA2AConversationOperation(log.operation) || (allowPushConversation && isA2APushConversationOperation(log.operation));
@@ -390,7 +391,11 @@ export function A2AOperationConversation({
 
 	if (!conversationOperation) return <ProtocolActivity log={log} showTimestamp={showTimestamp} />;
 
-	const renderedTimestamp = showTimestamp ? (isValid(timestamp) ? format(timestamp, "MMM d, HH:mm:ss") : log.timestamp) : undefined;
+	const renderedTimestamp = showTimestamp
+		? isValid(timestamp)
+			? format(timestamp, "MMM d, HH:mm:ss", { locale: dateFnsLocale(i18n.language) })
+			: log.timestamp
+		: undefined;
 
 	return (
 		<div>

@@ -317,9 +317,9 @@ function VKActiveSwitch({
 	// A user's managed key can't be toggled here even by a caller who does have update access. A
 	// key its owner's access profile governs is still the owner's key, toggled like any other.
 	const disabledReason = isUserProfileManaged
-		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
+		? t("virtualKeys.managedByProfileToggleHint")
 		: !hasUpdateAccess
-			? "You don't have permission to update virtual keys."
+			? t("virtualKeys.noUpdatePermission")
 			: undefined;
 
 	const control = (

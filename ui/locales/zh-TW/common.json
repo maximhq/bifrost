@@ -22,7 +22,11 @@
 		"toTime": "結束時間",
 		"timezone": "時區",
 		"selectTimezone": "選擇時區",
-		"time": "時間"
+		"time": "時間",
+		"am": "上午",
+		"pm": "下午",
+		"hourPlaceholder": "時",
+		"minutePlaceholder": "分"
 	},
 	"timePeriods": {
 		"1h": "最近 1 小時",
@@ -70,7 +74,10 @@
 		"modelLimits": "模型限額",
 		"agents": "代理",
 		"providers": "供應商",
-		"webhookEndpoints": "Webhook 端點"
+		"webhookEndpoints": "Webhook 端點",
+		"agent": "代理",
+		"relay": "中繼",
+		"relays": "中繼"
 	},
 	"aboutField": "關於{{field}}",
 	"thisField": "此欄位",
@@ -287,7 +294,53 @@
 		"validUrl": "必須是有效的 URL",
 		"validEmail": "必須是有效的電子郵件",
 		"grpcHostPortFormat": "gRPC 的格式必須為 <host>:<port>（例如 {{example}}）",
-		"invalidInput": "輸入無效"
+		"invalidInput": "輸入無效",
+		"vertexEndpointId": "請輸入 Vertex 端點 ID，或貼上支援的端點 URL",
+		"mcp": {
+			"privateKeyRequired": "private_key_jwt 需要私密金鑰",
+			"secretRequiredForMethod": "選擇傳送方式需要用戶端密鑰",
+			"credentialResend": "請重新輸入：受眾、上游權杖端點或斷言受眾已變更，因此已儲存的值不會傳送到新目標"
+		},
+		"relays": {
+			"costPerRequestNegative": "每次請求的費用不能為負數",
+			"costPerUnitNegative": "每單位費用不能為負數",
+			"blockSizePositive": "區塊大小必須大於零",
+			"minimumUnitsNegative": "最小單位數不能為負數",
+			"unitsPathRequiredRoute": "需要單位路徑：此路由按單位計費，但路由和中繼都未指定路徑",
+			"unitsPathRequired": "需要單位路徑，除非度量讀取整個請求主體",
+			"unitsPathRequiredInherited": "需要單位路徑：路由 {{method}} {{path}} 按單位計費，並從中繼繼承該路徑",
+			"absoluteUrl": "請輸入絕對 http(s) URL",
+			"pathRequired": "路徑為必填",
+			"pathMustStartWithSlash": "路徑必須以 / 開頭",
+			"doubleStarLast": "** 只能用作最後一段",
+			"headerNameRequired": "標頭認證需要標頭名稱",
+			"queryParamRequired": "查詢參數認證需要查詢參數",
+			"awsServiceRequired": "SigV4 認證需要 AWS 服務",
+			"awsServiceFormat": "AWS 服務必須符合 [a-z0-9-]+",
+			"headerNameNoSpecial": "標頭名稱不能包含空格、冒號或斜線",
+			"matcherNeedsValue": "標頭比對器需要值萬用字元",
+			"matcherNeedsName": "標頭比對器需要標頭名稱",
+			"jobIdPath": "請輸入啟動回應中攜帶工作 ID 的位置",
+			"pollPathRequired": "請輸入輪詢路徑",
+			"pollPathRooted": "請輸入以 / 開頭的路徑，例如 {{example}}",
+			"statusPathRequired": "請輸入輪詢回應中攜帶狀態的位置",
+			"succeededRequired": "請至少輸入一個成功狀態",
+			"atLeastOneSecond": "至少 1 秒",
+			"headerMatchedDup": "此標頭已在該路由上比對",
+			"relayNameFormat": "請使用 1-64 個字母、數字、點、連字號或底線",
+			"relayNameDots": "中繼不能命名為 . 或 ..",
+			"baseUrlFormat": "請輸入不含查詢、片段或使用者資訊的絕對 http(s) URL",
+			"headerValueRequired": "請輸入此標頭的值",
+			"headerNameEnter": "請輸入標頭名稱",
+			"headerAlreadySet": "此標頭已設定",
+			"lineError": "第 {{line}} 行：{{message}}",
+			"invalidPath": "路徑無效",
+			"regionSigV4": "SigV4 需要區域",
+			"credentialRequired": "此認證類型需要憑證",
+			"proxyUrlRequired": "代理 URL 為必填",
+			"rootedPathSearch": "請輸入以 / 開頭的路徑，例如 /v1/search",
+			"statusRange": "狀態碼必須介於 100 到 599 之間"
+		}
 	},
 	"permissionDenied": {
 		"create": "你沒有許可權建立{{entity}}。",
@@ -318,7 +371,9 @@
 		"label": "代理存取",
 		"tooltip": "授予此金鑰對已註冊代理的存取權。之後該金鑰即可在 <path0>{{path}}</path0> 呼叫各個代理。標示為對所有金鑰開放的代理無需授權。",
 		"selectPlaceholder": "選擇要新增的代理",
-		"removeAria": "移除 {{name}}"
+		"removeAria": "移除 {{name}}",
+		"openToAll": "對所有金鑰開放",
+		"disabled": "已停用"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} 將在其完整時長內使用滾動視窗。日曆對齊僅適用於 1d、1w、1M、1Q 和 1Y。"
@@ -411,7 +466,8 @@
 	"modelParameters": {
 		"keepBetween": "請將{{label}}保持在 {{min}} 到 {{max}} 之間。",
 		"addString": "新增字串",
-		"select": "選擇"
+		"select": "選擇",
+		"clear": "清除{{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -474,7 +530,8 @@
 		"optionSelectedAria": "{{label}}，已選擇{{disabled}}",
 		"optionNotSelectedAria": "{{label}}，未選擇{{disabled}}",
 		"disabledSuffix": "，已停用",
-		"clear": "清除"
+		"clear": "清除",
+		"moreCount": "+ 另外 {{count}} 項"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "財年開始於",
@@ -508,9 +565,36 @@
 		"failedToLoad": "載入失敗。"
 	},
 	"numberAndSelect": {
-		"resetPeriod": "重置週期"
+		"resetPeriod": "重置週期",
+		"noLimit": "無限制"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "儲存後將顯示解析後的值"
+	},
+	"viewToggle": {
+		"more": "檢視更多",
+		"less": "收合"
+	},
+	"baseProviderSelector": {
+		"placeholder": "選擇基礎格式",
+		"searchPlaceholder": "搜尋格式..."
+	},
+	"commandDialog": {
+		"title": "命令面板",
+		"description": "搜尋要執行的命令..."
+	},
+	"copyToClipboard": {
+		"success": "已複製到剪貼簿",
+		"failed": "複製失敗"
+	},
+	"agentCard": {
+		"unnamedSkill": "未命名技能",
+		"unknown": "未知"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} 另外 {{count}} 項"
+	},
+	"badges": {
+		"beta": "BETA"
 	}
 }

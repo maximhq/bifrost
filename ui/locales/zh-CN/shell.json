@@ -379,7 +379,8 @@
 			"Security": "安全",
 			"Provider Setup": "供应商设置",
 			"Everything Else": "其他设置"
-		}
+		},
+		"completedSr": "已完成："
 	},
 	"warp": {
 		"ask": "询问 Warp",
@@ -443,7 +444,8 @@
 		"question": {
 			"label": "问题",
 			"skip": "跳过",
-			"orType": "或在下方输入你自己的回答。"
+			"orType": "或在下方输入你自己的回答。",
+			"skipAnswer": "请自行判断，并说明你的假设。"
 		},
 		"message": {
 			"whatThisCovers": "涵盖内容",
@@ -604,7 +606,11 @@
 				"summary": "你的账户不允许使用 Warp 的模型。",
 				"cause": "此部署的治理规则禁止你的账户使用 Warp 设定的模型或提供商，因此请求在到达提供商之前就被拒绝了。",
 				"suggestions": ["请管理员允许你的账户使用 Warp 的模型。", "或者在 Warp 设置中选择你的账户有权使用的模型。"]
-			}
+			},
+			"requestFailedStatus": "Warp 请求失败（{{status}}）",
+			"noResponseBody": "Warp 未返回响应内容",
+			"connectionClosed": "连接在 Warp 完成回答前已关闭。",
+			"requestFailed": "Warp 请求失败"
 		},
 		"dock": {
 			"resize": "调整 Warp 面板大小",
@@ -612,7 +618,11 @@
 		},
 		"chart": {
 			"openInLogs": "在日志中打开",
-			"empty": "此时间窗口内没有数据。"
+			"empty": "此时间窗口内没有数据。",
+			"weekOf": "{{date}} 当周"
+		},
+		"usage": {
+			"tokens_other": "{{formattedCount}} 个令牌"
 		}
 	},
 	"rssSources": {
@@ -654,5 +664,11 @@
 		"upload": "上传",
 		"logoHelp": "图片 URL，或不超过 96 KB 的 PNG、JPEG、GIF、WebP、SVG 或 ICO。默认使用网站的 favicon。",
 		"addFeed": "添加订阅源"
+	},
+	"agentHandover": {
+		"completeTitle": "Bifrost Agent 登录完成",
+		"title": "Bifrost Agent 登录",
+		"completeBody": "你可以关闭此窗口并返回 Bifrost Agent。",
+		"status": "登录状态：{{status}}"
 	}
 }

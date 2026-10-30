@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "La riautorizzazione non è stata completata",
 			"toolsRefreshed": "Strumenti aggiornati",
 			"toolsRefreshedDesc_one": "Il client {{name}} ora offre {{count}} strumento.",
-			"toolsRefreshedDesc_other": "Il client {{name}} ora offre {{count}} strumenti."
+			"toolsRefreshedDesc_other": "Il client {{name}} ora offre {{count}} strumenti.",
+			"oauthVerifiedPerUser": "Configurazione OAuth verificata con successo. Ogni utente si autenticherà individualmente.",
+			"clientConnected": "Client MCP connesso con successo"
 		},
 		"filter": {
 			"connectionType": "Tipo di connessione",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "L'URL di base è obbligatorio",
 			"invalidAllowedExtraHeadersTitle": "Header extra consentiti non validi",
 			"invalidAllowedExtraHeadersDesc": "Il carattere jolly '*' non può essere combinato con nomi di header specifici.",
-			"allowedExtraHeadersPlaceholder": "*, oppure: authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "*, oppure: authorization, x-user-id",
+			"useGlobalSetting": "Usa impostazione globale",
+			"useGlobalSettingWithValue": "Usa impostazione globale ({{value}})",
+			"maxProtocolAuto": "Automatico (ultima)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "Questo server richiede una verifica una tantum: Bifrost scambia il tuo token di identità con cui hai effettuato l'accesso, testa la connessione e rileva gli strumenti. I token di identità dei chiamanti verranno quindi scambiati automaticamente a ogni chiamata agli strumenti.",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "Lo stato di connessione del client (integro, instabile, richiede nuova autorizzazione e così via). «Instabile» riflette i controlli di connessione di Bifrost verso il server, non l'esito delle chiamate agli strumenti effettuate tramite esso: si risolve da solo e non blocca mai le chiamate agli strumenti. Per i client per utente (OAuth, header, token exchange), riflette la credenziale admin conservata da Bifrost (usata solo per aggiornare periodicamente l'elenco degli strumenti), non la sessione di un singolo utente, che non è influenzata in nessun caso.",
 		"columnGuidanceAria": "Guida alla colonna {{label}}",
 		"vkCount_one": "{{count}} VK",
-		"vkCount_other": "{{count}} VK"
+		"vkCount_other": "{{count}} VK",
+		"failure": {
+			"stageConnect": "Connessione",
+			"stagePing": "Ping",
+			"stageListTools": "Elenco degli strumenti",
+			"stageToolDiscovery": "Individuazione degli strumenti",
+			"stageTransportLost": "Connessione interrotta",
+			"stageCredential": "Credenziale",
+			"titleDegraded": "Le istanze non concordano sullo stato di questo server",
+			"titleUnstableAll": "L'ultimo controllo della connessione è fallito su tutte le istanze",
+			"titleUnstable": "L'ultimo controllo della connessione è fallito",
+			"titleNeedsReauth": "Riautorizzazione necessaria",
+			"titleError": "Non registrato nel runtime",
+			"titleDefault": "Stato della connessione",
+			"lastFailedAgo": "Ultimo errore {{age}} fa",
+			"lastFailedRun": "Ultimo errore {{age}} fa · {{state}} da {{duration}}",
+			"stateNeedsReauth": "richiede riautorizzazione",
+			"stateUnstable": "instabile"
+		}
 	},
 	"library": {
 		"title": "Libreria server MCP",

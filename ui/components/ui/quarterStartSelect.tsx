@@ -3,6 +3,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { currentQuarterIndex, nextQuarterReset, quarterRanges, quarterStartMonthOptions } from "@/lib/constants/governance";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { Trans, useTranslation } from "react-i18next";
 
 interface QuarterStartSelectProps {
@@ -24,7 +25,8 @@ interface QuarterStartSelectProps {
  * The helper line spells out the concrete next reset date so the effect is unambiguous.
  */
 export default function QuarterStartSelect({ "data-testid": testId, value, onChange }: QuarterStartSelectProps) {
-	const { t } = useTranslation("common");
+	const { t, i18n } = useTranslation("common");
+	const locale = dateFnsLocale(i18n.resolvedLanguage);
 	const quarters = quarterRanges(value);
 	const current = currentQuarterIndex(value);
 	const nextReset = nextQuarterReset(value);
@@ -77,7 +79,7 @@ export default function QuarterStartSelect({ "data-testid": testId, value, onCha
 				<Trans
 					t={t}
 					i18nKey="quarterStart.nextReset"
-					values={{ reset: format(nextReset, "MMM d, yyyy"), end: format(currentQuarterEnd, "MMM d, yyyy") }}
+					values={{ reset: format(nextReset, "MMM d, yyyy", { locale }), end: format(currentQuarterEnd, "MMM d, yyyy", { locale }) }}
 					components={{ date: <span className="text-foreground font-medium" /> }}
 				/>
 			</p>

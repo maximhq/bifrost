@@ -263,7 +263,7 @@ export function RoutingRulesTable({
 												})
 													.unwrap()
 													.then(() => {
-														toast.success(`Rule ${checked ? "enabled" : "disabled"} successfully`);
+														toast.success(checked ? t("routing.enabledSuccess") : t("routing.disabledSuccess"));
 													})
 													.catch((err) => {
 														toast.error(t("routing.failedUpdate"), {

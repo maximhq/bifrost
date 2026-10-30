@@ -298,8 +298,11 @@ export default function MCPLibraryPage() {
 									{totalCount > 0 && (
 										<div className="mt-auto flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 											<div className="text-muted-foreground flex items-center gap-2">
-												{(urlState.offset + 1).toLocaleString()}-{Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString()} of{" "}
-												{totalCount.toLocaleString()} entries
+												{t("common.ofEntries", {
+													from: (urlState.offset + 1).toLocaleString(),
+													to: Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString(),
+													total: totalCount.toLocaleString(),
+												})}
 											</div>
 
 											<div className="flex items-center gap-2">
