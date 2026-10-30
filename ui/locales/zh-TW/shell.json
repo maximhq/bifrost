@@ -9,6 +9,8 @@
 		"llmLogs": "LLM 日誌",
 		"mcpLogs": "MCP 日誌",
 		"connectors": "聯結器",
+		"relayLogs": "轉送日誌",
+		"relays": "轉送",
 		"logsSettings": "日誌設定",
 		"models": "模型",
 		"modelCatalog": "模型目錄",
@@ -83,6 +85,8 @@
 		"skillsSettings": "技能設定"
 	},
 	"navDesc": {
+		"relayLogs": "轉送呼叫及其成本",
+		"relays": "以依路由計價的方式轉送非 LLM API",
 		"home": "你的用量、金鑰、預算和存取權限",
 		"observability": "請求日誌與監控",
 		"dashboard": "儀表板",
@@ -169,6 +173,74 @@
 		"unlockTitle": "解鎖你的個人主頁",
 		"unlockDescription": "此功能屬於 Bifrost 企業版許可證。主頁會向每位使用者展示自己的用量、金鑰、預算和存取權限。"
 	},
+	"commandPalette": {
+		"title": "命令選單",
+		"placeholder": "搜尋頁面或跳至…",
+		"empty": "沒有符合「{{query}}」的結果",
+		"groups": {
+			"general": "一般",
+			"results": "結果",
+			"actions": "操作",
+			"thisPage": "本頁"
+		},
+		"current": "目前",
+		"footer": {
+			"navigate": "導覽",
+			"open": "開啟",
+			"newTab": "新分頁",
+			"back": "返回"
+		},
+		"openHint": "開啟命令選單",
+		"actions": {
+			"create": "建立…",
+			"copyLink": "複製本頁連結",
+			"changeTheme": "變更主題…",
+			"changeLanguage": "變更語言…"
+		},
+		"pages": {
+			"create": {
+				"title": "建立",
+				"placeholder": "搜尋要建立的內容…"
+			},
+			"theme": {
+				"title": "主題",
+				"placeholder": "搜尋主題…"
+			},
+			"language": {
+				"title": "語言",
+				"placeholder": "搜尋語言…"
+			}
+		},
+		"create": {
+			"virtualKey": "建立虛擬金鑰",
+			"team": "建立團隊",
+			"customer": "建立客戶",
+			"user": "建立使用者",
+			"routingRule": "建立路由規則",
+			"mcpServer": "新增 MCP 伺服器",
+			"modelLimit": "建立模型限制",
+			"webhook": "建立 Webhook",
+			"mcpLibraryServer": "將伺服器新增至 MCP 程式庫",
+			"virtualMcp": "建立虛擬 MCP",
+			"agent": "建立代理程式",
+			"relay": "新增轉送端點",
+			"plugin": "新增外掛程式",
+			"alertChannel": "新增告警渠道",
+			"alertRule": "建立告警規則",
+			"businessUnit": "建立業務單位",
+			"role": "建立角色",
+			"accessProfile": "建立存取設定檔",
+			"project": "建立專案",
+			"prompt": "建立提示詞",
+			"promptFolder": "建立提示詞資料夾",
+			"skill": "建立技能",
+			"apiKey": "建立 API 金鑰"
+		},
+		"toast": {
+			"linkCopied": "已複製連結",
+			"linkCopyFailed": "無法複製連結"
+		}
+	},
 	"search": {
 		"placeholder": "搜尋…",
 		"ariaLabel": "搜尋側欄導航"
@@ -212,6 +284,8 @@
 		"accountMenu": "帳戶選單",
 		"openMenu": "開啟選單",
 		"signOut": "退出登入",
+		"viewAsUser": "以使用者身分檢視",
+		"closeView": "關閉檢視",
 		"version": "版本",
 		"userFallback": "使用者",
 		"discord": "Discord 伺服器",
@@ -463,7 +537,10 @@
 			"not_configured": {
 				"summary": "Warp 尚未設定。",
 				"cause": "未設定供應商和模型，或在設定中關閉了 Warp。",
-				"suggestions": ["開啟 Warp 設定並選擇供應商和模型。", "確認已開啟「啟用 Warp」。"]
+				"suggestions": [
+					"開啟 Warp 設定並選擇供應商和模型。",
+					"確認已開啟「啟用 Warp」。"
+				]
 			},
 			"max_iterations": {
 				"summary": "Warp 未能得出答案。",
@@ -478,7 +555,11 @@
 			"timeout": {
 				"summary": "耗時過長。",
 				"cause": "整個請求在 Warp 完成前已超過時間預算。時間範圍長、範圍寬會使每次查詢更慢，而 Warp 會執行多次查詢。",
-				"suggestions": ["嘗試更短的時間範圍。", "縮小到一個團隊、客戶或虛擬金鑰。", "若模型本身較慢，可在 Warp 設定中提高請求逾時。"]
+				"suggestions": [
+					"嘗試更短的時間範圍。",
+					"縮小到一個團隊、客戶或虛擬金鑰。",
+					"若模型本身較慢，可在 Warp 設定中提高請求逾時。"
+				]
 			},
 			"upstream_error": {
 				"summary": "無法連線到 Warp 的模型。",
@@ -492,7 +573,10 @@
 			"tool_error": {
 				"summary": "一次查詢失敗。",
 				"cause": "Warp 的某次資料查詢回傳了錯誤，且在剩餘步驟內無法復原。",
-				"suggestions": ["嘗試更窄的時間範圍。", "確認你提到的模型、金鑰或團隊確實存在。"]
+				"suggestions": [
+					"嘗試更窄的時間範圍。",
+					"確認你提到的模型、金鑰或團隊確實存在。"
+				]
 			},
 			"cancelled": {
 				"summary": "已停止。",
@@ -502,7 +586,10 @@
 			"unknown": {
 				"summary": "出了點問題。",
 				"cause": "Warp 回傳了錯誤，但沒有可辨識的錯誤碼。",
-				"suggestions": ["再試一次該問題。", "若持續發生，請連同下方詳情一併回報。"]
+				"suggestions": [
+					"再試一次該問題。",
+					"若持續發生，請連同下方詳情一併回報。"
+				]
 			},
 			"access_denied": {
 				"summary": "你的帳戶無法存取 Warp 的模型。",
@@ -524,12 +611,19 @@
 			"rate_limited": {
 				"summary": "你已達到速率限制。",
 				"cause": "你的帳戶在限制時段內傳送的請求或 token 超過速率限制，因此治理規則拒絕了 Warp 的模型呼叫。Warp 的模型呼叫會算在你的帳戶上，因此共用相同的限制。",
-				"suggestions": ["稍等片刻後再試。", "如果問題持續發生，請管理員提高上限。", "下方詳細資料會指出是哪項限制拒絕了請求。"]
+				"suggestions": [
+					"稍等片刻後再試。",
+					"如果問題持續發生，請管理員提高上限。",
+					"下方詳細資料會指出是哪項限制拒絕了請求。"
+				]
 			},
 			"model_blocked": {
 				"summary": "你的帳戶不允許使用 Warp 的模型。",
 				"cause": "此部署的治理規則禁止你的帳戶使用 Warp 設定的模型或提供者，因此請求在送達提供者前就遭到拒絕。",
-				"suggestions": ["請管理員允許你的帳戶使用 Warp 的模型。", "或在 Warp 設定中改用你的帳戶獲准使用的模型。"]
+				"suggestions": [
+					"請管理員允許你的帳戶使用 Warp 的模型。",
+					"或在 Warp 設定中改用你的帳戶獲准使用的模型。"
+				]
 			}
 		},
 		"dock": {

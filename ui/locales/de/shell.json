@@ -9,6 +9,8 @@
 		"llmLogs": "LLM-Protokolle",
 		"mcpLogs": "MCP-Protokolle",
 		"connectors": "Konnektoren",
+		"relayLogs": "Relay-Protokolle",
+		"relays": "Relays",
 		"logsSettings": "Protokolleinstellungen",
 		"models": "Modelle",
 		"modelCatalog": "Modellkatalog",
@@ -83,6 +85,8 @@
 		"skillsSettings": "Skills-Einstellungen"
 	},
 	"navDesc": {
+		"relayLogs": "Relay-Aufrufe und ihre Kosten",
+		"relays": "Nicht-LLM-APIs mit Preisen pro Route weiterleiten",
 		"home": "Ihre Nutzung, Schlüssel, Budgets und Zugriffe",
 		"observability": "Anfrageprotokolle & Monitoring",
 		"dashboard": "Übersicht",
@@ -169,6 +173,74 @@
 		"unlockTitle": "Persönliche Startseite freischalten",
 		"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Die Startseite zeigt jeder Person die eigene Nutzung, Schlüssel, Budgets und Zugriffe."
 	},
+	"commandPalette": {
+		"title": "Befehlsmenü",
+		"placeholder": "Seiten suchen oder springen zu…",
+		"empty": "Keine Ergebnisse für „{{query}}“",
+		"groups": {
+			"general": "Allgemein",
+			"results": "Ergebnisse",
+			"actions": "Aktionen",
+			"thisPage": "Auf dieser Seite"
+		},
+		"current": "Aktuell",
+		"footer": {
+			"navigate": "Navigieren",
+			"open": "Öffnen",
+			"newTab": "Neuer Tab",
+			"back": "Zurück"
+		},
+		"openHint": "Befehlsmenü öffnen",
+		"actions": {
+			"create": "Erstellen…",
+			"copyLink": "Link zu dieser Seite kopieren",
+			"changeTheme": "Design ändern…",
+			"changeLanguage": "Sprache ändern…"
+		},
+		"pages": {
+			"create": {
+				"title": "Erstellen",
+				"placeholder": "Suchen, was erstellt werden soll…"
+			},
+			"theme": {
+				"title": "Design",
+				"placeholder": "Designs suchen…"
+			},
+			"language": {
+				"title": "Sprache",
+				"placeholder": "Sprachen suchen…"
+			}
+		},
+		"create": {
+			"virtualKey": "Virtuellen Schlüssel erstellen",
+			"team": "Team erstellen",
+			"customer": "Kunden erstellen",
+			"user": "Benutzer erstellen",
+			"routingRule": "Routing-Regel erstellen",
+			"mcpServer": "MCP-Server hinzufügen",
+			"modelLimit": "Modelllimit erstellen",
+			"webhook": "Webhook erstellen",
+			"mcpLibraryServer": "Server zur MCP-Bibliothek hinzufügen",
+			"virtualMcp": "Virtuellen MCP erstellen",
+			"agent": "Agent erstellen",
+			"relay": "Relay-Endpunkt hinzufügen",
+			"plugin": "Plugin hinzufügen",
+			"alertChannel": "Alarmkanal hinzufügen",
+			"alertRule": "Alarmregel erstellen",
+			"businessUnit": "Geschäftsbereich erstellen",
+			"role": "Rolle erstellen",
+			"accessProfile": "Zugriffsprofil erstellen",
+			"project": "Projekt erstellen",
+			"prompt": "Prompt erstellen",
+			"promptFolder": "Prompt-Ordner erstellen",
+			"skill": "Skill erstellen",
+			"apiKey": "API-Schlüssel erstellen"
+		},
+		"toast": {
+			"linkCopied": "Link kopiert",
+			"linkCopyFailed": "Link konnte nicht kopiert werden"
+		}
+	},
 	"search": {
 		"placeholder": "Suchen...",
 		"ariaLabel": "Seitenleistennavigation durchsuchen"
@@ -212,6 +284,8 @@
 		"accountMenu": "Konto-Menü",
 		"openMenu": "Menü öffnen",
 		"signOut": "Abmelden",
+		"viewAsUser": "Als Benutzer anzeigen",
+		"closeView": "Ansicht schließen",
 		"version": "Version",
 		"userFallback": "Benutzer",
 		"discord": "Discord-Server",
@@ -499,7 +573,10 @@
 			"tool_error": {
 				"summary": "Eine Abfrage ist fehlgeschlagen.",
 				"cause": "Eine von Warps Datenabfragen hat einen Fehler zurückgegeben, und innerhalb der verbleibenden Schritte war keine Wiederherstellung möglich.",
-				"suggestions": ["Engeren Zeitraum wählen.", "Prüfen, ob das genannte Modell, der Schlüssel oder das Team wirklich existiert."]
+				"suggestions": [
+					"Engeren Zeitraum wählen.",
+					"Prüfen, ob das genannte Modell, der Schlüssel oder das Team wirklich existiert."
+				]
 			},
 			"cancelled": {
 				"summary": "Gestoppt.",
@@ -509,7 +586,10 @@
 			"unknown": {
 				"summary": "Etwas ist schiefgelaufen.",
 				"cause": "Warp hat einen Fehler ohne bekannten Code zurückgegeben.",
-				"suggestions": ["Frage nochmal stellen.", "Wenn es weiter passiert, mit den Details unten melden."]
+				"suggestions": [
+					"Frage nochmal stellen.",
+					"Wenn es weiter passiert, mit den Details unten melden."
+				]
 			},
 			"access_denied": {
 				"summary": "Dein Konto hat keinen Zugriff auf das Modell von Warp.",

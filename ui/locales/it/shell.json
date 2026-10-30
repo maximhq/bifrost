@@ -9,6 +9,8 @@
 		"llmLogs": "Log LLM",
 		"mcpLogs": "Log MCP",
 		"connectors": "Connettori",
+		"relayLogs": "Log dei relay",
+		"relays": "Relay",
 		"logsSettings": "Impostazioni dei log",
 		"models": "Modelli",
 		"modelCatalog": "Catalogo modelli",
@@ -83,6 +85,8 @@
 		"skillsSettings": "Impostazioni Skills"
 	},
 	"navDesc": {
+		"relayLogs": "Chiamate relay e relativo costo",
+		"relays": "Inoltra API non LLM con prezzi per route",
 		"home": "Il tuo utilizzo, le chiavi, i budget e gli accessi",
 		"observability": "Log delle richieste e monitoraggio",
 		"dashboard": "Dashboard",
@@ -169,6 +173,74 @@
 		"unlockTitle": "Sblocca la tua pagina iniziale personale",
 		"unlockDescription": "Questa funzione fa parte della licenza enterprise di Bifrost. La pagina iniziale mostra a ogni utente il proprio utilizzo, le chiavi, i budget e gli accessi."
 	},
+	"commandPalette": {
+		"title": "Menu comandi",
+		"placeholder": "Cerca pagine o vai a…",
+		"empty": "Nessun risultato per “{{query}}”",
+		"groups": {
+			"general": "Generale",
+			"results": "Risultati",
+			"actions": "Azioni",
+			"thisPage": "In questa pagina"
+		},
+		"current": "Attuale",
+		"footer": {
+			"navigate": "Naviga",
+			"open": "Apri",
+			"newTab": "Nuova scheda",
+			"back": "Indietro"
+		},
+		"openHint": "Apri menu comandi",
+		"actions": {
+			"create": "Crea…",
+			"copyLink": "Copia link a questa pagina",
+			"changeTheme": "Cambia tema…",
+			"changeLanguage": "Cambia lingua…"
+		},
+		"pages": {
+			"create": {
+				"title": "Crea",
+				"placeholder": "Cerca cosa creare…"
+			},
+			"theme": {
+				"title": "Tema",
+				"placeholder": "Cerca temi…"
+			},
+			"language": {
+				"title": "Lingua",
+				"placeholder": "Cerca lingue…"
+			}
+		},
+		"create": {
+			"virtualKey": "Crea chiave virtuale",
+			"team": "Crea team",
+			"customer": "Crea cliente",
+			"user": "Crea utente",
+			"routingRule": "Crea regola di routing",
+			"mcpServer": "Aggiungi server MCP",
+			"modelLimit": "Crea limite modello",
+			"webhook": "Crea webhook",
+			"mcpLibraryServer": "Aggiungi server alla libreria MCP",
+			"virtualMcp": "Crea MCP virtuale",
+			"agent": "Crea agente",
+			"relay": "Aggiungi endpoint relay",
+			"plugin": "Aggiungi plugin",
+			"alertChannel": "Aggiungi canale di avviso",
+			"alertRule": "Crea regola di avviso",
+			"businessUnit": "Crea unità di business",
+			"role": "Crea ruolo",
+			"accessProfile": "Crea profilo di accesso",
+			"project": "Crea progetto",
+			"prompt": "Crea prompt",
+			"promptFolder": "Crea cartella di prompt",
+			"skill": "Crea skill",
+			"apiKey": "Crea chiave API"
+		},
+		"toast": {
+			"linkCopied": "Link copiato",
+			"linkCopyFailed": "Impossibile copiare il link"
+		}
+	},
 	"search": {
 		"placeholder": "Cerca...",
 		"ariaLabel": "Cerca nella navigazione laterale"
@@ -212,6 +284,8 @@
 		"accountMenu": "Menu account",
 		"openMenu": "Apri menu",
 		"signOut": "Esci",
+		"viewAsUser": "Visualizza come utente",
+		"closeView": "Chiudi visualizzazione",
 		"version": "Versione",
 		"userFallback": "User",
 		"discord": "Server Discord",
