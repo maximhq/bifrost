@@ -114,6 +114,7 @@ The same lazy-auth pattern is used on both the **MCP Gateway** (`/mcp`) and the 
 3. Bifrost looks up an existing token for `(identity, mcp_client)`:
    - **Token found and `active`** → upstream call goes out transparently
    - **Missing, `orphaned`, or `needs_reauth`** → Bifrost returns an `mcp_auth_required` payload with an inline `authorize_url`. The tool is **not** executed.
+   - **Rejected upstream** (the provider expired or revoked it before the expiry Bifrost stored) → Bifrost refreshes it once and connects again, so the call goes ahead. If the provider refuses the refresh too, the token becomes `needs_reauth` and the same request returns `mcp_auth_required`.
 4. The user opens the URL, completes the upstream OAuth flow, and Bifrost stores the resulting token against their identity.
 5. The next request executes the tool normally.
 
