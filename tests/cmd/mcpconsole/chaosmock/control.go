@@ -38,6 +38,8 @@ type State struct {
 	StdioEnv map[string]string `json:"stdio_env,omitempty"`
 	// OAuth is the authorization server's state, present while OAuth is on.
 	OAuth *OAuthState `json:"oauth,omitempty"`
+	// REST is the REST surface's routes and call log, present once used.
+	REST *RESTState `json:"rest,omitempty"`
 }
 
 // State captures a server's current state.
@@ -59,6 +61,7 @@ func (s *Server) State() State {
 		StdioPID:     s.StdioPID(),
 		StdioEnv:     s.StdioEnv(),
 		OAuth:        oauth,
+		REST:         s.rest.snapshot(),
 	}
 }
 
@@ -81,6 +84,7 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Add    string `json:"add"`
 			Remove string `json:"remove"`
+			Reset  string `json:"reset"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -96,8 +100,15 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			})
 		case body.Remove != "":
 			writeJSON(w, http.StatusOK, map[string]any{"removed": f.Remove(body.Remove)})
+		case body.Reset != "":
+			s, ok := f.Reset(body.Reset)
+			if !ok {
+				http.Error(w, "no seed for server: "+body.Reset, http.StatusNotFound)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"reset": body.Reset, "state": s.State()})
 		default:
-			http.Error(w, "specify add or remove", http.StatusBadRequest)
+			http.Error(w, "specify add, remove or reset", http.StatusBadRequest)
 		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -152,6 +163,11 @@ type controlBody struct {
 	Env map[string]string `json:"env,omitempty"`
 	// Fail is a failure to queue on the OAuth authorization server.
 	Fail *OAuthFail `json:"fail,omitempty"`
+	// Route, Routes, Method and Path drive the routes/* verbs.
+	Route  *Route  `json:"route,omitempty"`
+	Routes []Route `json:"routes,omitempty"`
+	Method string  `json:"method,omitempty"`
+	Path   string  `json:"path,omitempty"`
 }
 
 func (s *Server) applyControl(verb string, r *http.Request) error {
@@ -254,6 +270,26 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 	case "counters/reset":
 		s.counters.Reset()
 		s.oauth.resetCounters()
+		s.rest.clearLog()
+	case "routes/set":
+		for _, rt := range body.Routes {
+			if err := rt.Validate(); err != nil {
+				return errBadRequest(err.Error())
+			}
+		}
+		s.rest.set(body.Routes)
+	case "routes/add":
+		if body.Route == nil {
+			return errBadRequest("route body is required")
+		}
+		if err := body.Route.Validate(); err != nil {
+			return errBadRequest(err.Error())
+		}
+		s.rest.add(*body.Route)
+	case "routes/remove":
+		if s.rest.remove(body.Method, body.Path) == 0 {
+			return errBadRequest("no route matched")
+		}
 	case "oauth/expire", "oauth/revoke", "oauth/fail":
 		return s.applyOAuthControl(strings.TrimSuffix(verb, "/"), body)
 	default:
