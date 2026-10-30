@@ -111,6 +111,34 @@ func TestLiveModelSourceEndpointDefaults(t *testing.T) {
 	}
 }
 
+// TestLiveModelSourceAzureScopes matches Azure scope defaults across SQL without mutating shared configuration.
+func TestLiveModelSourceAzureScopes(t *testing.T) {
+	store := liveListingTestStore(t, "SQLite")
+	key := liveListingTestKey("azure-key")
+	key.AzureKeyConfig = &schemas.AzureKeyConfig{
+		Endpoint: *schemas.NewSecretVar("https://azure.example"),
+		Scopes:   []string{},
+	}
+	config := ProviderConfig{Keys: []schemas.Key{key}}
+	require.NoError(t, store.AddProvider(t.Context(), schemas.Azure, config))
+	source, err := store.GetLiveModelSource(t.Context(), schemas.Azure, key.ID)
+	require.NoError(t, err)
+	fileHash, err := LiveModelSourceHash(schemas.Azure, &config, key)
+	require.NoError(t, err)
+	require.Equal(t, source.Hash, fileHash, "empty scopes must match SQL's nil default")
+	require.NotNil(t, key.AzureKeyConfig.Scopes, "hashing must not mutate the caller's shared config")
+	nilScopes := *key.AzureKeyConfig
+	nilScopes.Scopes = nil
+	key.AzureKeyConfig = &nilScopes
+	nilHash, err := LiveModelSourceHash(schemas.Azure, &config, key)
+	require.NoError(t, err)
+	require.Equal(t, fileHash, nilHash)
+	key.AzureKeyConfig.Scopes = []string{"https://custom.example/.default"}
+	changedHash, err := LiveModelSourceHash(schemas.Azure, &config, key)
+	require.NoError(t, err)
+	require.NotEqual(t, fileHash, changedHash, "explicit scopes remain part of discovery provenance")
+}
+
 // TestLiveModelListingSourceChanges rejects obsolete work while preserving status and URL-edit fallback semantics.
 func TestLiveModelListingSourceChanges(t *testing.T) {
 	cases := []struct {
