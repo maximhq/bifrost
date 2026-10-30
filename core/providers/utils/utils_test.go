@@ -47,7 +47,7 @@ func TestListModelsDiscoveryPagination(t *testing.T) {
 			resp, err := HandleMultipleListModelsRequests(ctx, []schemas.Key{{ID: "key"}}, request,
 				func(*schemas.BifrostContext, schemas.Key, *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 					return &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/a"}, {ID: "openai/b"}},
-						NextPageToken: "native-next", HasMore: schemas.Ptr(true)}, nil
+						NextPageToken: "native-next", HasMore: schemas.Ptr(true), IsPartial: true}, nil
 				})
 			if err != nil {
 				t.Fatalf("list models: %v", err)
@@ -57,6 +57,9 @@ func TestListModelsDiscoveryPagination(t *testing.T) {
 			}
 			if tc.wantNative && (resp.HasMore == nil || !*resp.HasMore) {
 				t.Fatal("discovery lost the provider's incomplete-listing marker")
+			}
+			if resp.IsPartial != tc.wantNative {
+				t.Fatalf("partial discovery = %t, want %t", resp.IsPartial, tc.wantNative)
 			}
 			if tc.pageSize == 1 && (len(resp.Data) != 1 || resp.NextPageToken == "" || resp.HasMore != nil) {
 				t.Fatalf("explicit pagination changed: %+v", resp)

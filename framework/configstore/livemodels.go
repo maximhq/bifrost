@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -81,12 +82,17 @@ func LiveModelProviderHash(config *ProviderConfig) (string, error) {
 	if config == nil {
 		return "", ErrNotFound
 	}
+	// Storage omits empty proxy secrets, so hash the same representation on both sides of a reload.
+	proxy, err := config.ProxyConfig.MarshalForStorage()
+	if err != nil {
+		return "", err
+	}
 	return hashLiveModelValue(struct {
 		Network *schemas.NetworkConfig
-		Proxy   *schemas.ProxyConfig
+		Proxy   json.RawMessage
 		Custom  *schemas.CustomProviderConfig
 		OpenAI  *schemas.OpenAIConfig
-	}{config.NetworkConfig, config.ProxyConfig, config.CustomProviderConfig, config.OpenAIConfig})
+	}{config.NetworkConfig, json.RawMessage(proxy), config.CustomProviderConfig, config.OpenAIConfig})
 }
 
 // hashLiveModelValue uses canonical JSON so map ordering cannot invalidate a successful listing.

@@ -177,7 +177,7 @@ func (mc *ModelCatalog) SyncLiveModelsForKey(ctx context.Context, expected confi
 			if resp == nil {
 				return
 			}
-			if resp.NextPageToken != "" || (resp.HasMore != nil && *resp.HasMore) {
+			if resp.IsPartial || resp.NextPageToken != "" || (resp.HasMore != nil && *resp.HasMore) {
 				results[mode].failed = true
 				if mc.logger != nil {
 					mc.logger.Warn("incomplete list-models for provider %s key %s (unfiltered=%t); retaining last-known-good data", expected.Provider, expected.KeyID, unfiltered)

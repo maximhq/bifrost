@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -81,6 +82,79 @@ func TestLiveModelListingsPersistence(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, rows, 1)
 			require.JSONEq(t, `{"Models":["other-provider"]}`, rows[0].Data)
+		})
+	}
+}
+
+// TestLiveModelProviderHashProxyStorage matches proxy hashes before and after the persistence round-trip.
+func TestLiveModelProviderHashProxyStorage(t *testing.T) {
+	t.Setenv("LIVE_MODEL_TEST_PROXY_URL", "http://proxy.example:8080")
+	for _, tc := range []struct {
+		name  string
+		proxy *schemas.ProxyConfig
+	}{
+		{"no proxy", nil},
+		{"no URL", &schemas.ProxyConfig{Type: schemas.EnvProxy}},
+		{"empty URL", &schemas.ProxyConfig{Type: schemas.EnvProxy, URL: schemas.NewSecretVar("")}},
+		{"empty optional fields", &schemas.ProxyConfig{Type: schemas.EnvProxy, URL: schemas.NewSecretVar(""),
+			Username: schemas.NewSecretVar(""), Password: schemas.NewSecretVar(""), CACertPEM: schemas.NewSecretVar("")}},
+		{"configured proxy", &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://proxy.example:8080"),
+			Username: schemas.NewSecretVar("user"), Password: schemas.NewSecretVar("synthetic-password"), CACertPEM: schemas.NewSecretVar("synthetic-ca")}},
+		{"environment reference", &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("env.LIVE_MODEL_TEST_PROXY_URL")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := ProviderConfig{ProxyConfig: tc.proxy}
+			before, err := json.Marshal(tc.proxy)
+			require.NoError(t, err)
+			hash, err := LiveModelProviderHash(&config)
+			require.NoError(t, err)
+			data, err := tc.proxy.MarshalForStorage()
+			require.NoError(t, err)
+			var storedProxy *schemas.ProxyConfig
+			require.NoError(t, json.Unmarshal(data, &storedProxy))
+			storedHash, err := LiveModelProviderHash(&ProviderConfig{ProxyConfig: storedProxy})
+			require.NoError(t, err)
+			require.Equal(t, hash, storedHash)
+			after, err := json.Marshal(tc.proxy)
+			require.NoError(t, err)
+			require.JSONEq(t, string(before), string(after), "hashing must not mutate shared configuration")
+		})
+	}
+}
+
+// TestLiveModelProviderHashChanges keeps real provider and proxy edits in the stale-write fence.
+func TestLiveModelProviderHashChanges(t *testing.T) {
+	config := ProviderConfig{
+		NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://provider.example"},
+		ProxyConfig:          &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://proxy.example:8080")},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+		OpenAIConfig:         &schemas.OpenAIConfig{},
+	}
+	hash, err := LiveModelProviderHash(&config)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name   string
+		change func(*ProviderConfig)
+	}{
+		{"network", func(c *ProviderConfig) { c.NetworkConfig = &schemas.NetworkConfig{BaseURL: "https://other.example"} }},
+		{"custom provider", func(c *ProviderConfig) {
+			c.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+		}},
+		{"OpenAI", func(c *ProviderConfig) { c.OpenAIConfig = &schemas.OpenAIConfig{DisableStore: true} }},
+		{"proxy URL", func(c *ProviderConfig) { c.ProxyConfig.URL = schemas.NewSecretVar("http://other-proxy.example:8080") }},
+		{"proxy type", func(c *ProviderConfig) { c.ProxyConfig.Type = schemas.Socks5Proxy }},
+		{"proxy username", func(c *ProviderConfig) { c.ProxyConfig.Username = schemas.NewSecretVar("user") }},
+		{"proxy password", func(c *ProviderConfig) { c.ProxyConfig.Password = schemas.NewSecretVar("synthetic-password") }},
+		{"proxy CA", func(c *ProviderConfig) { c.ProxyConfig.CACertPEM = schemas.NewSecretVar("synthetic-ca") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := config
+			proxy := *config.ProxyConfig
+			changed.ProxyConfig = &proxy
+			tc.change(&changed)
+			changedHash, err := LiveModelProviderHash(&changed)
+			require.NoError(t, err)
+			require.NotEqual(t, hash, changedHash)
 		})
 	}
 }

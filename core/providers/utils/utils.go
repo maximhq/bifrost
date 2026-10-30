@@ -4925,6 +4925,7 @@ func HandleMultipleListModelsRequests(
 		len(successfulResponses) == 1 && successfulResponses[0] != nil {
 		response.NextPageToken = successfulResponses[0].NextPageToken
 		response.HasMore = successfulResponses[0].HasMore
+		response.IsPartial = successfulResponses[0].IsPartial
 	}
 	response = response.ApplyPagination(request.PageSize, request.PageToken)
 

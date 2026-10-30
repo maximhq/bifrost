@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -56,13 +57,15 @@ func persistentDiscoveryServer(t *testing.T, store configstore.ConfigStore, prov
 	config, err := store.GetProviderConfig(t.Context(), provider)
 	require.NoError(t, err)
 	catalog.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{provider: config.Keys})
-	cfg := &lib.Config{ConfigStore: store, ModelCatalog: catalog,
+	cfg := &lib.Config{ConfigStore: store, ModelCatalog: catalog, ClientConfig: &configstore.ClientConfig{},
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{provider: *config}}
 	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: bifrost.NewNoOpLogger()})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	cfg.SetBifrostClient(client)
-	return &BifrostHTTPServer{Config: cfg, Client: client}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	t.Cleanup(ctx.Cancel)
+	return &BifrostHTTPServer{Config: cfg, Client: client, Ctx: ctx}
 }
 
 // TestPersistentLiveDiscovery exercises provider filtering, durable fallback, statuses, and DB-only peer reload through real HTTP discovery.
@@ -70,6 +73,7 @@ func TestPersistentLiveDiscovery(t *testing.T) {
 	previousLogger := logger
 	logger = noopTestLogger{}
 	t.Cleanup(func() { logger = previousLogger })
+	handlers.SetLogger(bifrost.NewNoOpLogger())
 	for _, keyless := range []bool{false, true} {
 		t.Run(fmt.Sprintf("keyless=%t", keyless), func(t *testing.T) {
 			var calls, authenticated atomic.Int32
@@ -114,6 +118,25 @@ func TestPersistentLiveDiscovery(t *testing.T) {
 				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: keyless},
 			}))
 			server := persistentDiscoveryServer(t, store, provider)
+			checkHTTPModels := func(gateway *BifrostHTTPServer, unfiltered bool, want []string) {
+				t.Helper()
+				routes := router.New()
+				handlers.NewProviderHandler(gateway, gateway.Config, gateway.Client).RegisterRoutes(routes)
+				var request fasthttp.Request
+				request.SetRequestURI(fmt.Sprintf("/api/models?provider=%s&unfiltered=%t&limit=100", provider, unfiltered))
+				var ctx fasthttp.RequestCtx
+				ctx.Init(&request, nil, nil)
+				routes.Handler(&ctx)
+				require.Equal(t, http.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				var body handlers.ListModelsResponse
+				require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+				names := make([]string, 0, len(body.Models))
+				for _, model := range body.Models {
+					require.Equal(t, string(provider), model.Provider)
+					names = append(names, model.Name)
+				}
+				require.ElementsMatch(t, want, names, string(ctx.Response.Body()))
+			}
 			var notifications atomic.Int32
 			server.Config.ModelCatalog.SetAfterLiveModelsSyncHook(func(context.Context, schemas.ModelProvider, string) { notifications.Add(1) })
 			require.NoError(t, server.RefreshLiveModelsForAllKeys(t.Context(), provider))
@@ -123,7 +146,12 @@ func TestPersistentLiveDiscovery(t *testing.T) {
 				require.Zero(t, authenticated.Load(), "residual credentials must not reach a keyless provider")
 			}
 			require.Equal(t, wantCalls, calls.Load())
-			require.ElementsMatch(t, wantModels, server.Config.ModelCatalog.GetModelsForProvider(provider))
+			checkHTTPModels(server, false, wantModels)
+			wantUnfiltered := slices.Clone(wantModels)
+			if !keyless {
+				wantUnfiltered = append(wantUnfiltered, "blocked")
+			}
+			checkHTTPModels(server, true, wantUnfiltered)
 			repo := store.(configstore.LiveModelListingStore)
 			before, err := repo.GetLiveModelListings(t.Context(), provider, nil)
 			require.NoError(t, err)
@@ -144,7 +172,8 @@ func TestPersistentLiveDiscovery(t *testing.T) {
 			}
 			fail.Store(true)
 			require.NoError(t, server.RefreshLiveModelsForAllKeys(t.Context(), provider), "provider failure retains existing refresh response behavior")
-			require.ElementsMatch(t, wantModels, server.Config.ModelCatalog.GetModelsForProvider(provider))
+			checkHTTPModels(server, false, wantModels)
+			checkHTTPModels(server, true, wantUnfiltered)
 			after, err := repo.GetLiveModelListings(t.Context(), provider, nil)
 			require.NoError(t, err)
 			require.ElementsMatch(t, before, after, "a failed fetch must not change either snapshot")
@@ -154,7 +183,8 @@ func TestPersistentLiveDiscovery(t *testing.T) {
 			beforeCalls := calls.Load()
 			follower.RefreshAllLiveModels(t.Context())
 			require.Equal(t, beforeCalls, calls.Load(), "closed gate must reload without provider discovery")
-			require.ElementsMatch(t, wantModels, follower.Config.ModelCatalog.GetModelsForProvider(provider))
+			checkHTTPModels(follower, false, wantModels)
+			checkHTTPModels(follower, true, wantUnfiltered)
 			if keyless {
 				config, err := follower.Config.GetProviderConfigRaw(provider)
 				require.NoError(t, err)

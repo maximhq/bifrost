@@ -879,15 +879,13 @@ func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockK
 	return creds, nil
 }
 
-// listModelsByKey performs a list models request to Bedrock's API for a single key.
-// It retrieves all foundation models available in Amazon Bedrock for a specific key.
 // listMantleModels lists models from the Bedrock Mantle (OpenAI-compatible) /v1/models
 // endpoint, converted to a Bifrost response with the same allow/blacklist/alias gating as
 // the foundation-model path. The bare /v1/models path returns the full mantle catalog
 // (including the mantle-only gpt-5.x / gemma-4 models that ListFoundationModels omits).
 // The request is signed as it is sent (mantleSigV4Headers signs POST and can't be reused
 // for this GET). Best-effort: returns nil on any failure so the foundation-model list is
-// still returned.
+// still returned, marked partial by the caller.
 func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	mURL := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "", "models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
@@ -927,6 +925,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 	return mantleResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
 }
 
+// listModelsByKey merges foundation and Mantle models, marking failed Mantle discovery as partial.
 func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
@@ -1034,6 +1033,8 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 			seen[m.ID] = struct{}{}
 			response.Data = append(response.Data, m)
 		}
+	} else {
+		response.IsPartial = true
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()

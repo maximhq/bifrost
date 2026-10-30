@@ -298482,6 +298482,126 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Live model listings survive discovery failures (live-listing-fallback)",
+      "description": "Offline fixture regression using provider-error-fixture.mjs (providerErrorFixture=1). A run-scoped OpenAI-based provider discovers two synthetic models, with a regex allowlist exposing only one. The fixture then fails discovery without changing the provider configuration or credentials. A manual refresh keeps its existing 200 response and failed key status; GET /api/models retains the filtered model and unfiltered=true retains both models. No paid provider calls. This pins the HTTP fallback contract; SQL durability and cold database reload are covered by TestPersistentLiveDiscovery.",
+      "item": [
+        {
+          "name": "openai custom provider /api/models keeps filtered and unfiltered listings after failed refresh - live-listing-fallback",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var name = 'harness-persist-run-' + Date.now();",
+                  "pm.collectionVariables.set('persistedListingProvider', name);",
+                  "function call(method, url, body, cb) {",
+                  "  var req = { url: url, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null) req.body = { mode: 'raw', raw: JSON.stringify(body) };",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    pm.test(method + ' ' + url + ' succeeded', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "    if (err || !res || res.code !== 200) return;",
+                  "    cb(res.json());",
+                  "  });",
+                  "}",
+                  "call('POST', BASE + '/api/providers', {",
+                  "  provider: name,",
+                  "  custom_provider_config: { base_provider_type: 'openai', is_key_less: false },",
+                  "  proxy_config: { type: 'environment', url: '' },",
+                  "  network_config: { base_url: FX + '/catalog/' + name, allow_private_network: true, max_retries: 0 }",
+                  "}, function () {",
+                  "  // A pattern, rather than an exact allowlist, prevents configuration backfill from hiding a missing catalog.",
+                  "  call('POST', BASE + '/api/providers/' + name + '/keys', {",
+                  "    name: name + '-key', value: 'synthetic-credential', weight: 1, models: ['regex:^persist-visible$']",
+                  "  }, function () {",
+                  "    call('GET', BASE + '/api/models?provider=' + name + '&limit=100', null, function (body) {",
+                  "      pm.test('successful discovery populates the filtered HTTP catalog', function () {",
+                  "        pm.expect(body.models.map(function (m) { return m.name; })).to.eql(['persist-visible']);",
+                  "      });",
+                  "      call('POST', FX + '/__models/' + name, null, function () {",
+                  "        call('POST', BASE + '/api/providers/' + name + '/refresh-models', null, function (body) {",
+                  "          pm.test('failed discovery remains visible in the existing key status', function () {",
+                  "            pm.expect(body.keys.length).to.eql(1);",
+                  "            pm.expect(body.keys[0].status).to.eql('list_models_failed');",
+                  "            pm.expect(body.keys[0].description).to.include('synthetic discovery outage');",
+                  "          });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var name = pm.collectionVariables.get('persistedListingProvider');",
+                  "pm.test('filtered HTTP listing retains discovered models after an outage', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().models.map(function (m) { return m.name; })).to.eql(['persist-visible']);",
+                  "});",
+                  "pm.sendRequest(BASE + '/api/models?provider=' + name + '&unfiltered=true&limit=100', function (err, res) {",
+                  "  pm.test('unfiltered HTTP listing retains its separate complete snapshot', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(res.json().models.map(function (m) { return m.name; }).sort()).to.eql(['persist-hidden', 'persist-visible']);",
+                  "  });",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + name, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('run-scoped provider is cleaned up', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "    pm.sendRequest({ url: FX + '/__models/' + name, method: 'DELETE' }, function (err, res) {",
+                  "      pm.test('run-scoped discovery failure is cleaned up', function () {",
+                  "        pm.expect(err, String(err)).to.eql(null);",
+                  "        pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models?provider={{persistedListingProvider}}&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{persistedListingProvider}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -62,13 +62,20 @@ func syncLiveFixture(t *testing.T, mc *ModelCatalog, source *configstore.LiveMod
 // TestLiveModelsPersistReload verifies independent modes and keys survive process-local cache replacement.
 func TestLiveModelsPersistReload(t *testing.T) {
 	mc, store, config := persistentLiveCatalog(t)
+	// A provider update keeps this pointer in memory, while SQL reload omits the empty URL.
+	config.ProxyConfig = &schemas.ProxyConfig{Type: schemas.EnvProxy, URL: schemas.NewSecretVar("")}
+	require.NoError(t, store.UpdateProvider(t.Context(), schemas.OpenAI, *config))
 	repo := store.(configstore.LiveModelListingStore)
 	one, err := repo.GetLiveModelSource(t.Context(), schemas.OpenAI, "one")
 	require.NoError(t, err)
+	one.ProviderHash, err = configstore.LiveModelProviderHash(config)
+	require.NoError(t, err)
 	two, err := repo.GetLiveModelSource(t.Context(), schemas.OpenAI, "two")
 	require.NoError(t, err)
+	var calls atomic.Int32
 	_, available, err := mc.SyncLiveModelsForKey(t.Context(), *one,
 		func(ctx context.Context, unfiltered bool) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			calls.Add(1)
 			resp, _ := liveFetch("first-model")(ctx, unfiltered)
 			if unfiltered {
 				resp.Data = append(resp.Data, schemas.Model{ID: "openai/raw-only"})
@@ -76,6 +83,7 @@ func TestLiveModelsPersistReload(t *testing.T) {
 			return resp, nil
 		})
 	require.NoError(t, err)
+	require.Equal(t, int32(2), calls.Load(), "equivalent proxy representations must not skip discovery")
 	require.True(t, available)
 	syncLiveFixture(t, mc, two, "second-model")
 	follower := liveCatalogFromStore(store, config)
@@ -99,6 +107,7 @@ func TestLiveModelsRefreshFailures(t *testing.T) {
 		{"both fail", "error", "error"}, {"filtered fails", "error", ""}, {"unfiltered fails", "", "error"},
 		{"nil response", "nil", "nil"}, {"next page", "next", "next"}, {"has more", "more", "more"},
 		{"failed key despite response", "status", "status"}, {"empty filtered success", "empty", ""},
+		{"partial discovery", "partial", "partial"}, {"partial filtered", "partial", ""}, {"partial unfiltered", "", "partial"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +136,8 @@ func TestLiveModelsRefreshFailures(t *testing.T) {
 						resp.NextPageToken = "more"
 					case "more":
 						resp.HasMore = schemas.Ptr(true)
+					case "partial":
+						resp.IsPartial = true
 					case "status":
 						resp.KeyStatuses = []schemas.KeyStatus{{KeyID: "one", Status: schemas.KeyStatusListModelsFailed}}
 					case "empty":

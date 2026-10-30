@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1749,6 +1750,53 @@ func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
 				t.Errorf("anthropic_beta body field = %q, want %q", bodyBeta, tc.want)
 			}
 		})
+	}
+}
+
+// TestVertexListModelsPartialPublisher separates transport failures from publishers unavailable in a region.
+func TestVertexListModelsPartialPublisher(t *testing.T) {
+	for _, tc := range []struct {
+		publisher string
+		status    int
+	}{
+		{"anthropic", 0}, {"mistralai", 0},
+		{"anthropic", http.StatusForbidden}, {"mistralai", http.StatusNotFound},
+	} {
+		for _, unfiltered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/status=%d/unfiltered=%t", tc.publisher, tc.status, unfiltered), func(t *testing.T) {
+				provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					publisher := strings.Split(r.URL.Path, "/")[3]
+					if publisher == tc.publisher {
+						if tc.status == 0 {
+							conn, _, err := w.(http.Hijacker).Hijack()
+							if err == nil {
+								_ = conn.Close()
+							}
+						} else {
+							w.WriteHeader(tc.status)
+						}
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = fmt.Fprintf(w, `{"publisherModels":[{"name":"publishers/%s/models/%s-model","versionId":"default"}]}`, publisher, publisher)
+				}))
+				key.ID, key.Models = "key", schemas.WhiteList{"*"}
+				ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+				defer ctx.Cancel()
+				response, bfErr := provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{
+					Provider: schemas.Vertex, KeyID: &key.ID, Unfiltered: unfiltered,
+				})
+				if bfErr != nil {
+					t.Fatalf("best-effort listing: %s", bfErr.GetErrorString())
+				}
+				if len(response.Data) != 2 {
+					t.Fatalf("remaining publisher models = %v, want two", response.Data)
+				}
+				if response.IsPartial != (tc.status == 0) {
+					t.Fatalf("partial = %t, want %t", response.IsPartial, tc.status == 0)
+				}
+			})
+		}
 	}
 }
 
