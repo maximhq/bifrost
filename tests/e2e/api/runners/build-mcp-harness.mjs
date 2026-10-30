@@ -2405,6 +2405,182 @@ const EP53 = folder("EP-53 Log entry for a /mcp call", `Setup: ${FLEET}; the ful
   deleteVK("EP-53", "full"), ...fleetTeardown("EP-53"),
 ]);
 
+// ================================================================ OAS redirect allowlist and SET client settings
+
+const APP_CB = "https://app.example/cb";
+const redirectAllowlist = (id, uris) => oauthConfig(id, "both", [`cc.oauth2_server_config.allowed_redirect_uris = ${lit(uris)};`],
+  `setup: ${BOTH}, temp-token auth on, allowed_redirect_uris ${lit(uris)}`);
+// registerWith registers a named client for one redirect URI, so a refusal can only be about that URI.
+const registerWith = (id, uri, asserts, extraTests = []) => request(id, `register ${uri}`, "POST", "/oauth2/register", {
+  noAuth: true, body: { client_name: `${id} ${uri}`, redirect_uris: [uri] }, asserts, extraTests,
+});
+const OAS10 = folder("OAS-10 Redirect allowlist and later removal", `Setup: ${BOTH}, dashboard auth on, temp-token auth on; allowed_redirect_uris exactly ["${APP_CB}"], then ["*"], then []; a virtual key to consent with.`, [
+  readConfig("OAS-10"),
+  vkCreate("OAS-10", "setup: create a virtual key to consent with", { name: "OAS-10 key" }, "oas10_key"),
+  redirectAllowlist("OAS-10", [APP_CB]),
+  registerWith("OAS-10", APP_CB, [A.status(201)], ["pm.collectionVariables.set('oas10_client', pm.response.json().client_id);"]),
+  registerWith("OAS-10", "https://other.example/cb", [A.status(400)]),
+  registerWith("OAS-10", "https://app.example/cb2", [A.status(400)]),
+  authorize("OAS-10", "oas10_client", "oas10_f1", "setup: authorize a flow that stays pending", { redirect_uri: APP_CB }),
+  authorize("OAS-10", "oas10_client", "oas10_f2", "setup: authorize a flow to consent", { redirect_uri: APP_CB }),
+  consent("OAS-10", "oas10_f2", "setup: consent the second flow with the key", "temp", { mode: "vk", value: "{{oas10_key}}" }, [A.status(200), codeIssued()], { extraTests: saveCode("oas10_f2") }),
+  authorize("OAS-10", "oas10_client", "oas10_f3", "setup: authorize a control flow", { redirect_uri: APP_CB }),
+  consent("OAS-10", "oas10_f3", "setup: consent the control flow with the key", "temp", { mode: "vk", value: "{{oas10_key}}" }, [A.status(200), codeIssued()], { extraTests: saveCode("oas10_f3") }),
+  tokenReq("OAS-10", "control: the same exchange succeeds while the redirect is approved", codeParams("oas10_f3", "oas10_client", { redirect_uri: APP_CB }), [A.status(200), tokensIssued()]),
+  redirectAllowlist("OAS-10", ["*"]),
+  registerWith("OAS-10", "https://any.example/cb", [A.status(201)]),
+  registerWith("OAS-10", "cursor://other", [A.status(400)]),
+  redirectAllowlist("OAS-10", []),
+  request("OAS-10", "authorize after the allowlist is emptied", "GET", goodAuthorize("oas10_client", { redirect_uri: APP_CB }), { noAuth: true, noRedirect: true, asserts: [A.status(400)] }),
+  consent("OAS-10", "oas10_f1", "consent the pending flow after the allowlist is emptied", "temp", { mode: "vk", value: "{{oas10_key}}" }, [A.status(400), A.msgEquals("redirect_uri is no longer approved")]),
+  tokenReq("OAS-10", "exchange the second flow's code after the allowlist is emptied", codeParams("oas10_f2", "oas10_client", { redirect_uri: APP_CB }), [A.status(400), O.descEquals("redirect_uri mismatch")]),
+  restoreConfig("OAS-10"),
+  vkDelete("OAS-10", "teardown: delete the virtual key", "oas10_key"),
+]);
+
+// SET tests use client alpha on the alpha mock server (echo_tool, add_tool), served as alpha-<tool>.
+const setClient = (id, over) => [
+  ...freshServer(id, "alpha", ["echo_tool", "add_tool"]),
+  createClient(id, httpClient(`${id.toLowerCase()}-a`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: create client alpha"),
+];
+const setExec = (id, title, tool, asserts, headers = []) => execTool(id, title, `alpha-${tool}`, asserts, { headers });
+// pollMcpList re-sends tools/list to /mcp, 200ms apart for up to about 2s, until cond (ES5 on the tool list) holds;
+// /mcp resyncs from a background goroutine after a refresh.
+const pollMcpList = (cond) => [
+  "var left = 10;",
+  "function poll() {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/mcp', method: 'POST', header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' }, body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) } }, function (err, res) {",
+  "    var tools = !err && res.code === 200 && res.json().result ? res.json().result.tools : null;",
+  `    if ((tools && (${cond})) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 200);",
+  "  });",
+  "}",
+  "poll();",
+];
+const callsBefore = (id, varName, tool) => mockGet(id, "alpha", `setup: record alpha's ${tool} calls`, [], [`pm.collectionVariables.set(${lit(varName)}, (pm.response.json().counters.calls || {})[${lit(tool)}] || 0);`]);
+const callsPlusOne = (varName, tool) => A.custom(`calls[${tool}] is one more than the recorded count`, [
+  `var before = Number(pm.collectionVariables.get(${lit(varName)}));`,
+  `pm.expect((pm.response.json().counters.calls || {})[${lit(tool)}] || 0, 'body: ' + pm.response.text()).to.equal(before + 1);`,
+]);
+
+const SET01 = folder("SET-01 Regex and case-insensitive allow-list entries", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"regex:^ECHO.*\"], then [\"ECHO_TOOL\"].", [
+  ...setClient("SET-01", { tools_to_execute: ["regex:^ECHO.*"] }),
+  ...[["regex:^ECHO.*", null], ["ECHO_TOOL", ["ECHO_TOOL"]]].flatMap(([label, put], run) => [
+    ...(put ? [
+      request("SET-01", `setup: set tools_to_execute ${lit(put)}`, "PUT", "/api/mcp/client/set-01-a", { body: { tools_to_execute: put }, asserts: [A.status(200)] }),
+      getClient("SET-01", "set-01-a", `the stored tools_to_execute is ${lit(put)}`, [A.custom(`tools_to_execute is ${lit(put)}`, [`pm.expect(pm.response.json().clients[0].config.tools_to_execute, 'body: ' + pm.response.text()).to.eql(${lit(put)});`])]),
+    ] : []),
+    callsBefore("SET-01", `set01_echo_${run}`, "echo_tool"),
+    setExec("SET-01", `${label}: execute echo_tool`, "echo_tool", [A.status(200)]),
+    mockGet("SET-01", "alpha", `${label}: alpha counted the echo_tool call`, [callsPlusOne(`set01_echo_${run}`, "echo_tool")]),
+    setExec("SET-01", `${label}: execute add_tool`, "add_tool", [A.status(400), A.msgContains("is not permitted")]),
+  ]),
+  request("SET-01", "set tools_to_execute [\"regex:(\"]", "PUT", "/api/mcp/client/set-01-a", { body: { tools_to_execute: ["regex:("] }, asserts: [A.status(400), A.msgContains("does not compile")] }),
+  deleteClient("SET-01", "set-01-a"),
+]);
+
+const SET02 = folder("SET-02 A VK grant and the client allow-list both apply", "Setup: alpha (echo_tool, add_tool) as client alpha, allow_by_default true, tools_to_execute [\"add_tool\"]; an empty-grant VK grants alpha []; a no-config VK has no MCP configs.", [
+  ...setClient("SET-02", { allow_by_default: true, tools_to_execute: ["add_tool"] }),
+  vkCreate("SET-02", "setup: create the empty-grant VK, granting alpha []", { name: "SET-02 empty-grant key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: [] }] }, "set02_vk1"),
+  vkCreate("SET-02", "setup: create the no-config VK", { name: "SET-02 no-config key" }, "set02_vk2"),
+  setExec("SET-02", "execute echo_tool with the empty-grant VK", "echo_tool", [A.status(403), A.msgContains("is not allowed")], [{ key: "x-bf-vk", value: "{{set02_vk1}}" }]),
+  setExec("SET-02", "execute echo_tool with the no-config VK", "echo_tool", [A.status(400), A.msgContains("not in client's ToolsToExecute allow-list")], [{ key: "x-bf-vk", value: "{{set02_vk2}}" }]),
+  vkDelete("SET-02", "teardown: delete the empty-grant VK", "set02_vk1"),
+  vkDelete("SET-02", "teardown: delete the no-config VK", "set02_vk2"),
+  deleteClient("SET-02", "set-02-a"),
+]);
+
+const alphaToolsOnMcp = "tools.filter(function (t) { return t.name.indexOf('alpha-') === 0; }).map(function (t) { return t.name; }).sort()";
+const SET07 = folder("SET-07 Refresh picks up added and removed tools, skips bad names", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; then alpha adds z_tool, removes add_tool and adds \"bad/name\".", [
+  ...setClient("SET-07", { needs_session_stickiness: true }),
+  mockPost("SET-07", "alpha", "tools/add", "setup: alpha adds z_tool", { tool: { name: "z_tool" } }),
+  mockPost("SET-07", "alpha", "tools/remove", "setup: alpha removes add_tool", { name: "add_tool" }),
+  mockPost("SET-07", "alpha", "tools/add", "setup: alpha adds bad/name", { tool: { name: "bad/name" } }),
+  request("SET-07", "refresh-tools", "POST", "/api/mcp/client/set-07-a/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 2)] }),
+  getClient("SET-07", "set-07-a", "the client lists echo_tool and z_tool", [toolNamesAre(["echo_tool", "z_tool"])]),
+  setExec("SET-07", "execute add_tool", "add_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  request("SET-07", "/mcp lists the same tools", "POST", "/mcp", {
+    noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT], pre: pollMcpList(`JSON.stringify(${alphaToolsOnMcp}) === '["alpha-echo_tool","alpha-z_tool"]'`),
+    asserts: [A.status(200), A.custom("alpha's tools are exactly [\"alpha-echo_tool\",\"alpha-z_tool\"]", [
+      "var tools = pm.response.json().result.tools;",
+      `pm.expect(${alphaToolsOnMcp}, 'body: ' + pm.response.text()).to.eql(["alpha-echo_tool", "alpha-z_tool"]);`,
+    ])],
+  }),
+  deleteClient("SET-07", "set-07-a"),
+]);
+
+const SET08 = folder("SET-08 Upstream rename against a named allow-list", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"echo_tool\"]; alpha renames echo_tool to echo2; then refresh-tools.", [
+  ...setClient("SET-08", { tools_to_execute: ["echo_tool"] }),
+  mockPost("SET-08", "alpha", "tools/rename", "setup: alpha renames echo_tool to echo2", { from: "echo_tool", to: "echo2" }),
+  request("SET-08", "setup: refresh-tools", "POST", "/api/mcp/client/set-08-a/refresh-tools", { asserts: [A.status(200)] }),
+  getClient("SET-08", "set-08-a", "the tools have echo2, not echo_tool", [A.custom("tools include echo2 and not echo_tool", [
+    "var names = pm.response.json().clients[0].tools.map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('echo2');",
+    "pm.expect(names).to.not.include('echo_tool');",
+  ])]),
+  setExec("SET-08", "execute echo2", "echo2", [A.status(400), A.msgContains("not in client's ToolsToExecute allow-list")]),
+  setExec("SET-08", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  mockGet("SET-08", "alpha", "alpha never ran echo2", [callsIs("echo2", 0)]),
+  deleteClient("SET-08", "set-08-a"),
+]);
+
+const SET09_PROP = { type: "string", description: "SET-09 property" };
+const echoToolEntry = "pm.response.json().clients[0].tools.filter(function (t) { return t.name === 'echo_tool'; })[0]";
+const SET09 = folder("SET-09 Refresh picks up schema and description edits", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha changes echo_tool's input schema (a required set09_prop) and its description.", [
+  ...setClient("SET-09", {}),
+  mockPost("SET-09", "alpha", "tools/schema", "setup: alpha changes echo_tool's schema", { name: "echo_tool", schema: { type: "object", properties: { set09_prop: SET09_PROP }, required: ["set09_prop"] } }),
+  mockPost("SET-09", "alpha", "tools/describe", "setup: alpha changes echo_tool's description", { name: "echo_tool", text: "SET-09 new description" }),
+  getClient("SET-09", "set-09-a", "control: before the refresh echo_tool keeps its old description", [A.custom("description is \"chaosmock tool echo_tool\"", [
+    `var t = ${echoToolEntry};`,
+    "pm.expect(t && t.description, 'body: ' + pm.response.text()).to.equal('chaosmock tool echo_tool');",
+  ])]),
+  request("SET-09", "refresh-tools", "POST", "/api/mcp/client/set-09-a/refresh-tools", { asserts: [A.status(200)] }),
+  getClient("SET-09", "set-09-a", "GET shows the new description and property", [A.custom(`description "SET-09 new description", parameters.properties.set09_prop is ${lit(SET09_PROP)}`, [
+    `var t = ${echoToolEntry};`,
+    "pm.expect(t && t.description, 'body: ' + pm.response.text()).to.equal('SET-09 new description');",
+    `pm.expect(t.parameters.properties.set09_prop).to.eql(${lit(SET09_PROP)});`,
+  ])], { extraTests: [`pm.collectionVariables.set('set09_parameters', JSON.stringify(${echoToolEntry}.parameters));`] }),
+  request("SET-09", "/mcp inputSchema matches", "POST", "/mcp", {
+    noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT],
+    pre: pollMcpList("tools.some(function (t) { return t.name === 'alpha-echo_tool' && t.inputSchema && t.inputSchema.properties && t.inputSchema.properties.set09_prop; })"),
+    asserts: [A.status(200), A.custom("alpha-echo_tool's inputSchema equals GET's parameters, required included", [
+      "var t = pm.response.json().result.tools.filter(function (x) { return x.name === 'alpha-echo_tool'; })[0];",
+      "pm.expect(t && t.inputSchema, 'body: ' + pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('set09_parameters')));",
+      "pm.expect(t.inputSchema.required).to.eql(['set09_prop']);",
+    ])],
+  }),
+  deleteClient("SET-09", "set-09-a"),
+]);
+
+const SET21 = folder("SET-21 Slug survives a rename", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; its slug is \"alpha\"; it is renamed to alpha2.", [
+  ...setClient("SET-21", {}),
+  getClient("SET-21", "set-21-a", "control: the slug is \"alpha\"", [clientField("config.endpoint_slug", "alpha")]),
+  request("SET-21", "setup: rename the client to alpha2", "PUT", "/api/mcp/client/set-21-a", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
+  getClient("SET-21", "set-21-a", "the slug is still \"alpha\"", [clientField("config.endpoint_slug", "alpha")]),
+  list("SET-21", "/mcp/alpha lists alpha2's tools", "/mcp/alpha", [], [A.status(200), toolNamesInList(["alpha2-add_tool", "alpha2-echo_tool"])]),
+  deleteClient("SET-21", "set-21-a"),
+]);
+
+const CODE_MODE_TOOLS = ["listToolFiles", "readToolFile", "getToolDocs", "executeToolCode"];
+const mcpNames = "pm.response.json().result.tools.map(function (t) { return t.name; })";
+const SET22 = folder("SET-22 Code-mode flag swaps the listed tools", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; is_code_mode_client set true, then false.", [
+  ...setClient("SET-22", {}),
+  request("SET-22", "set is_code_mode_client true", "PUT", "/api/mcp/client/set-22-a", { body: { is_code_mode_client: true }, asserts: [A.status(200)] }),
+  list("SET-22", "/mcp after true", "/mcp", [], [A.status(200), A.custom(`lists ${CODE_MODE_TOOLS.join(", ")} and no alpha-* tool`, [
+    `var names = ${mcpNames};`,
+    `${lit(CODE_MODE_TOOLS)}.forEach(function (n) { pm.expect(names, 'body: ' + pm.response.text()).to.include(n); });`,
+    "pm.expect(names.filter(function (n) { return n.indexOf('alpha-') === 0; })).to.eql([]);",
+  ])]),
+  request("SET-22", "set is_code_mode_client false", "PUT", "/api/mcp/client/set-22-a", { body: { is_code_mode_client: false }, asserts: [A.status(200)] }),
+  list("SET-22", "/mcp after false", "/mcp", [], [A.status(200), A.custom("lists alpha-add_tool and alpha-echo_tool and no code mode tool", [
+    `var names = ${mcpNames};`,
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('alpha-add_tool');",
+    "pm.expect(names).to.include('alpha-echo_tool');",
+    `${lit(CODE_MODE_TOOLS)}.forEach(function (n) { pm.expect(names).to.not.include(n); });`,
+  ])]),
+  deleteClient("SET-22", "set-22-a"),
+]);
+
 // ================================================================ INF direct execute and code mode
 
 // execBody posts a JSON body (or raw text) to /v1/mcp/tool/execute with no admin credentials; query is appended as is.
@@ -2445,7 +2621,8 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN17, CONN18, CONN22]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
