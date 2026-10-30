@@ -627,5 +627,6 @@
 		"unexpected": "予期しないエラーが発生しました",
 		"requestTimeout": "リクエストがタイムアウトしました",
 		"network": "ネットワークエラー"
-	}
+	},
+	"valueOrEnvVar": "{{value}} または {{env}}"
 }

@@ -627,5 +627,6 @@
 		"unexpected": "An unexpected error occurred",
 		"requestTimeout": "Request timeout",
 		"network": "Network error"
-	}
+	},
+	"valueOrEnvVar": "{{value}} or {{env}}"
 }
