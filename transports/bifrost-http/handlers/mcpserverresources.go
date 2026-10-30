@@ -26,12 +26,12 @@ type MCPResourcesAndPromptsServer interface {
 // resourcesAndPromptsOptions declares prompts, resources and completions, narrowing their lists per request.
 func (h *MCPServerHandler) resourcesAndPromptsOptions(hooks *server.Hooks) []server.ServerOption {
 	hooks.AddAfterListResources(func(ctx context.Context, _ any, _ *mcp.ListResourcesRequest, result *mcp.ListResourcesResult) {
-		if result != nil && requestNarrowed(ctx) {
+		if result != nil && h.narrowsLists(ctx) {
 			result.Resources = keepCallersEntries(result.Resources, h.served.GetAvailableMCPResources(ctx), resourceURI)
 		}
 	})
 	hooks.AddAfterListResourceTemplates(func(ctx context.Context, _ any, _ *mcp.ListResourceTemplatesRequest, result *mcp.ListResourceTemplatesResult) {
-		if result != nil && requestNarrowed(ctx) {
+		if result != nil && h.narrowsLists(ctx) {
 			result.ResourceTemplates = keepCallersEntries(result.ResourceTemplates, h.served.GetAvailableMCPResourceTemplates(ctx), coremcp.ResourceTemplateURI)
 		}
 	})
@@ -40,7 +40,7 @@ func (h *MCPServerHandler) resourcesAndPromptsOptions(hooks *server.Hooks) []ser
 		server.WithResourceCapabilities(false, true),
 		server.WithCompletions(),
 		server.WithPromptFilter(func(ctx context.Context, prompts []mcp.Prompt) []mcp.Prompt {
-			if !requestNarrowed(ctx) {
+			if !h.narrowsLists(ctx) {
 				return prompts
 			}
 			return keepCallersEntries(prompts, h.served.GetAvailableMCPPrompts(ctx), promptName)
@@ -50,9 +50,15 @@ func (h *MCPServerHandler) resourcesAndPromptsOptions(hooks *server.Hooks) []ser
 	}
 }
 
-// syncResourcesAndPrompts installs every upstream's prompts, resources and templates; core
-// re-checks the caller on each call.
-func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context) {
+// narrowsLists reports whether a prompt or resource list must be narrowed to the caller's own
+// entries: the request carries an include list, or some placeholder stands for each caller's own.
+func (h *MCPServerHandler) narrowsLists(ctx context.Context) bool {
+	return requestNarrowed(ctx) || h.perCaller.Load() != nil
+}
+
+// syncResourcesAndPrompts installs every upstream's prompts, resources and templates, and perCaller's
+// placeholders; core re-checks the caller on each call.
+func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context, perCaller *perCallerEntries) {
 	prompts := h.served.GetAvailableMCPPrompts(ctx)
 	serverPrompts := make([]server.ServerPrompt, 0, len(prompts))
 	for _, prompt := range prompts {
@@ -68,6 +74,9 @@ func (h *MCPServerHandler) syncResourcesAndPrompts(ctx context.Context) {
 	for _, template := range templates {
 		serverTemplates = append(serverTemplates, server.ServerResourceTemplate{Template: template, Handler: server.ResourceTemplateHandlerFunc(h.readResource)})
 	}
+	serverPrompts = append(serverPrompts, h.perCallerServerPrompts(perCaller, prompts)...)
+	serverResources = append(serverResources, h.perCallerServerResources(perCaller, resources)...)
+	serverTemplates = append(serverTemplates, h.perCallerServerTemplates(perCaller, templates)...)
 	h.mcpServer.SetPrompts(serverPrompts...)
 	h.mcpServer.SetResources(serverResources...)
 	h.mcpServer.SetResourceTemplates(serverTemplates...)
@@ -147,23 +156,9 @@ func requestNarrowed(ctx context.Context) bool {
 	return ctx.Value(schemas.MCPContextKeyIncludeClients) != nil || ctx.Value(schemas.MCPContextKeyIncludeTools) != nil
 }
 
-// keepAllowed keeps the items whose key is among allowed's, in their order.
-func keepAllowed[T, A any](items []T, itemKey func(T) string, allowed []A, allowedKey func(A) string) []T {
-	keys := make(map[string]bool, len(allowed))
-	for _, item := range allowed {
-		keys[allowedKey(item)] = true
-	}
-	kept := make([]T, 0, len(items))
-	for _, item := range items {
-		if keys[itemKey(item)] {
-			kept = append(kept, item)
-		}
-	}
-	return kept
-}
-
-// keepCallersEntries is keepAllowed for entries of one type, each kept entry replaced by the
-// caller's own: two upstreams can list the same resource URI with different details.
+// keepCallersEntries keeps the items whose key is among allowed's, in their order, each replaced by
+// the caller's own: two upstreams can list the same resource URI with different details, and a
+// per-caller placeholder carries none of its own.
 func keepCallersEntries[T any](items, allowed []T, key func(T) string) []T {
 	byKey := make(map[string]T, len(allowed))
 	for _, item := range allowed {

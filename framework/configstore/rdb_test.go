@@ -6510,6 +6510,44 @@ func TestPerUserDiscovery_ToolCallerCountsOfEachClient(t *testing.T) {
 	assert.Empty(t, counts)
 }
 
+// TestPerUserDiscovery_NamesOfEachClient: the union of what user and virtual-key
+// callers' discoveries of a client hold, sorted: tool and prompt names bare,
+// resource and template URIs as listed. Session rows and clients not asked for
+// are left out.
+func TestPerUserDiscovery_NamesOfEachClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	alice := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search", "read")
+	alice.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")}
+	alice.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///alice.md", "alice")}
+	alice.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")}
+	key := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search", "export")
+	key.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review"), mcpgo.NewPrompt("summarize")}
+	for _, discovery := range []*tables.TableMCPPerUserDiscovery{
+		alice,
+		key,
+		samplePerUserDiscovery(schemas.MCPAuthModeSession, "sess-1", "notes", "admin"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read"),
+	} {
+		require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+
+	names, err := store.GetMCPPerUserDiscoveryNames(ctx, []string{"notes", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]MCPPerUserDiscoveryNames{
+		"notes": {
+			Tools:             []string{"export", "read", "search"},
+			Prompts:           []string{"review", "summarize"},
+			Resources:         []string{"file:///alice.md"},
+			ResourceTemplates: []string{"notes://{id}"},
+		},
+	}, names)
+
+	names, err = store.GetMCPPerUserDiscoveryNames(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}
+
 // TestMCPClientPendingVerification_OnlyItsSetterClearsIt: for a client read
 // from the record (one with per_user_discovery on), the record is stored at
 // create and read back on every load, an ordinary update leaves it as it is
