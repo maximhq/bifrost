@@ -3878,6 +3878,46 @@ func TestApplyNonStreamingOutputToEntryDropsToolsRawResponse(t *testing.T) {
 	}
 }
 
+// TestApplyNonStreamingOutputToEntrySearchKeepsCountNotPages pins what a Search row does keep: the
+// number of results it matched, and only that. Cost recomputation needs the count to tell a billed
+// Search from a free no-match one, so it is recorded whatever the content policy says — while the
+// result pages stay out of every content field, whatever the raw-storage setting.
+func TestApplyNonStreamingOutputToEntrySearchKeepsCountNotPages(t *testing.T) {
+	const pageText = "whole page text that must not be persisted"
+	searchResult := &schemas.BifrostResponse{
+		SearchResponse: &schemas.BifrostSearchResponse{
+			Results: []schemas.BifrostSearchResult{
+				{Title: "t1", URL: "https://example.com/1", Snippet: pageText, Content: pageText},
+				{Title: "t2", URL: "https://example.com/2", Snippet: pageText, Content: pageText},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.SearchRequest,
+				RawResponse: map[string]any{"results": []any{pageText}},
+			},
+		},
+	}
+
+	for _, contentLoggingEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("content logging %v", contentLoggingEnabled), func(t *testing.T) {
+			plugin := &LoggerPlugin{}
+			entry := &logstore.Log{}
+
+			plugin.applyNonStreamingOutputToEntry(entry, searchResult, true, contentLoggingEnabled)
+
+			require.NotNil(t, entry.SearchResultCount, "the count is a pricing input, recorded whatever the content policy")
+			require.Equal(t, 2, *entry.SearchResultCount)
+			require.Empty(t, entry.RawResponse, "the raw body is never stored for Search")
+			require.NoError(t, entry.SerializeFields())
+			for _, column := range []string{entry.RawRequest, entry.RawResponse, entry.OutputMessage, entry.ResponsesOutput, entry.Params, entry.ContentSummary} {
+				require.NotContains(t, column, pageText, "no page text may reach a log column")
+			}
+			serialized, err := json.Marshal(entry)
+			require.NoError(t, err)
+			require.NotContains(t, string(serialized), pageText, "no page text may reach a log column")
+		})
+	}
+}
+
 // TestApplyNonStreamingOutputToEntryVideoOutputs verifies that each video response lands in
 // its own log column. Generation, remix and retrieve all return BifrostVideoGenerationResponse,
 // so the request type is the only thing separating generation from retrieve.

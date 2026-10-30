@@ -490,6 +490,18 @@ type Log struct {
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
 
+	// SearchResultCount is how many results a Search matched; NULL on every other
+	// request type and on rows written before the column existed — including the
+	// empty result set itself, which is written as 0. It is what cost
+	// recomputation bills a Search from: an empty Search is free while a matching
+	// one owes the configured per-request fee, and the reconstructed response the
+	// reprice builds has no result pages to count. It is deliberately NOT a payload
+	// field (see payload.go), like the served-tier columns above: a count is a
+	// pricing input, not request content, so it must survive object-storage
+	// offload and content-hidden rows. A plain count is what lets Search keep
+	// result pages out of the log store altogether.
+	SearchResultCount *int `json:"search_result_count,omitempty"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
