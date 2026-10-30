@@ -544,7 +544,32 @@
 			"proxyUrlRequired": "프록시 URL은 필수입니다",
 			"rootedPathSearch": "/v1/search 같은 루트 경로를 입력하세요",
 			"statusRange": "상태 코드는 100에서 599 사이여야 합니다"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "http/socks5에는 프록시 URL이 필요해요",
+		"usernameAndPasswordMustBothBeProvided": "사용자 이름과 비밀번호를 모두 입력해야 해요",
+		"maxRetriesCannotBeNegative": "최대 재시도 횟수는 음수일 수 없어요",
+		"endpointIsRequiredForAzureKeys": "Azure 키에는 엔드포인트가 필요해요",
+		"projectIdIsRequiredForVertexKeys": "Vertex AI 키에는 프로젝트 ID가 필요해요",
+		"regionIsRequiredForVertexKeys": "Vertex AI 키에는 리전이 필요해요",
+		"authCredentialsMustBeValidJsonOrEnvVar": "인증 자격 증명을 입력할 때는 유효한 JSON 객체 또는 env.VAR 형식이어야 해요",
+		"enterTheVpcEndpointDnsName": "ID가 아니라 VPC 콘솔에 표시된 엔드포인트의 DNS 이름을 입력하세요",
+		"regionIsRequiredForBedrockKeys": "Bedrock 키에는 리전이 필요해요",
+		"bedrockAccessKeyPair": "Bedrock: Access Key와 Secret Key를 모두 입력하거나, IAM 역할 인증을 사용하려면 둘 다 비워 두세요",
+		"regionIsRequiredForBedrockMantleKeys": "Bedrock Mantle 키에는 리전이 필요해요",
+		"bedrockMantleAccessKeyPair": "Bedrock Mantle: Access Key와 Secret Key를 모두 입력하거나, IAM 역할 인증을 사용하려면 둘 다 비워 두세요",
+		"regionIsRequiredForSagemakerKeys": "SageMaker 키에는 리전이 필요해요",
+		"sagemakerAccessKeyPair": "SageMaker: Access Key와 Secret Key를 모두 입력하거나, 기본 AWS 자격 증명 체인을 사용하려면 둘 다 비워 두세요",
+		"keyNameIsRequired": "키 이름은 필수예요",
+		"keyWeightsMustBeBetween01And1": "키 가중치는 0.1에서 1 사이여야 해요",
+		"deploymentsMustHaveAModelIdOnEveryRow": "배포의 모든 행에 모델 ID를 설정해야 해요",
+		"pleaseSelectAProvider": "프로바이더를 선택하세요",
+		"customProviderNameFormat": "커스텀 프로바이더 이름에는 영문 소문자, 숫자, '-', '_'만 쓸 수 있어요(공백 불가)",
+		"baseProviderTypeIsRequiredForCustomProviders": "커스텀 프로바이더에는 기본 프로바이더 유형이 필요해요",
+		"customProviderNameCannotMatchAStandardProvider": "커스텀 프로바이더 이름은 표준 프로바이더 이름과 같을 수 없어요",
+		"baseUrlIsRequiredForThisProvider": "이 프로바이더에는 기본 URL이 필요해요",
+		"baseUrlMustStartWithHttpOrHttps": "기본 URL은 http:// 또는 https://로 시작해야 해요",
+		"atLeastOneApiKeyIsRequired": "API 키가 하나 이상 필요해요",
+		"apiKeyValueCannotBeEmpty": "API 키 값은 비워 둘 수 없어요"
 	},
 	"permissionDenied": {
 		"create": "{{entity}}을(를) 만들 권한이 없어요.",
@@ -596,5 +621,11 @@
 	},
 	"badges": {
 		"beta": "베타"
+	},
+	"apiErrors": {
+		"networkUnreachable": "네트워크 오류: 서버에 연결할 수 없어요",
+		"unexpected": "예기치 않은 오류가 발생했어요",
+		"requestTimeout": "요청 시간이 초과됐어요",
+		"network": "네트워크 오류"
 	}
 }

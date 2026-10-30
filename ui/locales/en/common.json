@@ -340,7 +340,32 @@
 			"proxyUrlRequired": "Proxy URL is required",
 			"rootedPathSearch": "Enter a rooted path such as /v1/search",
 			"statusRange": "Status must be between 100 and 599"
-		}
+		},
+		"proxyUrlIsRequiredForHttpSocks5": "Proxy URL is required for http/socks5",
+		"usernameAndPasswordMustBothBeProvided": "Username and password must both be provided",
+		"maxRetriesCannotBeNegative": "Max retries cannot be negative",
+		"endpointIsRequiredForAzureKeys": "Endpoint is required for Azure keys",
+		"projectIdIsRequiredForVertexKeys": "Project ID is required for Vertex AI keys",
+		"regionIsRequiredForVertexKeys": "Region is required for Vertex AI keys",
+		"authCredentialsMustBeValidJsonOrEnvVar": "Auth Credentials must be a valid JSON object or env.VAR format when provided",
+		"enterTheVpcEndpointDnsName": "Enter the endpoint's DNS name from the VPC console, not its ID",
+		"regionIsRequiredForBedrockKeys": "Region is required for Bedrock keys",
+		"bedrockAccessKeyPair": "For Bedrock: either provide both Access Key and Secret Key, or leave both empty for IAM role authentication",
+		"regionIsRequiredForBedrockMantleKeys": "Region is required for Bedrock Mantle keys",
+		"bedrockMantleAccessKeyPair": "For Bedrock Mantle: either provide both Access Key and Secret Key, or leave both empty for IAM role authentication",
+		"regionIsRequiredForSagemakerKeys": "Region is required for SageMaker keys",
+		"sagemakerAccessKeyPair": "For SageMaker: either provide both Access Key and Secret Key, or leave both empty to use the default AWS credential chain",
+		"keyNameIsRequired": "Name is required for the key",
+		"keyWeightsMustBeBetween01And1": "Key weights must be between 0.1 and 1",
+		"deploymentsMustHaveAModelIdOnEveryRow": "Deployments must have a Model ID set on every row",
+		"pleaseSelectAProvider": "Please select a provider",
+		"customProviderNameFormat": "Custom provider name must be lowercase alphanumeric and may include '-' or '_' (no spaces)",
+		"baseProviderTypeIsRequiredForCustomProviders": "Base provider type is required for custom providers",
+		"customProviderNameCannotMatchAStandardProvider": "Custom provider name cannot be the same as a standard provider name",
+		"baseUrlIsRequiredForThisProvider": "Base URL is required for this provider",
+		"baseUrlMustStartWithHttpOrHttps": "Base URL must start with http:// or https://",
+		"atLeastOneApiKeyIsRequired": "At least one API key is required",
+		"apiKeyValueCannotBeEmpty": "API key value cannot be empty"
 	},
 	"permissionDenied": {
 		"create": "You don't have permission to create {{entity}}.",
@@ -596,5 +621,11 @@
 	},
 	"badges": {
 		"beta": "BETA"
+	},
+	"apiErrors": {
+		"networkUnreachable": "Network error: Unable to connect to the server",
+		"unexpected": "An unexpected error occurred",
+		"requestTimeout": "Request timeout",
+		"network": "Network error"
 	}
 }
