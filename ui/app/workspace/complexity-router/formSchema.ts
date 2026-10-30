@@ -10,6 +10,7 @@ import {
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
 	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
+	MIN_SESSION_IDLE_TIMEOUT_MS,
 	KeywordListKey,
 	MAX_LLM_PROMPT_CHARACTERS,
 	MAX_LLM_MESSAGE_HISTORY,
@@ -36,6 +37,24 @@ export function countCanonicalSemanticPhrases(keywords: Record<KeywordListKey, s
 	const medium = count(keywords.medium_keywords);
 	const complex = count(keywords.complex_keywords);
 	return { simple, medium, complex, total: simple + medium + complex };
+}
+
+// parseSessionIdleTimeoutMs reads a duration such as "10m", "1h30m", or the
+// gateway's "10m0s" as milliseconds, and anything else as null.
+export function parseSessionIdleTimeoutMs(timeout: string): number | null {
+	const trimmed = timeout.trim();
+	if (!/^(\d+(\.\d+)?(ms|h|m|s))+$/.test(trimmed)) return null;
+	const unitMs: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1_000, ms: 1 };
+	let total = 0;
+	for (const [, value, unit] of trimmed.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) {
+		total += Number.parseFloat(value) * unitMs[unit];
+	}
+	return total;
+}
+
+// compactSessionIdleTimeout drops the zero units Go prints, so a saved "1h0m0s" shows as "1h".
+export function compactSessionIdleTimeout(timeout: string): string {
+	return timeout.replace(/([hm])0s$/, "$1").replace(/h0m$/, "h");
 }
 
 export function isPositiveDurationString(value: string | undefined): boolean {
@@ -177,7 +196,7 @@ export const analyzerConfigSchema = z
 			}),
 		}),
 		llm: llmSchema,
-		session: z.object({ enabled: z.boolean() }),
+		session: z.object({ enabled: z.boolean(), idle_timeout: z.string().optional() }),
 	})
 	.superRefine((data, ctx) => {
 		// A blank provider and model means the classifier simply is not configured
@@ -207,6 +226,17 @@ export const analyzerConfigSchema = z
 				message: "Configure the semantic classifier before enabling session routing",
 				path: ["session", "enabled"],
 			});
+		}
+		const idleTimeout = data.session.idle_timeout?.trim();
+		if (data.session.enabled && idleTimeout) {
+			const idleTimeoutMs = parseSessionIdleTimeoutMs(idleTimeout);
+			if (idleTimeoutMs === null || idleTimeoutMs < MIN_SESSION_IDLE_TIMEOUT_MS) {
+				ctx.addIssue({
+					code: "custom",
+					message: "Enter a duration of at least 1m, like 10m or 2h",
+					path: ["session", "idle_timeout"],
+				});
+			}
 		}
 
 		if (usesDecision(data)) {
@@ -411,7 +441,10 @@ export function toFormValues(config: AnalyzerConfig, decisionDefaults?: Decision
 			min_confidence: config.decision?.min_confidence ?? DEFAULT_DECISION_CONFIG.min_confidence,
 			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
-		session: config.session ?? { enabled: false },
+		session: {
+			enabled: config.session?.enabled ?? false,
+			idle_timeout: compactSessionIdleTimeout(config.session?.idle_timeout ?? ""),
+		},
 		llm: savedLLM
 			? {
 					...DEFAULT_LLM_FORM_VALUES,
@@ -449,7 +482,9 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 		// Unused Decision values are not validated, so keep the saved block instead of
 		// sending hidden, possibly invalid edits.
 		...(usesDecision(values) ? { decision: toDecisionPayload(values.decision) } : saved?.decision ? { decision: saved.decision } : {}),
-		...(values.session.enabled ? { session: values.session } : {}),
+		...(values.session.enabled
+			? { session: { enabled: true, ...(values.session.idle_timeout?.trim() ? { idle_timeout: values.session.idle_timeout.trim() } : {}) } }
+			: {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
 	};

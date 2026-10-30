@@ -84400,7 +84400,7 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": [
                         "enabled"
@@ -84409,6 +84409,20 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        },
+                        "idle_timeout": {
+                          "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                          "default": "24h",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 60000
+                            }
+                          ]
                         }
                       }
                     }
@@ -84849,7 +84863,7 @@
                   },
                   "session": {
                     "type": "object",
-                    "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                    "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                     "additionalProperties": false,
                     "required": [
                       "enabled"
@@ -84858,6 +84872,20 @@
                       "enabled": {
                         "type": "boolean",
                         "description": "Enable monotonic session tier retention; default is false."
+                      },
+                      "idle_timeout": {
+                        "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                        "default": "24h",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                          },
+                          {
+                            "type": "number",
+                            "minimum": 60000
+                          }
+                        ]
                       }
                     }
                   }
@@ -85275,7 +85303,7 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": [
                         "enabled"
@@ -85284,6 +85312,20 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        },
+                        "idle_timeout": {
+                          "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                          "default": "24h",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 60000
+                            }
+                          ]
                         }
                       }
                     }
@@ -85745,7 +85787,7 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": [
                         "enabled"
@@ -85754,6 +85796,20 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        },
+                        "idle_timeout": {
+                          "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                          "default": "24h",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 60000
+                            }
+                          ]
                         }
                       }
                     }
@@ -87099,7 +87155,7 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": [
                         "enabled"
@@ -87108,6 +87164,20 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        },
+                        "idle_timeout": {
+                          "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                          "default": "24h",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 60000
+                            }
+                          ]
                         }
                       }
                     }
@@ -87554,7 +87624,7 @@
                   },
                   "session": {
                     "type": "object",
-                    "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                    "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                     "additionalProperties": false,
                     "required": [
                       "enabled"
@@ -87563,6 +87633,20 @@
                       "enabled": {
                         "type": "boolean",
                         "description": "Enable monotonic session tier retention; default is false."
+                      },
+                      "idle_timeout": {
+                        "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                        "default": "24h",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                          },
+                          {
+                            "type": "number",
+                            "minimum": 60000
+                          }
+                        ]
                       }
                     }
                   }
@@ -87980,7 +88064,7 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": [
                         "enabled"
@@ -87989,6 +88073,20 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        },
+                        "idle_timeout": {
+                          "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                          "default": "24h",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 60000
+                            }
+                          ]
                         }
                       }
                     }
@@ -88456,7 +88554,7 @@
                     },
                     "session": {
                       "type": "object",
-                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns for 24 hours of inactivity. It uses the configured primary classifier and is independent of provider session stickiness.",
+                      "description": "Session-aware complexity routing. When enabled and a supported session identity is present, Bifrost retains the highest tier observed across normally sequential turns until the session has been idle for `idle_timeout` (24 hours by default). It uses the configured primary classifier and is independent of provider session stickiness.",
                       "additionalProperties": false,
                       "required": [
                         "enabled"
@@ -88465,6 +88563,20 @@
                         "enabled": {
                           "type": "boolean",
                           "description": "Enable monotonic session tier retention; default is false."
+                        },
+                        "idle_timeout": {
+                          "description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.",
+                          "default": "24h",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"
+                            },
+                            {
+                              "type": "number",
+                              "minimum": 60000
+                            }
+                          ]
                         }
                       }
                     }

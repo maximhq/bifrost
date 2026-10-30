@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	COMPLEXITY_TIER_VALUES,
+	DEFAULT_SESSION_IDLE_TIMEOUT,
 	DecisionGuidanceDefaults,
 	DecisionTier,
 	KeywordListKey,
@@ -222,35 +223,66 @@ interface SessionRoutingCardProps {
 // SessionRoutingCard toggles session-aware routing, which works the same on
 // top of either classifier.
 export function SessionRoutingCard({ control, errors, canUpdate }: SessionRoutingCardProps) {
+	const enabled = useWatch({ control, name: "session.enabled" });
 	return (
-		<div className="bg-card flex items-center justify-between gap-6 rounded-sm border p-4">
-			<div className="space-y-1">
-				<FieldLabel htmlFor="complexity-router-session-enabled">Session-aware routing</FieldLabel>
-				<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">
-					Keep each session at its highest complexity tier for 24 hours of inactivity. Harder turns can move up; easier turns stay put to
-					reduce model changes. Requests without a session ID route independently.
-				</p>
-				{errors?.enabled && (
-					<p id="complexity-router-session-enabled-error" className="text-destructive text-xs">
-						{errors.enabled.message}
+		<div className="bg-card space-y-4 rounded-sm border p-4">
+			<div className="flex items-center justify-between gap-6">
+				<div className="space-y-1">
+					<FieldLabel htmlFor="complexity-router-session-enabled">Session-aware routing</FieldLabel>
+					<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">
+						Keep each session at its highest complexity tier until it goes idle. Harder turns can move up; easier turns stay put to reduce
+						model changes. Requests without a session ID route independently.
 					</p>
-				)}
+					{errors?.enabled && (
+						<p id="complexity-router-session-enabled-error" className="text-destructive text-xs">
+							{errors.enabled.message}
+						</p>
+					)}
+				</div>
+				<Controller
+					control={control}
+					name="session.enabled"
+					render={({ field }) => (
+						<Switch
+							id="complexity-router-session-enabled"
+							data-testid="complexity-router-session-enabled-switch"
+							checked={field.value}
+							onCheckedChange={field.onChange}
+							disabled={!canUpdate}
+							aria-invalid={errors?.enabled ? true : undefined}
+							aria-describedby={errors?.enabled ? "complexity-router-session-enabled-error" : undefined}
+						/>
+					)}
+				/>
 			</div>
-			<Controller
-				control={control}
-				name="session.enabled"
-				render={({ field }) => (
-					<Switch
-						id="complexity-router-session-enabled"
-						data-testid="complexity-router-session-enabled-switch"
-						checked={field.value}
-						onCheckedChange={field.onChange}
-						disabled={!canUpdate}
-						aria-invalid={errors?.enabled ? true : undefined}
-						aria-describedby={errors?.enabled ? "complexity-router-session-enabled-error" : undefined}
+			{enabled && (
+				<div className="flex items-center justify-between gap-6 border-t pt-4">
+					<div className="space-y-1">
+						<FieldLabel htmlFor="complexity-router-session-idle-timeout">Idle timeout</FieldLabel>
+						<p className="text-muted-foreground max-w-3xl text-xs leading-relaxed">
+							Release a session&apos;s tier after this long without a request, so its next turn is classified afresh. Use a duration like{" "}
+							<b>10m</b> or <b>2h</b>. Leave empty for 24 hours.
+						</p>
+						{errors?.idle_timeout && <p className="text-destructive text-xs">{errors.idle_timeout.message}</p>}
+					</div>
+					<Controller
+						control={control}
+						name="session.idle_timeout"
+						render={({ field }) => (
+							<Input
+								id="complexity-router-session-idle-timeout"
+								data-testid="complexity-router-session-idle-timeout-input"
+								placeholder={DEFAULT_SESSION_IDLE_TIMEOUT}
+								disabled={!canUpdate}
+								value={field.value ?? ""}
+								onChange={field.onChange}
+								aria-invalid={errors?.idle_timeout ? true : undefined}
+								className={cn("w-28 shrink-0 font-mono", errors?.idle_timeout && "border-destructive focus-visible:ring-destructive")}
+							/>
+						)}
 					/>
-				)}
-			/>
+				</div>
+			)}
 		</div>
 	);
 }

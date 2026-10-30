@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1301,4 +1303,93 @@ func TestRDBConfigStore_ComplexityDecisionMinConfidencePersistence(t *testing.T)
 	require.NotNil(t, got)
 	require.NotNil(t, got.Decision)
 	assert.Equal(t, 0.8, got.Decision.MinConfidence)
+}
+
+// TestComplexitySessionConfigIdleTimeout pins the decode, round-trip, and bounds
+// of session.idle_timeout, and that leaving it unset changes neither the JSON
+// nor the section hash of an existing config.
+func TestComplexitySessionConfigIdleTimeout(t *testing.T) {
+	var cfg ComplexitySessionConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"idle_timeout":"10m"}`), &cfg))
+	assert.Equal(t, 10*time.Minute, cfg.IdleTimeout)
+	assert.Equal(t, 10*time.Minute, cfg.normalized().IdleTimeout, "normalizing must not drop the timeout")
+
+	require.NoError(t, json.Unmarshal([]byte(`{"enabled":true,"idle_timeout":90000}`), &cfg))
+	assert.Equal(t, 90*time.Second, cfg.IdleTimeout, "a number is milliseconds, like the classifier timeouts")
+
+	data, err := json.Marshal(ComplexitySessionConfig{Enabled: true, IdleTimeout: 10 * time.Minute})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"enabled":true,"idle_timeout":"10m0s"}`, string(data))
+
+	unset, err := json.Marshal(ComplexitySessionConfig{Enabled: true})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"enabled":true}`, string(unset))
+	unsetHash, err := hashComplexityValue(ComplexitySessionConfig{Enabled: true})
+	require.NoError(t, err)
+	setHash, err := hashComplexityValue(ComplexitySessionConfig{Enabled: true, IdleTimeout: time.Hour})
+	require.NoError(t, err)
+	assert.NotEqual(t, unsetHash, setHash, "changing the timeout must register as a session settings change")
+
+	assert.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"idle_timeout":"-5m"}`), &ComplexitySessionConfig{}), "idle_timeout")
+	assert.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"idle_timeout":"soon"}`), &ComplexitySessionConfig{}), "idle_timeout")
+	assert.ErrorContains(t, json.Unmarshal([]byte(`{"enabled":true,"ttl":"5m"}`), &ComplexitySessionConfig{}), "unknown complexity session field")
+
+	assert.NoError(t, (&ComplexitySessionConfig{Enabled: true}).Validate())
+	assert.NoError(t, (&ComplexitySessionConfig{Enabled: true, IdleTimeout: MinComplexitySessionIdleTimeout}).Validate())
+	assert.ErrorContains(t, (&ComplexitySessionConfig{Enabled: true, IdleTimeout: 30 * time.Second}).Validate(), "session idle_timeout must be at least 1m0s")
+
+	analyzer := testDecisionAnalyzerConfig()
+	assert.Equal(t, DefaultComplexitySessionIdleTimeout, analyzer.SessionIdleTimeout())
+	analyzer.Session = &ComplexitySessionConfig{Enabled: true, IdleTimeout: 10 * time.Minute}
+	assert.Equal(t, 10*time.Minute, analyzer.SessionIdleTimeout())
+	analyzer.Session.IdleTimeout = 30 * time.Second
+	normalized := analyzer.Normalized()
+	assert.ErrorContains(t, normalized.Validate(), "session idle_timeout", "an analyzer config must reject an invalid session block")
+}
+
+// TestComplexitySemanticRowSessionIdleTimeoutRollback pins the storage shape: the
+// timeout round-trips through the row, but never inside the session block, whose
+// released decoder rejects any field other than enabled.
+func TestComplexitySemanticRowSessionIdleTimeoutRollback(t *testing.T) {
+	config := testDecisionAnalyzerConfig()
+	config.Session = &ComplexitySessionConfig{Enabled: true, IdleTimeout: 10 * time.Minute}
+
+	row, err := encodeComplexitySemanticConfigRow(*config)
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Minute, config.Session.IdleTimeout, "encoding must not mutate the live config")
+
+	var stored struct {
+		Session              map[string]json.RawMessage `json:"session"`
+		SessionIdleTimeoutMs int64                      `json:"session_idle_timeout_ms"`
+	}
+	require.NoError(t, json.Unmarshal(row, &stored))
+	assert.Equal(t, []string{"enabled"}, slices.Collect(maps.Keys(stored.Session)), "a released binary rejects any other session field")
+	assert.Equal(t, int64(600000), stored.SessionIdleTimeoutMs)
+
+	decoded, err := decodeComplexitySemanticConfigRow(row)
+	require.NoError(t, err)
+	combined := applyComplexitySemanticConfigRow(&ComplexityAnalyzerConfig{}, decoded)
+	require.NotNil(t, combined.Session)
+	assert.Equal(t, 10*time.Minute, combined.Session.IdleTimeout)
+
+	config.Session.IdleTimeout = 0
+	row, err = encodeComplexitySemanticConfigRow(*config)
+	require.NoError(t, err)
+	assert.NotContains(t, string(row), "idle_timeout", "an unset timeout must leave the row byte-compatible")
+}
+
+// TestRDBConfigStore_ComplexitySessionIdleTimeoutPersistence pins the timeout
+// through a real save and load.
+func TestRDBConfigStore_ComplexitySessionIdleTimeoutPersistence(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := testDecisionAnalyzerConfig()
+	cfg.Session = &ComplexitySessionConfig{Enabled: true, IdleTimeout: 45 * time.Minute}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Session)
+	assert.Equal(t, 45*time.Minute, got.Session.IdleTimeout)
 }

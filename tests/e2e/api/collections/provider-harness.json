@@ -298531,6 +298531,55 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "298. Complexity Router session.idle_timeout (session idle timeout)",
+      "description": "session.idle_timeout is how long a session keeps its complexity tier without a request. A value under the 1m minimum is refused by the management API before anything is saved, so this case changes no router state and calls no provider. Before the field existed the same body failed as a generic 'Invalid request payload'. Expiry itself needs a real wait and a global router change, so it is pinned by the Go tests in plugins/routing instead.",
+      "item": [
+        {
+          "name": "[EXPECT-400] PUT /api/routing/complexity-analyzer-config rejects typesafe session idle_timeout below 1m",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('too-short idle_timeout is refused by name', function () {",
+                  "  pm.expect(pm.response.code, 'expected the validation rejection: ' + text).to.equal(400);",
+                  "  pm.expect(text, 'expected the idle_timeout bound in the error: ' + text).to.include('session idle_timeout must be at least 1m0s');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"classifier\":\"decision\",\"keywords\":{\"simple_keywords\":[\"simple\"],\"medium_keywords\":[\"medium\"],\"complex_keywords\":[\"complex\"]},\"session\":{\"enabled\":true,\"idle_timeout\":\"30s\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/routing/complexity-analyzer-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "routing",
+                "complexity-analyzer-config"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

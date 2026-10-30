@@ -3013,12 +3013,13 @@
                 },
                 "session": {
                   "type": "object",
-                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns for 24 hours of inactivity. Uses the configured primary classifier and is independent of provider session stickiness.",
+                  "description": "Session-aware complexity routing. Retains the highest observed tier across normally sequential turns until the session has been idle for idle_timeout (24 hours by default). Uses the configured primary classifier and is independent of provider session stickiness.",
                   "properties": {
                     "enabled": {
                       "type": "boolean",
                       "description": "Enable monotonic session tier retention; default: false."
-                    }
+                    },
+                    "idle_timeout": {"description": "How long a session can go without a request before its tier is released and its next turn is classified afresh. Every request restarts the clock. Duration string or milliseconds as a number, at least 1m; default 24h.", "oneOf": [{"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))*$"}, {"type": "number", "minimum": 60000}], "default": "24h"}
                   },
                   "required": ["enabled"],
                   "additionalProperties": false

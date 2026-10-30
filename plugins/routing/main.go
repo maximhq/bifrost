@@ -258,6 +258,9 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
 	p.complexityConfig.Store(resolved)
 	p.sessionEnabled.Store(resolved.SessionRoutingEnabled())
+	if p.sessionStore != nil {
+		p.sessionStore.setTTL(resolved.SessionIdleTimeout())
+	}
 	if p.semanticClassifier != nil {
 		semanticConfig := resolved
 		if resolved.Classifier == complexity.ClassifierDecision {
@@ -613,7 +616,15 @@ func (p *RoutingPlugin) persistComplexityTurnTier(ctx *schemas.BifrostContext) {
 	if sessionID == "" || tier == "" {
 		return
 	}
-	if err := p.turnTierStore.save(complexityTurnTierKey(ctx), tier, complexityTurnTierTTL(ctx)); err != nil {
+	ttl := complexityTurnTierTTL(ctx)
+	// This entry must not outlive the session, or a tool continuation would read
+	// it and recreate the tier the idle timeout just released.
+	if p.sessionEnabled.Load() {
+		if config := p.complexityConfig.Load(); config != nil && config.Session != nil && config.Session.IdleTimeout > 0 && config.Session.IdleTimeout < ttl {
+			ttl = config.Session.IdleTimeout
+		}
+	}
+	if err := p.turnTierStore.save(complexityTurnTierKey(ctx), tier, ttl); err != nil {
 		p.logComplexitySessionStoreError("persist continuation tier", err)
 	}
 }

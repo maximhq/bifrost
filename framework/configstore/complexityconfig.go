@@ -722,29 +722,41 @@ func (c *ComplexityDecisionConfig) Validate() error {
 // requests belonging to the same session.
 //
 // When enabled, Bifrost retains the highest tier reached across normally
-// sequential session turns during the built-in inactivity window. Overlapping
-// requests for the same session are best-effort because the runtime KV contract
-// exposes separate reads and writes. The window is a routing-state retention
-// policy and is intentionally independent of provider prompt-cache TTLs.
+// sequential session turns until the session has been idle for IdleTimeout.
+// Overlapping requests for the same session are best-effort because the runtime
+// KV contract exposes separate reads and writes. The window is a routing-state
+// retention policy and is intentionally independent of provider prompt-cache TTLs.
 type ComplexitySessionConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled     bool          `json:"enabled"`
+	IdleTimeout time.Duration `json:"idle_timeout,omitempty"` // 0 uses DefaultComplexitySessionIdleTimeout
 }
 
-// UnmarshalJSON rejects unknown fields so misspelled session settings cannot be
-// accepted while silently leaving session routing disabled.
+// DefaultComplexitySessionIdleTimeout is how long a session keeps its tier
+// without a request when idle_timeout is unset.
+const DefaultComplexitySessionIdleTimeout = 24 * time.Hour
+
+// MinComplexitySessionIdleTimeout is the shortest accepted idle_timeout. The
+// clock starts when a request arrives, so anything shorter would expire
+// sessions during an ordinary streamed response.
+const MinComplexitySessionIdleTimeout = time.Minute
+
+// UnmarshalJSON accepts IdleTimeout as a duration string or milliseconds and
+// rejects unknown fields so misspelled session settings cannot be accepted while
+// silently leaving session routing disabled.
 func (c *ComplexitySessionConfig) UnmarshalJSON(data []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	for field := range fields {
-		if field != "enabled" {
+		if field != "enabled" && field != "idle_timeout" {
 			return fmt.Errorf("unknown complexity session field %q", field)
 		}
 	}
 
 	var decoded struct {
-		Enabled *bool `json:"enabled"`
+		Enabled     *bool           `json:"enabled"`
+		IdleTimeout json.RawMessage `json:"idle_timeout"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
@@ -753,6 +765,50 @@ func (c *ComplexitySessionConfig) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("complexity session config requires enabled")
 	}
 	c.Enabled = *decoded.Enabled
+	c.IdleTimeout = 0
+	if len(decoded.IdleTimeout) == 0 || string(decoded.IdleTimeout) == "null" {
+		return nil
+	}
+	var duration string
+	if err := json.Unmarshal(decoded.IdleTimeout, &duration); err == nil {
+		parsed, err := time.ParseDuration(duration)
+		if err != nil {
+			return fmt.Errorf("failed to parse session idle_timeout duration string %q: %w", duration, err)
+		}
+		c.IdleTimeout = parsed
+	} else {
+		var milliseconds float64
+		if err := json.Unmarshal(decoded.IdleTimeout, &milliseconds); err != nil {
+			return fmt.Errorf("unsupported session idle_timeout value: %s", string(decoded.IdleTimeout))
+		}
+		c.IdleTimeout = time.Duration(milliseconds * float64(time.Millisecond))
+	}
+	if c.IdleTimeout < 0 {
+		return fmt.Errorf("session idle_timeout must be non-negative, got %v", c.IdleTimeout)
+	}
+	return nil
+}
+
+// MarshalJSON writes IdleTimeout as a duration string for a stable round trip.
+func (c ComplexitySessionConfig) MarshalJSON() ([]byte, error) {
+	var idleTimeout string
+	if c.IdleTimeout != 0 {
+		idleTimeout = c.IdleTimeout.String()
+	}
+	return json.Marshal(struct {
+		Enabled     bool   `json:"enabled"`
+		IdleTimeout string `json:"idle_timeout,omitempty"`
+	}{Enabled: c.Enabled, IdleTimeout: idleTimeout})
+}
+
+// Validate checks the idle timeout bound. Unset selects the default.
+func (c *ComplexitySessionConfig) Validate() error {
+	if c == nil || c.IdleTimeout == 0 {
+		return nil
+	}
+	if c.IdleTimeout < MinComplexitySessionIdleTimeout {
+		return fmt.Errorf("session idle_timeout must be at least %s, got %s", MinComplexitySessionIdleTimeout, c.IdleTimeout)
+	}
 	return nil
 }
 
@@ -761,7 +817,7 @@ func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 	if c == nil {
 		return nil
 	}
-	return &ComplexitySessionConfig{Enabled: c.Enabled}
+	return &ComplexitySessionConfig{Enabled: c.Enabled, IdleTimeout: c.IdleTimeout}
 }
 
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
@@ -922,11 +978,11 @@ type persistedComplexityTierBoundaries struct {
 // embeds it, and keeping it here is what stops a Bifrost predating the semantic
 // router from rewriting it as though it were a lexical keyword.
 //
-// DecisionMinConfidence is decision.min_confidence, stored beside the block
-// because released binaries decode that block strictly: a new field inside it
-// makes the whole row unreadable after a rollback, and the router drops to
-// defaults. This record ignores unknown keys, so a rolled-back binary runs with
-// the gate off instead.
+// DecisionMinConfidence and SessionIdleTimeoutMs are decision.min_confidence and
+// session.idle_timeout, stored beside their blocks because released binaries
+// decode those blocks strictly: a new field inside one makes the whole row
+// unreadable after a rollback, and the router drops to defaults. This record
+// ignores unknown keys, so a rolled-back binary runs without them instead.
 type complexitySemanticConfigRecord struct {
 	Keywords              ComplexityEditableKeywordConfig `json:"keywords"`
 	Classifier            string                          `json:"classifier,omitempty"`
@@ -935,6 +991,7 @@ type complexitySemanticConfigRecord struct {
 	DecisionMinConfidence float64                         `json:"decision_min_confidence,omitempty"`
 	LLM                   *ComplexityLLMConfig            `json:"llm,omitempty"`
 	Session               *ComplexitySessionConfig        `json:"session,omitempty"`
+	SessionIdleTimeoutMs  int64                           `json:"session_idle_timeout_ms,omitempty"`
 	ConfigHashes          complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
 	EmbeddingFingerprint  string                          `json:"_embedding_fingerprint,omitempty"`
 }
@@ -960,6 +1017,14 @@ func (c *ComplexityAnalyzerConfig) LLMFallbackEnabled() bool {
 	return c != nil && c.Semantic != nil &&
 		c.Semantic.Fallback == ComplexitySemanticFallbackLLM &&
 		c.LLM != nil
+}
+
+// SessionIdleTimeout returns how long a session keeps its tier without a request.
+func (c *ComplexityAnalyzerConfig) SessionIdleTimeout() time.Duration {
+	if c == nil || c.Session == nil || c.Session.IdleTimeout <= 0 {
+		return DefaultComplexitySessionIdleTimeout
+	}
+	return c.Session.IdleTimeout
 }
 
 // SessionRoutingEnabled reports whether monotonic session-tier retention is enabled.
@@ -996,6 +1061,9 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 		return err
 	}
 	if err := c.Decision.Validate(); err != nil {
+		return err
+	}
+	if err := c.Session.Validate(); err != nil {
 		return err
 	}
 	if c.Semantic != nil {
@@ -1344,6 +1412,12 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 		minConfidence, stripped.MinConfidence = stripped.MinConfidence, 0
 		decision = &stripped
 	}
+	session, idleTimeoutMs := config.Session, int64(0)
+	if session != nil {
+		stripped := *session
+		idleTimeoutMs, stripped.IdleTimeout = stripped.IdleTimeout.Milliseconds(), 0
+		session = &stripped
+	}
 	record := complexitySemanticConfigRecord{
 		Keywords:              config.Keywords,
 		Classifier:            config.Classifier,
@@ -1351,7 +1425,8 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 		Decision:              decision,
 		DecisionMinConfidence: minConfidence,
 		LLM:                   config.LLM,
-		Session:               config.Session,
+		Session:               session,
+		SessionIdleTimeoutMs:  idleTimeoutMs,
 		ConfigHashes: complexitySemanticRowHashes{
 			SimpleKeywords:     config.ConfigHashes.SimpleKeywords,
 			MediumKeywords:     config.ConfigHashes.MediumKeywords,
@@ -1389,6 +1464,11 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	}
 	combined.LLM = row.LLM
 	combined.Session = row.Session
+	if row.Session != nil {
+		session := *row.Session
+		session.IdleTimeout = time.Duration(row.SessionIdleTimeoutMs) * time.Millisecond
+		combined.Session = &session
+	}
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
 	combined.ConfigHashes.MediumKeywords = row.ConfigHashes.MediumKeywords
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords

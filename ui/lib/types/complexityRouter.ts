@@ -76,6 +76,8 @@ export interface SemanticConfig {
 
 export interface SessionConfig {
 	enabled: boolean;
+	// Go duration. Omitted keeps the gateway default of 24 hours.
+	idle_timeout?: string;
 }
 
 // The llm classifier has no warmup: it holds no corpus and makes its first
@@ -133,9 +135,9 @@ export interface AnalyzerConfig {
 	// "llm". May be present while the fallback says "none": the block is
 	// retained so toggling the fallback never loses settings.
 	llm?: LLMConfig;
-	// When enabled, one scoped session retains its highest observed tier for a
-	// fixed 24-hour inactivity window. The gateway owns that policy; there are no
-	// client-tunable thresholds or downgrade controls.
+	// When enabled, one scoped session retains its highest observed tier until it
+	// has been idle for session.idle_timeout (24 hours by default). There are no
+	// downgrade controls.
 	session?: SessionConfig;
 }
 
@@ -206,6 +208,8 @@ export const DEFAULT_DECISION_TIMEOUT_MS = 1500;
 export const DEFAULT_DECISION_PREVIOUS_MESSAGE_COUNT = 1;
 export const MAX_DECISION_PREVIOUS_MESSAGE_COUNT = 5;
 export const DEFAULT_DECISION_MIN_CONFIDENCE = 0;
+export const DEFAULT_SESSION_IDLE_TIMEOUT = "24h";
+export const MIN_SESSION_IDLE_TIMEOUT_MS = 60_000;
 
 // Server-side bounds from validateComplexityDecisionGuidance in framework/configstore.
 export const MAX_DECISION_DEFINITION_CHARACTERS = 500;

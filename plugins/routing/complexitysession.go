@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
@@ -16,7 +18,7 @@ const (
 	// complexitySessionKind is the session state kind under which the effective tier is kept.
 	complexitySessionKind          = "complexity"
 	complexityTurnTierKind         = "complexity-turn-tier"
-	complexitySessionInactivityTTL = 24 * time.Hour
+	complexitySessionInactivityTTL = configstore.DefaultComplexitySessionIdleTimeout
 )
 
 var errInvalidComplexitySessionTier = errors.New("invalid stored complexity session tier")
@@ -29,7 +31,7 @@ var errInvalidComplexitySessionTier = errors.New("invalid stored complexity sess
 // session are best-effort and resolve by last writer wins.
 type complexitySessionStore struct {
 	store schemas.KVStore
-	ttl   time.Duration
+	ttl   atomic.Int64 // inactivity window in nanoseconds; replaced on config reload
 }
 
 // complexityTurnTierStore keeps the latest effective tier for tool continuations.
@@ -76,7 +78,20 @@ type complexitySessionResolution struct {
 
 // newComplexitySessionStore creates monotonic session-tier storage.
 func newComplexitySessionStore(store schemas.KVStore, ttl time.Duration) *complexitySessionStore {
-	return &complexitySessionStore{store: store, ttl: ttl}
+	sessions := &complexitySessionStore{store: store}
+	sessions.setTTL(ttl)
+	return sessions
+}
+
+// setTTL replaces the inactivity window. An existing entry keeps the expiry it
+// was written with until its next turn refreshes it.
+func (s *complexitySessionStore) setTTL(ttl time.Duration) {
+	s.ttl.Store(int64(ttl))
+}
+
+// inactivityTTL returns the current inactivity window.
+func (s *complexitySessionStore) inactivityTTL() time.Duration {
+	return time.Duration(s.ttl.Load())
 }
 
 // load returns the current unexpired tier. When refresh is true, an existing
@@ -98,7 +113,7 @@ func (s *complexitySessionStore) load(key string, refresh bool) (string, bool, e
 		return "", true, err
 	}
 	if refresh {
-		if err := s.store.SetWithTTL(key, tier, s.ttl); err != nil {
+		if err := s.store.SetWithTTL(key, tier, s.inactivityTTL()); err != nil {
 			return "", true, err
 		}
 	}
@@ -131,7 +146,7 @@ func (s *complexitySessionStore) resolve(key, proposed string) (complexitySessio
 	if existed && (effective == "" || complexityTierAtLeast(previous, effective)) {
 		effective = previous
 	}
-	if err := s.store.SetWithTTL(key, effective, s.ttl); err != nil {
+	if err := s.store.SetWithTTL(key, effective, s.inactivityTTL()); err != nil {
 		return complexitySessionResolution{}, err
 	}
 	return complexitySessionResolution{

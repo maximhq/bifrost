@@ -295,6 +295,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
 		{name: "too many semantic phrases", body: testComplexityAnalyzerPayload(t, tooManyPhrases), want: "contains 751 phrases"},
+		{name: "session idle_timeout below minimum", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"session":{"enabled":true,"idle_timeout":"30s"}}`, want: "session idle_timeout must be at least 1m0s"},
 		{name: "decision min_confidence out of range", body: `{"classifier":"decision","keywords":{"simple_keywords":["simple"],"medium_keywords":["medium"],"complex_keywords":["complex"]},"decision":{"min_confidence":1.5}}`, want: "decision min_confidence must be between 0 and 1"},
 	}
 

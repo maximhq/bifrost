@@ -35,6 +35,7 @@ test.describe('Complexity Router', () => {
                 timeout: '3000ms',
                 min_confidence: 0.7,
               },
+              session: { enabled: true, idle_timeout: '10m0s' },
             },
           })
         },
@@ -160,6 +161,16 @@ test.describe('Complexity Router', () => {
         expect(modelQueries.every((params) => params.get('decisions') === 'true')).toBe(true)
       })
     }
+
+    test('should show the saved session idle timeout as a compact duration', async ({ page }) => {
+      decisionProvider = 'openai'
+      savedModel = 'gpt-6-luna'
+      decisionModels = ['gpt-6-luna']
+      chatModels = ['gpt-4o-mini']
+      await page.goto('/workspace/complexity-router')
+
+      await expect(page.getByTestId('complexity-router-session-idle-timeout-input')).toHaveValue('10m')
+    })
 
     test('should show the saved confidence threshold in the model configuration sheet', async ({ page }) => {
       decisionProvider = 'openai'

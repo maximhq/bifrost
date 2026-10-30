@@ -261,7 +261,7 @@ In split configuration mode, `config.json` phrases are added to those already st
 
 Turn on **Session-aware routing** to keep an agent conversation on a stable tier that only moves up. The first turn that gets a tier sets the session tier. Later turns can raise it (Simple → Medium → Complex), but an easier turn keeps the higher tier. This avoids model switches that hurt prompt-cache reuse. Once a session reaches Complex, Bifrost stops classifying it.
 
-- **Expiry**: after **24 hours of inactivity**. Each turn resets the clock.
+- **Expiry**: after `session.idle_timeout` without a request (default `24h`, minimum `1m`). Each request restarts the clock, and the next turn after expiry is classified afresh, so it can land on any tier. For example, `10m` outlasts Anthropic's roughly five-minute prompt cache during active work, then releases the tier after a break. A session with steady traffic never goes idle, so it keeps its tier however long it runs. The clock starts when a request arrives, so set this longer than your slowest responses and tool runs.
 - **What is stored**: only the tier, under a hashed session ID. No prompts, scores, or history.
 - **Session ID**: `x-bf-session-id`, or for recognized agents their own header: `x-codex-turn-metadata.session_id` (Codex) or `x-claude-code-session-id` (Claude Code). Requests without one are classified on their own.
 - **Continuations**: a turn with no new user text can reuse the session tier, but never sets or raises it. Codex background work (`prewarm`, `compaction`, `memory`) skips session state.
@@ -339,7 +339,7 @@ Navigate to **Models > Complexity Router**. On **Classifier**, choose **Decision
 
 **Both classifiers**
 
-- **Session-aware routing**: retains the highest tier reached by each identified session for 24 hours of inactivity. The toggle is off by default.
+- **Session-aware routing**: retains the highest tier reached by each identified session until it goes idle. The toggle is off by default. **Idle timeout** sets how long that takes, as a duration like `10m` or `2h`; empty uses 24 hours.
 
 </Tab>
 <Tab title="API">
@@ -556,7 +556,8 @@ Semantic with an LLM fallback (for a decision-model fallback, set `semantic.fall
 | `llm.prompt` | string | Shipped default guidance | Replaces the shipped classification guidance (max 4,000 characters). The tier-name and response-format reinforcement is appended by Bifrost regardless and cannot be edited |
 | `llm.message_history_count` | integer | `1` | Number of recent user messages sent to the classifier, oldest first (1 to 10) |
 | `llm.count_toward_budgets` | boolean | `false` | Count classification completion cost toward virtual-key budgets (record-only, never enforced) |
-| `session.enabled` | boolean | `false` | Retain the highest observed tier across normally sequential turns for 24 hours of inactivity. Requires a semantic block unless the decision model is primary; overlapping requests for the same session are best-effort |
+| `session.enabled` | boolean | `false` | Retain the highest observed tier across normally sequential turns until the session goes idle. Requires a semantic block unless the decision model is primary; overlapping requests for the same session are best-effort |
+| `session.idle_timeout` | duration | `24h` | How long a session can go without a request before its tier is released, at least `1m`. Accepts a duration string or milliseconds as a number |
 | `keywords.simple_keywords` | string[] | 50 built-in phrases | Reference phrases for the Simple tier; required in the saved config, but unused by the decision model |
 | `keywords.medium_keywords` | string[] | 50 built-in phrases | Reference phrases for the Medium tier; required in the saved config, but unused by the decision model |
 | `keywords.complex_keywords` | string[] | 50 built-in phrases | Reference phrases for the Complex tier; required in the saved config, but unused by the decision model |

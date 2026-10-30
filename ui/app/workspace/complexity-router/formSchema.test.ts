@@ -5,6 +5,8 @@ import {
 	DEFAULT_FORM_VALUES,
 	getDecisionProviderState,
 	isRouterConfigured,
+	compactSessionIdleTimeout,
+	parseSessionIdleTimeoutMs,
 	decisionGuidanceFormValues,
 	decisionTimeoutFieldValue,
 	shouldSeedLLMPrompt,
@@ -76,6 +78,53 @@ const DECISION_DEFAULTS: DecisionGuidanceDefaults = {
 };
 
 const EMPTY_DECISION_GUIDANCE = decisionGuidanceFormValues();
+
+describe("Session idle timeout", () => {
+	const keywords = { simple_keywords: ["simple"], medium_keywords: ["medium"], complex_keywords: ["complex"] };
+	const saved: AnalyzerConfig = { classifier: "decision", keywords, session: { enabled: true, idle_timeout: "1h30m0s" } };
+
+	test("reads durations as milliseconds and rejects anything else", () => {
+		expect(parseSessionIdleTimeoutMs("10m")).toBe(600_000);
+		expect(parseSessionIdleTimeoutMs("1h30m")).toBe(5_400_000);
+		expect(parseSessionIdleTimeoutMs("24h0m0s")).toBe(86_400_000);
+		expect(parseSessionIdleTimeoutMs(" 90s ")).toBe(90_000);
+		for (const invalid of ["", "10", "soon", "10 m", "-5m", "10m extra"]) {
+			expect(parseSessionIdleTimeoutMs(invalid)).toBeNull();
+		}
+	});
+
+	test("drops the zero units Go prints", () => {
+		expect(compactSessionIdleTimeout("10m0s")).toBe("10m");
+		expect(compactSessionIdleTimeout("1h0m0s")).toBe("1h");
+		expect(compactSessionIdleTimeout("24h0m0s")).toBe("24h");
+		expect(compactSessionIdleTimeout("1h30m0s")).toBe("1h30m");
+		expect(compactSessionIdleTimeout("1m30s")).toBe("1m30s");
+		expect(compactSessionIdleTimeout("")).toBe("");
+	});
+
+	test("round-trips a saved timeout and omits a blank one from the payload", () => {
+		const values = toFormValues(saved);
+		expect(values.session.idle_timeout).toBe("1h30m");
+		expect(toAnalyzerPayload(values, saved).session).toEqual({ enabled: true, idle_timeout: "1h30m" });
+
+		values.session.idle_timeout = "";
+		expect(toAnalyzerPayload(values, saved).session).toEqual({ enabled: true });
+	});
+
+	test("rejects a short or malformed timeout only while session routing is on", () => {
+		const values = toFormValues(saved);
+		for (const invalid of ["30s", "10", "soon"]) {
+			values.session.idle_timeout = invalid;
+			const parsed = analyzerConfigSchema.safeParse(values);
+			expect(parsed.success).toBe(false);
+			if (parsed.success) return;
+			expect(parsed.error.issues.map((issue) => issue.path.join("."))).toContain("session.idle_timeout");
+		}
+
+		values.session.enabled = false;
+		expect(analyzerConfigSchema.safeParse(values).success).toBe(true);
+	});
+});
 
 describe("Decision complexity configuration", () => {
 	test("defaults to one prior user message and a 1500ms timeout", () => {
