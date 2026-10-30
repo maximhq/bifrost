@@ -569,7 +569,7 @@ export default function WarpView() {
 									    maturity signal actually informs a decision. */}
 									<div className="flex items-center gap-2">
 										<Label htmlFor="warp-enabled">{t("warp.enable")}</Label>
-										<Badge variant="secondary">ALPHA</Badge>
+										<Badge variant="secondary">{t("warp.alphaBadge")}</Badge>
 									</div>
 									<p className="text-muted-foreground text-sm">{t("warp.enableHelp")}</p>
 								</div>
@@ -1380,6 +1380,7 @@ interface WarpFieldProps {
 }
 
 function WarpField({ label, htmlFor, hint, error, className, children }: WarpFieldProps) {
+	const { t } = useTranslation("config");
 	return (
 		<div className={cn("flex min-w-0 flex-col gap-1.5", className)}>
 			<div className="flex items-center gap-1.5">
@@ -1390,7 +1391,7 @@ function WarpField({ label, htmlFor, hint, error, className, children }: WarpFie
 							<button
 								type="button"
 								className="text-muted-foreground hover:text-foreground inline-flex"
-								aria-label={`About ${label}`}
+								aria-label={t("warp.aboutAria", { label })}
 								data-testid={`${htmlFor}-info`}
 							>
 								<Info className="size-3.5" />

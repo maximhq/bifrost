@@ -33,6 +33,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Check, ChevronLeft, ChevronRight, Copy, Loader2, MoreHorizontal, Pencil, Plus, Search, Server, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 interface VirtualMCPsTableProps {
 	virtualMcps: VirtualMCP[];
@@ -254,9 +255,9 @@ export default function VirtualMCPsTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("common.ofEntries", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 
@@ -406,7 +407,7 @@ function formatDate(iso: string): string {
 	try {
 		const t = new Date(iso).getTime();
 		if (Number.isNaN(t)) return iso;
-		return new Date(t).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+		return new Date(t).toLocaleDateString(getLocale(), { year: "numeric", month: "short", day: "numeric" });
 	} catch {
 		return iso;
 	}

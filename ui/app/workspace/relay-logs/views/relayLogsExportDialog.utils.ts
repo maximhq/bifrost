@@ -4,6 +4,8 @@
  * (app/workspace/logs/utils/logsExport.ts).
  */
 
+import i18n from "@/lib/i18n";
+import type { ParseKeys } from "i18next";
 import { logAppDisplayName, mapAppToClientApp, mapUserAgentToApp } from "@/lib/constants/logs";
 import type { RelayLog, RelayLogFilters } from "@/lib/types/relays";
 import { buildCSV } from "@/lib/utils/csv";
@@ -106,28 +108,31 @@ export function relayLogsToCSV(logs: RelayLog[]): string {
 /** A readable list of the filters in force, for the dialog's "Filters applied" line. */
 export function formatRelayActiveFiltersSummary(filters: RelayLogFilters): string[] {
 	const summary: string[] = [];
-	if (filters.request_id) summary.push(`request "${filters.request_id}"`);
-	if (filters.search) summary.push(`search "${filters.search}"`);
-	const counted: [string, string[] | undefined][] = [
-		["relays", filters.relay_names],
-		["methods", filters.methods],
-		["kinds", filters.kinds],
-		["virtual keys", filters.virtual_key_ids],
-		["users", filters.user_ids],
-		["teams", filters.team_ids],
-		["customers", filters.customer_ids],
-		["business units", filters.business_unit_ids],
-		["projects", filters.project_ids],
-		["apps", filters.apps],
+	const t = (key: ParseKeys<"observability">, options?: Record<string, unknown>) => i18n.t(key, { ns: "observability", ...options });
+	if (filters.request_id) summary.push(t("logs.export.summary.request", { value: filters.request_id }));
+	if (filters.search) summary.push(t("logs.export.summary.search", { value: filters.search }));
+	const counted: [ParseKeys<"observability">, string[] | undefined][] = [
+		["logs.export.summary.relays", filters.relay_names],
+		["logs.export.summary.methods", filters.methods],
+		["logs.export.summary.kinds", filters.kinds],
+		["logs.export.summary.virtualKeys", filters.virtual_key_ids],
+		["logs.export.summary.users", filters.user_ids],
+		["logs.export.summary.teams", filters.team_ids],
+		["logs.export.summary.customers", filters.customer_ids],
+		["logs.export.summary.businessUnits", filters.business_unit_ids],
+		["logs.export.summary.projects", filters.project_ids],
+		["logs.export.summary.apps", filters.apps],
 	];
-	for (const [name, values] of counted) {
-		if (values && values.length > 0) summary.push(`${name} (${values.length})`);
+	for (const [key, values] of counted) {
+		if (values && values.length > 0) summary.push(t(key, { total: values.length }));
 	}
-	if (filters.statuses && filters.statuses.length > 0) summary.push(`status: ${filters.statuses.join(", ")}`);
-	if (filters.billable !== undefined) summary.push(filters.billable ? "billable only" : "non-billable only");
-	if (filters.min_cost !== undefined) summary.push(`min cost ${filters.min_cost}`);
-	if (filters.max_cost !== undefined) summary.push(`max cost ${filters.max_cost}`);
-	if (filters.period) summary.push(`period ${filters.period}`);
+	if (filters.statuses && filters.statuses.length > 0)
+		summary.push(t("logs.export.summary.status", { value: filters.statuses.join(", ") }));
+	if (filters.billable !== undefined)
+		summary.push(t(filters.billable ? "logs.export.summary.billableOnly" : "logs.export.summary.nonBillableOnly"));
+	if (filters.min_cost !== undefined) summary.push(t("logs.export.summary.minCost", { value: filters.min_cost }));
+	if (filters.max_cost !== undefined) summary.push(t("logs.export.summary.maxCost", { value: filters.max_cost }));
+	if (filters.period) summary.push(t("logs.export.summary.period", { value: filters.period }));
 	return summary;
 }
 

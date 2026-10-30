@@ -12,9 +12,11 @@ import type { ParseKeys } from "i18next";
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { toast } from "sonner";
 import { A2AConversationMessage as ConversationMessage, A2APayloadView, TaskStateBadge } from "./a2aPayloadView";
 import { CorrelatedLogsContent, useCorrelatedLogCounts } from "./correlatedLogs";
+import { getLocale } from "@/lib/i18n";
 
 const CONTEXT_PAGE_SIZE = 10;
 const CONTEXT_FILTERS = (contextId: string) => ({ context_id: contextId, record_kind: ["request"] });
@@ -327,7 +329,7 @@ function latestTaskState(log: AgentLogOperation) {
 }
 
 function ProtocolActivity({ log, showTimestamp }: { log: AgentLogOperation; showTimestamp: boolean }) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const definition = protocolActivityDefinition(log.operation);
 	const taskState = definition.showsTaskState ? latestTaskState(log) : undefined;
 	const timestamp = new Date(log.timestamp);
@@ -343,7 +345,7 @@ function ProtocolActivity({ log, showTimestamp }: { log: AgentLogOperation; show
 					<span className="text-xs font-semibold">{t("agentLogs.contextSheet.event")}</span>
 					{showTimestamp ? (
 						<span className="text-muted-foreground ml-auto shrink-0 font-mono text-[10px]">
-							{isValid(timestamp) ? format(timestamp, "MMM d, HH:mm:ss") : log.timestamp}
+							{isValid(timestamp) ? format(timestamp, "MMM d, HH:mm:ss", { locale: dateFnsLocale(i18n.language) }) : log.timestamp}
 						</span>
 					) : null}
 				</div>
@@ -379,7 +381,7 @@ export function A2AOperationConversation({
 	showTimestamp?: boolean;
 	allowPushConversation?: boolean;
 }) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const timestamp = new Date(log.timestamp);
 	const conversationOperation =
 		isA2AConversationOperation(log.operation) || (allowPushConversation && isA2APushConversationOperation(log.operation));
@@ -390,7 +392,11 @@ export function A2AOperationConversation({
 
 	if (!conversationOperation) return <ProtocolActivity log={log} showTimestamp={showTimestamp} />;
 
-	const renderedTimestamp = showTimestamp ? (isValid(timestamp) ? format(timestamp, "MMM d, HH:mm:ss") : log.timestamp) : undefined;
+	const renderedTimestamp = showTimestamp
+		? isValid(timestamp)
+			? format(timestamp, "MMM d, HH:mm:ss", { locale: dateFnsLocale(i18n.language) })
+			: log.timestamp
+		: undefined;
 
 	return (
 		<div>
@@ -643,9 +649,9 @@ export function AgentContextDetailsSheet({
 							<div className="bg-card sticky bottom-0 z-10 flex items-center justify-between py-3 text-xs" data-testid="pagination">
 								<div className="text-muted-foreground flex items-center gap-2">
 									{t("agentGateway.agentsTable.entriesRange", {
-										from: (page * CONTEXT_PAGE_SIZE + 1).toLocaleString(),
-										to: Math.min((page + 1) * CONTEXT_PAGE_SIZE, totalCount).toLocaleString(),
-										total: totalCount.toLocaleString(),
+										from: (page * CONTEXT_PAGE_SIZE + 1).toLocaleString(getLocale()),
+										to: Math.min((page + 1) * CONTEXT_PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+										total: totalCount.toLocaleString(getLocale()),
 									})}
 								</div>
 								<div className="flex items-center gap-2">

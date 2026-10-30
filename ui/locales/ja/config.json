@@ -335,7 +335,8 @@
 		"unregisteredNote": "現在このフラグを読むコードはありません。上書きは保存されますが、Register() 追加まで無効です。",
 		"toastToggled": "{{name}} を{{state}}にしました",
 		"enabledState": "有効",
-		"disabledState": "無効"
+		"disabledState": "無効",
+		"enableAria": "{{name}} を有効化"
 	},
 	"mcpSettings": {
 		"title": "MCP 設定",
@@ -782,7 +783,44 @@
 		"showLess": "閉じる",
 		"showMore": "もっと見る",
 		"skillNotFound": "スキルが見つかりません",
-		"backToList": "一覧に戻る"
+		"backToList": "一覧に戻る",
+		"validation": {
+			"nameRequired": "名前は必須です",
+			"nameTooLong": "名前は64文字以内にしてください",
+			"nameFormat": "名前は小文字の英数字とハイフンのみ使用できます（先頭・末尾・連続するハイフンは不可）",
+			"nameReserved": "\"{{name}}\" はスキル配信レイヤーが使用する予約名です",
+			"descriptionRequired": "説明は必須です",
+			"descriptionTooLong": "説明が1024文字の上限を超えています（{{length}}/1024）",
+			"versionRequired": "バージョンは必須です",
+			"versionFormat": "バージョンは semver 形式にしてください（例: 1.0.0 または 1.0.0-beta.1）",
+			"versionParts": "バージョンの各部分は0以上の整数にしてください",
+			"versionBump": "バージョンは {{previous}} と異なる必要があります。メジャー（{{major}}）、マイナー（{{minor}}）、パッチ（{{patch}}）のいずれかを上げるか、サフィックス（例: -beta.1）を変更してください。",
+			"extraFrontmatterObject": "追加の frontmatter は JSON オブジェクトにしてください",
+			"reservedKeys": "予約済みのキーは使用できません: {{keys}}",
+			"invalidJson": "JSON が無効です",
+			"metadataObject": "メタデータは JSON オブジェクトにしてください",
+			"metadataKeys": "メタデータのキーは文字列にしてください",
+			"metadataValue": "メタデータ \"{{key}}\" の値は文字列にしてください",
+			"bodyRequired": "SKILL.md の本文は必須です",
+			"bodyLarge": "この SKILL.md の本文は推奨サイズを超えています。詳細な内容は references/ 配下のファイルに移し、スキル本文からリンクすることを検討してください。",
+			"fileTooLarge": "ファイルが {{limit}} の上限を超えています",
+			"urlRequired": "URL は必須です",
+			"urlScheme": "URL は http:// または https:// で始めてください",
+			"dataUrlRequired": "データ URL は必須です",
+			"dataUrlFormat": "データ URL は data: で始まり、;base64, を含める必要があります",
+			"textRequired": "テキスト内容は必須です",
+			"unknownSource": "不明なソースタイプ: {{type}}",
+			"filenameRequired": "ファイル名は必須です",
+			"filenameDots": "ファイル名に . や .. は使用できません",
+			"filenameFolders": "ファイル名にフォルダーを含めないでください",
+			"skillMdManaged": "SKILL.md はスキル本文で管理されます",
+			"pathRequired": "ファイルパスは必須です",
+			"pathRelative": "パスは相対パスにしてください（先頭の / は不可）",
+			"pathNotFolder": "パスはフォルダーではなくファイルを指す必要があります",
+			"pathSlashes": "パスにはスラッシュ（/）のみ使用できます",
+			"pathSegments": "パスに空、カレント、親ディレクトリのセグメントを含めないでください"
+		},
+		"itemCount_other": "{{count}} 件"
 	},
 	"promptRepo": {
 		"loadFailed": "プロンプトリポジトリの読み込みに失敗しました",
@@ -956,7 +994,9 @@
 		"file": "ファイル",
 		"attachmentAlt": "添付",
 		"noChangePermission": "プロンプトを変更する権限がありません",
-		"noChangeFolderPermission": "プロンプトフォルダーを変更する権限がありません"
+		"noChangeFolderPermission": "プロンプトフォルダーを変更する権限がありません",
+		"noResponseBody": "応答本文がありません",
+		"mcpServerFallback": "MCP サーバー"
 	},
 	"docs": {
 		"title": "ドキュメント",
@@ -1179,7 +1219,9 @@
 			"thresholdLabel": "新しいトピックのしきい値",
 			"thresholdHint": "トピックに一致しなかったリクエストがいくつ保留されると、Warpが新しいトピックにまとめるかを指定します。毎時確認されます。値を小さくすると少ない例から新しい話題を早く検出し、大きくすると明確なパターンが現れるまで待ちます。{{min}}～{{max}}。",
 			"thresholdError": "{{min}}～{{max}}の整数を入力してください"
-		}
+		},
+		"alphaBadge": "アルファ",
+		"aboutAria": "{{label}}について"
 	},
 	"agentGateway": {
 		"title": "Agent Gateway 設定",
@@ -1304,7 +1346,26 @@
 			"noServer": "サーバーが記載されていません。リレーに設定したベース URL を維持してください。",
 			"authSuggestion": "認証の候補：{{type}}",
 			"import": "インポート",
-			"importCount_other": "{{count}} 件のルートをインポート"
+			"importCount_other": "{{count}} 件のルートをインポート",
+			"docEmpty": "ドキュメントが空です",
+			"docNotJson": "ドキュメントが JSON オブジェクトではありません",
+			"docNotOpenapi": "ドキュメントが OpenAPI オブジェクトではありません",
+			"warn": {
+				"schemeUndeclared": "セキュリティスキーム {{name}} が必要ですが宣言されていません。認証タイプを手動で設定してください",
+				"apiKeyLocation": "セキュリティスキーム {{name}} は {{location}} で apiKey を使用しており、Relay では注入できません",
+				"unsupportedLocation": "サポートされていない場所",
+				"httpScheme": "セキュリティスキーム {{name}} は HTTP {{scheme}} 認証を使用しており、Relay では注入できません",
+				"schemeType": "セキュリティスキーム {{name}} は {{type}} です。認証タイプを手動で設定してください",
+				"unknownType": "不明",
+				"authOptional": "ドキュメントでは認証が任意とされています。API にキーが必要な場合は認証タイプを手動で設定してください",
+				"noSingleScheme": "ドキュメント内に、Relay が注入できる単一スキームのセキュリティ代替案がありません。認証タイプを手動で設定してください",
+				"severalSchemes": "ドキュメントには複数のセキュリティスキームが宣言されていますが、どれも必須とされていません。認証タイプを手動で設定してください",
+				"noPaths": "ドキュメントにパスが宣言されていません",
+				"refPaths_other": "{{paths}} は $ref で定義されており、インポートでは $ref を解決しないため、これらの操作はインポートされませんでした。ルートを手動で追加し、ルート一覧を確認してください。",
+				"noMethods": "ドキュメント内に、Relay が扱うメソッドを使用する操作がありません",
+				"differentSchemes": "操作ごとに異なるセキュリティスキームが必要ですが、1つのエンドポイントには1つの認証しか適用できません。認証タイプを手動で設定してください",
+				"serverQuery": "サーバー URL のクエリ（{{query}}）は、Relay のベース URL にクエリを含められないため、提案されるベース URL から除外されています。呼び出し側で自分で送信する必要があります。"
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}}（リレーの既定値）",
@@ -1325,7 +1386,17 @@
 			"blockSizeInfo": "この単位数ごとに、開始したブロックを単位として課金します。",
 			"minimumLabel": "最小単位数（任意）",
 			"minimumInfo": "数量が読み取られた場合に課金される最小の単位数です。",
-			"formula": "カウントされる呼び出し 1 回あたりのコストは <strong>{{formula}}</strong> です"
+			"formula": "カウントされる呼び出し 1 回あたりのコストは <strong>{{formula}}</strong> です",
+			"sources": {
+				"response": "レスポンスボディ",
+				"request": "リクエストボディ"
+			},
+			"measures": {
+				"value": "パスの数値",
+				"chars": "パスの文字列の文字数",
+				"bodyBytes": "ボディ全体のサイズ（バイト）",
+				"bodyChars": "ボディ全体の文字数"
+			}
 		},
 		"preview": {
 			"path": "パス",
@@ -1440,7 +1511,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole または env.AWS_ROLE_ARN",
 			"externalIdLabel": "外部 ID（任意）",
 			"externalIdInfo": "クロスアカウントアクセスを使う場合、ロールの信頼ポリシーで必要になります",
-			"externalIdPlaceholder": "external-id または env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id または env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer トークン",
+				"header": "カスタムヘッダー",
+				"query": "クエリパラメータ",
+				"basic": "Basic 認証",
+				"none": "認証なし"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1511,6 +1589,18 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- または env.PROXY_CA_CERT_PEM",
 			"removeConfig": "設定を削除",
 			"saveProxy": "プロキシ設定を保存"
+		},
+		"pricing": {
+			"free": "無料",
+			"perCall": "${{price}} / 呼び出し",
+			"perUnit": "${{price}} / ユニット",
+			"perByte": "${{price}} / バイト",
+			"perChar": "${{price}} / 文字",
+			"blockUnit_other": "${{price}} / {{count}} ユニット",
+			"blockByte_other": "${{price}} / {{count}} バイト",
+			"blockChar_other": "${{price}} / {{count}} 文字",
+			"withMinimum": "{{pricing}}、最小 {{min}}",
+			"reportedCost": "報告されたコスト"
 		}
 	},
 	"skillsSettings": {

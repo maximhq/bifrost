@@ -230,7 +230,7 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 								type="submit"
 								data-testid="commit-version-submit"
 								disabled={isLoading || selectedIndices.size === 0 || !canCommit}
-								title={canCommit ? undefined : "You do not have permission to change prompts"}
+								title={canCommit ? undefined : t("promptRepo.noChangePermission")}
 								className={selectedIndices.size === 0 ? "opacity-50" : ""}
 							>
 								{isLoading ? t("promptRepo.committing") : t("promptRepo.commitVersion")}

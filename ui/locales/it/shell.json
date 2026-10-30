@@ -9,6 +9,8 @@
 		"llmLogs": "Log LLM",
 		"mcpLogs": "Log MCP",
 		"connectors": "Connettori",
+		"relayLogs": "Log dei relay",
+		"relays": "Relay",
 		"logsSettings": "Impostazioni dei log",
 		"models": "Modelli",
 		"modelCatalog": "Catalogo modelli",
@@ -83,6 +85,8 @@
 		"skillsSettings": "Impostazioni Skills"
 	},
 	"navDesc": {
+		"relayLogs": "Chiamate relay e relativo costo",
+		"relays": "Inoltra API non LLM con prezzi per route",
 		"home": "Il tuo utilizzo, le chiavi, i budget e gli accessi",
 		"observability": "Log delle richieste e monitoraggio",
 		"dashboard": "Dashboard",
@@ -169,6 +173,74 @@
 		"unlockTitle": "Sblocca la tua pagina iniziale personale",
 		"unlockDescription": "Questa funzione fa parte della licenza enterprise di Bifrost. La pagina iniziale mostra a ogni utente il proprio utilizzo, le chiavi, i budget e gli accessi."
 	},
+	"commandPalette": {
+		"title": "Menu comandi",
+		"placeholder": "Cerca pagine o vai a…",
+		"empty": "Nessun risultato per “{{query}}”",
+		"groups": {
+			"general": "Generale",
+			"results": "Risultati",
+			"actions": "Azioni",
+			"thisPage": "In questa pagina"
+		},
+		"current": "Attuale",
+		"footer": {
+			"navigate": "Naviga",
+			"open": "Apri",
+			"newTab": "Nuova scheda",
+			"back": "Indietro"
+		},
+		"openHint": "Apri menu comandi",
+		"actions": {
+			"create": "Crea…",
+			"copyLink": "Copia link a questa pagina",
+			"changeTheme": "Cambia tema…",
+			"changeLanguage": "Cambia lingua…"
+		},
+		"pages": {
+			"create": {
+				"title": "Crea",
+				"placeholder": "Cerca cosa creare…"
+			},
+			"theme": {
+				"title": "Tema",
+				"placeholder": "Cerca temi…"
+			},
+			"language": {
+				"title": "Lingua",
+				"placeholder": "Cerca lingue…"
+			}
+		},
+		"create": {
+			"virtualKey": "Crea chiave virtuale",
+			"team": "Crea team",
+			"customer": "Crea cliente",
+			"user": "Crea utente",
+			"routingRule": "Crea regola di routing",
+			"mcpServer": "Aggiungi server MCP",
+			"modelLimit": "Crea limite modello",
+			"webhook": "Crea webhook",
+			"mcpLibraryServer": "Aggiungi server alla libreria MCP",
+			"virtualMcp": "Crea MCP virtuale",
+			"agent": "Crea agente",
+			"relay": "Aggiungi endpoint relay",
+			"plugin": "Aggiungi plugin",
+			"alertChannel": "Aggiungi canale di avviso",
+			"alertRule": "Crea regola di avviso",
+			"businessUnit": "Crea unità di business",
+			"role": "Crea ruolo",
+			"accessProfile": "Crea profilo di accesso",
+			"project": "Crea progetto",
+			"prompt": "Crea prompt",
+			"promptFolder": "Crea cartella di prompt",
+			"skill": "Crea skill",
+			"apiKey": "Crea chiave API"
+		},
+		"toast": {
+			"linkCopied": "Link copiato",
+			"linkCopyFailed": "Impossibile copiare il link"
+		}
+	},
 	"search": {
 		"placeholder": "Cerca...",
 		"ariaLabel": "Cerca nella navigazione laterale"
@@ -212,6 +284,8 @@
 		"accountMenu": "Menu account",
 		"openMenu": "Apri menu",
 		"signOut": "Esci",
+		"viewAsUser": "Visualizza come utente",
+		"closeView": "Chiudi visualizzazione",
 		"version": "Versione",
 		"userFallback": "User",
 		"discord": "Server Discord",
@@ -305,7 +379,8 @@
 			"Security": "Sicurezza",
 			"Provider Setup": "Configurazione provider",
 			"Everything Else": "Tutto il resto"
-		}
+		},
+		"completedSr": "Completato:"
 	},
 	"warp": {
 		"ask": "Chiedi a Warp",
@@ -369,7 +444,8 @@
 		"question": {
 			"label": "Domanda",
 			"skip": "Salta",
-			"orType": "Oppure digita la tua risposta qui sotto."
+			"orType": "Oppure digita la tua risposta qui sotto.",
+			"skipAnswer": "Usa il tuo miglior giudizio e indica cosa hai ipotizzato."
 		},
 		"message": {
 			"whatThisCovers": "Cosa copre",
@@ -544,7 +620,11 @@
 					"Chiedi a un amministratore di consentire il modello di Warp per il tuo account.",
 					"In alternativa, nelle impostazioni di Warp scegli un modello consentito per il tuo account."
 				]
-			}
+			},
+			"requestFailedStatus": "Richiesta a Warp non riuscita ({{status}})",
+			"noResponseBody": "Warp non ha restituito alcun corpo di risposta",
+			"connectionClosed": "La connessione si è chiusa prima che Warp finisse di rispondere.",
+			"requestFailed": "Richiesta a Warp non riuscita"
 		},
 		"dock": {
 			"resize": "Ridimensiona il pannello Warp",
@@ -552,7 +632,12 @@
 		},
 		"chart": {
 			"openInLogs": "Apri nei log",
-			"empty": "Nessun dato in questo intervallo."
+			"empty": "Nessun dato in questo intervallo.",
+			"weekOf": "Settimana del {{date}}"
+		},
+		"usage": {
+			"tokens_one": "{{formattedCount}} token",
+			"tokens_other": "{{formattedCount}} token"
 		}
 	},
 	"rssSources": {
@@ -594,5 +679,11 @@
 		"upload": "Carica",
 		"logoHelp": "Un URL immagine oppure un file PNG, JPEG, GIF, WebP, SVG o ICO fino a 96 KB. Per impostazione predefinita viene usata la favicon del sito.",
 		"addFeed": "Aggiungi feed"
+	},
+	"agentHandover": {
+		"completeTitle": "Accesso a Bifrost Agent completato",
+		"title": "Accesso a Bifrost Agent",
+		"completeBody": "Puoi chiudere questa finestra e tornare a Bifrost Agent.",
+		"status": "Stato dell'accesso: {{status}}"
 	}
 }

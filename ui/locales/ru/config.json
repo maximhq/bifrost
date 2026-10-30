@@ -341,7 +341,8 @@
 		"unregisteredNote": "Сейчас ни один код не читает этот флаг. Переопределение сохраняется, но бездействует, пока не будет добавлен вызов Register().",
 		"toastToggled": "{{name}}: {{state}}",
 		"enabledState": "включён",
-		"disabledState": "отключён"
+		"disabledState": "отключён",
+		"enableAria": "Включить {{name}}"
 	},
 	"mcpSettings": {
 		"title": "Настройки MCP",
@@ -790,7 +791,47 @@
 		"showLess": "Показать меньше",
 		"showMore": "Показать больше",
 		"skillNotFound": "Skill не найден",
-		"backToList": "Назад к списку"
+		"backToList": "Назад к списку",
+		"validation": {
+			"nameRequired": "Укажите имя",
+			"nameTooLong": "Имя должно содержать не более 64 символов",
+			"nameFormat": "Имя может содержать только строчные буквы, цифры и дефисы (без дефисов в начале, в конце и подряд)",
+			"nameReserved": "«{{name}}» — зарезервированное имя, используемое слоем выдачи навыков",
+			"descriptionRequired": "Укажите описание",
+			"descriptionTooLong": "Описание превышает лимит в 1024 символа ({{length}}/1024)",
+			"versionRequired": "Укажите версию",
+			"versionFormat": "Версия должна быть в формате semver (например, 1.0.0 или 1.0.0-beta.1)",
+			"versionParts": "Части версии должны быть неотрицательными целыми числами",
+			"versionBump": "Версия должна отличаться от {{previous}}. Увеличьте хотя бы одну часть: major ({{major}}), minor ({{minor}}), patch ({{patch}}) или измените суффикс (например, -beta.1).",
+			"extraFrontmatterObject": "Дополнительный frontmatter должен быть JSON-объектом",
+			"reservedKeys": "Нельзя использовать зарезервированные ключи: {{keys}}",
+			"invalidJson": "Некорректный JSON",
+			"metadataObject": "Метаданные должны быть JSON-объектом",
+			"metadataKeys": "Ключи метаданных должны быть строками",
+			"metadataValue": "Значение метаданных для «{{key}}» должно быть строкой",
+			"bodyRequired": "Укажите содержимое SKILL.md",
+			"bodyLarge": "Содержимое этого SKILL.md превышает рекомендуемый размер. Рассмотрите возможность вынести подробные материалы в файлы в references/ и сослаться на них из тела навыка.",
+			"fileTooLarge": "Файл превышает лимит {{limit}}",
+			"urlRequired": "Укажите URL",
+			"urlScheme": "URL должен начинаться с http:// или https://",
+			"dataUrlRequired": "Укажите data URL",
+			"dataUrlFormat": "Data URL должен начинаться с data: и содержать ;base64,",
+			"textRequired": "Укажите текстовое содержимое",
+			"unknownSource": "Неизвестный тип источника: {{type}}",
+			"filenameRequired": "Укажите имя файла",
+			"filenameDots": "Имя файла не может быть . или ..",
+			"filenameFolders": "Имя файла не должно включать папки",
+			"skillMdManaged": "SKILL.md управляется через тело навыка",
+			"pathRequired": "Укажите путь к файлу",
+			"pathRelative": "Путь должен быть относительным (без начального /)",
+			"pathNotFolder": "Путь должен указывать на файл, а не на папку",
+			"pathSlashes": "В пути допустимы только косые черты (/)",
+			"pathSegments": "Путь не должен содержать пустых сегментов, а также сегментов текущего или родительского каталога"
+		},
+		"itemCount_one": "{{count}} элемент",
+		"itemCount_other": "{{count}} элемента",
+		"itemCount_few": "{{count}} элемента",
+		"itemCount_many": "{{count}} элементов"
 	},
 	"promptRepo": {
 		"loadFailed": "Не удалось загрузить репозиторий промптов",
@@ -966,7 +1007,9 @@
 		"file": "Файл",
 		"attachmentAlt": "вложение",
 		"noChangePermission": "У вас нет права изменять промпты",
-		"noChangeFolderPermission": "У вас нет права изменять папки промптов"
+		"noChangeFolderPermission": "У вас нет права изменять папки промптов",
+		"noResponseBody": "Нет тела ответа",
+		"mcpServerFallback": "MCP-сервер"
 	},
 	"docs": {
 		"title": "Документация",
@@ -1207,7 +1250,9 @@
 			"themesCount_many": "{{count}} тем",
 			"labelsFellBack_few": "Не использовано {{count}} метки",
 			"labelsFellBack_many": "Не использовано {{count}} меток"
-		}
+		},
+		"alphaBadge": "АЛЬФА",
+		"aboutAria": "О параметре «{{label}}»"
 	},
 	"agentGateway": {
 		"title": "Настройки Agent Gateway",
@@ -1347,7 +1392,29 @@
 			"importCount_one": "Импортировать {{count}} маршрут",
 			"importCount_few": "Импортировать {{count}} маршрута",
 			"importCount_many": "Импортировать {{count}} маршрутов",
-			"importCount_other": "Импортировать {{count}} маршрута"
+			"importCount_other": "Импортировать {{count}} маршрута",
+			"docEmpty": "Документ пуст",
+			"docNotJson": "Документ не является JSON-объектом",
+			"docNotOpenapi": "Документ не является объектом OpenAPI",
+			"warn": {
+				"schemeUndeclared": "Схема безопасности {{name}} требуется, но не объявлена; задайте тип аутентификации вручную",
+				"apiKeyLocation": "Схема безопасности {{name}} использует apiKey в {{location}}, который relay не может подставить",
+				"unsupportedLocation": "неподдерживаемом расположении",
+				"httpScheme": "Схема безопасности {{name}} использует HTTP-аутентификацию {{scheme}}, которую relay не может подставить",
+				"schemeType": "Схема безопасности {{name}} имеет тип {{type}}; задайте тип аутентификации вручную",
+				"unknownType": "неизвестный",
+				"authOptional": "Документ делает аутентификацию необязательной; если API требует ключ, задайте тип аутентификации вручную",
+				"noSingleScheme": "Ни одна из альтернатив безопасности в документе не является единственной схемой, которую relay может подставить; задайте тип аутентификации вручную",
+				"severalSchemes": "Документ объявляет несколько схем безопасности и не требует ни одной; задайте тип аутентификации вручную",
+				"noPaths": "В документе не объявлено ни одного пути",
+				"refPaths_one": "{{paths}} определён через $ref, который импорт не разрешает, поэтому эти операции не были импортированы; добавьте их маршруты вручную и проверьте список маршрутов.",
+				"refPaths_other": "{{paths}} определены через $ref, который импорт не разрешает, поэтому эти операции не были импортированы; добавьте их маршруты вручную и проверьте список маршрутов.",
+				"refPaths_few": "{{paths}} определены через $ref, который импорт не разрешает, поэтому эти операции не были импортированы; добавьте их маршруты вручную и проверьте список маршрутов.",
+				"refPaths_many": "{{paths}} определены через $ref, который импорт не разрешает, поэтому эти операции не были импортированы; добавьте их маршруты вручную и проверьте список маршрутов.",
+				"noMethods": "Ни одна операция в документе не использует метод, который обслуживает relay",
+				"differentSchemes": "Операции требуют разных схем безопасности, а один эндпоинт применяет одну аутентификацию; задайте тип аутентификации вручную",
+				"serverQuery": "Query-часть URL сервера ({{query}}) не включена в предлагаемый базовый URL, так как базовый URL relay не может её содержать; вызывающая сторона должна передавать её сама."
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}} (по умолчанию для ретранслятора)",
@@ -1368,7 +1435,17 @@
 			"blockSizeInfo": "Тарификация за каждый начатый блок из такого числа единиц.",
 			"minimumLabel": "Минимум единиц (необязательно)",
 			"minimumInfo": "Наименьшее число единиц к оплате после считывания количества.",
-			"formula": "Каждый учитываемый вызов стоит <strong>{{formula}}</strong>"
+			"formula": "Каждый учитываемый вызов стоит <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "Тело ответа",
+				"request": "Тело запроса"
+			},
+			"measures": {
+				"value": "Число по пути",
+				"chars": "Символы строки по пути",
+				"bodyBytes": "Размер всего тела (байты)",
+				"bodyChars": "Символы всего тела"
+			}
 		},
 		"preview": {
 			"path": "Путь",
@@ -1483,7 +1560,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole или env.AWS_ROLE_ARN",
 			"externalIdLabel": "External ID (необязательно)",
 			"externalIdInfo": "Требуется политикой доверия роли при кросс-аккаунтном доступе",
-			"externalIdPlaceholder": "external-id или env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id или env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer-токен",
+				"header": "Пользовательский заголовок",
+				"query": "Параметр запроса",
+				"basic": "Basic-аутентификация",
+				"none": "Без аутентификации"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1554,6 +1638,27 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- или env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Удалить конфигурацию",
 			"saveProxy": "Сохранить конфигурацию прокси"
+		},
+		"pricing": {
+			"free": "Бесплатно",
+			"perCall": "${{price}} / вызов",
+			"perUnit": "${{price}} / единица",
+			"perByte": "${{price}} / байт",
+			"perChar": "${{price}} / символ",
+			"blockUnit_one": "${{price}} за {{count}} единицу",
+			"blockUnit_other": "${{price}} за {{count}} единицы",
+			"blockUnit_few": "${{price}} за {{count}} единицы",
+			"blockUnit_many": "${{price}} за {{count}} единиц",
+			"blockByte_one": "${{price}} за {{count}} байт",
+			"blockByte_other": "${{price}} за {{count}} байта",
+			"blockByte_few": "${{price}} за {{count}} байта",
+			"blockByte_many": "${{price}} за {{count}} байт",
+			"blockChar_one": "${{price}} за {{count}} символ",
+			"blockChar_other": "${{price}} за {{count}} символа",
+			"blockChar_few": "${{price}} за {{count}} символа",
+			"blockChar_many": "${{price}} за {{count}} символов",
+			"withMinimum": "{{pricing}}, мин. {{min}}",
+			"reportedCost": "сообщённая стоимость"
 		}
 	},
 	"skillsSettings": {

@@ -18,6 +18,7 @@ import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } f
 import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 // Fixed content height for every body cell, as in the LLM logs table: 32px plus
 // the cell's py-1.5 makes every body row exactly 44px, whatever it holds.
@@ -282,7 +283,11 @@ export function RelayLogsDataTable({
 			{/* Pagination Footer */}
 			<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 				<div className="text-muted-foreground flex items-center gap-2">
-					{t("logs.entryRange", { start: startItem.toLocaleString(), end: endItem.toLocaleString(), total: totalItems.toLocaleString() })}
+					{t("logs.entryRange", {
+						start: startItem.toLocaleString(getLocale()),
+						end: endItem.toLocaleString(getLocale()),
+						total: totalItems.toLocaleString(getLocale()),
+					})}
 				</div>
 
 				<div className="flex items-center gap-3">

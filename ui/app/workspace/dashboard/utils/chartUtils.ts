@@ -1,6 +1,6 @@
 // Chart utility functions for the dashboard
 import { formatCompactNumber } from "@/lib/utils/numbers";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 
 // Format timestamp based on bucket size
 export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): string {
@@ -8,20 +8,20 @@ export function formatTimestamp(timestamp: string, bucketSizeSeconds: number): s
 
 	if (bucketSizeSeconds >= 86400) {
 		// Daily buckets: "Jan 20"
-		return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+		return date.toLocaleDateString(getLocale(), { month: "short", day: "numeric" });
 	} else if (bucketSizeSeconds >= 3600) {
 		// Hourly buckets: "10:00"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
 	} else {
 		// Sub-hourly: "10:15"
-		return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+		return date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
 	}
 }
 
 // Format full timestamp for tooltip
 export function formatFullTimestamp(timestamp: string): string {
 	const date = new Date(timestamp);
-	return date.toLocaleString("en-US", {
+	return date.toLocaleString(getLocale(), {
 		month: "short",
 		day: "numeric",
 		hour: "2-digit",

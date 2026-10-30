@@ -25,6 +25,7 @@ import { useDeleteAgentMutation, useUpdateAgentMutation } from "@/lib/store/apis
 import type { AgentRegistrationView } from "@/lib/types/agents";
 import AgentAccessSummary from "@enterprise/components/agent-gateway/agentAccessSummary";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { format, formatDistanceToNow } from "date-fns";
 import type { TFunction } from "i18next";
 import { Check, ChevronLeft, ChevronRight, Copy, Info, MoreHorizontal, PencilIcon, Plus, Search, Trash2 } from "lucide-react";
@@ -32,6 +33,8 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import AgentSheet from "./agentSheet";
 import { AgentsEmptyState } from "./agentsEmptyState";
+import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 function AgentActionsMenu({
 	agent,
@@ -206,7 +209,7 @@ export default function AgentsTable({
 	const [deleteAgent] = useDeleteAgentMutation();
 	const [updateAgent] = useUpdateAgentMutation();
 	const { toast } = useToast();
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
 	const { t: tCommon } = useTranslation("common");
 
 	// Externally reachable base URL, so the endpoint cell copies the full URL callers use.
@@ -217,6 +220,7 @@ export default function AgentsTable({
 		setSelectedAgent(null);
 		setSheetOpen(true);
 	};
+	useActionParam("create", handleCreate, { isOpen: sheetOpen, enabled: hasCreateAccess });
 
 	const handleEdit = (agent: AgentRegistrationView) => {
 		setSelectedAgent(agent);
@@ -396,9 +400,13 @@ export default function AgentsTable({
 										<TableCell className="text-muted-foreground pr-6 text-sm">
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<span>{formatDistanceToNow(new Date(agent.updated_at), { addSuffix: true })}</span>
+													<span>
+														{formatDistanceToNow(new Date(agent.updated_at), { addSuffix: true, locale: dateFnsLocale(i18n.language) })}
+													</span>
 												</TooltipTrigger>
-												<TooltipContent>{format(new Date(agent.updated_at), "MMM dd, yyyy HH:mm:ss OOOO")}</TooltipContent>
+												<TooltipContent>
+													{format(new Date(agent.updated_at), "MMM dd, yyyy HH:mm:ss OOOO", { locale: dateFnsLocale(i18n.language) })}
+												</TooltipContent>
 											</Tooltip>
 										</TableCell>
 										<TableCell data-testid={`agent-status-${agent.name}`} onClick={(e) => e.stopPropagation()}>
@@ -434,9 +442,9 @@ export default function AgentsTable({
 					<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 						<div className="text-muted-foreground flex items-center gap-2">
 							{t("agentGateway.agentsTable.entriesRange", {
-								from: (offset + 1).toLocaleString(),
-								to: Math.min(offset + limit, totalCount).toLocaleString(),
-								total: totalCount.toLocaleString(),
+								from: (offset + 1).toLocaleString(getLocale()),
+								to: Math.min(offset + limit, totalCount).toLocaleString(getLocale()),
+								total: totalCount.toLocaleString(getLocale()),
 							})}
 						</div>
 						<div className="flex items-center gap-2">

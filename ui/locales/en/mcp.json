@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "Reauthorization did not complete",
 			"toolsRefreshed": "Tools refreshed",
 			"toolsRefreshedDesc_one": "Client {{name}} is now serving {{count}} tool.",
-			"toolsRefreshedDesc_other": "Client {{name}} is now serving {{count}} tools."
+			"toolsRefreshedDesc_other": "Client {{name}} is now serving {{count}} tools.",
+			"oauthVerifiedPerUser": "OAuth setup verified successfully. Each user will authenticate individually.",
+			"clientConnected": "MCP client connected successfully"
 		},
 		"filter": {
 			"connectionType": "Connection Type",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "Base URL is required",
 			"invalidAllowedExtraHeadersTitle": "Invalid allowed extra headers",
 			"invalidAllowedExtraHeadersDesc": "Wildcard '*' cannot be combined with specific header names.",
-			"allowedExtraHeadersPlaceholder": "*, or: authorization, x-user-id"
+			"allowedExtraHeadersPlaceholder": "*, or: authorization, x-user-id",
+			"useGlobalSetting": "Use global setting",
+			"useGlobalSettingWithValue": "Use global setting ({{value}})",
+			"maxProtocolAuto": "Auto (latest)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call.",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "The client's connection state (healthy, unstable, needs re-authorization, and so on). \"Unstable\" reflects Bifrost's own connection checks to the server, not the results of tool calls made through it: it self-heals and never blocks tool calls. For per-user clients (OAuth, headers, token exchange), this reflects Bifrost's own retained admin credential (used only to periodically refresh the tool list), not any individual user's own session, which is unaffected either way.",
 		"columnGuidanceAria": "{{label}} column guidance",
 		"vkCount_one": "{{count}} VK",
-		"vkCount_other": "{{count}} VKs"
+		"vkCount_other": "{{count}} VKs",
+		"failure": {
+			"stageConnect": "Connecting",
+			"stagePing": "Ping",
+			"stageListTools": "Listing tools",
+			"stageToolDiscovery": "Discovering tools",
+			"stageTransportLost": "Connection dropped",
+			"stageCredential": "Credential",
+			"titleDegraded": "Instances disagree about this server's state",
+			"titleUnstableAll": "Last connection check failed on every instance",
+			"titleUnstable": "Last connection check failed",
+			"titleNeedsReauth": "Reauthorization required",
+			"titleError": "Not registered in the runtime",
+			"titleDefault": "Connection state",
+			"lastFailedAgo": "Last failed {{age}} ago",
+			"lastFailedRun": "Last failed {{age}} ago · {{state}} for {{duration}}",
+			"stateNeedsReauth": "needs reauth",
+			"stateUnstable": "unstable"
+		}
 	},
 	"library": {
 		"title": "MCP Server Library",

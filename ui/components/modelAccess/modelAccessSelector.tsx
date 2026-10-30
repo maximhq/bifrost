@@ -136,7 +136,7 @@ export function ModelAccessSelector({
 					value={hasWildcard ? [MODEL_WILDCARD] : models}
 					onChange={(next: string[]) => onChange(replaceModels(list, next))}
 					placeholder={modelAccessPlaceholder(list, mode)}
-					emptyMessage={provider ? "No models available for this provider." : "Select a provider first."}
+					emptyMessage={provider ? t("modelAccess.noneForProvider") : t("modelAccess.selectProviderFirst")}
 					renderValueLabel={(entry) => <ModelAccessChipLabel entry={entry} />}
 				/>
 			) : (

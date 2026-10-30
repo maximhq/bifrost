@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
+import i18n from "@/lib/i18n";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
 import { allowedRequestsSchema } from "@/lib/types/schemas";
@@ -21,7 +22,10 @@ import { useTranslation } from "react-i18next";
 const formSchema = z.object({
 	name: z.string().min(1),
 	baseFormat: z.string().min(1),
-	base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
+	base_url: z
+		.string()
+		.min(1, { error: () => i18n.t("providers.customBaseUrlRequired", { ns: "models" }) })
+		.url({ error: () => i18n.t("validation.validUrl") }),
 	allowed_requests: allowedRequestsSchema,
 	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
 	is_key_less: z.boolean().optional(),

@@ -581,11 +581,14 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												</div>
 												<FormControl>
 													<SecretVarInput
-														placeholder={
-															protocol === "http"
-																? "https://otel-collector.example.com:4318/v1/traces or env.OTEL_COLLECTOR_URL"
-																: "otel-collector.example.com:4317 or env.OTEL_COLLECTOR_URL"
-														}
+														placeholder={t("valueOrEnvVar", {
+															ns: "common",
+															value:
+																protocol === "http"
+																	? "https://otel-collector.example.com:4318/v1/traces"
+																	: "otel-collector.example.com:4317",
+															env: "env.OTEL_COLLECTOR_URL",
+														})}
 														disabled={!hasOtelAccess}
 														{...field}
 													/>
@@ -839,11 +842,11 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												</div>
 												<FormControl>
 													<SecretVarInput
-														placeholder={
-															protocol === "http"
-																? "https://otel-collector:4318/v1/metrics or env.OTEL_METRICS_ENDPOINT"
-																: "otel-collector:4317 or env.OTEL_METRICS_ENDPOINT"
-														}
+														placeholder={t("valueOrEnvVar", {
+															ns: "common",
+															value: protocol === "http" ? "https://otel-collector:4318/v1/metrics" : "otel-collector:4317",
+															env: "env.OTEL_METRICS_ENDPOINT",
+														})}
 														disabled={!hasOtelAccess}
 														{...field}
 													/>

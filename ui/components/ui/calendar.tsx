@@ -6,6 +6,7 @@ import { DayButton, DayPicker, getDefaultClassNames } from "react-day-picker";
 
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { getLocale } from "@/lib/i18n";
 
 function Calendar({
 	className,
@@ -133,7 +134,7 @@ function CalendarDayButton({ className, day, modifiers, ...props }: React.Compon
 			ref={ref}
 			variant="ghost"
 			size="icon"
-			data-day={day.date.toLocaleDateString()}
+			data-day={day.date.toLocaleDateString(getLocale())}
 			data-selected-single={modifiers.selected && !modifiers.range_start && !modifiers.range_end && !modifiers.range_middle}
 			data-range-start={modifiers.range_start}
 			data-range-end={modifiers.range_end}

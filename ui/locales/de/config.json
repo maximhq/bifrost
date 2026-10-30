@@ -80,7 +80,7 @@
 		"configuredAllowlist": "<span0>Erlaubnisliste konfiguriert:</span0> Die gefilterten Headers sind durch die Erlaubnisliste, plus jeder direkte Header in der Erlaubnisliste wird weitergeleitet",
 		"denylistRules": "<span0>Beschränkungslisten:</span0> Alle Headers, die in der Beschränkungsliste enthalten sind, werden von der Weiterleitung abgefangen.",
 		"wildcardRules": "<span0>Vorzeichenwildcards:</span0> Mit  <code1>*</code1> am Ende eines Patterns wird eine Übereinstimmung mit Präfixen (z.B., <code2>anthropic-*</code2> passt zu allen Headers, die mit <code3>anthropic-</code3> beginnen). Ein  <code4>*</code4> alle Headers überspringt.",
-		"headerNames": "Erlaubnisliste/Beschränkungslisten-Einträge sollten ohne den  <code1>x-bf-eh-</code1>-Prefix sein",
+		"headerNames": "Einträge der Erlaubnis- und Sperrliste sind Header-Namen <span0>ohne</span0> das Präfix <code1>x-bf-eh-</code1>",
 		"allowlistExample": "Beispiel: Um Anforderungen an <code0>x-bf-eh-custom-id</code0> oder direkte Anforderungen an <code1>custom-id</code1> zu erlauben, füge  <code2>custom-id</code2> zur Erlaubnisliste hinzu.",
 		"extraFieldsPlacement": "Platzierung der Extra-Felder",
 		"extraFieldsPlacementHelp": "Wo Inferenz-Antworten die <b>extra_fields</b>-Metadaten von Bifrost enthalten. <b>Body</b> behält das extra_fields-Objekt in der JSON-Antwort. <b>Headers</b> entfernt es aus dem Body und aus jedem Streaming-Chunk und sendet seine skalaren Felder als <b>x-bifrost-*</b>-Antwort-Header.",
@@ -108,13 +108,13 @@
 		"enableHelp": "Lade (oder deaktiviere) das Plugin ohne Serverneustart. Die Konfigurationsänderungen, die du unten unternehmen, ändern den lebenden Plugin in der Stelle und es ist kein Neudeploy benötigt.",
 		"directHelp": "Direkte Modus hashes jede Anfrage und wiederholt eine genaue Übereinstimmung. Keine Embeddings, keine Anbieter benötigt. Der kosteneffizientste Pfad, perfekt für stabilisierte Botsprüfungen.",
 		"semanticHelp": "Direkt + Semantik Modus fügt einen Vektor-Similarity-Search auf dem direkten Hash-Matching zu. Erfordert einen Embedding-fähigen Anbieter und die tatsächliche Dimension des Modells. Direkte Hits werden immer noch vor der Semantischen Suche gesendet; die Semantische Suche läuft nur, wenn der direkte Lookup fehlschlägt.",
-		"structuralChangeHelp": "<b0>Warnung:</b0> Ein Vector-Store-Namespace kann nur Vektoren einer <em1>einzigen</em1> Dimension speichern. Jedes Mal, wenn du den Embedding-Anbieter oder die Dimension änderst, werden vorhandene Cache-Einträge ungültig.",
+		"structuralChangeHelp": "<b0>Hinweis:</b0> Ein Vector-Store-Namespace kann nur Vektoren <em1>einer</em1> Dimension enthalten. Wenn du den Embedding-<b2>Anbieter</b2>, das <b3>Modell</b3> oder die <b4>Dimension</b4> änderst, stelle sicher, dass die <b5>Dimension</b5> weiterhin zur Ausgabe des Modells passt. Andernfalls schlagen Schreibvorgänge in den bestehenden Namespace fehl und Lesevorgänge liefern stillschweigend keine Treffer. Der Namespace wird <em6>nicht</em6> automatisch neu angelegt; verwende einen neuen Namespace oder lösche die bestehende Klasse bzw. den Index in deinem Vector Store, bevor du speicherst.",
 		"inheritedKeysHelp": "API-Tags werden von der Hauptkonfiguration des Embedding-Anbieters übernommen. Hier musst du sie nicht erneut hinzufügen.",
-		"dimensionHelp": "Die Größe des Vektors, die vom Embedding-Modell produziert wird. Es muss genau mit dem Modell übereinstimmen (z.B. <code0>1536</code0> für OpenAI, <code1>text-embedding-3-small</code1> für Databricks, <code2>3072</code2> für Cohere/Voyage).",
+		"dimensionHelp": "Größe der Vektoren, die das Embedding-Modell erzeugt. Sie muss genau zum Modell passen (z. B. <code0>1536</code0> für OpenAI <code1>text-embedding-3-small</code1>, <code2>3072</code2> für <code3>text-embedding-3-large</code3>, <code4>768</code4> für viele Cohere-/Voyage-Modelle).",
 		"ttlHelp": "Wie lange konservierte Einträge in der Cache leben, bevor sie ablaufen. Du kannst per Anfrage über den <b0>x-bf-cache-ttl</b0>-Header überschreiben.",
 		"thresholdHelp": "Die minimale Cosinus-Ähnlichkeitsgrenze für eine semantische Treffermeldung. Du kannst per Anfrage über den <b0>x-bf-cache-threshold</b0>-Header überschreiben.",
 		"namespaceHelp": "Name des Buckets/Index, in dem die Cache-Einträge liegen. Leer lassen, um den Standard (<code0>BifrostSemanticCachePlugin</code0>) zu verwenden. Eine Änderung lässt die Erweiterung auf einen anderen (möglicherweise leeren) Bucket zeigen. Alte Einträge werden nicht gelöscht, sondern nur nicht mehr abgefragt.",
-		"defaultKeyHelp": "Fallback-Schlüssel für Cache-Einträge, wenn eine Anfrage keine <b0>x-bf-cache-key</b0>-Header enthält. Cache-Keys isolieren die Einträge: gleicher Schlüssel ↔ gemeinsamer Cache-Pool. Lass diese leer, um den Caching für jede Anfrage zu deaktivieren, die keinen Header sendet.",
+		"defaultKeyHelp": "Ersatz-Partitionsschlüssel, wenn eine Anfrage <b0>x-bf-cache-key</b0> nicht setzt. Cache-Schlüssel trennen Einträge: gleicher Schlüssel ↔ gemeinsamer Cache-Pool. Leer lassen, um das <b1>Caching zu deaktivieren</b1> für jede Anfrage, die den Header nicht sendet.",
 		"conversationThresholdHelp": "Deaktiviere das Caching für Konversationen mit mehr als dieser Anzahl Nachrichten. Lange Historien treffen selten exakt zu und füllen den Cache.",
 		"cacheByModelHelp": "Füge den Modellnamen in den Cache-Schlüssel ein. Unterschiedliche Modelle teilen sich keine gespeicherten Antworten.",
 		"cacheByProviderHelp": "Füge den Anbieternamen in den Cache-Schlüssel ein. Unterschiedliche Anbieter teilen sich keine gespeicherten Antworten.",
@@ -220,7 +220,7 @@
 		"issuerChangeWarning": "Wenn du den Issuer änderst, werden die von Bifrost ausgestellten Zugriffstokens ungültig. MCP-Clients erneuern sie automatisch, und Cross-App-Access-Apps fordern neue an.",
 		"toastIssuerUrlRequired": "Die Issuer-URL ist erforderlich, solange der MCP-Auth-Modus OAuth oder Beide ist. Stelle die MCP-Authentifizierung in den MCP-Einstellungen auf Headers um, um sie zu entfernen.",
 		"firstSetupHelp": "Es existiert noch kein Administratorkonto, daher akzeptieren die Verwaltungs-APIs nur das Setup-Token. Gib das über <code0>setup_token</code0> in <code1>config.json</code1> (oder die Umgebungsvariable <code2>BIFROST_SETUP_TOKEN</code2>) konfigurierte Token ein, um das Administratorkonto zu erstellen. Sobald es aktiviert ist, funktioniert das Setup-Token nicht mehr.",
-		"dualCredentialHelp": "Wie man Anfragen mit Bezug auf beide Identitätsanbieter-Aufruftoken (<b0>Authorization: Bearer</b0>) und virtuelle Schlüssel (<b1>x-bf-vk</b1)> behandelt. <b2>Vorliegen von IDP-Token bevorzugen</b2> verwenden den Benutzer-Token für die Identität, <b3>virtuellen Schlüssel bevorzugen</b3> weisen den IDP-Token und authentifizieren sich über den virtuellen Schlüssel ab, und <b4>Anfragen ablehnen</b4> geben einen 400-Fehler zurück.",
+		"dualCredentialHelp": "Legt fest, wie Inferenzanfragen behandelt werden, die sowohl ein Zugriffstoken des Identitätsanbieters (<b0>Authorization: Bearer</b0>) als auch einen virtuellen Schlüssel (<b1>x-bf-vk</b1>) mitsenden. <b2>IDP-Token bevorzugen</b2> verwendet das Benutzertoken für die Identität, <b3>Virtuellen Schlüssel bevorzugen</b3> verwirft das IDP-Token und authentifiziert über den virtuellen Schlüssel, und <b4>Anfrage ablehnen</b4> gibt einen 400-Fehler zurück.",
 		"directKeysHelp": "Wenn aktiviert, können Aufrufer direkt in der <b0>Authorization</b0>, <b1>x-api-key</b1>, oder <b2>x-goog-api-key</b2>-Header ein Anbieter-API-Schlüssel (z.B. ⟦P0⟧) mit <b3>x-bf-direct-key: true</b3> übergeben. Bifrost verwendet diesen Schlüssel direkt, ohne sich an die registrierten Schlüsselpool zu binden.",
 		"originsHelp": "Kommagetrennte Liste erlaubter Origins für CORS- und WebSocket-Anfragen. Localhost-Origins sind immer erlaubt. Jeder Origin muss eine vollständige URL sein.",
 		"requiredHeadersHelp": "Komma-getrennte Liste der Headers, die auf jeder Anfrage vorhanden sein müssen. Wenn eine Anfrage diese Header nicht enthält, wird sie mit einem 400-Fehler abgelehnt. Headernamen sind grob geschrieben-case-insensitive.",
@@ -335,7 +335,8 @@
 		"unregisteredNote": "Aktuell liest kein Code dieses Flag. Das Override ist gespeichert, bleibt aber inaktiv, bis ein Register()-Aufruf hinzugefügt wird.",
 		"toastToggled": "{{name}} wurde {{state}}",
 		"enabledState": "aktiviert",
-		"disabledState": "deaktiviert"
+		"disabledState": "deaktiviert",
+		"enableAria": "{{name}} aktivieren"
 	},
 	"mcpSettings": {
 		"title": "MCP-Einstellungen",
@@ -782,7 +783,45 @@
 		"showLess": "Weniger anzeigen",
 		"showMore": "Mehr anzeigen",
 		"skillNotFound": "Skill nicht gefunden",
-		"backToList": "Zurück zur Liste"
+		"backToList": "Zurück zur Liste",
+		"validation": {
+			"nameRequired": "Name ist erforderlich",
+			"nameTooLong": "Der Name darf höchstens 64 Zeichen lang sein",
+			"nameFormat": "Der Name darf nur Kleinbuchstaben, Ziffern und Bindestriche enthalten (keine Bindestriche am Anfang, am Ende oder direkt hintereinander)",
+			"nameReserved": "\"{{name}}\" ist ein reservierter Name der Skills-Auslieferungsschicht",
+			"descriptionRequired": "Beschreibung ist erforderlich",
+			"descriptionTooLong": "Die Beschreibung überschreitet das Limit von 1024 Zeichen ({{length}}/1024)",
+			"versionRequired": "Version ist erforderlich",
+			"versionFormat": "Die Version muss im SemVer-Format vorliegen (z. B. 1.0.0 oder 1.0.0-beta.1)",
+			"versionParts": "Die Versionsteile müssen nicht negative ganze Zahlen sein",
+			"versionBump": "Die Version muss sich von {{previous}} unterscheiden. Erhöhe mindestens eines davon: Major ({{major}}), Minor ({{minor}}), Patch ({{patch}}) oder ändere das Suffix (z. B. -beta.1).",
+			"extraFrontmatterObject": "Zusätzliches Frontmatter muss ein JSON-Objekt sein",
+			"reservedKeys": "Reservierte Schlüssel können nicht verwendet werden: {{keys}}",
+			"invalidJson": "Ungültiges JSON",
+			"metadataObject": "Metadaten müssen ein JSON-Objekt sein",
+			"metadataKeys": "Metadatenschlüssel müssen Strings sein",
+			"metadataValue": "Der Metadatenwert für „{{key}}“ muss ein String sein",
+			"bodyRequired": "Der Inhalt von SKILL.md ist erforderlich",
+			"bodyLarge": "Dieser SKILL.md-Inhalt überschreitet die empfohlene Größe. Verschiebe ausführliches Material in Dateien unter references/ und verlinke sie im Skill-Inhalt.",
+			"fileTooLarge": "Die Datei überschreitet das Limit von {{limit}}",
+			"urlRequired": "URL ist erforderlich",
+			"urlScheme": "Die URL muss mit http:// oder https:// beginnen",
+			"dataUrlRequired": "Daten-URL ist erforderlich",
+			"dataUrlFormat": "Die Daten-URL muss mit data: beginnen und ;base64, enthalten",
+			"textRequired": "Textinhalt ist erforderlich",
+			"unknownSource": "Unbekannter Quelltyp: {{type}}",
+			"filenameRequired": "Dateiname ist erforderlich",
+			"filenameDots": "Der Dateiname darf nicht . oder .. sein",
+			"filenameFolders": "Der Dateiname darf keine Ordner enthalten",
+			"skillMdManaged": "SKILL.md wird über den Skill-Inhalt verwaltet",
+			"pathRequired": "Dateipfad ist erforderlich",
+			"pathRelative": "Der Pfad muss relativ sein (kein führendes /)",
+			"pathNotFolder": "Der Pfad muss auf eine Datei zeigen, nicht auf einen Ordner",
+			"pathSlashes": "Der Pfad darf nur Schrägstriche (/) verwenden",
+			"pathSegments": "Der Pfad darf keine leeren Segmente sowie keine Segmente für das aktuelle oder übergeordnete Verzeichnis enthalten"
+		},
+		"itemCount_one": "{{count}} Element",
+		"itemCount_other": "{{count}} Elemente"
 	},
 	"promptRepo": {
 		"loadFailed": "Prompt-Repository konnte nicht geladen werden",
@@ -956,7 +995,9 @@
 		"file": "Datei",
 		"attachmentAlt": "Anhang",
 		"noChangePermission": "Du hast keine Berechtigung, Prompts zu ändern",
-		"noChangeFolderPermission": "Du hast keine Berechtigung, Prompt-Ordner zu ändern"
+		"noChangeFolderPermission": "Du hast keine Berechtigung, Prompt-Ordner zu ändern",
+		"noResponseBody": "Kein Antwortinhalt",
+		"mcpServerFallback": "MCP-Server"
 	},
 	"docs": {
 		"title": "Dokumentation",
@@ -1179,7 +1220,9 @@
 			"thresholdLabel": "Schwellenwert für neue Themen",
 			"thresholdHint": "Wie viele Anfragen ohne passendes Thema warten müssen, bevor Warp sie stündlich zu neuen Themen gruppiert. Ein niedriger Wert erkennt neue Themen früher anhand weniger Beispiele; ein höherer wartet auf deutlichere Muster. {{min}} bis {{max}}.",
 			"thresholdError": "Muss eine ganze Zahl zwischen {{min}} und {{max}} sein"
-		}
+		},
+		"alphaBadge": "ALPHA",
+		"aboutAria": "Info zu {{label}}"
 	},
 	"agentGateway": {
 		"title": "Agent-Gateway-Einstellungen",
@@ -1309,7 +1352,27 @@
 			"authSuggestion": "Auth-Vorschlag: {{type}}",
 			"import": "Importieren",
 			"importCount_one": "{{count}} Route importieren",
-			"importCount_other": "{{count}} Routen importieren"
+			"importCount_other": "{{count}} Routen importieren",
+			"docEmpty": "Das Dokument ist leer",
+			"docNotJson": "Das Dokument ist kein JSON-Objekt",
+			"docNotOpenapi": "Das Dokument ist kein OpenAPI-Objekt",
+			"warn": {
+				"schemeUndeclared": "Das Sicherheitsschema {{name}} ist erforderlich, aber nicht deklariert; lege den Authentifizierungstyp manuell fest",
+				"apiKeyLocation": "Das Sicherheitsschema {{name}} verwendet einen apiKey in {{location}}, den das Relay nicht einfügen kann",
+				"unsupportedLocation": "einem nicht unterstützten Ort",
+				"httpScheme": "Das Sicherheitsschema {{name}} verwendet HTTP-{{scheme}}-Authentifizierung, die das Relay nicht einfügen kann",
+				"schemeType": "Das Sicherheitsschema {{name}} ist {{type}}; lege den Authentifizierungstyp manuell fest",
+				"unknownType": "unbekannt",
+				"authOptional": "Das Dokument macht die Authentifizierung optional; lege den Authentifizierungstyp manuell fest, falls die API einen Schlüssel benötigt",
+				"noSingleScheme": "Keine Sicherheitsalternative im Dokument ist ein einzelnes Schema, das das Relay einfügen kann; lege den Authentifizierungstyp manuell fest",
+				"severalSchemes": "Das Dokument deklariert mehrere Sicherheitsschemata und verlangt keines; lege den Authentifizierungstyp manuell fest",
+				"noPaths": "Das Dokument deklariert keine Pfade",
+				"refPaths_one": "{{paths}} ist über $ref definiert, das der Import nicht auflöst; diese Operationen wurden daher nicht importiert. Füge ihre Routen manuell hinzu und prüfe die Routenliste.",
+				"refPaths_other": "{{paths}} sind über $ref definiert, das der Import nicht auflöst; diese Operationen wurden daher nicht importiert. Füge ihre Routen manuell hinzu und prüfe die Routenliste.",
+				"noMethods": "Keine Operation im Dokument verwendet eine Methode, die das Relay bedient",
+				"differentSchemes": "Die Operationen erfordern unterschiedliche Sicherheitsschemata, ein Endpunkt wendet aber nur eine Authentifizierung an; lege den Authentifizierungstyp manuell fest",
+				"serverQuery": "Die Query der Server-URL ({{query}}) wird in der vorgeschlagenen Basis-URL weggelassen, da eine Relay-Basis-URL keine Query enthalten kann; Aufrufer müssen sie selbst senden."
+			}
 		},
 		"usage": {
 			"relayDefault": "{{value}} (Relay-Standard)",
@@ -1330,7 +1393,17 @@
 			"blockSizeInfo": "Abrechnung pro angefangenem Block dieser Anzahl von Einheiten.",
 			"minimumLabel": "Mindesteinheiten (Optional)",
 			"minimumInfo": "Mindestanzahl abgerechneter Einheiten, sobald eine Menge gelesen wird.",
-			"formula": "Jeder gezählte Aufruf kostet <strong>{{formula}}</strong>"
+			"formula": "Jeder gezählte Aufruf kostet <strong>{{formula}}</strong>",
+			"sources": {
+				"response": "Antwort-Body",
+				"request": "Request-Body"
+			},
+			"measures": {
+				"value": "Zahl am Pfad",
+				"chars": "Zeichen der Zeichenkette am Pfad",
+				"bodyBytes": "Größe des gesamten Bodys (Bytes)",
+				"bodyChars": "Zeichen des gesamten Bodys"
+			}
 		},
 		"preview": {
 			"path": "Pfad",
@@ -1445,7 +1518,14 @@
 			"roleArnPlaceholder": "arn:aws:iam::123456789:role/MyRole oder env.AWS_ROLE_ARN",
 			"externalIdLabel": "Externe ID (Optional)",
 			"externalIdInfo": "Wird von der Vertrauensrichtlinie der Rolle bei kontoübergreifendem Zugriff verlangt",
-			"externalIdPlaceholder": "external-id oder env.AWS_EXTERNAL_ID"
+			"externalIdPlaceholder": "external-id oder env.AWS_EXTERNAL_ID",
+			"authTypes": {
+				"bearer": "Bearer-Token",
+				"header": "Benutzerdefinierter Header",
+				"query": "Query-Parameter",
+				"basic": "Basic-Authentifizierung",
+				"none": "Keine Authentifizierung"
+			}
 		},
 		"endpointConfig": {
 			"tabs": {
@@ -1516,6 +1596,21 @@
 			"proxyCaCertPlaceholder": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.PROXY_CA_CERT_PEM",
 			"removeConfig": "Konfiguration entfernen",
 			"saveProxy": "Proxy-Konfiguration speichern"
+		},
+		"pricing": {
+			"free": "Kostenlos",
+			"perCall": "${{price}} / Aufruf",
+			"perUnit": "${{price}} / Einheit",
+			"perByte": "${{price}} / Byte",
+			"perChar": "${{price}} / Zeichen",
+			"blockUnit_one": "${{price}} pro {{count}} Einheit",
+			"blockUnit_other": "${{price}} pro {{count}} Einheiten",
+			"blockByte_one": "${{price}} pro {{count}} Byte",
+			"blockByte_other": "${{price}} pro {{count}} Bytes",
+			"blockChar_one": "${{price}} pro {{count}} Zeichen",
+			"blockChar_other": "${{price}} pro {{count}} Zeichen",
+			"withMinimum": "{{pricing}}, mind. {{min}}",
+			"reportedCost": "gemeldete Kosten"
 		}
 	},
 	"skillsSettings": {

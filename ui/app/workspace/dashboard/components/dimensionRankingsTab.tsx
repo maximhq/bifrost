@@ -12,6 +12,7 @@ import { ChartCard } from "./charts/chartCard";
 import { ChartErrorBoundary } from "./charts/chartErrorBoundary";
 import { formatCost, SortableHeader, TrendBadge } from "./rankingsShared";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 import { NoChartData } from "./charts/noChartData";
 
 type SortField = "total_requests" | "total_tokens" | "total_cost";
@@ -26,13 +27,19 @@ interface DimensionRankingsTabProps {
 }
 
 function TopDimensionTooltip({ active, payload }: any) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 	const data = payload[0]?.payload;
 	if (!data) return null;
 	return (
 		<div className="rounded-sm border border-zinc-200 bg-white px-3 py-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
 			<div className="mb-1 text-xs text-zinc-500">{data.displayName}</div>
-			<div className="text-sm font-medium">{data.total_requests.toLocaleString()} requests</div>
+			<div className="text-sm font-medium">
+				{t("dashboard.rankings.requestsCount", {
+					count: data.total_requests,
+					formattedCount: data.total_requests.toLocaleString(getLocale()),
+				})}
+			</div>
 		</div>
 	);
 }
@@ -108,7 +115,7 @@ function TopDimensionChart({
 						</div>
 					</div>
 				) : (
-					grandTotal.toLocaleString("en-US")
+					grandTotal.toLocaleString(getLocale())
 				)
 			}
 			secondaryTotalLabel={t("dashboard.rankings.attributedRequests")}

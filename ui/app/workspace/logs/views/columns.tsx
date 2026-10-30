@@ -51,7 +51,7 @@ function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage
 	if (entries.length === 0) {
 		return null;
 	}
-	const model = entries.length === 1 ? entries[0].model : "mixed";
+	const model = entries.length === 1 ? entries[0].model : i18n.t("logs.batchMixedModel", { ns: "observability" });
 	const usage: LLMUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 	for (const entry of entries) {
 		usage.prompt_tokens = (usage.prompt_tokens ?? 0) + (entry.usage?.prompt_tokens ?? 0);
@@ -792,7 +792,7 @@ export const createColumns = (
 	const attributionColumns: ColumnDef<LogEntry>[] = [
 		{
 			id: "session",
-			header: "Session",
+			header: t("labels.session"),
 			size: 170,
 			cell: ({ row }) => {
 				const sessionId = row.original.session_id;
