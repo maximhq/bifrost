@@ -30,6 +30,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { CustomersEmptyState } from "./customersEmptyState";
 import CustomerSheet from "./customerSheet";
@@ -50,6 +51,7 @@ interface CustomerActionsMenuProps {
 }
 
 function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete }: CustomerActionsMenuProps) {
+	const { t } = useTranslation("governance");
 	const [isOpen, setIsOpen] = useState(false);
 
 	return (
@@ -81,8 +83,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					onPointerDown={(e) => e.stopPropagation()}
 				>
 					<Edit className="h-4 w-4" />
-					Edit
-				</DisabledReasonMenuItem>
+					{t("customers.actions.edit")}
+				</DisabledReasonMenuItem>{" "}
 				<DropdownMenuItem asChild className="cursor-pointer" data-testid={`customer-button-view-logs-${customer.id}`}>
 					<Link
 						to="/workspace/logs"
@@ -94,7 +96,7 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 						onPointerDown={(e) => e.stopPropagation()}
 					>
 						<ScrollText className="h-4 w-4" />
-						View logs
+						{t("customers.actions.viewLogs")}
 					</Link>
 				</DropdownMenuItem>
 				<DisabledReasonMenuItem
@@ -110,8 +112,8 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 					onPointerDown={(e) => e.stopPropagation()}
 				>
 					<Trash2 className="h-4 w-4" />
-					Delete
-				</DisabledReasonMenuItem>
+					{t("customers.actions.delete")}
+				</DisabledReasonMenuItem>{" "}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -141,6 +143,8 @@ export default function CustomersTable({
 	onOffsetChange,
 	onSheetOpenChange,
 }: CustomersTableProps) {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const [showCustomerSheet, setShowCustomerSheet] = useState(false);
 	const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 	const [confirmDeleteCustomer, setConfirmDeleteCustomer] = useState<Customer | null>(null);
@@ -163,7 +167,7 @@ export default function CustomersTable({
 	const handleDelete = async (customerId: string) => {
 		try {
 			await deleteCustomer(customerId).unwrap();
-			toast.success("Customer deleted successfully");
+			toast.success(t("customers.deleted"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		} finally {
@@ -196,7 +200,7 @@ export default function CustomersTable({
 	// Hoisted above the empty/populated branch: PageTitle draws nothing inline,
 	// and leaving it out of either branch drops the topbar to the route-derived
 	// fallback.
-	const pageTitle = <PageTitle title="Customers">Manage customer accounts with their own teams, budgets, and access controls.</PageTitle>;
+	const pageTitle = <PageTitle title={t("customers.title")}>{t("customers.description")}</PageTitle>;
 
 	// True empty state: no customers at all (not just filtered to zero). Rendered
 	// as a branch *inside* the tree rather than an early return with a different
@@ -237,8 +241,8 @@ export default function CustomersTable({
 							<div className="relative max-w-sm flex-1">
 								<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
 								<Input
-									aria-label="Search customers by name"
-									placeholder="Search by name..."
+									aria-label={t("customers.searchAria")}
+									placeholder={t("customers.searchPlaceholder")}
 									value={search}
 									onChange={(e) => onSearchChange(e.target.value)}
 									className="pl-9"
@@ -253,7 +257,7 @@ export default function CustomersTable({
 									disabled={!hasCreateAccess}
 								>
 									<Plus className="h-4 w-4" />
-									Add Customer
+									{t("customers.add")}
 								</Button>
 							</DisabledReason>
 						</div>
@@ -262,11 +266,11 @@ export default function CustomersTable({
 							<Table className="min-w-[1100px]">
 								<TableHeader>
 									<TableRow>
-										<TableHead>Name</TableHead>
-										<TableHead>Teams</TableHead>
-										<TableHead>Budget</TableHead>
-										<TableHead>Rate Limit</TableHead>
-										<TableHead>Virtual Keys</TableHead>
+										<TableHead>{t("customers.columns.name")}</TableHead>
+										<TableHead>{t("customers.columns.teams")}</TableHead>
+										<TableHead>{t("customers.columns.budget")}</TableHead>
+										<TableHead>{t("customers.columns.rateLimit")}</TableHead>
+										<TableHead>{t("customers.columns.virtualKeys")}</TableHead>
 										<TableHead className={`bg-muted ${ACTIONS_COLUMN_CLASS}`}></TableHead>
 									</TableRow>
 								</TableHeader>
@@ -274,7 +278,7 @@ export default function CustomersTable({
 									{customers.length === 0 ? (
 										<TableRow>
 											<TableCell colSpan={6} className="h-24 text-center">
-												<span className="text-muted-foreground text-sm">No matching customers found.</span>
+												<span className="text-muted-foreground text-sm">{t("customers.noMatch")}</span>
 											</TableCell>
 										</TableRow>
 									) : (
@@ -336,7 +340,7 @@ export default function CustomersTable({
 															<span className="truncate font-medium">{customer.name}</span>
 															{isExhausted && (
 																<Badge variant="destructive" className="w-fit text-xs">
-																	Limit Reached
+																	{t("customers.limitReached")}
 																</Badge>
 															)}
 														</div>
@@ -551,21 +555,18 @@ export default function CustomersTable({
 				<AlertDialog open={!!confirmDeleteCustomer} onOpenChange={(open) => !open && setConfirmDeleteCustomer(null)}>
 					<AlertDialogContent>
 						<AlertDialogHeader>
-							<AlertDialogTitle>Delete Customer</AlertDialogTitle>
-							<AlertDialogDescription>
-								Are you sure you want to delete &quot;{confirmDeleteCustomer?.name}&quot;? This will also delete all associated teams and
-								unassign any virtual keys. This action cannot be undone.
-							</AlertDialogDescription>
+							<AlertDialogTitle>{t("customers.deleteTitle")}</AlertDialogTitle>
+							<AlertDialogDescription>{t("customers.deleteDescription", { name: confirmDeleteCustomer?.name })}</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter>
-							<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
+							<AlertDialogCancel data-testid="customer-button-delete-cancel">{tCommon("cancel")}</AlertDialogCancel>
 							<AlertDialogAction
 								data-testid="customer-button-delete-confirm"
 								onClick={() => confirmDeleteCustomer && handleDelete(confirmDeleteCustomer.id)}
 								disabled={isDeleting}
 								className="bg-red-600 hover:bg-red-700"
 							>
-								{isDeleting ? "Deleting..." : "Delete"}
+								{isDeleting ? t("customers.deleting") : t("customers.actions.delete")}
 							</AlertDialogAction>
 						</AlertDialogFooter>
 					</AlertDialogContent>

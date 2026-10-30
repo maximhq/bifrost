@@ -12,6 +12,7 @@ import { isSecretVarSet, type SecretVar } from "@/lib/types/schemas";
 import { Info, TriangleAlert } from "lucide-react";
 import type { Control } from "react-hook-form";
 import { useFormContext, useWatch } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 
 /**
  * tokenExchangeProfilePayload returns the Cross App Access (id_jag) fields of a
@@ -159,6 +160,7 @@ export function TokenExchangeFields({
 	scopes,
 	gridClassName = "grid grid-cols-1 gap-4 md:grid-cols-2",
 }: TokenExchangeFieldsProps) {
+	const { t } = useTranslation("mcp");
 	const useIdPCredentials = useWatch({ control, name: "token_exchange.use_idp_credentials" });
 	const profile = useWatch({ control, name: "token_exchange.profile" });
 	const isIDJAG = profile === "id_jag";
@@ -177,17 +179,17 @@ export function TokenExchangeFields({
 						name="token_exchange.profile"
 						render={({ field }) => (
 							<FormItem className={`flex flex-col gap-2 ${fullRow}`}>
-								<FormLabel>How the upstream token is obtained</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.howUpstreamTokenObtained")}</FormLabel>
 								<FormControl>
 									<div
 										className="bg-muted inline-flex w-fit gap-0.5 rounded-md p-0.5"
 										role="radiogroup"
-										aria-label="Token exchange profile"
+										aria-label={t("registry.tokenExchange.profileAria")}
 									>
 										{(
 											[
-												["", "Identity provider issues it"],
-												["id_jag", "Cross App Access (ID-JAG)"],
+												["", t("registry.tokenExchange.profileDirect")],
+												["id_jag", t("registry.tokenExchange.profileIdJag")],
 											] as const
 										).map(([value, label]) => {
 											const selected = (field.value ?? "") === value;
@@ -215,9 +217,7 @@ export function TokenExchangeFields({
 									</div>
 								</FormControl>
 								<p className="text-muted-foreground text-xs">
-									{isIDJAG
-										? "Cross App Access (ID-JAG), for example Okta XAA: the identity provider issues an identity assertion (ID-JAG) for the upstream authorization server named in Audience, and that server exchanges it for its own token. Users must have signed in to Bifrost through the identity provider. Bifrost asks as your SSO login application, the only app the identity provider accepts the user's sign-in token from."
-										: "The identity provider exchanges the caller's token for one scoped to the audience. Use this for internal servers that trust your identity provider."}
+									{isIDJAG ? t("registry.tokenExchange.profileIdJagDesc") : t("registry.tokenExchange.profileDirectDesc")}
 								</p>
 							</FormItem>
 						)}
@@ -257,7 +257,7 @@ export function TokenExchangeFields({
 												aria-checked={!checked}
 												data-testid={`${useIdPCredentialsTestId}-dedicated`}
 											>
-												Dedicated application
+												{t("registry.tokenExchange.dedicatedApplication")}
 											</Button>
 											<Button
 												type="button"
@@ -274,7 +274,7 @@ export function TokenExchangeFields({
 												aria-checked={checked}
 												data-testid={`${useIdPCredentialsTestId}-idp`}
 											>
-												Identity provider application
+												{t("registry.tokenExchange.idpApplication")}
 											</Button>
 										</div>
 									</FormControl>
@@ -383,7 +383,7 @@ export function TokenExchangeFields({
 										field.onChange(e);
 										onAudienceTouched?.();
 									}}
-									placeholder="api://my-mcp-server"
+									placeholder={t("registry.tokenExchange.audiencePlaceholder")}
 									data-testid={audienceTestId}
 								/>
 							</FormControl>
@@ -414,7 +414,7 @@ export function TokenExchangeFields({
 									{...field}
 									value={field.value ?? ""}
 									disabled={disabled}
-									placeholder="https://your-domain.okta.com/oauth2/your-auth-server-id"
+									placeholder={t("registry.tokenExchange.authServerUrlPlaceholder")}
 									data-testid={authServerUrlTestId}
 								/>
 							</FormControl>
@@ -430,11 +430,11 @@ export function TokenExchangeFields({
 							name="token_exchange.resource_client_id"
 							render={({ field }) => (
 								<FormItem className="flex flex-col gap-2">
-									<FormLabel>Client ID at the upstream server</FormLabel>
+									<FormLabel>{t("registry.tokenExchange.resourceClientId")}</FormLabel>
 									<FormControl>
 										<SecretVarInput
 											data-testid="token-exchange-resource-client-id-input"
-											placeholder="Bifrost's client ID registered with the MCP server's authorization server"
+											placeholder={t("registry.tokenExchange.resourceClientIdPlaceholder")}
 											disabled={disabled}
 											redactNonEnvValue={clientIdRedactNonEnvValue}
 											value={field.value}
@@ -457,17 +457,17 @@ export function TokenExchangeFields({
 							name="token_exchange.resource_token_endpoint"
 							render={({ field }) => (
 								<FormItem className="flex flex-col gap-2">
-									<FormLabel>Upstream token endpoint (optional)</FormLabel>
+									<FormLabel>{t("registry.tokenExchange.resourceTokenEndpoint")}</FormLabel>
 									<FormControl>
 										<Input
 											{...field}
 											value={field.value ?? ""}
 											disabled={disabled}
-											placeholder="Discovered from the audience"
+											placeholder={t("registry.tokenExchange.resourceTokenEndpointPlaceholder")}
 											data-testid="token-exchange-resource-token-endpoint-input"
 										/>
 									</FormControl>
-									<p className="text-muted-foreground text-xs">Leave empty to discover it from the audience; the server must support the jwt-bearer grant.</p>
+									<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.resourceTokenEndpointHelp")}</p>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -477,13 +477,13 @@ export function TokenExchangeFields({
 							name="token_exchange.resource"
 							render={({ field }) => (
 								<FormItem className="flex flex-col gap-2">
-									<FormLabel>Resource (optional)</FormLabel>
+									<FormLabel>{t("registry.tokenExchange.resourceOptional")}</FormLabel>
 									<FormControl>
 										<Input
 											{...field}
 											value={field.value ?? ""}
 											disabled={disabled}
-											placeholder="Only if your IdP connection defines one"
+											placeholder={t("registry.tokenExchange.resourcePlaceholder")}
 											data-testid="token-exchange-resource-input"
 										/>
 									</FormControl>
@@ -502,7 +502,7 @@ export function TokenExchangeFields({
 								value={scopes.value}
 								disabled={scopes.disabled ?? disabled}
 								onChange={(e) => scopes.onChange(e.target.value)}
-								placeholder="jira.read, jira.write, offline_access"
+								placeholder={t("registry.tokenExchange.scopesPlaceholder")}
 								data-testid={scopes.testId}
 							/>
 						</FormControl>
@@ -519,7 +519,7 @@ export function TokenExchangeFields({
 						<Textarea
 							aria-labelledby="mcp-token-exchange-scopes-label"
 							className="h-20"
-							placeholder="jira.read, jira.write, offline_access"
+							placeholder={t("registry.tokenExchange.scopesPlaceholder")}
 							value={scopes.value}
 							disabled={scopes.disabled ?? disabled}
 							onChange={(e) => scopes.onChange(e.target.value)}
@@ -557,6 +557,7 @@ function ResourceClientAuthFields({
 	maskNonEnvValue,
 	redactNonEnvValue,
 }: ResourceClientAuthFieldsProps) {
+	const { t } = useTranslation("mcp");
 	const { setValue } = useFormContext();
 	const key = useWatch({ control, name: "token_exchange.resource_private_key" }) as SecretVar | undefined;
 	const mode = useWatch({ control, name: "token_exchange.resource_auth_mode" }) as MCPResourceAuthMode | undefined;
@@ -577,14 +578,14 @@ function ResourceClientAuthFields({
 	return (
 		<>
 			<FormItem className="flex flex-col gap-2">
-				<FormLabel>Authentication at the upstream server</FormLabel>
+				<FormLabel>{t("registry.tokenExchange.resourceAuth")}</FormLabel>
 				<Select value={method} onValueChange={(v) => choose(v as MCPResourceAuthMode)} disabled={disabled}>
 					<SelectTrigger className="w-full" data-testid="token-exchange-resource-auth-method-select">
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="secret">Client secret, or none for a public client</SelectItem>
-						<SelectItem value="private_key">Private key (private_key_jwt)</SelectItem>
+						<SelectItem value="secret">{t("registry.tokenExchange.resourceAuthSecret")}</SelectItem>
+						<SelectItem value="private_key">{t("registry.tokenExchange.resourceAuthPrivateKey")}</SelectItem>
 					</SelectContent>
 				</Select>
 			</FormItem>
@@ -595,11 +596,11 @@ function ResourceClientAuthFields({
 						name="token_exchange.resource_client_secret"
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>Client secret at the upstream server</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.resourceClientSecret")}</FormLabel>
 								<FormControl>
 									<SecretVarInput
 										data-testid="token-exchange-resource-client-secret-input"
-										placeholder="Leave empty for a public client"
+										placeholder={t("registry.tokenExchange.resourceClientSecretPlaceholder")}
 										disabled={disabled}
 										hideValueWhenEnv={hideValueWhenEnv}
 										maskNonEnvValue={maskNonEnvValue}
@@ -617,7 +618,7 @@ function ResourceClientAuthFields({
 						name="token_exchange.resource_client_auth_method"
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>Send the secret</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.sendSecret")}</FormLabel>
 								<Select
 									value={field.value || AUTO_CLIENT_AUTH}
 									onValueChange={(v) => field.onChange(v === AUTO_CLIENT_AUTH ? "" : v)}
@@ -629,15 +630,12 @@ function ResourceClientAuthFields({
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
-										<SelectItem value={AUTO_CLIENT_AUTH}>Automatic</SelectItem>
-										<SelectItem value="client_secret_basic">HTTP Basic (client_secret_basic)</SelectItem>
-										<SelectItem value="client_secret_post">Request body (client_secret_post)</SelectItem>
+										<SelectItem value={AUTO_CLIENT_AUTH}>{t("registry.tokenExchange.authMethodAutomatic")}</SelectItem>
+										<SelectItem value="client_secret_basic">{t("registry.tokenExchange.authMethodBasic")}</SelectItem>
+										<SelectItem value="client_secret_post">{t("registry.tokenExchange.authMethodPost")}</SelectItem>
 									</SelectContent>
 								</Select>
-								<p className="text-muted-foreground text-xs">
-									Automatic uses the request body when the server&apos;s metadata lists only client_secret_post, otherwise HTTP Basic.
-									Choose one when you set the token endpoint yourself.
-								</p>
+								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.authMethodHelp")}</p>
 								<FormMessage />
 							</FormItem>
 						)}
@@ -650,13 +648,13 @@ function ResourceClientAuthFields({
 						name="token_exchange.resource_private_key"
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>Private key</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.privateKey")}</FormLabel>
 								<FormControl>
 									<SecretVarInput
 										data-testid="token-exchange-resource-private-key-input"
 										variant="textarea"
 										rows={4}
-										placeholder="-----BEGIN PRIVATE KEY----- or env.UPSTREAM_PRIVATE_KEY"
+										placeholder={t("registry.tokenExchange.privateKeyPlaceholder")}
 										disabled={disabled}
 										hideValueWhenEnv={hideValueWhenEnv}
 										maskNonEnvValue={maskNonEnvValue}
@@ -665,10 +663,7 @@ function ResourceClientAuthFields({
 										onChange={field.onChange}
 									/>
 								</FormControl>
-								<p className="text-muted-foreground text-xs">
-									RSA or EC key in PEM form. Bifrost signs a client assertion with it for each redemption; register the public key with the
-									upstream server.
-								</p>
+								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.privateKeyHelp")}</p>
 								<FormMessage />
 							</FormItem>
 						)}
@@ -678,13 +673,13 @@ function ResourceClientAuthFields({
 						name="token_exchange.resource_key_id"
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>Key ID (optional)</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.keyIdOptional")}</FormLabel>
 								<FormControl>
 									<Input
 										{...field}
 										value={field.value ?? ""}
 										disabled={disabled}
-										placeholder="The kid the upstream server registered for this key"
+										placeholder={t("registry.tokenExchange.keyIdPlaceholder")}
 										data-testid="token-exchange-resource-key-id-input"
 									/>
 								</FormControl>
@@ -697,7 +692,7 @@ function ResourceClientAuthFields({
 						name="token_exchange.resource_signing_algorithm"
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>Signing algorithm</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.signingAlgorithm")}</FormLabel>
 								<Select value={field.value || "RS256"} onValueChange={field.onChange} disabled={disabled}>
 									<FormControl>
 										<SelectTrigger className="w-full" data-testid="token-exchange-resource-signing-algorithm-select">
@@ -721,19 +716,17 @@ function ResourceClientAuthFields({
 						name="token_exchange.resource_assertion_audience"
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>Assertion audience (optional)</FormLabel>
+								<FormLabel>{t("registry.tokenExchange.assertionAudience")}</FormLabel>
 								<FormControl>
 									<Input
 										{...field}
 										value={field.value ?? ""}
 										disabled={disabled}
-										placeholder="Defaults to the upstream token endpoint"
+										placeholder={t("registry.tokenExchange.assertionAudiencePlaceholder")}
 										data-testid="token-exchange-resource-assertion-audience-input"
 									/>
 								</FormControl>
-								<p className="text-muted-foreground text-xs">
-									Set this only when the upstream server expects a different aud, such as its issuer URL.
-								</p>
+								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.assertionAudienceHelp")}</p>
 								<FormMessage />
 							</FormItem>
 						)}
