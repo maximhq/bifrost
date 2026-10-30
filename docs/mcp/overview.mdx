@@ -482,6 +482,19 @@ How a client reconnects, and whether tool calls are affected while it does, depe
 
 Either way, a tool call that lands during a reconnect window is covered by [Auth failure recovery](./tool-execution#auth-failure-recovery) when the failure is auth-shaped; other failures during a close-first window surface as a normal connection error and are retried by the caller.
 
+### Supported Protocol Versions
+
+Bifrost supports the MCP protocol versions `2025-06-18`, `2025-11-25` and `2026-07-28`, as a client of your MCP servers and as a server to MCP clients.
+
+| Connection | Versions |
+|---|---|
+| MCP clients connecting to Bifrost's gateway | All three; the client's version is used |
+| HTTP MCP servers | All three, up to the [max protocol version](#max-protocol-version) |
+| STDIO MCP servers | All three, up to the max protocol version |
+| SSE MCP servers | `2025-06-18` and `2025-11-25`; `2026-07-28` has no SSE transport |
+
+Versions are agreed per connection, so MCP clients and servers on different versions can work together through Bifrost.
+
 ### Max Protocol Version
 
 The max protocol version is the newest MCP protocol version Bifrost offers an upstream server when it connects. The server can still negotiate an older one; a server that answers with a newer one fails to connect. `auto` means the newest version Bifrost supports (currently `2026-07-28`); the other values are `2026-07-28`, `2025-11-25`, and `2025-06-18`.
@@ -526,12 +539,16 @@ This enables detailed audit trails for autonomous tool execution.
 
 Tools are discovered from MCP servers during:
 1. **Client Connection** - Initial ListTools request
-2. **Runtime Updates** - When server tool list changes
+2. **Runtime Updates** - When a server announces a change, and on a periodic sync
 3. **Configuration Changes** - When tools_to_execute is updated
 
 The MCP Server dynamically updates its tool registry from the tool manager.
 
-Runtime updates run on a periodic tool sync per client. The cadence is the per-client `tool_sync_interval` (minutes on the API; `0` or unset inherits the global `mcp_tool_sync_interval` client setting, default 10 minutes). Server-level clients sync over their live connection; per-user clients (`per_user_oauth`, `per_user_headers`) hold no persistent connection, so the syncer uses the retained admin discovery credential for a one-shot connect, `tools/list`, disconnect cycle (see [Per-User OAuth](./auth/per-user-oauth#admin-discovery-credential) and [Per-User Headers](./auth/per-user-headers#admin-discovery-credential)). A failed sync keeps the existing tool set and retries on the next cycle.
+An MCP server can announce that its tools, prompts or resources changed. Bifrost listens for this on persistent connections and refreshes that server straight away, and MCP clients connected to Bifrost's gateway that listen for changes are told in turn. A server only needs to declare the capability; there is nothing to configure.
+
+Bifrost cannot hear announcements on [per-call connections](./connections#two-independent-axes), which includes every per-user server and, by default, new `http` servers using `none`, `headers` or `oauth`. Those servers rely on the periodic sync. To get announcements from such a server, set [`needs_session_stickiness`](./connecting-to-servers#session-stickiness-http-only) to `true`.
+
+Runtime updates also run on a periodic tool sync per client. The cadence is the per-client `tool_sync_interval` (minutes on the API; `0` or unset inherits the global `mcp_tool_sync_interval` client setting, default 10 minutes). Server-level clients sync over their live connection; per-user clients (`per_user_oauth`, `per_user_headers`) hold no persistent connection, so the syncer uses the retained admin discovery credential for a one-shot connect, `tools/list`, disconnect cycle (see [Per-User OAuth](./auth/per-user-oauth#admin-discovery-credential) and [Per-User Headers](./auth/per-user-headers#admin-discovery-credential)). A failed sync keeps the existing tool set and retries on the next cycle.
 
 Every discovered tool list — from the initial connect and from every periodic sync — persists to the database, so a restart doesn't lose anything a running instance had already discovered. Persistence is skipped when a sync's result is byte-identical to what's already stored, so an unchanged tick doesn't cause a write.
 
