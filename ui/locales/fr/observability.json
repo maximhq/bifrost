@@ -138,6 +138,7 @@
 			"successRate": "Taux de réussite",
 			"avgLatency": "Latence moyenne",
 			"noData": "Aucune donnée d'utilisation de {{dimension}} n'est disponible pour cette période.",
+			"actualTooltip": "Nombre réel de requêtes envoyées.",
 			"attributedTooltipShort": "Attribué - une requête est comptabilisée pour chaque {{dimension}} dont elle fait partie, cela peut donc dépasser le nombre réel de requêtes.",
 			"attributedTooltipLong": "Une requête est comptabilisée dans chaque {{dimension}} à laquelle elle appartient, cela peut donc dépasser le nombre total de requêtes.",
 			"newBadge": "nouveau",

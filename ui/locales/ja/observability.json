@@ -137,6 +137,7 @@
 			"successRate": "成功率",
 			"avgLatency": "平均遅延",
 			"noData": "この期間の{{dimension}}使用データは利用できません。",
+			"actualTooltip": "実際に送信されたリクエスト数。",
 			"attributedTooltipShort": "帰属 - リクエストは、それが属する各{{dimension}}に対してカウントされるため、実際のリクエスト数を超えることがあります。",
 			"attributedTooltipLong": "リクエストは属する各{{dimension}}にカウントされるため、これにより総リクエスト数を超えることがあります。",
 			"newBadge": "新規",

@@ -138,6 +138,7 @@
 			"successRate": "Tasa de éxito",
 			"avgLatency": "Latencia media",
 			"noData": "No hay datos de uso{{dimension}}disponibles para este período de tiempo.",
+			"actualTooltip": "Número real de solicitudes enviadas.",
 			"attributedTooltipShort": "Atribuido - una solicitud cuenta hacia cada{{dimension}}que pertenece, por lo que esto puede exceder el recuento de solicitud real.",
 			"attributedTooltipLong": "Una solicitud cuenta con cada{{dimension}}que pertenece, por lo que esto puede exceder el recuento total de solicitud.",
 			"newBadge": "nuevo",

@@ -138,6 +138,7 @@
 			"successRate": "Erfolgsrate",
 			"avgLatency": "Durchschn. Latenz",
 			"noData": "Keine {{dimension}}-Nutzungsdaten für diesen Zeitraum verfügbar.",
+			"actualTooltip": "Tatsächliche Anzahl gesendeter Anfragen.",
 			"attributedTooltipShort": "Zugeordnet – eine Anfrage wird für jedes {{dimension}} gezählt, zu dem sie gehört, daher kann dies die tatsächliche Anzahl der Anfragen überschreiten.",
 			"attributedTooltipLong": "Eine Anfrage wird für jedes {{dimension}} gezählt, zu dem sie gehört, daher kann dies die Gesamtzahl der Anfragen überschreiten.",
 			"newBadge": "neu",

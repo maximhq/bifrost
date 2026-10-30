@@ -42,3 +42,21 @@ describe("document language", () => {
 		expect(documentElement.lang).toBe("en");
 	});
 });
+
+describe("changeLocale storage", () => {
+	it("keeps the language switch successful when localStorage persistence fails", async () => {
+		const setItem = vi.fn();
+		const storage = { setItem, getItem: vi.fn(() => null), removeItem: vi.fn() };
+		vi.stubGlobal("window", { localStorage: storage });
+		vi.stubGlobal("localStorage", storage);
+		const { changeLocale, getLocale, i18nReady, LOCALE_STORAGE_KEY } = await loadI18n();
+		await i18nReady;
+		setItem.mockImplementation(() => {
+			throw new DOMException("Storage is full", "QuotaExceededError");
+		});
+
+		await expect(changeLocale("zh-CN")).resolves.toBe("zh-CN");
+		expect(getLocale()).toBe("zh-CN");
+		expect(setItem).toHaveBeenCalledWith(LOCALE_STORAGE_KEY, "zh-CN");
+	});
+});

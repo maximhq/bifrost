@@ -37,7 +37,7 @@ const OPENAI_CONFIG_TAB_LABELS: Record<string, string> = {
 	fireworks: "OpenAI Config",
 };
 
-const availableTabs = (
+export const availableTabs = (
 	hasCustomProviderConfig: boolean,
 	hasGovernanceAccess: boolean,
 	openAIConfigTabLabel: string | undefined,

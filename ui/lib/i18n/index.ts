@@ -35,9 +35,16 @@ export function getLocale(): SupportedLocale {
 	return isSupportedLocale(current) ? current : DEFAULT_LOCALE;
 }
 
-// The language detector persists the choice to localStorage on every change.
+// 在异常保护下持久化语言选择，避免存储失败中断切换。
 export async function changeLocale(locale: SupportedLocale): Promise<SupportedLocale> {
 	await i18n.changeLanguage(locale);
+	if (typeof window !== "undefined") {
+		try {
+			window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+		} catch {
+			// 存储不可用时仍保留已完成的语言切换。
+		}
+	}
 	return getLocale();
 }
 
@@ -84,7 +91,7 @@ if (!i18n.isInitialized) {
 			detection: {
 				order: ["localStorage", "navigator"],
 				lookupLocalStorage: LOCALE_STORAGE_KEY,
-				caches: ["localStorage"],
+				caches: [],
 			},
 			react: {
 				useSuspense: false,

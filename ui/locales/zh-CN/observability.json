@@ -137,6 +137,7 @@
 			"successRate": "成功率",
 			"avgLatency": "平均延迟",
 			"noData": "该时间段内暂无{{dimension}}用量数据。",
+			"actualTooltip": "实际发送的请求数。",
 			"attributedTooltipShort": "归因：一条请求会计入其所属的每个{{dimension}}，因此可能超过实际请求数。",
 			"attributedTooltipLong": "一条请求会计入其所属的每个{{dimension}}，因此可能超过总请求数。",
 			"newBadge": "新增",
