@@ -2467,7 +2467,7 @@ func TestSelectWeightedTargetSplitFollowsTheWeights(t *testing.T) {
 // does not read the clock, and the guarantee that a referencing rule never sees
 // the zero placeholder.
 func TestEvaluateRoutingRules_CurrentTime(t *testing.T) {
-	const offpeak = `model == "deepseek-chat" && current_time.getHours('UTC') >= 1 && current_time.getHours('UTC') < 4`
+	const hourWindow = `model == "deepseek-chat" && current_time.getHours('UTC') >= 1 && current_time.getHours('UTC') < 4`
 	wednesday := time.Date(2026, 1, 7, 2, 15, 0, 0, time.UTC)
 	la, err := time.LoadLocation("America/Los_Angeles")
 	require.NoError(t, err)
@@ -2481,11 +2481,11 @@ func TestEvaluateRoutingRules_CurrentTime(t *testing.T) {
 		wantMatch bool
 		wantCalls int
 	}{
-		{name: "inside hour window", expr: offpeak, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 1},
-		{name: "hour 1 inclusive", expr: offpeak, at: time.Date(2026, 1, 7, 1, 0, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: true, wantCalls: 1},
-		{name: "hour 4 exclusive", expr: offpeak, at: time.Date(2026, 1, 7, 4, 0, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: false, wantCalls: 1},
-		{name: "before window", expr: offpeak, at: time.Date(2026, 1, 7, 0, 30, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: false, wantCalls: 1},
-		{name: "wrong model inside window", expr: offpeak, at: wednesday, model: "gpt-4o", wantMatch: false, wantCalls: 1},
+		{name: "inside hour window", expr: hourWindow, at: wednesday, model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+		{name: "hour 1 inclusive", expr: hourWindow, at: time.Date(2026, 1, 7, 1, 0, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: true, wantCalls: 1},
+		{name: "hour 4 exclusive", expr: hourWindow, at: time.Date(2026, 1, 7, 4, 0, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: false, wantCalls: 1},
+		{name: "before window", expr: hourWindow, at: time.Date(2026, 1, 7, 0, 30, 0, 0, time.UTC), model: "deepseek-chat", wantMatch: false, wantCalls: 1},
+		{name: "wrong model inside window", expr: hourWindow, at: wednesday, model: "gpt-4o", wantMatch: false, wantCalls: 1},
 		{
 			name:      "day of week matches",
 			expr:      fmt.Sprintf(`current_time.getDayOfWeek('UTC') == %d`, int(wednesday.Weekday())),

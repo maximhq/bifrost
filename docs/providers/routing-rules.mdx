@@ -141,30 +141,29 @@ See [Complexity Router](/features/complexity-router) for how tiers are computed,
 #### Request Time
 
 ```cel
-current_time   // CEL timestamp captured once when this request's rules are evaluated
+current_time   // CEL timestamp. The engine reads the clock the first time a rule that references current_time is evaluated, once per request evaluation.
 ```
 
-`current_time` is the instant routing started for the request, in UTC. Every rule in that evaluation sees the same value, including later steps of a [chained rule](#rule-chaining). It is not refreshed per rule or per chain step. Rules that do not reference `current_time` do not read the clock.
+The engine reads the clock the first time a rule that references `current_time` is evaluated, once per request evaluation. Later rules in that evaluation, including later steps of a [chained rule](#rule-chaining), see the same value. It is not refreshed per rule or per chain step. Rules that do not reference `current_time` do not read the clock. The instant is UTC.
 
-Timestamp methods take a timezone name. Pass `'UTC'` unless you mean a local clock. The stored instant is UTC either way: `getHours('America/Los_Angeles')` converts before it reads the hour.
+`getHours`, `getDayOfWeek`, `getFullYear`, `getMonth`, `getDayOfMonth`, `getMinutes`, and `getSeconds` take an optional timezone and default to UTC. Pass a timezone name to read a clock other than UTC. The stored instant is UTC either way: `getHours('America/Los_Angeles')` converts before it reads the hour.
 
 ```cel
-current_time.getHours('UTC')       // 0-23
-current_time.getDayOfWeek('UTC')   // 0 = Sunday through 6 = Saturday
+current_time.getHours()                        // 0-23, UTC
+current_time.getHours('America/Los_Angeles')   // 0-23 in that zone
+current_time.getDayOfWeek()                    // 0 = Sunday through 6 = Saturday, UTC
 ```
 
-The same timezone argument works on the other CEL timestamp accessors (`getFullYear`, `getMonth`, `getDayOfMonth`, `getMinutes`, `getSeconds`).
-
-**DeepSeek off-peak.** Send `deepseek-chat` to an off-peak target only from 01:00 up to 04:00 UTC:
+**DeepSeek off-peak.** Send `deepseek-chat` to an off-peak target from 04:00 up to 06:00 UTC:
 
 ```cel
-model == "deepseek-chat" && current_time.getHours('UTC') >= 1 && current_time.getHours('UTC') < 4
+model == "deepseek-chat" && current_time.getHours('UTC') >= 4 && current_time.getHours('UTC') < 6
 ```
 
 Weekdays only (Monday through Friday, UTC):
 
 ```cel
-current_time.getDayOfWeek('UTC') >= 1 && current_time.getDayOfWeek('UTC') <= 5
+current_time.getDayOfWeek() >= 1 && current_time.getDayOfWeek() <= 5
 ```
 
 The visual rule builder emits field comparisons and cannot express a timestamp method call. Write `current_time` rules in the CEL editor.

@@ -1,0 +1,1 @@
+- feat: routing rules can read the request time through a new `current_time` CEL timestamp variable
