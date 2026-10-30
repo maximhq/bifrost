@@ -40,7 +40,7 @@ import type { TFunction } from "i18next";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format, isValid } from "date-fns";
 import { AlertCircle, ChevronDown, Download, Loader2, MoreVertical, Trash2, Waypoints, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
@@ -131,8 +131,15 @@ export function RelayLogDetailSheet({
 	// currentData, not data: data keeps the previous log while the next one loads, and Delete and
 	// Export must never act on it.
 	const id = logId ?? log?.id ?? "";
-	const { currentData: fetched, isFetching, isError } = useGetRelayLogQuery(id, { skip: !open || !id });
+	// A row still processing (a call that outlived the plugin's sweep) or a failed read is re-read
+	// every 2s while the sheet is open, as the LLM log sheet does, so it flips in place.
+	const [pollingInterval, setPollingInterval] = useState(0);
+	const { currentData: fetched, isFetching, isError } = useGetRelayLogQuery(id, { skip: !open || !id, pollingInterval });
 	const display = fetched ?? (log?.id === id ? log : null);
+	const shouldPoll = open && (isError || fetched?.status === "processing");
+	useEffect(() => {
+		setPollingInterval(shouldPoll ? 2000 : 0);
+	}, [shouldPoll]);
 	const [moreDetailsOpen, setMoreDetailsOpen] = useState(false);
 	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({ enabled: open, hasPrev, hasNext, onNavigate: (d) => onNavigate?.(d) });
 

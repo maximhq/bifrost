@@ -48,7 +48,7 @@ export default function RelayLogsPage() {
 		{
 			relay_names: arr,
 			methods: arr,
-			statuses: arr,
+			status: arr,
 			kinds: arr,
 			virtual_key_ids: arr,
 			user_ids: arr,
@@ -83,7 +83,7 @@ export default function RelayLogsPage() {
 		() => ({
 			relay_names: urlState.relay_names,
 			methods: urlState.methods,
-			statuses: urlState.statuses,
+			status: urlState.status,
 			kinds: urlState.kinds,
 			virtual_key_ids: urlState.virtual_key_ids,
 			user_ids: urlState.user_ids,
@@ -168,7 +168,7 @@ export default function RelayLogsPage() {
 				...(timeChanged && !next.period ? { period: "" } : {}),
 				relay_names: next.relay_names ?? [],
 				methods: next.methods ?? [],
-				statuses: next.statuses ?? [],
+				status: next.status ?? [],
 				kinds: next.kinds ?? [],
 				virtual_key_ids: next.virtual_key_ids ?? [],
 				user_ids: next.user_ids ?? [],
@@ -299,7 +299,7 @@ export default function RelayLogsPage() {
 		paramName: "relay_cols",
 		storageKey: "bifrost.relay_logs.cols",
 		// App is visible by default, as on the LLM logs page; Model stays hidden since most relays carry none.
-		defaultHidden: ["model", "virtual_key", "user", "team", "customer", "business_unit", "project"],
+		defaultHidden: ["model", "virtual_key", "user", "team", "customer", "business_unit", "project", "session"],
 		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
 	});
 

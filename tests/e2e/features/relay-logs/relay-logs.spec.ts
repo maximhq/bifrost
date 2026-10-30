@@ -368,21 +368,26 @@ test.describe("Relay Logs", () => {
     await expect(page.filterSidebar).toBeVisible();
 
     await page.page.getByTestId("relay-status-filter-checkbox-error").click();
-    await expect.poll(() => page.urlParams("statuses")).toEqual(["error"]);
+    await expect.poll(() => page.urlParams("status")).toEqual(["error"]);
     await expect(page.rowsFor(relayName)).toHaveCount(1);
     await expect(page.rowsFor(relayName).filter({ hasText: "-ungranted" })).toHaveCount(1);
 
     await page.page.getByTestId("relay-status-filter-checkbox-success").click();
-    await expect.poll(() => page.urlParams("statuses").slice().sort()).toEqual(["error", "success"]);
+    await expect.poll(() => page.urlParams("status").slice().sort()).toEqual(["error", "success"]);
     await expect(page.rowsFor(relayName)).toHaveCount(5);
 
     await page.page.getByTestId("relay-status-filter-checkbox-cancelled").click();
-    await expect.poll(() => page.urlParams("statuses")).toHaveLength(3);
+    await expect.poll(() => page.urlParams("status")).toHaveLength(3);
 
-    // Reset clears the statuses and the relay filter, but not the time window.
+    // Processing is offered as on the LLM logs: a call that outlives the logging sweep is written
+    // as a processing row until it finishes.
+    await page.page.getByTestId("relay-status-filter-checkbox-processing").click();
+    await expect.poll(() => page.urlParams("status")).toHaveLength(4);
+
+    // Reset clears the status filter and the relay filter, but not the time window.
     await expect(page.filterResetBtn).toBeVisible();
     await page.filterResetBtn.click();
-    await page.expectUrlParam("statuses", null);
+    await page.expectUrlParam("status", null);
     await page.expectUrlParam("relay_names", null);
     await expect(page.filterResetBtn).toHaveCount(0);
   });
@@ -544,7 +549,7 @@ test.describe("Relay Logs", () => {
   test("restores filters from the URL into the sidebar", async ({ relayLogsPage: page }) => {
     await page.goto({
       relay_names: relayName,
-      statuses: ["success"],
+      status: ["success"],
       methods: ["POST"],
       billable: "true",
       kinds: ["call"],
