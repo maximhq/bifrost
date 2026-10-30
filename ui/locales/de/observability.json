@@ -124,7 +124,10 @@
 			"barChart": "Balkendiagramm",
 			"lineChart": "Liniendiagramm",
 			"directValue": "Direkt: {{value}}",
-			"semanticValue": "Semantisch: {{value}}"
+			"semanticValue": "Semantisch: {{value}}",
+			"tokensPerSecValue": "{{value}} Token/s",
+			"moreCount_one": "+{{count}} weitere",
+			"moreCount_other": "+{{count}} weitere"
 		},
 		"rankings": {
 			"topDimension": "Top-{{dimension}}s",
@@ -136,7 +139,10 @@
 			"avgLatency": "Durchschn. Latenz",
 			"noData": "Keine {{dimension}}-Nutzungsdaten für diesen Zeitraum verfügbar.",
 			"attributedTooltipShort": "Zugeordnet – eine Anfrage wird für jedes {{dimension}} gezählt, zu dem sie gehört, daher kann dies die tatsächliche Anzahl der Anfragen überschreiten.",
-			"attributedTooltipLong": "Eine Anfrage wird für jedes {{dimension}} gezählt, zu dem sie gehört, daher kann dies die Gesamtzahl der Anfragen überschreiten."
+			"attributedTooltipLong": "Eine Anfrage wird für jedes {{dimension}} gezählt, zu dem sie gehört, daher kann dies die Gesamtzahl der Anfragen überschreiten.",
+			"newBadge": "neu",
+			"requestsCount_one": "{{formattedCount}} Anfrage",
+			"requestsCount_other": "{{formattedCount}} Anfragen"
 		},
 		"noModelUsage": "Keine Modell-Nutzungsdaten für diesen Zeitraum verfügbar."
 	},
@@ -144,7 +150,24 @@
 		"fallbackChain": {
 			"openFinalAttempt": "Letzten Versuch öffnen",
 			"title": "Fallback-Kette",
-			"viewing": "Ansicht"
+			"viewing": "Ansicht",
+			"outcome": {
+				"succeeded": "Anfrage erfolgreich",
+				"failed": "Alle Versuche fehlgeschlagen",
+				"inProgress": "Läuft noch"
+			},
+			"summary": {
+				"attempt": "Versuch {{position}} von {{total}}",
+				"fellBack": "Versuch {{position}} von {{total}}. Dieser Versuch ist fehlgeschlagen, die Anfrage wurde auf {{label}} umgeleitet.",
+				"later": "Versuch {{position}} von {{total}}. Danach wurden weitere Versuche ausgeführt."
+			},
+			"attempts_other": "{{count}} Versuche",
+			"attempts_one": "{{count}} Versuch",
+			"attemptsWithTotal_other": "{{count}} Versuche · {{latency}} gesamt",
+			"attemptsWithTotal_one": "{{count}} Versuch · {{latency}} gesamt",
+			"keyName": "Schlüssel {{name}}",
+			"retries_other": "{{count}} Wiederholungen",
+			"retries_one": "{{count}} Wiederholung"
 		},
 		"searchPlaceholder": "Logs durchsuchen oder Anfrage-ID einfügen",
 		"loggingSettings": "Protokolleinstellungen",
@@ -241,7 +264,13 @@
 			"toastCancelled": "Kosten-Neuberechnung abgebrochen",
 			"toastComplete": "Kosten-Neuberechnung abgeschlossen",
 			"toastProgress": "Protokollkosten werden neu berechnet...",
-			"errorGeneric": "Kosten konnten nicht neu berechnet werden"
+			"errorGeneric": "Kosten konnten nicht neu berechnet werden",
+			"noLogsMatch": "Keine Logs entsprechen den aktuellen Filtern.",
+			"toastStopped": "Gestoppt nach {{updated}} aktualisiert, {{skipped}} übersprungen",
+			"toastUpdatedSkipped": "{{updated}} aktualisiert, {{skipped}} übersprungen",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} geprüft, {{updated}} aktualisiert, {{skipped}} übersprungen",
+			"toastChecked": "{{processed}} geprüft, {{updated}} aktualisiert, {{skipped}} übersprungen",
+			"errorGenericStatus": "Kosten konnten nicht neu berechnet werden ({{status}})"
 		},
 		"session": {
 			"logs": "Protokolle",
@@ -548,7 +577,12 @@
 				"monitoredWouldTransform": "Die Regel überwacht nur: Sie hätte dies umgewandelt, die Anfrage wurde aber unverändert fortgesetzt.",
 				"monitored": "Die Regel überwacht nur: Die Anfrage wurde unverändert fortgesetzt.",
 				"detected": "Die Regel hat die Anfrage markiert und sie unverändert fortgesetzt."
-			}
+			},
+			"unknown": "Unbekannt",
+			"sourceEventInitiated": "Ereignisgesteuert",
+			"sourceLanguageModel": "Sprachmodell",
+			"batchItemResult": "Batch-Element {{type}}",
+			"providerReturnedHttp": "Anbieter hat HTTP {{status}} zurückgegeben"
 		},
 		"media": {
 			"pause": "Pausieren",
@@ -764,9 +798,21 @@
 				"virtualKeys": "Virtuelle Schlüssel ({{total}})",
 				"teams": "Teams ({{total}})",
 				"customers": "Kunden ({{total}})",
-				"period": "Zeitraum {{value}}"
+				"period": "Zeitraum {{value}}",
+				"relays": "Relays ({{total}})",
+				"methods": "Methoden ({{total}})",
+				"kinds": "Arten ({{total}})",
+				"users": "Benutzer ({{total}})",
+				"businessUnits": "Geschäftseinheiten ({{total}})",
+				"projects": "Projekte ({{total}})",
+				"apps": "Apps ({{total}})",
+				"billableOnly": "nur abrechenbar",
+				"nonBillableOnly": "nur nicht abrechenbar",
+				"minCost": "Min. Kosten {{value}}",
+				"maxCost": "Max. Kosten {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "gemischt"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1076,7 +1122,8 @@
 			"overheadLatencySpans": "Overhead-Latenz-Spans",
 			"overheadLatencySpansHelp": "Interne Timing-Spans (Setup, Schlüsselauswahl, Pipeline-Phasen). Standardmäßig deaktiviert.",
 			"configJsonPrecedence": "Wenn <filter>plugin_span_filter</filter> in der <plugin>{{pluginName}}</plugin>-Plugin-Konfiguration in der config.json gesetzt ist, hat dies nach dem Neustart von Bifrost Vorrang vor diesen Einstellungen.",
-			"destinationOtel": "der OTEL-Collector"
+			"destinationOtel": "der OTEL-Collector",
+			"noChangePermission": "Sie haben keine Berechtigung, die Observability-Einstellungen zu ändern"
 		},
 		"savePrometheus": "Prometheus-Konfiguration speichern",
 		"saveOtel": "OTEL-Konfiguration speichern",
@@ -1233,7 +1280,12 @@
 		"passthrough_stream": "Passthrough-Stream",
 		"websocket_responses": "WebSocket-Antworten",
 		"realtime": "Echtzeit",
-		"realtime_turn": "Echtzeit-Turn"
+		"realtime_turn": "Echtzeit-Turn",
+		"model_retrieve": "Modell abrufen",
+		"live": "Live",
+		"live_session": "Live-Sitzung",
+		"live_content": "Live-Aufzeichnung",
+		"live_sideband": "Live-Sideband"
 	},
 	"celBuilder": {
 		"copied": "Kopiert",
@@ -1260,7 +1312,8 @@
 		"value": "Wert",
 		"enterValue": "Wert eingeben...",
 		"commaSeparated": "Kommagetrennte Werte oder JSON-Array eingeben",
-		"celPlaceholder": "z. B. model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "z. B. model == \"claude-sonnet-4-6\"",
+		"remove": "Entfernen"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Routing-Regel",
@@ -1717,6 +1770,12 @@
 			"stepRegister": "Registriere den Upstream-Agent im Agent Gateway und aktiviere ihn.",
 			"stepReplace": "Ersetze <code>{{agentName}}</code> durch den registrierten Namen.",
 			"stepVirtualKey": "Verwende einen virtuellen Schlüssel, der auf den Agent zugreifen kann, oder entferne den Header <code>x-bf-vk</code>, wenn die Authentifizierung deaktiviert ist."
+		},
+		"interactive": {
+			"copied": "Kopiert",
+			"filterBy": "Nach {{label}} filtern",
+			"clickToFilter": "Klicken zum Filtern · Rechtsklick zum Kopieren",
+			"rightClickToCopy": "Rechtsklick zum Kopieren"
 		}
 	},
 	"overhead": {

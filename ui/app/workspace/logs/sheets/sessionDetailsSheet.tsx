@@ -6,12 +6,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { ProviderName } from "@/lib/constants/logs";
-import { RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
+import { getRequestTypeLabel, RequestTypeColors, Status, StatusBarColors } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
 import { useGetLogSessionSummaryByIdQuery, useLazyGetLogSessionByIdQuery } from "@/lib/store/apis/logsApi";
 import { LogEntry } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -63,7 +64,8 @@ export function SessionDetailsSheet({
 	onLogClick,
 	onFilterByParentRequestId,
 }: SessionDetailsSheetProps) {
-	const { t } = useTranslation("observability");
+	const { t, i18n } = useTranslation("observability");
+	const dateLocale = dateFnsLocale(i18n.language);
 	const [triggerGetSession] = useLazyGetLogSessionByIdQuery();
 	const [sessionLogs, setSessionLogs] = useState<LogEntry[]>([]);
 	const [loadingSession, setLoadingSession] = useState(false);
@@ -99,12 +101,16 @@ export function SessionDetailsSheet({
 			},
 			{
 				label: t("logs.session.started"),
-				value: sessionSummary?.started_at ? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa") : t("labels.nA"),
+				value: sessionSummary?.started_at
+					? format(new Date(sessionSummary.started_at), "MMM d, yyyy hh:mm:ss aa", { locale: dateLocale })
+					: t("labels.nA"),
 				size: "sm",
 			},
 			{
 				label: t("logs.session.latestUpdate"),
-				value: sessionSummary?.latest_at ? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa") : t("labels.nA"),
+				value: sessionSummary?.latest_at
+					? format(new Date(sessionSummary.latest_at), "MMM d, yyyy hh:mm:ss aa", { locale: dateLocale })
+					: t("labels.nA"),
 				size: "sm",
 			},
 			{
@@ -112,7 +118,7 @@ export function SessionDetailsSheet({
 				value: formatDurationFromMs(sessionSummary?.duration_ms),
 			},
 		],
-		[sessionSummary, sessionLogs.length, t],
+		[sessionSummary, sessionLogs.length, t, dateLocale],
 	);
 
 	const sortSessionLogs = useCallback(
@@ -284,11 +290,11 @@ export function SessionDetailsSheet({
 													{t("logs.session.current")}
 												</div>
 											) : null}
-											{format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa (XXX)")}
+											{format(new Date(log.timestamp), "yyyy-MM-dd hh:mm:ss aa (XXX)", { locale: dateLocale })}
 										</TableCell>
 										<TableCell>
 											<Badge variant="outline" className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors]} text-xs`}>
-												{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels]}
+												{getRequestTypeLabel(log.object, t)}
 											</Badge>
 										</TableCell>
 										<TableCell className="max-w-[360px]">

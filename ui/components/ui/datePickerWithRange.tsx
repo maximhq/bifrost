@@ -1,5 +1,6 @@
 import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { getSupportedTimezones } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
 import { isCalendarPeriod } from "@/lib/utils/timeRange";
@@ -74,7 +75,7 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
-	const { t } = useTranslation("common");
+	const { t, i18n } = useTranslation("common");
 	const isMobile = useIsMobile();
 	const periodLabel = (period?: { label: string; labelKey?: ParseKeys<"common"> }) =>
 		period?.labelKey ? t(period.labelKey) : period?.label;
@@ -117,7 +118,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 		}
 
 		let hour = ((timeObj.hour + 11) % 12) + 1; // Convert hour to 12-hour format
-		let period = timeObj.hour >= 12 ? "PM" : "AM"; // Determine AM/PM
+		let period = timeObj.hour >= 12 ? t("datePicker.pm") : t("datePicker.am"); // Determine AM/PM
 		let minute = timeObj.minute.toString().padStart(2, "0"); // Ensure the minute has two digits
 
 		return `${hour}:${minute} ${period}`;
@@ -145,8 +146,9 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 
 	/** Format a date for the trigger button, respecting the active timezone. */
 	const formatDate = (d: Date, fmt: string): string => {
-		if (activeTimezone) return format(d, fmt, { in: tz(activeTimezone) });
-		return format(d, fmt);
+		const locale = dateFnsLocale(i18n.resolvedLanguage);
+		if (activeTimezone) return format(d, fmt, { in: tz(activeTimezone), locale });
+		return format(d, fmt, { locale });
 	};
 
 	/** Short timezone abbreviation for the trigger button label. */
@@ -404,7 +406,7 @@ interface DateTimePickerProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 export function DateTimePicker(props: DateTimePickerProps) {
-	const { t } = useTranslation("common");
+	const { t, i18n } = useTranslation("common");
 	const { className, buttonClassName, buttonVariant, triggerLabel, onTrigger, dateTime } = props;
 
 	const initialDate = dateTime ? new Date(dateTime) : new Date();
@@ -427,7 +429,7 @@ export function DateTimePicker(props: DateTimePickerProps) {
 		}
 
 		let hour = ((timeObj.hour + 11) % 12) + 1; // Convert hour to 12-hour format
-		let period = timeObj.hour >= 12 ? "PM" : "AM"; // Determine AM/PM
+		let period = timeObj.hour >= 12 ? t("datePicker.pm") : t("datePicker.am"); // Determine AM/PM
 		let minute = timeObj.minute.toString().padStart(2, "0"); // Ensure the minute has two digits
 
 		return `${hour}:${minute} ${period}`;
@@ -470,7 +472,7 @@ export function DateTimePicker(props: DateTimePickerProps) {
 						<CalendarIcon className="h-4 w-4" strokeWidth={1.5} />
 						{date ? (
 							<>
-								{format(date, "LLL dd, y")} {printTimeValue(timeValue)}
+								{format(date, "LLL dd, y", { locale: dateFnsLocale(i18n.resolvedLanguage) })} {printTimeValue(timeValue)}
 							</>
 						) : (
 							<span>{t("datePicker.pickADateTime")}</span>

@@ -124,7 +124,10 @@
 			"barChart": "Bar chart",
 			"lineChart": "Line chart",
 			"directValue": "Direct: {{value}}",
-			"semanticValue": "Semantic: {{value}}"
+			"semanticValue": "Semantic: {{value}}",
+			"tokensPerSecValue": "{{value}} tokens/sec",
+			"moreCount_one": "+{{count}} more",
+			"moreCount_other": "+{{count}} more"
 		},
 		"rankings": {
 			"topDimension": "Top {{dimension}}s",
@@ -136,7 +139,10 @@
 			"avgLatency": "Avg Latency",
 			"noData": "No {{dimension}} usage data available for this time period.",
 			"attributedTooltipShort": "Attributed - a request counts toward each {{dimension}} it belongs to, so this can exceed the actual request count.",
-			"attributedTooltipLong": "A request counts toward each {{dimension}} it belongs to, so this can exceed the total request count."
+			"attributedTooltipLong": "A request counts toward each {{dimension}} it belongs to, so this can exceed the total request count.",
+			"newBadge": "new",
+			"requestsCount_one": "{{formattedCount}} request",
+			"requestsCount_other": "{{formattedCount}} requests"
 		},
 		"noModelUsage": "No model usage data available for this time period."
 	},
@@ -144,7 +150,24 @@
 		"fallbackChain": {
 			"openFinalAttempt": "Open final attempt",
 			"title": "Fallback chain",
-			"viewing": "Viewing"
+			"viewing": "Viewing",
+			"outcome": {
+				"succeeded": "Request succeeded",
+				"failed": "All attempts failed",
+				"inProgress": "Still running"
+			},
+			"summary": {
+				"attempt": "Attempt {{position}} of {{total}}",
+				"fellBack": "Attempt {{position}} of {{total}}. This attempt failed and the request fell back to {{label}}.",
+				"later": "Attempt {{position}} of {{total}}. Later attempts ran after this one."
+			},
+			"attempts_other": "{{count}} attempts",
+			"attempts_one": "{{count}} attempt",
+			"attemptsWithTotal_other": "{{count}} attempts · {{latency}} total",
+			"attemptsWithTotal_one": "{{count}} attempt · {{latency}} total",
+			"keyName": "key {{name}}",
+			"retries_other": "{{count}} retries",
+			"retries_one": "{{count}} retry"
 		},
 		"searchPlaceholder": "Search logs or paste a request ID",
 		"loggingSettings": "Logging settings",
@@ -244,7 +267,13 @@
 			"toastCancelled": "Cost recalculation cancelled",
 			"toastComplete": "Cost recalculation complete",
 			"toastProgress": "Recalculating log costs...",
-			"errorGeneric": "Failed to recalculate costs"
+			"errorGeneric": "Failed to recalculate costs",
+			"noLogsMatch": "No logs match the current filters.",
+			"toastStopped": "Stopped after {{updated}} updated, {{skipped}} skipped",
+			"toastUpdatedSkipped": "{{updated}} updated, {{skipped}} skipped",
+			"toastCheckedOfTotal": "{{processed}}/{{total}} checked, {{updated}} updated, {{skipped}} skipped",
+			"toastChecked": "{{processed}} checked, {{updated}} updated, {{skipped}} skipped",
+			"errorGenericStatus": "Failed to recalculate costs ({{status}})"
 		},
 		"session": {
 			"logs": "Logs",
@@ -551,7 +580,12 @@
 			"summaryNumbered": "Summary {{number}}",
 			"attachment": "Attachment",
 			"toolTypeCount_one": "{{type}} · {{count}} tool",
-			"toolTypeCount_other": "{{type}} · {{count}} tools"
+			"toolTypeCount_other": "{{type}} · {{count}} tools",
+			"unknown": "Unknown",
+			"sourceEventInitiated": "Event Initiated",
+			"sourceLanguageModel": "Language Model",
+			"batchItemResult": "Batch item {{type}}",
+			"providerReturnedHttp": "Provider returned HTTP {{status}}"
 		},
 		"media": {
 			"pause": "Pause",
@@ -765,9 +799,21 @@
 				"virtualKeys": "virtual keys ({{total}})",
 				"teams": "teams ({{total}})",
 				"customers": "customers ({{total}})",
-				"period": "period {{value}}"
+				"period": "period {{value}}",
+				"relays": "relays ({{total}})",
+				"methods": "methods ({{total}})",
+				"kinds": "kinds ({{total}})",
+				"users": "users ({{total}})",
+				"businessUnits": "business units ({{total}})",
+				"projects": "projects ({{total}})",
+				"apps": "apps ({{total}})",
+				"billableOnly": "billable only",
+				"nonBillableOnly": "non-billable only",
+				"minCost": "min cost {{value}}",
+				"maxCost": "max cost {{value}}"
 			}
-		}
+		},
+		"batchMixedModel": "mixed"
 	},
 	"relayLogs": {
 		"fields": {
@@ -1077,7 +1123,8 @@
 			"overheadLatencySpans": "Overhead latency spans",
 			"overheadLatencySpansHelp": "Internal timing spans (setup, key selection, pipeline phases). Off by default.",
 			"configJsonPrecedence": "If <filter>plugin_span_filter</filter> is set in the <plugin>{{pluginName}}</plugin> plugin config in config.json, it takes precedence over these settings after restarting Bifrost.",
-			"destinationOtel": "the OTEL collector"
+			"destinationOtel": "the OTEL collector",
+			"noChangePermission": "You do not have permission to change observability settings"
 		},
 		"savePrometheus": "Save Prometheus Configuration",
 		"saveOtel": "Save OTEL Configuration",
@@ -1234,7 +1281,12 @@
 		"passthrough_stream": "Passthrough Stream",
 		"websocket_responses": "WebSocket Responses",
 		"realtime": "Realtime",
-		"realtime_turn": "Realtime Turn"
+		"realtime_turn": "Realtime Turn",
+		"model_retrieve": "Retrieve Model",
+		"live": "Live",
+		"live_session": "Live Session",
+		"live_content": "Live Recording",
+		"live_sideband": "Live Sideband"
 	},
 	"celBuilder": {
 		"copied": "Copied",
@@ -1261,7 +1313,8 @@
 		"value": "Value",
 		"enterValue": "Enter value...",
 		"commaSeparated": "Enter comma-separated values or JSON array",
-		"celPlaceholder": "e.g. model == \"claude-sonnet-4-6\""
+		"celPlaceholder": "e.g. model == \"claude-sonnet-4-6\"",
+		"remove": "Remove"
 	},
 	"routingEngineLabels": {
 		"routing_rule": "Routing Rule",
@@ -1718,6 +1771,12 @@
 			"accepted": "Accepted",
 			"requestParameters": "Request parameters",
 			"noProtocolBody": "No protocol body was recorded."
+		},
+		"interactive": {
+			"copied": "Copied",
+			"filterBy": "Filter by {{label}}",
+			"clickToFilter": "Click to filter · Right-click to copy",
+			"rightClickToCopy": "Right-click to copy"
 		}
 	},
 	"overhead": {

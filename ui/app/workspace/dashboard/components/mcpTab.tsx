@@ -9,6 +9,7 @@ import { MCPCostChart } from "./charts/mcpCostChart";
 import { MCPTopToolsChart } from "./charts/mcpTopToolsChart";
 import { MCPVolumeChart } from "./charts/mcpVolumeChart";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 export interface MCPTabProps {
 	// Data
@@ -73,7 +74,7 @@ function MCPTabImpl({
 				testId="chart-mcp-volume"
 				totalLabel={t("labels.total")}
 				total={mcpVolumeTotal !== null ? <NumberFlow value={mcpVolumeTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-				totalTooltip={mcpVolumeTotal !== null ? mcpVolumeTotal.toLocaleString("en-US") : undefined}
+				totalTooltip={mcpVolumeTotal !== null ? mcpVolumeTotal.toLocaleString(getLocale()) : undefined}
 				legend={
 					<div className={CHART_HEADER_LEGEND_CLASS}>
 						<span className="flex items-center gap-1">
@@ -110,7 +111,7 @@ function MCPTabImpl({
 				}
 				totalTooltip={
 					mcpCostTotal !== null
-						? mcpCostTotal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 6 })
+						? mcpCostTotal.toLocaleString(getLocale(), { style: "currency", currency: "USD", maximumFractionDigits: 6 })
 						: undefined
 				}
 				legend={
@@ -135,7 +136,7 @@ function MCPTabImpl({
 				testId="chart-mcp-top-tools"
 				totalLabel={t("labels.total")}
 				total={mcpTopToolsTotal !== null ? <NumberFlow value={mcpTopToolsTotal} format={COMPACT_NUMBER_FORMAT} /> : undefined}
-				totalTooltip={mcpTopToolsTotal !== null ? mcpTopToolsTotal.toLocaleString("en-US") : undefined}
+				totalTooltip={mcpTopToolsTotal !== null ? mcpTopToolsTotal.toLocaleString(getLocale()) : undefined}
 			>
 				<MCPTopToolsChart data={mcpTopToolsData} />
 			</ChartCard>

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { InspectAgentCardResponse } from "@/lib/types/agents";
 
 // agentEndpointOrigin matches runtime origin identity, including TLS for bare gRPC targets.
@@ -89,7 +90,7 @@ export function mapAgentCard(card: Record<string, unknown>): InspectAgentCardRes
 			return [
 				{
 					id: asString(skill.id) ?? "",
-					name: asString(skill.name) ?? "Unnamed skill",
+					name: asString(skill.name) ?? i18n.t("agentCard.unnamedSkill", { ns: "common" }),
 					description: asString(skill.description),
 					tags: strings(skill.tags),
 					examples: strings(skill.examples),
@@ -123,7 +124,7 @@ export function mapAgentCard(card: Record<string, unknown>): InspectAgentCardRes
 			return [
 				{
 					name,
-					type: asString(scheme.type) ?? variant?.[0]?.replace("SecurityScheme", "") ?? "Unknown",
+					type: asString(scheme.type) ?? variant?.[0]?.replace("SecurityScheme", "") ?? i18n.t("agentCard.unknown", { ns: "common" }),
 					description: asString(definition.description),
 					definition,
 				},

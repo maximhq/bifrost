@@ -121,7 +121,9 @@
 			"reauthorizationDidNotComplete": "다시 인증이 완료되지 않았습니다",
 			"toolsRefreshed": "도구를 새로고침했습니다",
 			"toolsRefreshedDesc_one": "클라이언트 {{name}}이(가) 이제 도구 {{count}}개를 제공합니다.",
-			"toolsRefreshedDesc_other": "클라이언트 {{name}}이(가) 이제 도구 {{count}}개를 제공합니다."
+			"toolsRefreshedDesc_other": "클라이언트 {{name}}이(가) 이제 도구 {{count}}개를 제공합니다.",
+			"oauthVerifiedPerUser": "OAuth 설정을 확인했습니다. 각 사용자가 개별적으로 인증합니다.",
+			"clientConnected": "MCP 클라이언트가 연결되었습니다"
 		},
 		"filter": {
 			"connectionType": "연결 유형",
@@ -288,7 +290,10 @@
 			"baseUrlRequired": "기본 URL이 필요합니다",
 			"invalidAllowedExtraHeadersTitle": "허용된 추가 헤더가 잘못되었습니다.",
 			"invalidAllowedExtraHeadersDesc": "와일드카드 '*'는 특정 헤더 이름과 결합할 수 없습니다.",
-			"allowedExtraHeadersPlaceholder": "* 또는: 인증, x-user-id"
+			"allowedExtraHeadersPlaceholder": "* 또는: 인증, x-user-id",
+			"useGlobalSetting": "전역 설정 사용",
+			"useGlobalSettingWithValue": "전역 설정 사용({{value}})",
+			"maxProtocolAuto": "자동(최신)"
 		},
 		"sheet": {
 			"statePendingTokenExchange": "이 서버에는 일회성 확인이 필요해요. Bifrost는 로그인된 ID 토큰을 교환하고 연결을 테스트하며 도구를 검색해요. 그러면 호출자는 모든 도구 호출에서 자동으로 교환되는 자체 ID 토큰을 갖게 돼요.",
@@ -600,7 +605,25 @@
 		"stateColumnHelp": "클라이언트의 연결 상태(정상, 불안정, 재인증 필요 등) \"불안정\"은 도구 호출 결과가 아닌 Bifrost의 서버에 대한 자체 연결 확인을 반영합니다. 자체 복구되며 도구 호출을 차단하지 않습니다. 사용자별 클라이언트(OAuth, 헤더, 토큰 교환)의 경우 이는 Bifrost가 보유하고 있는 관리자 자격 증명(도구 목록을 주기적으로 새로 고치는 데만 사용됨)을 반영하며, 개별 사용자의 세션은 영향을 받지 않습니다.",
 		"columnGuidanceAria": "{{label}} 컬럼 안내",
 		"vkCount_one": "{{count}} VK",
-		"vkCount_other": "{{count}} VK"
+		"vkCount_other": "{{count}} VK",
+		"failure": {
+			"stageConnect": "연결 중",
+			"stagePing": "Ping",
+			"stageListTools": "도구 목록 조회 중",
+			"stageToolDiscovery": "도구 검색 중",
+			"stageTransportLost": "연결이 끊어짐",
+			"stageCredential": "자격 증명",
+			"titleDegraded": "인스턴스마다 이 서버의 상태가 다릅니다",
+			"titleUnstableAll": "마지막 연결 확인이 모든 인스턴스에서 실패했습니다",
+			"titleUnstable": "마지막 연결 확인에 실패했습니다",
+			"titleNeedsReauth": "재인증이 필요합니다",
+			"titleError": "런타임에 등록되지 않았습니다",
+			"titleDefault": "연결 상태",
+			"lastFailedAgo": "마지막 실패: {{age}} 전",
+			"lastFailedRun": "마지막 실패: {{age}} 전 · {{state}} {{duration}} 동안",
+			"stateNeedsReauth": "재인증 필요",
+			"stateUnstable": "불안정"
+		}
 	},
 	"library": {
 		"title": "MCP 서버 라이브러리",

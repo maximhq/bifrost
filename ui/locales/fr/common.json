@@ -22,7 +22,11 @@
 		"toTime": "Heure de fin",
 		"timezone": "Fuseau horaire",
 		"selectTimezone": "Sélectionner un fuseau horaire",
-		"time": "Heure"
+		"time": "Heure",
+		"am": "AM",
+		"pm": "PM",
+		"hourPlaceholder": "HH",
+		"minutePlaceholder": "MM"
 	},
 	"timePeriods": {
 		"1h": "Dernière heure",
@@ -70,7 +74,10 @@
 		"agents": "agents",
 		"providers": "fournisseurs",
 		"webhookEndpoints": "points de terminaison webhook",
-		"modelLimits": "limites de modèle"
+		"modelLimits": "limites de modèle",
+		"agent": "agent",
+		"relay": "relais",
+		"relays": "relais"
 	},
 	"aboutField": "À propos de {{field}}",
 	"thisField": "ce champ",
@@ -161,7 +168,8 @@
 		"optionSelectedAria": "{{label}}, sélectionné{{disabled}}",
 		"optionNotSelectedAria": "{{label}}, non sélectionné{{disabled}}",
 		"disabledSuffix": ", désactivé",
-		"clear": "Effacer"
+		"clear": "Effacer",
+		"moreCount": "+ {{count}} de plus"
 	},
 	"quarterStart": {
 		"fiscalYearStarts": "Début de l’exercice fiscal",
@@ -195,7 +203,8 @@
 		"failedToLoad": "Échec du chargement."
 	},
 	"numberAndSelect": {
-		"resetPeriod": "Période de réinitialisation"
+		"resetPeriod": "Période de réinitialisation",
+		"noLimit": "Aucune limite"
 	},
 	"secretVar": {
 		"resolvedAfterSave": "La valeur résolue apparaîtra après l’enregistrement"
@@ -204,7 +213,9 @@
 		"label": "Accès aux agents",
 		"tooltip": "Accordez à cette clé l’accès aux agents enregistrés. La clé pourra ensuite appeler chaque agent à l’adresse <path0>{{path}}</path0>. Les agents ouverts à toutes les clés n’ont pas besoin d’autorisation.",
 		"selectPlaceholder": "Sélectionnez un agent à ajouter",
-		"removeAria": "Retirer {{name}}"
+		"removeAria": "Retirer {{name}}",
+		"openToAll": "Ouvert à toutes les clés",
+		"disabled": "Désactivé"
 	},
 	"calendarAlignment": {
 		"rollingNotice": "{{durations}} utiliseront des fenêtres glissantes sur toute leur durée. L’alignement calendaire ne s’applique qu’à 1d, 1w, 1M, 1Q et 1Y."
@@ -297,7 +308,8 @@
 	"modelParameters": {
 		"keepBetween": "Veuillez maintenir {{label}} entre {{min}} et {{max}}.",
 		"addString": "Ajouter une chaîne",
-		"select": "Sélectionner"
+		"select": "Sélectionner",
+		"clear": "Effacer {{label}}"
 	},
 	"entityAssociation": {
 		"placeholders": {
@@ -486,7 +498,53 @@
 		"validUrl": "Doit être une URL valide",
 		"validEmail": "Doit être une adresse e-mail valide",
 		"grpcHostPortFormat": "Doit être au format <host>:<port> pour gRPC (par ex. {{example}})",
-		"invalidInput": "Saisie invalide"
+		"invalidInput": "Saisie invalide",
+		"vertexEndpointId": "Saisissez un ID de point de terminaison Vertex ou collez une URL de point de terminaison prise en charge",
+		"mcp": {
+			"privateKeyRequired": "Une clé privée est requise pour private_key_jwt",
+			"secretRequiredForMethod": "Un secret client est requis pour choisir son mode d'envoi",
+			"credentialResend": "Saisissez-le à nouveau : l'audience, le point de terminaison de jeton en amont ou l'audience de l'assertion a changé, donc la valeur enregistrée n'est pas envoyée à la nouvelle cible"
+		},
+		"relays": {
+			"costPerRequestNegative": "Le coût par requête ne peut pas être négatif",
+			"costPerUnitNegative": "Le coût par unité ne peut pas être négatif",
+			"blockSizePositive": "La taille de bloc doit être supérieure à zéro",
+			"minimumUnitsNegative": "Le minimum d'unités ne peut pas être négatif",
+			"unitsPathRequiredRoute": "Le chemin des unités est requis : cette route facture à l'unité et ni elle ni le relais n'indique de chemin",
+			"unitsPathRequired": "Le chemin des unités est requis, sauf si la mesure lit tout le corps",
+			"unitsPathRequiredInherited": "Le chemin des unités est requis : la route {{method}} {{path}} facture à l'unité et l'hérite du relais",
+			"absoluteUrl": "Saisissez une URL http(s) absolue",
+			"pathRequired": "Le chemin est requis",
+			"pathMustStartWithSlash": "Le chemin doit commencer par /",
+			"doubleStarLast": "** n'est autorisé que comme dernier segment",
+			"headerNameRequired": "Le nom d'en-tête est requis pour l'authentification par en-tête",
+			"queryParamRequired": "Le paramètre de requête est requis pour l'authentification par requête",
+			"awsServiceRequired": "Le service AWS est requis pour l'authentification SigV4",
+			"awsServiceFormat": "Le service AWS doit correspondre à [a-z0-9-]+",
+			"headerNameNoSpecial": "Le nom d'en-tête ne doit pas contenir d'espaces, de deux-points ni de barres obliques",
+			"matcherNeedsValue": "Un filtre d'en-tête nécessite un glob de valeur",
+			"matcherNeedsName": "Un filtre d'en-tête nécessite un nom d'en-tête",
+			"jobIdPath": "Indiquez où la réponse de démarrage porte l'ID du job",
+			"pollPathRequired": "Saisissez le chemin d'interrogation",
+			"pollPathRooted": "Saisissez un chemin racine tel que {{example}}",
+			"statusPathRequired": "Indiquez où la réponse d'interrogation porte le statut",
+			"succeededRequired": "Saisissez au moins un statut de réussite",
+			"atLeastOneSecond": "Au moins 1 seconde",
+			"headerMatchedDup": "Cet en-tête est déjà filtré sur cette route",
+			"relayNameFormat": "Utilisez 1 à 64 lettres, chiffres, points, tirets ou traits de soulignement",
+			"relayNameDots": "Un relais ne peut pas s'appeler . ou ..",
+			"baseUrlFormat": "Saisissez une URL http(s) absolue sans requête, fragment ni informations utilisateur",
+			"headerValueRequired": "Saisissez une valeur pour cet en-tête",
+			"headerNameEnter": "Saisissez un nom d'en-tête",
+			"headerAlreadySet": "Cet en-tête est déjà défini",
+			"lineError": "Ligne {{line}} : {{message}}",
+			"invalidPath": "chemin invalide",
+			"regionSigV4": "La région est requise pour SigV4",
+			"credentialRequired": "L'identifiant est requis pour ce type d'authentification",
+			"proxyUrlRequired": "L'URL du proxy est requise",
+			"rootedPathSearch": "Saisissez un chemin racine tel que /v1/search",
+			"statusRange": "Le statut doit être compris entre 100 et 599"
+		}
 	},
 	"permissionDenied": {
 		"create": "Vous n’avez pas la permission de créer {{entity}}.",
@@ -512,5 +570,31 @@
 		"quarter_other": "{{count}} trimestres",
 		"year_one": "{{count}} an",
 		"year_other": "{{count}} ans"
+	},
+	"viewToggle": {
+		"more": "Voir plus",
+		"less": "Voir moins"
+	},
+	"baseProviderSelector": {
+		"placeholder": "Sélectionner le format de base",
+		"searchPlaceholder": "Rechercher des formats..."
+	},
+	"commandDialog": {
+		"title": "Palette de commandes",
+		"description": "Recherchez une commande à exécuter..."
+	},
+	"copyToClipboard": {
+		"success": "Copié dans le presse-papiers",
+		"failed": "Échec de la copie"
+	},
+	"agentCard": {
+		"unnamedSkill": "Compétence sans nom",
+		"unknown": "Inconnu"
+	},
+	"responsesItems": {
+		"queriesMore": "{{first}} +{{count}} de plus"
+	},
+	"badges": {
+		"beta": "BÊTA"
 	}
 }

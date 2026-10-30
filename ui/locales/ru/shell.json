@@ -381,7 +381,8 @@
 			"Security": "Безопасность",
 			"Provider Setup": "Настройка провайдера",
 			"Everything Else": "Всё остальное"
-		}
+		},
+		"completedSr": "Выполнено:"
 	},
 	"warp": {
 		"ask": "Спросить Warp",
@@ -447,7 +448,8 @@
 		"question": {
 			"label": "Вопрос",
 			"skip": "Пропустить",
-			"orType": "Или введите свой ответ ниже."
+			"orType": "Или введите свой ответ ниже.",
+			"skipAnswer": "Действуй на своё усмотрение и скажи, что ты предположил."
 		},
 		"message": {
 			"whatThisCovers": "Что здесь охвачено",
@@ -628,7 +630,11 @@
 					"Попросите администратора разрешить модель Warp для вашей учётной записи.",
 					"Или выберите в настройках Warp модель, доступную вашей учётной записи."
 				]
-			}
+			},
+			"requestFailedStatus": "Запрос к Warp не выполнен ({{status}})",
+			"noResponseBody": "Warp не вернул тело ответа",
+			"connectionClosed": "Соединение закрылось до того, как Warp закончил отвечать.",
+			"requestFailed": "Запрос к Warp не выполнен"
 		},
 		"dock": {
 			"resize": "Изменить размер панели Warp",
@@ -636,7 +642,14 @@
 		},
 		"chart": {
 			"openInLogs": "Открыть в журналах",
-			"empty": "За этот период данных нет."
+			"empty": "За этот период данных нет.",
+			"weekOf": "Неделя с {{date}}"
+		},
+		"usage": {
+			"tokens_one": "{{formattedCount}} токен",
+			"tokens_other": "{{formattedCount}} токена",
+			"tokens_few": "{{formattedCount}} токена",
+			"tokens_many": "{{formattedCount}} токенов"
 		}
 	},
 	"rssSources": {
@@ -678,5 +691,11 @@
 		"upload": "Загрузить",
 		"logoHelp": "URL изображения или файл PNG, JPEG, GIF, WebP, SVG либо ICO размером до 96 КБ. По умолчанию используется значок сайта.",
 		"addFeed": "Добавить ленту"
+	},
+	"agentHandover": {
+		"completeTitle": "Вход в Bifrost Agent выполнен",
+		"title": "Вход в Bifrost Agent",
+		"completeBody": "Можно закрыть это окно и вернуться в Bifrost Agent.",
+		"status": "Статус входа: {{status}}"
 	}
 }
