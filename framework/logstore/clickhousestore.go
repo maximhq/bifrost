@@ -1233,6 +1233,14 @@ func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time
 	return nil
 }
 
+// FlushRelayLogs removes stale processing relay log rows. See Flush.
+func (s *ClickHouseLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "relay_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing relay logs: %w", err)
+	}
+	return nil
+}
+
 // DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed with one
 // lightweight delete; the count is selected first because mutations never
 // report rows affected.

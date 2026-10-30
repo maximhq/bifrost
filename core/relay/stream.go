@@ -37,15 +37,21 @@ type Stream struct {
 	usage        *schemas.RelayUsage
 	bytesOut     int64
 
-	capture []byte // bounded body prefix for the log row; nil when content logging is off
+	capture []byte // the whole body for the log row; nil when content logging is off
+
+	// A buffered reply past the large-payload response threshold (handOffLarge): the bytes read
+	// while deciding are forwarded first, and the log row keeps a preview, as an LLM row does.
+	ahead         []byte
+	captureLimit  int
+	largeResponse bool
 
 	once   sync.Once
 	finish func(resp *schemas.BifrostRelayResponse, err *schemas.BifrostError)
 }
 
 // newStream wraps an open upstream reply. mapping and requestUnits decide what is read; finish runs
-// the post-hooks. The returned stream buffers up to maxBufferedResponseBytes response bytes in
-// capture for the log row, but only when the content-logging policy would keep the body, so a
+// the post-hooks. The returned stream keeps the whole reply in capture for the log row, as the
+// stream accumulator keeps an LLM stream, but only when the content-logging policy would keep the body, so a
 // stream nobody logs the body of never allocates the buffer.
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
@@ -96,7 +102,7 @@ func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
 		// No logging plugin stamped a default at all — either it is not registered, or its
 		// PreRelayHook did not run. Governance's or the per-request key being present on ctx for
 		// unrelated reasons must not turn capture on by itself; without a plugin to ever read the
-		// buffer, that would just retain up to maxBufferedResponseBytes per stream for nothing.
+		// buffer, that would just retain the stream's bytes for nothing.
 		return false
 	}
 	if disabled, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
@@ -116,10 +122,30 @@ func relayContentCaptureEnabled(ctx *schemas.BifrostContext) bool {
 	return enabled
 }
 
+// largeResponsePreviewBytes is the most of a large reply the log row keeps, the preview an LLM row
+// keeps of a large response (FinalizeResponseWithLargeDetection); a variable so tests can shorten it.
+var largeResponsePreviewBytes = 1 << 20
+
+// handOffLarge turns the stream into the forwarding of a buffered reply that passed the
+// large-payload response threshold: ahead (what was read while deciding) goes out first, and the
+// log row keeps only a preview, so the reply is never held whole.
+func (s *Stream) handOffLarge(ahead []byte) {
+	s.ahead = ahead
+	s.largeResponse = true
+	s.captureLimit = largeResponsePreviewBytes
+}
+
 // Read forwards the next bytes of the reply.
 func (s *Stream) Read(p []byte) (int, error) {
-	// The body DoHTTPRequest handed over counts each chunk wait as upstream time itself.
-	n, err := s.reader.Read(p)
+	var n int
+	var err error
+	if len(s.ahead) > 0 {
+		n = copy(p, s.ahead)
+		s.ahead = s.ahead[n:]
+	} else {
+		// The body DoHTTPRequest handed over counts each chunk wait as upstream time itself.
+		n, err = s.reader.Read(p)
+	}
 	if n > 0 {
 		s.bytesOut += int64(n)
 		if s.runes != nil {
@@ -130,13 +156,12 @@ func (s *Stream) Read(p []byte) (int, error) {
 				s.observeEvent(event)
 			}
 		}
-		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does, and
-		// stops at the same bound the buffered relay holds (maxBufferedResponseBytes).
-		if s.capture != nil && int64(len(s.capture)) < maxBufferedResponseBytes {
-			remaining := int(maxBufferedResponseBytes) - len(s.capture)
+		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does and
+		// as the stream accumulator keeps an LLM stream; there is no bound of the relay's own.
+		if s.capture != nil {
 			chunk := p[:n]
-			if len(chunk) > remaining {
-				chunk = chunk[:remaining]
+			if s.captureLimit > 0 {
+				chunk = chunk[:min(len(chunk), max(s.captureLimit-len(s.capture), 0))]
 			}
 			s.capture = append(s.capture, chunk...)
 		}
@@ -176,11 +201,12 @@ func (s *Stream) complete(readErr error) {
 	s.once.Do(func() {
 		s.stop()
 		resp := &schemas.BifrostRelayResponse{
-			StatusCode: s.StatusCode,
-			Headers:    s.Headers,
-			Streamed:   true,
-			BytesOut:   s.bytesOut,
-			Latency:    time.Since(s.start).Milliseconds(),
+			StatusCode:    s.StatusCode,
+			Headers:       s.Headers,
+			Streamed:      true,
+			LargeResponse: s.largeResponse,
+			BytesOut:      s.bytesOut,
+			Latency:       time.Since(s.start).Milliseconds(),
 		}
 		if len(s.capture) > 0 {
 			resp.Body = s.capture

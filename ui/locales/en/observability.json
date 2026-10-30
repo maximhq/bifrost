@@ -905,6 +905,7 @@
 			"tokensNotPricedValue": "{{input}} in / {{output}} out",
 			"matchedRoute": "Matched route",
 			"parentLog": "Parent log",
+			"responseBodyPreview": "Response Body (Preview)",
 			"queryParameters": "Query Parameters",
 			"matchedHeaders": "Matched Headers",
 			"errorNoMessageWithStatus": "The relay returned an error (HTTP {{status}}) without a message.",

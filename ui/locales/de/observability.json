@@ -905,6 +905,7 @@
 			"tokensNotPricedValue": "{{input}} ein / {{output}} aus",
 			"matchedRoute": "Zugeordnete Route",
 			"parentLog": "Übergeordnetes Protokoll",
+			"responseBodyPreview": "Antwortinhalt (Vorschau)",
 			"queryParameters": "Query-Parameter",
 			"matchedHeaders": "Zugeordnete Header",
 			"errorNoMessageWithStatus": "Das Relay hat einen Fehler (HTTP {{status}}) ohne Meldung zurückgegeben.",

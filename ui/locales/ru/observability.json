@@ -955,6 +955,7 @@
 			"tokensNotPricedValue": "{{input}} вход / {{output}} выход",
 			"matchedRoute": "Совпавший маршрут",
 			"parentLog": "Родительский журнал",
+			"responseBodyPreview": "Тело ответа (предпросмотр)",
 			"queryParameters": "Параметры запроса",
 			"matchedHeaders": "Совпавшие заголовки",
 			"errorNoMessageWithStatus": "Ретранслятор вернул ошибку (HTTP {{status}}) без сообщения.",
