@@ -8,6 +8,8 @@ import { CappedBarStack } from "./barShape";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 import { NoChartData } from "./noChartData";
+import { getLocale } from "@/lib/i18n";
+import { useLocale } from "@/lib/i18n/useLocale";
 
 interface LogVolumeChartProps {
 	data: LogsHistogramResponse | null;
@@ -47,21 +49,21 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 						<span className="bg-chart-success h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 					</span>
-					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString()}</span>
+					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-error h-2 w-2 rounded-full" />
 						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 					</span>
-					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString()}</span>
+					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString(getLocale())}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
 						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cancelled")}</span>
 					</span>
-					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString()}</span>
+					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString(getLocale())}</span>
 				</div>
 			</div>
 		</div>
@@ -69,6 +71,7 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 }
 
 function LogVolumeChartImpl({ data, chartType, startTime, endTime }: LogVolumeChartProps) {
+	useLocale();
 	const chartData = useMemo(() => {
 		if (!data?.buckets || !data.bucket_size_seconds) {
 			return [];

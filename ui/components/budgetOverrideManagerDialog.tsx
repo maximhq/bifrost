@@ -11,6 +11,7 @@ import { Pencil, Plus } from "lucide-react";
 import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { getLocale } from "@/lib/i18n";
 
 // One overridable budget row. `budget` is the persisted row the override applies to;
 // `label` is scope-relative (the section already names the scope), e.g. the reset
@@ -249,7 +250,7 @@ export function BudgetOverrideManagerDialog({
 										<Trans
 											t={t}
 											i18nKey="budgetOverride.validUntil"
-											values={{ date: validUntil.toLocaleString() }}
+											values={{ date: validUntil.toLocaleString(getLocale()) }}
 											components={{ b0: <span className="text-foreground font-medium" /> }}
 										/>
 									</p>

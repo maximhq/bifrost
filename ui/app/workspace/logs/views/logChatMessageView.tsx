@@ -6,7 +6,7 @@ import { cleanJson, isJson } from "@/lib/utils/validation";
 import { Download } from "lucide-react";
 import AudioPlayer from "./audioPlayer";
 import CollapsibleBox from "./collapsibleBox";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
 
 interface LogChatMessageViewProps {
@@ -346,7 +346,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 									id: message.audio.id,
 									expires:
 										message.audio.expires_at && Number.isFinite(message.audio.expires_at)
-											? new Date(message.audio.expires_at * 1000).toLocaleString()
+											? new Date(message.audio.expires_at * 1000).toLocaleString(getLocale())
 											: t("labels.nA"),
 								})}
 							</div>

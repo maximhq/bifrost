@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { StatusBarColors } from "@/lib/constants/logs";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import type { AgentLogStatus, AgentLogSummary, DisplayAgentLogSummary } from "@/lib/types/agentLogs";
 import type { ColumnDef, Row } from "@tanstack/react-table";
@@ -245,7 +245,7 @@ export const createAgentColumns = (
 		size: 100,
 		cell: ({ row }) => {
 			const latency = row.original.latency;
-			return <span className="font-mono text-sm">{latency != null ? `${latency.toLocaleString()}ms` : "—"}</span>;
+			return <span className="font-mono text-sm">{latency != null ? `${latency.toLocaleString(getLocale())}ms` : "—"}</span>;
 		},
 	},
 	...(handleDelete

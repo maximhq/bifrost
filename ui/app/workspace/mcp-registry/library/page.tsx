@@ -20,6 +20,7 @@ import { MCPLibraryServerCard, MCPLibraryServerCardSkeleton } from "./views/mcpL
 import { MCPLibraryServersTable, MCPLibraryServersTableSkeleton } from "./views/mcpLibraryServersTable";
 import { MCPLibrarySettingsSheet } from "./views/mcpLibrarySettingsSheet";
 import { useActionParam } from "@/hooks/useActionParam";
+import { getLocale } from "@/lib/i18n";
 
 const PAGE_SIZE = 24;
 const VIEW_MODE_STORAGE_KEY = "mcp-library-view-mode";
@@ -299,9 +300,9 @@ export default function MCPLibraryPage() {
 										<div className="mt-auto flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 											<div className="text-muted-foreground flex items-center gap-2">
 												{t("common.ofEntries", {
-													from: (urlState.offset + 1).toLocaleString(),
-													to: Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString(),
-													total: totalCount.toLocaleString(),
+													from: (urlState.offset + 1).toLocaleString(getLocale()),
+													to: Math.min(urlState.offset + PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+													total: totalCount.toLocaleString(getLocale()),
 												})}
 											</div>
 

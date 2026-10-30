@@ -32,6 +32,7 @@ import PricingOverrideSheet from "./pricingOverrideSheet";
 import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
+import { getLocale } from "@/lib/i18n";
 
 function PricingOverrideActionsMenu({
 	row,
@@ -478,9 +479,9 @@ export default function ScopedPricingOverridesView() {
 				<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
 						{t("virtualKeys.rangeOf", {
-							from: (offset + 1).toLocaleString(),
-							to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(),
-							total: totalCount.toLocaleString(),
+							from: (offset + 1).toLocaleString(getLocale()),
+							to: Math.min(offset + PAGE_SIZE, totalCount).toLocaleString(getLocale()),
+							total: totalCount.toLocaleString(getLocale()),
 						})}
 					</div>
 

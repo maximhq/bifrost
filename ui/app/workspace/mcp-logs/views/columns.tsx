@@ -157,7 +157,7 @@ export const createMCPColumns = (
 				<div className="flex min-w-0 flex-col pl-4 leading-tight" title={presentation.description}>
 					<TruncatedLabel className="font-mono text-xs tabular-nums">
 						{latency != null
-							? `${latency.toLocaleString()}ms`
+							? `${latency.toLocaleString(getLocale())}ms`
 							: presentation.inspectionDuration != null
 								? `${presentation.inspectionDuration}ms`
 								: t("mcpLogs.notRecorded")}
