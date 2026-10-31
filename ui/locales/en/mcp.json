@@ -874,6 +874,8 @@
 			"invalidLinkBody": "The link may have expired, been used already, invalid, or had its short-lived token stripped. Trigger the original action again so a fresh authentication link is created.",
 			"successTitle": "Authentication successful",
 			"successBody": "Your credential has been stored. You can close this tab and return to your MCP client - future requests will use this credential automatically.",
+			"toolsPendingTitle": "Discovery not finished yet",
+			"toolsPendingBody": "Your credential is saved, but Bifrost couldn't discover {{name}}'s tools, prompts and resources for you. Ask your MCP client to connect to {{name}} again to retry.",
 			"failedTitle": "Authentication failed",
 			"failedFallback": "We couldn't complete the authentication flow.",
 			"failedHint": "You can close this tab and retry the original request from your MCP client to generate a fresh authentication link.",

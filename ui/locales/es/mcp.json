@@ -874,6 +874,8 @@
 			"invalidLinkBody": "El enlace puede haber caducado, sido utilizado ya, inválido, o si su token de corta duración se despojó. De nuevo se activa la acción original para crear un nuevo enlace de autenticación.",
 			"successTitle": "Autenticación exitosa",
 			"successBody": "Puede cerrar esta ficha y volver a su cliente MCP - las solicitudes futuras utilizarán esta credencial automáticamente.",
+			"toolsPendingTitle": "El descubrimiento aún no ha terminado",
+			"toolsPendingBody": "Tu credencial está guardada, pero Bifrost no pudo descubrir las herramientas, los prompts y los recursos de {{name}} para ti. Pide a tu cliente MCP que vuelva a conectarse a {{name}} para reintentarlo.",
 			"failedTitle": "La autenticación falló",
 			"failedFallback": "No pudimos completar el flujo de autenticación.",
 			"failedHint": "Puede cerrar esta ficha y retratar la solicitud original de su cliente MCP para generar un nuevo enlace de autenticación.",

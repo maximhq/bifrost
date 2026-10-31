@@ -874,6 +874,8 @@
 			"invalidLinkBody": "連結可能已過期、已被使用、無效，或其短期令牌被剝離。請再次觸發原始操作以生成新的驗證連結。",
 			"successTitle": "驗證成功",
 			"successBody": "你的憑證已儲存。可以關閉此標籤頁並返回 MCP 客戶端 — 之後的請求會自動使用此憑證。",
+			"toolsPendingTitle": "發現尚未完成",
+			"toolsPendingBody": "您的憑證已儲存，但 Bifrost 無法為您發現 {{name}} 的工具、提示詞與資源。請讓您的 MCP 用戶端重新連線至 {{name}} 以重試。",
 			"failedTitle": "驗證失敗",
 			"failedFallback": "我們無法完成驗證流程。",
 			"failedHint": "你可以關閉此標籤頁，並從 MCP 客戶端重試原始請求以生成新的驗證連結。",

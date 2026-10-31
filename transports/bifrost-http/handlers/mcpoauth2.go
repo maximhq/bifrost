@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -24,16 +25,18 @@ type OAuthHandler struct {
 	client        *bifrost.Bifrost
 	store         *lib.Config
 	oauthProvider *oauth2.OAuth2Provider
+	mcpManager    MCPManager // discovers with a caller's new token; nil skips that
 }
 
 // NewOAuthHandler creates a new OAuth handler instance
-func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifrost, store *lib.Config) *OAuthHandler {
+func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifrost, store *lib.Config, mcpManager MCPManager) *OAuthHandler {
 	// A metadata-document client_id follows the base these paths are served under.
 	oauthProvider.SetClientMetadataDocumentPaths(oauthCallbackPath, oauthClientMetadataPath)
 	return &OAuthHandler{
 		client:        client,
 		store:         store,
 		oauthProvider: oauthProvider,
+		mcpManager:    mcpManager,
 	}
 }
 
@@ -110,7 +113,7 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Per-user runtime flow (state lives in oauth_user_sessions).
-	_, perUserErr := h.oauthProvider.CompleteUserOAuthFlow(ctx, state, code)
+	completion, perUserErr := h.oauthProvider.CompleteUserOAuthFlow(ctx, state, code)
 	if perUserErr != nil && !errors.Is(perUserErr, schemas.ErrOAuth2NotPerUserSession) {
 		// The OAuth state is the CSRF token — never log it raw; it could
 		// be replayed by anyone with log access while the flow is alive.
@@ -120,7 +123,12 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if perUserErr == nil {
-		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, "", true), fasthttp.StatusFound)
+		pendingClient := h.discoverAfterOAuthSignIn(ctx, completion)
+		redirect := perUserCallbackRedirect(ctx, h.store.ConfigStore, "", true)
+		if pendingClient != "" {
+			redirect = withToolsPending(redirect, pendingClient)
+		}
+		ctx.Redirect(redirect, fasthttp.StatusFound)
 		return
 	}
 
@@ -131,6 +139,64 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=success", fasthttp.StatusFound)
+}
+
+// discoverAfterOAuthSignIn stores the discovery a caller's new OAuth token makes,
+// for a client that keeps one per caller, before the callback redirects: the
+// caller's next request then has the client's tools. Discovery dials the
+// upstream, so it is bounded by signInDiscoveryTimeout. The token is read again
+// for discovery and once more before storing, so a token revoked meanwhile leaves
+// nothing behind. Sign-in succeeds even when discovery fails, since the token is
+// stored: it drops the discovery an earlier sign-in left then, which the new
+// token replaced, and returns the client's name, for the redirect to tell the
+// caller its tools are not loaded yet and that connecting again retries. It
+// returns "" when discovery succeeded or was not attempted, and for a token
+// revoked meanwhile, which connecting again would not help.
+func (h *OAuthHandler) discoverAfterOAuthSignIn(parent context.Context, completion *schemas.UserOAuthCompletion) string {
+	store := perUserDiscoveryStore(h.store)
+	if completion == nil || store == nil || h.mcpManager == nil || h.store.ConfigStore == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(parent, signInDiscoveryTimeout)
+	defer cancel()
+	config, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, completion.MCPClientID)
+	if err != nil || config == nil {
+		if err != nil {
+			logger.Warn("[oauth] failed to load MCP client %s to discover after a per-user sign-in: %v", completion.MCPClientID, err)
+		}
+		return ""
+	}
+	mode, identity := completion.AuthMode, completion.Identity
+	if !keepsSignInDiscovery(config, mode, identity) {
+		return ""
+	}
+	token := func(ctx context.Context) (string, error) {
+		return h.oauthProvider.GetUserAccessTokenByMode(ctx, mode, identity, config.ID)
+	}
+	accessToken, err := token(ctx)
+	if err != nil {
+		logger.Warn("[oauth] failed to read the new token of MCP client %s to discover after a per-user sign-in: %v", config.Name, err)
+		dropSignInDiscovery(parent, store, config, mode, identity)
+		return config.Name
+	}
+	discovery, err := h.mcpManager.VerifyPerUserOAuthConnection(ctx, config, accessToken)
+	if err != nil {
+		logger.Warn("[oauth] failed to discover the tools of MCP client %s after a per-user sign-in: %v", config.Name, err)
+		dropSignInDiscovery(parent, store, config, mode, identity)
+		return config.Name
+	}
+	// Revoked while discovery ran: a discovery stored now would outlive it.
+	if _, err := token(ctx); err != nil {
+		dropSignInDiscovery(parent, store, config, mode, identity)
+		return ""
+	}
+	discovery.DiscoveredAt = time.Now()
+	if err := storeSignInDiscovery(ctx, store, config, mode, identity, discovery); err != nil {
+		logger.Warn("[oauth] failed to store the discovery of MCP client %s after a per-user sign-in: %v", config.Name, err)
+		dropSignInDiscovery(parent, store, config, mode, identity)
+		return config.Name
+	}
+	return ""
 }
 
 // handleCallbackError handles ?error= responses. The upstream error is only logged, so provider text
@@ -192,6 +258,18 @@ func perUserCallbackRedirect(ctx *fasthttp.RequestCtx, store configstore.ConfigS
 		return "/workspace/mcp-sessions?error=" + url.QueryEscape(userMsg)
 	}
 	return "/workspace/mcp-sessions/auth-failed?error=" + url.QueryEscape(userMsg)
+}
+
+// withToolsPending marks a per-user sign-in success redirect to say clientName's
+// tools could not be loaded yet, for the page to tell the caller to connect again.
+// Only the name travels in the URL, never the error, which can carry upstream
+// details: a URL is kept in browser history and proxy logs.
+func withToolsPending(redirect, clientName string) string {
+	sep := "?"
+	if strings.Contains(redirect, "?") {
+		sep = "&"
+	}
+	return redirect + sep + "tools=pending&client=" + url.QueryEscape(clientName)
 }
 
 // resolveOAuthFlowPollStatus folds an admin-mode flow row into the status a

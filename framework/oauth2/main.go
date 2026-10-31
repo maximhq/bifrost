@@ -1864,16 +1864,18 @@ func (p *OAuth2Provider) ReregisterDynamicClient(ctx context.Context, oauthConfi
 }
 
 // CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
-// It looks up the session by state, exchanges code for tokens, and returns a session token.
-func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error) {
+// It looks up the session by state, exchanges code for tokens, stores them, and
+// returns the caller and MCP client the token was stored for, as the flow row
+// recorded them.
+func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (*schemas.UserOAuthCompletion, error) {
 	// Atomically claim session by state to prevent concurrent callback races
 	session, err := p.configStore.ClaimOauthUserSessionByState(ctx, state)
 	if err != nil {
-		return "", fmt.Errorf("failed to claim per-user oauth session: %w", err)
+		return nil, fmt.Errorf("failed to claim per-user oauth session: %w", err)
 	}
 	if session == nil {
 		// State not found or already claimed — not a per-user session
-		return "", schemas.ErrOAuth2NotPerUserSession
+		return nil, schemas.ErrOAuth2NotPerUserSession
 	}
 
 	// Check expiry. Flow rows are deleted on every terminal transition
@@ -1882,7 +1884,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	// or already completed" — no audit trail to preserve here.
 	if time.Now().After(session.ExpiresAt) {
 		p.cleanupFlow(ctx, session.ID)
-		return "", fmt.Errorf("per-user oauth flow expired")
+		return nil, fmt.Errorf("per-user oauth flow expired")
 	}
 
 	// Load template OAuth config for token_url, client_id, etc. Split the
@@ -1892,15 +1894,15 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, session.OauthConfigID)
 	if err != nil {
 		p.cleanupFlow(ctx, session.ID)
-		return "", fmt.Errorf("failed to load template oauth config: %w", err)
+		return nil, fmt.Errorf("failed to load template oauth config: %w", err)
 	}
 	if templateConfig == nil {
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
-		return "", schemas.ErrOAuth2ConfigNotFound
+		return nil, schemas.ErrOAuth2ConfigNotFound
 	}
 	if err := checkFlowAuthorizationServer(session, templateConfig); err != nil {
 		p.cleanupFlow(ctx, session.ID)
-		return "", err
+		return nil, err
 	}
 	// Exchange code for tokens with PKCE verifier
 	// Use the redirect URI stored in the session (same one used in authorize step)
@@ -1922,7 +1924,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	)
 	if err != nil {
 		p.cleanupFlow(ctx, session.ID)
-		return "", fmt.Errorf("per-user token exchange failed: %w", err)
+		return nil, fmt.Errorf("per-user token exchange failed: %w", err)
 	}
 
 	// SessionID is carried from the flow row as-is: populated for session-mode
@@ -1950,13 +1952,13 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		tokenUserID = session.UserID
 		if tokenUserID == nil || *tokenUserID == "" {
 			p.cleanupFlow(ctx, session.ID)
-			return "", fmt.Errorf("user-mode oauth flow has no user_id at completion")
+			return nil, fmt.Errorf("user-mode oauth flow has no user_id at completion")
 		}
 	case schemas.MCPAuthModeVK:
 		tokenVKID = session.VirtualKeyID
 		if tokenVKID == nil || *tokenVKID == "" {
 			p.cleanupFlow(ctx, session.ID)
-			return "", fmt.Errorf("vk-mode oauth flow has no virtual_key_id at completion")
+			return nil, fmt.Errorf("vk-mode oauth flow has no virtual_key_id at completion")
 		}
 	case schemas.MCPAuthModeSession:
 		// Both identity columns left nil; row is keyed by session_id.
@@ -1964,7 +1966,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		// Bogus flow_mode on the row — drop it so a fresh flow can start
 		// instead of leaving the row stuck in 'claiming' forever.
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
-		return "", fmt.Errorf("invalid flow mode on session: %s", session.ID)
+		return nil, fmt.Errorf("invalid flow mode on session: %s", session.ID)
 	}
 
 	// Create per-user OAuth token record
@@ -1994,7 +1996,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		// next initiation for this binding indefinitely. Drop it so the
 		// caller can restart cleanly.
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
-		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
+		return nil, fmt.Errorf("failed to create per-user oauth token: %w", err)
 	}
 	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
 	// reused row's ID when one existed, so this evicts exactly the row that
@@ -2011,7 +2013,14 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 
 	logger.Debug("Per-user OAuth flow completed: session_id=%s, mcp_client_id=%s", session.ID, session.MCPClientID)
 
-	return sessionID, nil
+	identity := sessionID
+	switch flowMode {
+	case schemas.MCPAuthModeUser:
+		identity = *tokenUserID
+	case schemas.MCPAuthModeVK:
+		identity = *tokenVKID
+	}
+	return &schemas.UserOAuthCompletion{AuthMode: flowMode, Identity: identity, MCPClientID: session.MCPClientID}, nil
 }
 
 // GetUserAccessTokenByMode retrieves the upstream access token using exactly

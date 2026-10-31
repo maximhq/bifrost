@@ -874,6 +874,8 @@
 			"invalidLinkBody": "Il link potrebbe essere scaduto, già utilizzato, non valido oppure il suo token di breve durata potrebbe essere stato rimosso. Avvia di nuovo l'azione originale per creare un nuovo link di autenticazione.",
 			"successTitle": "Autenticazione riuscita",
 			"successBody": "La tua credenziale è stata memorizzata. Puoi chiudere questa scheda e tornare al tuo client MCP - le richieste future utilizzeranno automaticamente questa credenziale.",
+			"toolsPendingTitle": "Rilevamento non ancora completato",
+			"toolsPendingBody": "La tua credenziale è stata salvata, ma Bifrost non è riuscito a rilevare gli strumenti, i prompt e le risorse di {{name}} per te. Chiedi al tuo client MCP di connettersi di nuovo a {{name}} per riprovare.",
 			"failedTitle": "Autenticazione non riuscita",
 			"failedFallback": "Non siamo riusciti a completare il flusso di autenticazione.",
 			"failedHint": "Puoi chiudere questa scheda e riprovare la richiesta originale dal tuo client MCP per generare un nuovo link di autenticazione.",
