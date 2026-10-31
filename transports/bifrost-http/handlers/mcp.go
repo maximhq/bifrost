@@ -255,7 +255,7 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
 		return
 	}
-	if clientConfig.PendingOAuthConfig != nil {
+	if clientConfig.PendingVerification {
 		// A config.json-bootstrapped client links OauthConfigID before the
 		// admin ever completes consent (see InitiateOAuthFlow), so the check
 		// above alone doesn't catch this case. Reauthorizing here would
@@ -505,20 +505,67 @@ type VerifyMCPClientHeadersRequest struct {
 // Synchronous: no callback, no popup. On success the client transitions
 // to connected; on failure the row stays in pending_verification and the
 // admin can retry.
-// isConcurrentVerifyReplay reports whether a reloaded row's DiscoveredTools
-// reflects a DIFFERENT (concurrent) verify-headers request completing this
-// client's one-time bootstrap during this request's own upstream
-// round-trip — the only scenario the replay guard exists to catch. Gated on
-// the client's STATE at the start of the request, not on DiscoveredTools'
-// own nil-ness: only a client that was genuinely still pending its one-time
+// isConcurrentVerifyReplay reports whether a reloaded row recording the client
+// as verified reflects a DIFFERENT (concurrent) verify-headers request
+// completing this client's one-time bootstrap during this request's own
+// upstream round-trip — the only scenario the replay guard exists to catch.
+// Gated on the client's STATE at the start of the request, not on the row's
+// record alone: only a client that was genuinely still pending its one-time
 // bootstrap (pending_verification) can race another request finishing that
 // same bootstrap. A client repairing an already-verified admin credential
 // starts in some other state (Healthy, Unstable, ...) and must run through
 // to completion — in particular the admin-credential retention step below
 // — or that credential could never be repaired once a client has been
 // verified once.
-func isConcurrentVerifyReplay(wasPendingVerificationBeforeThisRequest, reloadedHasTools bool) bool {
-	return wasPendingVerificationBeforeThisRequest && reloadedHasTools
+func isConcurrentVerifyReplay(wasPendingVerificationBeforeThisRequest, reloadedVerified bool) bool {
+	return wasPendingVerificationBeforeThisRequest && reloadedVerified
+}
+
+// perUserDiscoveryOn reports whether config keeps a discovery per caller, so its
+// admin verification keeps neither the admin's credential nor the tools found.
+func perUserDiscoveryOn(config *schemas.MCPClientConfig) bool {
+	return config != nil && config.PerUserDiscovery != nil && *config.PerUserDiscovery
+}
+
+// activateVerifiedClient hands the runtime the result of config's admin
+// verification once the store has recorded it: the discovery it found, whose
+// resources, prompts and instructions are written to the row first (the full
+// config update leaves those columns alone), or, for a client with
+// per_user_discovery on, which keeps none, the config recording that it
+// passed. That config goes through the credential update, the same path a
+// completed OAuth sign-in takes to end a client's pending_verification. A
+// client already verified has nothing left to update there, which is not a
+// failure. Any other failure is only logged: the store has the record, which
+// the client is read from again when it is next loaded.
+func (h *MCPHandler) activateVerifiedClient(ctx context.Context, config *schemas.MCPClientConfig, discovery *schemas.MCPDiscovery) {
+	if perUserDiscoveryOn(config) {
+		verified := *config
+		verified.PendingVerification = false
+		if err := h.updateMCPClientCredentialsWithRetry(ctx, config.ID, &verified); err != nil && !errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+			logger.Warn(fmt.Sprintf("failed to activate MCP client %s after its verification: %v", config.ID, err))
+		}
+		return
+	}
+	h.persistMCPDiscovery(ctx, config.ID, discovery)
+	h.mcpManager.SetClientDiscovery(config.ID, discovery)
+}
+
+// recordAdminVerification records in the store that config, still waiting for
+// its admin step, passed it. Only a client with per_user_discovery on is read
+// from that record (see TableMCPClient.AwaitsAdminVerification), so only its
+// failure is returned, for the caller to report: the client works now but would
+// read as unverified again after a restart. For any other client the tools
+// already stored record the step, so a failure is only logged.
+func (h *MCPHandler) recordAdminVerification(ctx context.Context, config *schemas.MCPClientConfig) error {
+	if !config.PendingVerification {
+		return nil
+	}
+	err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, config.ID)
+	if err != nil && !perUserDiscoveryOn(config) {
+		logger.Warn(fmt.Sprintf("failed to record the verification of MCP client %s: %v", config.ID, err))
+		return nil
+	}
+	return err
 }
 
 // isPrematureOAuthCompletion reports whether a complete-oauth request
@@ -640,8 +687,8 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	}
 	// Re-check the replay guard against the freshly reloaded row: a
 	// concurrent verify-headers call (e.g. a double-click) may have
-	// completed its own discovery and persisted DiscoveredTools during the
-	// network round-trip above. The reload already reads the current row,
+	// completed its own discovery and recorded the client as verified during
+	// the network round-trip above. The reload already reads the current row,
 	// so this costs nothing extra and closes the double-submit race the
 	// guard at the top of this handler can't see. Treat it as this
 	// request's own success rather than an error: the desired end state
@@ -649,13 +696,13 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	// request, so there's nothing left to do here — redoing the
 	// persist/activation below would only risk clobbering its tool set.
 	//
-	// Gated on isConcurrentVerifyReplay (not a bare DiscoveredTools != nil
-	// check): a client that wasn't pending_verification when this request
+	// Gated on isConcurrentVerifyReplay (not a bare check of the row): a
+	// client that wasn't pending_verification when this request
 	// started isn't racing another request's bootstrap, it's a legitimate
 	// repair of an already-verified client — that case must fall through
 	// and run to completion, or the admin credential (retained further
 	// below) could never be repaired once a client has been verified once.
-	if isConcurrentVerifyReplay(wasPendingVerificationBeforeThisRequest, clientConfig.DiscoveredTools != nil) {
+	if isConcurrentVerifyReplay(wasPendingVerificationBeforeThisRequest, !clientConfig.PendingVerification) {
 		SendJSON(ctx, map[string]any{
 			"status":      "success",
 			"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(clientConfig.DiscoveredTools)),
@@ -663,17 +710,22 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		})
 		return
 	}
-	clientConfig.DiscoveredTools = tools
-	clientConfig.DiscoveredToolNameMapping = toolNameMapping
-	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
-	clientConfig.DiscoveredInstructions = discovery.Instructions
+	// A client with per_user_discovery on keeps neither the discovery nor, below,
+	// the admin's credential: each caller discovers with their own.
+	keepsAdminDiscovery := !perUserDiscoveryOn(clientConfig)
+	if keepsAdminDiscovery {
+		clientConfig.DiscoveredTools = tools
+		clientConfig.DiscoveredToolNameMapping = toolNameMapping
+		clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+		clientConfig.DiscoveredInstructions = discovery.Instructions
+	}
 
 	// Activate the runtime client BEFORE persisting so a partial failure
 	// can always be retried through this endpoint. The replay guard above
-	// reads DiscoveredTools from the DB, so persisting first would turn an
+	// reads the row's verification record, so persisting first would turn an
 	// activation failure into a permanent 409 wedge (runtime still parked,
 	// DB claiming verified). In this order every partial failure leaves the
-	// DB row without tools and the retry path open:
+	// DB row unverified and the retry path open:
 	//   - activation fails → nothing persisted → retry re-runs verification
 	//   - persistence fails → runtime not yet given the tools either (see
 	//     below) → retry re-runs verification cleanly, nothing to reconcile
@@ -723,9 +775,10 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		// NOTE: Partial success; the runtime client is activated (Healthy)
 		// but — since SetClientDiscovery runs below, after this succeeds — has
 		// no tools live either, so runtime and DB agree (both empty) rather
-		// than drifting. The replay guard reads DiscoveredTools from the
-		// DB, so retrying this endpoint re-runs verification cleanly; a
-		// restart re-parks the client in pending_verification.
+		// than drifting. The replay guard reads the row's verification
+		// record, still unset, so retrying this endpoint re-runs
+		// verification cleanly; a restart re-parks the client in
+		// pending_verification.
 		logger.Error(fmt.Sprintf(
 			"[PARTIAL SUCCESS] MCP client %s was activated after headers verification but persisting discovered tools failed: %v. "+
 				"The client is connected but has no tools live yet; retry this endpoint to re-run verification and persist.",
@@ -734,13 +787,19 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
-	// Set discovered tools on the client after persistence succeeds — not
-	// before. SetClientDiscovery may propagate this update to other observers
-	// of the DB row (deployment-specific), so it must run strictly after
-	// the write above lands — otherwise a propagated update could be read
-	// back before the row it depends on was actually written.
-	h.persistMCPDiscovery(ctx, clientConfig.ID, discovery)
-	h.mcpManager.SetClientDiscovery(clientConfig.ID, discovery)
+	// Record the verification, then set the discovery on the client, after
+	// persistence succeeds — not before. SetClientDiscovery may propagate this
+	// update to other observers of the DB row (deployment-specific), so it must
+	// run strictly after the writes above land — otherwise a propagated update
+	// could be read back before the row it depends on was actually written. A
+	// failed record leaves runtime and DB unverified alike, so a retry re-runs
+	// verification.
+	if err := h.recordAdminVerification(ctx, clientConfig); err != nil {
+		logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s was verified but recording the verification failed: %v. Retry this endpoint to re-run verification.", clientConfig.ID, err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but recording the verification failed. Retry this endpoint to re-run verification: %v", err))
+		return
+	}
+	h.activateVerifiedClient(ctx, clientConfig, discovery)
 
 	// Retain the admin's sample header values as the auth_mode='admin'
 	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
@@ -753,7 +812,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	// since the client is verified and serving; it just means the tool list
 	// can't refresh (bootstrap) or the client keeps projecting needs_reauth
 	// until this endpoint is retried (repair).
-	if h.store.MCPHeadersProvider != nil {
+	if keepsAdminDiscovery && h.store.MCPHeadersProvider != nil {
 		if err := h.store.MCPHeadersProvider.UpsertCredential(ctx, &schemas.MCPHeadersUserCredential{
 			MCPClientID: clientConfig.ID,
 			AuthMode:    schemas.MCPAuthModeAdmin,
@@ -861,17 +920,22 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	// Same reload-activate-persist ordering as verify-headers, for the same
 	// reasons: the reload narrows the concurrent-edit window opened by the
 	// upstream round-trip, and activating before persisting keeps every
-	// partial failure retryable through this endpoint (the replay guard
-	// reads DiscoveredTools from the DB).
+	// partial failure retryable through this endpoint (the row's
+	// verification record is set last).
 	clientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verification succeeded but reloading the client for activation failed: %v", err))
 		return
 	}
-	clientConfig.DiscoveredTools = tools
-	clientConfig.DiscoveredToolNameMapping = toolNameMapping
-	clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
-	clientConfig.DiscoveredInstructions = discovery.Instructions
+	// A client with per_user_discovery on keeps neither the discovery nor, below,
+	// the admin's credential: each caller exchanges and discovers their own.
+	keepsAdminDiscovery := !perUserDiscoveryOn(clientConfig)
+	if keepsAdminDiscovery {
+		clientConfig.DiscoveredTools = tools
+		clientConfig.DiscoveredToolNameMapping = toolNameMapping
+		clientConfig.DiscoveredResources, clientConfig.DiscoveredResourceTemplates, clientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+		clientConfig.DiscoveredInstructions = discovery.Instructions
+	}
 
 	if err := h.updateMCPClientWithRetry(bifrostCtx, clientConfig.ID, clientConfig); err != nil {
 		logger.Error(fmt.Sprintf("Failed to update MCP client after exchange verification for client %s: %v", clientConfig.ID, err))
@@ -916,9 +980,10 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		// NOTE: Partial success; the runtime client is activated (Healthy)
 		// but — since SetClientDiscovery runs below, after this succeeds — has
 		// no tools live either, so runtime and DB agree (both empty) rather
-		// than drifting. The replay guard reads DiscoveredTools from the
-		// DB, so retrying this endpoint re-runs verification cleanly; a
-		// restart re-parks the client in pending_verification.
+		// than drifting. The replay guard reads the row's verification
+		// record, still unset, so retrying this endpoint re-runs
+		// verification cleanly; a restart re-parks the client in
+		// pending_verification.
 		logger.Error(fmt.Sprintf(
 			"[PARTIAL SUCCESS] MCP client %s was activated after exchange verification but persisting discovered tools failed: %v. "+
 				"The client is connected but has no tools live yet; retry this endpoint to re-run verification and persist.",
@@ -927,13 +992,19 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
-	// Set discovered tools on the client after persistence succeeds — not
-	// before. SetClientDiscovery may propagate this update to other observers
-	// of the DB row (deployment-specific), so it must run strictly after
-	// the write above lands — otherwise a propagated update could be read
-	// back before the row it depends on was actually written.
-	h.persistMCPDiscovery(ctx, clientConfig.ID, discovery)
-	h.mcpManager.SetClientDiscovery(clientConfig.ID, discovery)
+	// Record the verification, then set the discovery on the client, after
+	// persistence succeeds — not before. SetClientDiscovery may propagate this
+	// update to other observers of the DB row (deployment-specific), so it must
+	// run strictly after the writes above land — otherwise a propagated update
+	// could be read back before the row it depends on was actually written. A
+	// failed record leaves runtime and DB unverified alike, so a retry re-runs
+	// verification.
+	if err := h.recordAdminVerification(ctx, clientConfig); err != nil {
+		logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s was verified but recording the verification failed: %v. Retry this endpoint to re-run verification.", clientConfig.ID, err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but recording the verification failed. Retry this endpoint to re-run verification: %v", err))
+		return
+	}
+	h.activateVerifiedClient(ctx, clientConfig, discovery)
 
 	// Retain the admin credential for the periodic tool syncer and the
 	// refresh worker. Deliberately last, mirroring verify-headers: on a
@@ -943,8 +1014,10 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	// is verified and serving either way; a failed retention just means
 	// tool-list refresh stays unavailable (bootstrap) or the client keeps
 	// projecting needs_reauth (repair) until this endpoint is retried.
-	if retainErr := h.store.OAuthProvider.RetainExchangeAdminCredential(ctx, clientConfig, adminResponse); retainErr != nil {
-		logger.Warn(fmt.Sprintf("failed to retain admin exchange credential for MCP client %s: %v", clientConfig.ID, retainErr))
+	if keepsAdminDiscovery {
+		if retainErr := h.store.OAuthProvider.RetainExchangeAdminCredential(ctx, clientConfig, adminResponse); retainErr != nil {
+			logger.Warn(fmt.Sprintf("failed to retain admin exchange credential for MCP client %s: %v", clientConfig.ID, retainErr))
+		}
 	}
 
 	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
@@ -2723,6 +2796,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		switch {
 		case errors.Is(exchangeErr, schemas.ErrExchangeSubjectTokenMissing):
 			// Nothing to verify as: created in pending_verification.
+			schemasConfig.PendingVerification = true
 		case errors.Is(exchangeErr, schemas.ErrStoredSignInExpired):
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, "Admin credential exchange failed: your Bifrost sign-in has expired. Sign in to Bifrost again and retry")
 			return
@@ -4449,18 +4523,19 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		//    credential and revokes it) vs the shared completion path.
 		//    per_user_headers and other non-OAuth types cannot complete
 		//    through this endpoint.
-		// 2. PendingOAuthConfigJSON must still be set — once cleared, the
-		//    client has already completed bootstrap, and any further hit
+		// 2. The client must still be pending verification — once cleared,
+		//    the client has already completed bootstrap, and any further hit
 		//    on complete-oauth with this oauth_config_id is a replay (the
 		//    JSON blob is gone because RemovePendingMCPClient ran, and the
-		//    bootstrap stash is gone because ClearMCPClientPendingOAuthConfig
-		//    ran). Reject with 409 so callers don't trigger redundant DB
-		//    writes + reconnects on an already-connected client.
+		//    record is cleared, with the bootstrap stash, by
+		//    ClearMCPClientPendingVerification). Reject with 409 so callers
+		//    don't trigger redundant DB writes + reconnects on an
+		//    already-connected client.
 		if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) && dbClient.AuthType != string(schemas.MCPAuthTypePerUserOauth) {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("OAuth config does not match an OAuth-based MCP client (auth_type=%q)", dbClient.AuthType))
 			return
 		}
-		if dbClient.PendingOAuthConfigJSON == nil || *dbClient.PendingOAuthConfigJSON == "" {
+		if !dbClient.AwaitsAdminVerification() {
 			// Not a bootstrap completion. Three possibilities: a genuine
 			// replay (client already active, this exact oauth_config_id's
 			// flow completed long ago, nothing new happened), a shared
@@ -4534,10 +4609,11 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		mcpClientConfig.OauthConfigID = &oauthConfigID
-		// Drop the bootstrap stash from the in-memory config so the MCP
-		// manager's reconnect path takes the normal connect branch instead
-		// of re-parking the client in pending_verification.
+		// Drop the bootstrap stash and the pending record from the in-memory
+		// config so the MCP manager's reconnect path takes the normal connect
+		// branch instead of re-parking the client in pending_verification.
 		mcpClientConfig.PendingOAuthConfig = nil
+		mcpClientConfig.PendingVerification = false
 		configBootstrap = true
 	}
 
@@ -4579,11 +4655,17 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		}
 		tools, toolNameMapping := discovery.Tools, discovery.ToolNameMapping
 
-		// Attach discovered tools before persisting so the DB row includes them from the start.
-		mcpClientConfig.DiscoveredTools = tools
-		mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
-		mcpClientConfig.DiscoveredResources, mcpClientConfig.DiscoveredResourceTemplates, mcpClientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
-		mcpClientConfig.DiscoveredInstructions = discovery.Instructions
+		// Attach discovered tools before persisting so the DB row includes them
+		// from the start. A client with per_user_discovery on keeps neither the
+		// discovery nor, below, the admin's sign-in: each caller discovers with
+		// their own.
+		keepsAdminDiscovery := !perUserDiscoveryOn(mcpClientConfig)
+		if keepsAdminDiscovery {
+			mcpClientConfig.DiscoveredTools = tools
+			mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
+			mcpClientConfig.DiscoveredResources, mcpClientConfig.DiscoveredResourceTemplates, mcpClientConfig.DiscoveredPrompts = discovery.Resources, discovery.ResourceTemplates, discovery.Prompts
+			mcpClientConfig.DiscoveredInstructions = discovery.Instructions
+		}
 
 		if isUpdateFlow {
 			oldDBConfig := *existingDBConfig
@@ -4665,8 +4747,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Set discovered tools on the client
-		h.persistMCPDiscovery(ctx, mcpClientConfig.ID, discovery)
-		h.mcpManager.SetClientDiscovery(mcpClientConfig.ID, discovery)
+		h.activateVerifiedClient(ctx, mcpClientConfig, discovery)
 
 		// Retain the admin's bootstrap-verification token instead of
 		// discarding it via RevokeToken: promote the row CompleteOAuthFlow
@@ -4683,22 +4764,27 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// fail the request, since the client is otherwise fully verified and
 		// working; it just means the tool list can't be refreshed later
 		// until the admin repairs the discovery credential.
-		if promoteErr := h.store.ConfigStore.PromoteSharedOauthTokenToAdmin(ctx, oauthConfigID, mcpClientConfig.ID); promoteErr != nil {
+		// A client with per_user_discovery on keeps no admin sign-in: the token
+		// is deleted instead, the same way a failed verification deletes it.
+		if !keepsAdminDiscovery {
+			if revokeErr := h.oauthHandler.RevokeToken(ctx, oauthConfigID); revokeErr != nil {
+				logger.Warn(fmt.Sprintf("failed to revoke admin bootstrap token after verification of MCP client %s: %v", mcpClientConfig.ID, revokeErr))
+			}
+		} else if promoteErr := h.store.ConfigStore.PromoteSharedOauthTokenToAdmin(ctx, oauthConfigID, mcpClientConfig.ID); promoteErr != nil {
 			logger.Warn(fmt.Sprintf("failed to retain admin bootstrap token for MCP client %s: %v", mcpClientConfig.ID, promoteErr))
 		}
 
-		// For clients bootstrapped from config.json, drop the
-		// pending_oauth_config_json stash now that verification succeeded.
+		// For clients bootstrapped from config.json, record that
+		// verification succeeded, dropping the bootstrap stash with it.
 		// This branch returns before the shared completion path below, so
-		// the stash must be cleared here as well; otherwise the next boot
-		// rehydrates it and parks the verified client back in
-		// pending_verification. A failed clear must surface as an error:
-		// a silent success would hide the drift until a restart re-parks
-		// the client. The replay guard reads the stash, which is still
-		// set, so re-running verification retries the whole flow
-		// including this clear.
+		// the record must be cleared here as well; otherwise the next boot
+		// parks the verified client back in pending_verification. A failed
+		// clear must surface as an error: a silent success would hide the
+		// drift until a restart re-parks the client. The replay guard reads
+		// the record, which is still set, so re-running verification
+		// retries the whole flow including this clear.
 		if configBootstrap {
-			if err := h.store.ConfigStore.ClearMCPClientPendingOAuthConfig(ctx, mcpClientConfig.ID); err != nil {
+			if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
 				logger.Error(fmt.Sprintf(
 					"[PARTIAL SUCCESS] Per-user OAuth MCP client %s was verified and activated but clearing the pending bootstrap config failed: %v. "+
 						"Runtime and database state have drifted: the client works now but will return to pending_verification on restart. Re-run verification to retry.",
@@ -4816,15 +4902,15 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// Don't fail the request - the MCP client was successfully created
 	}
 
-	// For clients bootstrapped from config.json, drop the
-	// pending_oauth_config_json stash now that authorization succeeded so
-	// the runtime no longer treats the client as pending_verification.
-	// A failed clear must surface as an error: a silent success would
-	// hide the drift until a restart re-parks the connected client. The
-	// stash is still set, so re-running verification retries the whole
-	// flow including this clear.
+	// For clients bootstrapped from config.json, record that
+	// authorization succeeded, dropping the bootstrap stash with it, so the
+	// runtime no longer treats the client as pending_verification after a
+	// restart. A failed clear must surface as an error: a silent success
+	// would hide the drift until a restart re-parks the connected client.
+	// The record is still set, so re-running verification retries the
+	// whole flow including this clear.
 	if configBootstrap {
-		if err := h.store.ConfigStore.ClearMCPClientPendingOAuthConfig(ctx, mcpClientConfig.ID); err != nil {
+		if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
 			logger.Error(fmt.Sprintf(
 				"[PARTIAL SUCCESS] OAuth MCP client %s completed authorization but clearing the pending bootstrap config failed: %v. "+
 					"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. Re-run verification to retry.",

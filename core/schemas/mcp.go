@@ -1018,6 +1018,8 @@ type MCPClientConfig struct {
 	// config.json entry that omits it can keep the stored value.
 	PerUserDiscovery *bool `json:"per_user_discovery,omitempty"`
 
+	PendingVerification bool `json:"-"` // Server-set: the client still needs its one-time admin sign-in or verification
+
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names

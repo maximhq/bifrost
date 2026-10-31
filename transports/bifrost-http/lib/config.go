@@ -2333,6 +2333,12 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				c.PendingOAuthConfig == nil {
 				c.PendingOAuthConfig = &schemas.OAuth2Config{}
 			}
+			// A client declared here starts pending its one-time admin step
+			// whenever its auth type has one: the OAuth sign-in above, or
+			// verification of per-user headers or a token exchange (an openapi
+			// client has nothing upstream to verify). A client already stored
+			// keeps its own record instead (see pinMCPClientImmutableFields).
+			c.PendingVerification = mcpClientStartsPendingVerification(c)
 			if c.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
 				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir()); err != nil {
 					logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
@@ -2467,6 +2473,7 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	// pre-authorization pending stash is preserved here — once authorized,
 	// PendingOAuthConfig is cleared and this is a no-op.
 	fileClient.PendingOAuthConfig = existing.PendingOAuthConfig
+	fileClient.PendingVerification = existing.PendingVerification
 
 	// Not immutable, but a per_user_headers client must keep a non-empty key
 	// schema — the update API rejects emptying it for the same reason.
@@ -2738,7 +2745,7 @@ func authorizedOauthRowForComparison(ctx context.Context, store configstore.Conf
 	if store == nil || fileClient == nil || existing == nil {
 		return nil
 	}
-	if fileClient.PendingOAuthConfig == nil || existing.PendingOAuthConfig != nil || existing.OauthConfigID == nil {
+	if fileClient.PendingOAuthConfig == nil || existing.PendingVerification || existing.OauthConfigID == nil {
 		return nil
 	}
 	row, err := store.GetOauthConfigByID(ctx, *existing.OauthConfigID)
@@ -2794,6 +2801,18 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.PromptsToExpose = clientConfig.PromptsToExpose
 	row.ResourcesToExpose = clientConfig.ResourcesToExpose
 	row.PerUserDiscovery = clientConfig.PerUserDiscovery
+}
+
+// mcpClientStartsPendingVerification reports whether a client declared in
+// config.json, before any admin step ran for it, needs one: an OAuth sign-in,
+// or verification of per-user headers or a token exchange. An openapi client's
+// server is synthesized in-process, so there is nothing upstream to verify.
+func mcpClientStartsPendingVerification(c *schemas.MCPClientConfig) bool {
+	switch c.AuthType {
+	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		return c.ConnectionType != schemas.MCPConnectionTypeOpenAPI
+	}
+	return false
 }
 
 // mergeMCPConfig merges MCP config from file with store

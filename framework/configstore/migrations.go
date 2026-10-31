@@ -586,6 +586,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_video_token_pricing_column"}, run: migrationAddVideoTokenPricingColumn},
 	{IDs: []string{"add_voice_live_pricing_columns"}, run: migrationAddVoiceLivePricingColumns},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
+	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16967,6 +16968,55 @@ func migrationAddMCPPerUserDiscoveries(ctx context.Context, db *gorm.DB, logger 
 			}
 			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "PerUserDiscovery"); err != nil {
 				return fmt.Errorf("drop per_user_discovery column from config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientPendingVerificationColumn adds
+// config_mcp_clients.pending_verification, the explicit record that a client
+// still needs its one-time admin step, and backfills it from the signals the
+// runtime used to infer that from: an OAuth client still carrying its
+// bootstrap stash, and a per_user_headers or token_exchange client (not
+// openapi, which has nothing upstream to verify) that never stored the tools
+// its verification discovers. Every other row stays false. Clients without
+// per_user_discovery are still read from those signals for now (see
+// TableMCPClient.AwaitsAdminVerification); the backfill keeps the column right
+// for when that read moves to it.
+func migrationAddMCPClientPendingVerificationColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_pending_verification_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "PendingVerification"); err != nil {
+				return fmt.Errorf("add pending_verification column to config_mcp_clients: %w", err)
+			}
+			if err := tx.Model(&tables.TableMCPClient{}).
+				Where("(auth_type IN ? AND pending_oauth_config_json IS NOT NULL AND pending_oauth_config_json != '') OR "+
+					"(auth_type IN ? AND connection_type != ? AND (discovered_tools_json IS NULL OR discovered_tools_json = '' OR discovered_tools_json = 'null'))",
+					[]string{string(schemas.MCPAuthTypeOauth), string(schemas.MCPAuthTypePerUserOauth)},
+					[]string{string(schemas.MCPAuthTypePerUserHeaders), string(schemas.MCPAuthTypeTokenExchange)},
+					string(schemas.MCPConnectionTypeOpenAPI)).
+				Update("pending_verification", true).Error; err != nil {
+				return fmt.Errorf("backfill pending_verification on config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "PendingVerification"); err != nil {
+				return fmt.Errorf("drop pending_verification column from config_mcp_clients: %w", err)
 			}
 			return nil
 		},

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -20,23 +21,25 @@ import (
 // =============================================================================
 
 // newPendingClientConfig builds a client that AddClient would have parked in
-// pending_verification: an OAuth-based client carrying the inline oauth_config
-// block from config.json that no admin has authorized yet.
+// pending_verification: one recorded as still needing its admin step, here an
+// OAuth-based client carrying the inline oauth_config block from config.json
+// that no admin has authorized yet.
 func newPendingClientConfig(id string, authType schemas.MCPAuthType) *schemas.MCPClientConfig {
 	return &schemas.MCPClientConfig{
-		ID:                 id,
-		Name:               "pending-" + id,
-		AuthType:           authType,
-		ConnectionType:     schemas.MCPConnectionTypeHTTP,
-		ConnectionString:   schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
-		PendingOAuthConfig: &schemas.OAuth2Config{},
+		ID:                  id,
+		Name:                "pending-" + id,
+		AuthType:            authType,
+		ConnectionType:      schemas.MCPConnectionTypeHTTP,
+		ConnectionString:    schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+		PendingOAuthConfig:  &schemas.OAuth2Config{},
+		PendingVerification: true,
 	}
 }
 
 // TestEnableClient_StillPendingVerification_KeepsThatState covers the path that
 // loses the signal. AddClient's disabled branch runs before its
-// pending_verification branches, so a client declared both disabled and
-// unauthorized is registered as Disabled with its PendingOAuthConfig intact.
+// pending_verification branch, so a client declared both disabled and
+// unauthorized is registered as Disabled with its PendingVerification intact.
 // Enabling it then took the ordinary route: the per-call branch marked it
 // Healthy outright, and the sticky branch dialled with a credential that does
 // not exist yet. Either way the "an admin must authorize this" state was gone,
@@ -50,9 +53,7 @@ func TestEnableClient_StillPendingVerification_KeepsThatState(t *testing.T) {
 		{name: "per_user_oauth", authType: schemas.MCPAuthTypePerUserOauth},
 		{name: "oauth", authType: schemas.MCPAuthTypeOauth},
 		{
-			// per_user_headers is pending only while DiscoveredTools is nil:
-			// AddClient nil-checks it on purpose so a verified server that
-			// legitimately exposes zero tools is not re-parked on every reload.
+			// The record decides, not the absence of tools or a stash.
 			name:     "per_user_headers with no discovery yet",
 			authType: schemas.MCPAuthTypePerUserHeaders,
 			mutate: func(c *schemas.MCPClientConfig) {
@@ -61,9 +62,6 @@ func TestEnableClient_StillPendingVerification_KeepsThatState(t *testing.T) {
 			},
 		},
 		{
-			// token_exchange follows the same nil rule. An initialized empty map
-			// would mean "verified, and the server has no tools", which is not
-			// pending: see TestAwaitsAdminVerification_NilIsTheDiscriminator.
 			name:     "token_exchange with no discovery yet",
 			authType: schemas.MCPAuthTypeTokenExchange,
 			mutate: func(c *schemas.MCPClientConfig) {
@@ -154,18 +152,10 @@ func TestSetState_PendingVerification_NotOverwritten(t *testing.T) {
 		"a synthetic success must not silently promote an unauthorized client either")
 }
 
-// TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked pins the
-// discriminator between "never verified" and "verified, and the server exposes
-// no tools". It is nil-ness, not length, and the store is what makes it so:
-// BeforeSave marshals DiscoveredTools only when it is non-nil, so a verified
-// zero-tool server persists "{}", and AfterFind unmarshals that back into a
-// non-nil empty map. A client that never completed verification round-trips as
-// nil instead.
-//
-// Reading an empty map as "not verified" therefore re-parks a perfectly
-// verified client in pending_verification on every single reload, which is the
-// re-park the per-user-headers branch nil-checks specifically to avoid. Token
-// exchange was len-checking and had that bug.
+// TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked pins that a
+// verified token-exchange client whose server exposes no tools is not sent
+// back through admin verification on reload: the client's record of its admin
+// step decides, not how many tools it stored.
 func TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
@@ -176,6 +166,7 @@ func TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked(t *testing.
 	// into clientMap directly, so they never needed a conforming one.
 	config.Name = "tokenexchangezerotools"
 	config.PendingOAuthConfig = nil
+	config.PendingVerification = false
 	config.TokenExchange = &schemas.MCPTokenExchangeConfig{
 		Audience: "https://example.invalid/api",
 		ClientID: schemas.NewSecretVar("exchange-app"),
@@ -193,23 +184,24 @@ func TestAddClient_TokenExchange_VerifiedWithZeroTools_IsNotReParked(t *testing.
 		"a verified token-exchange client that simply exposes no tools must not be sent back through admin verification")
 }
 
-// TestAwaitsAdminVerification_NilIsTheDiscriminator states the same rule
-// directly, for both auth types whose pending-ness is decided by the tool map.
-func TestAwaitsAdminVerification_NilIsTheDiscriminator(t *testing.T) {
-	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange} {
+// TestAwaitsAdminVerification_ReadsTheClientsRecord states the rule directly,
+// for every auth type: the client's record of its admin step decides, and
+// neither its tools nor an OAuth stash stands in for it.
+func TestAwaitsAdminVerification_ReadsTheClientsRecord(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{
+		schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth,
+		schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange,
+		schemas.MCPAuthTypeHeaders,
+	} {
 		t.Run(string(authType), func(t *testing.T) {
-			config := &schemas.MCPClientConfig{AuthType: authType}
+			pending := &schemas.MCPClientConfig{AuthType: authType, PendingVerification: true, DiscoveredTools: map[string]schemas.ChatTool{"a": {}}}
+			assert.True(t, awaitsAdminVerification(pending), "recorded as pending, whatever it holds")
 
-			config.DiscoveredTools = nil
-			assert.True(t, awaitsAdminVerification(config), "a nil tool map means verification never ran")
-
-			config.DiscoveredTools = map[string]schemas.ChatTool{}
-			assert.False(t, awaitsAdminVerification(config), "a non-nil empty map means verification ran and found nothing")
-
-			config.DiscoveredTools = map[string]schemas.ChatTool{"a": {}}
-			assert.False(t, awaitsAdminVerification(config))
+			verified := &schemas.MCPClientConfig{AuthType: authType, PendingOAuthConfig: &schemas.OAuth2Config{}}
+			assert.False(t, awaitsAdminVerification(verified), "no tools and a stash do not make a verified client pending")
 		})
 	}
+	assert.False(t, awaitsAdminVerification(nil))
 }
 
 // newVerifiedClientConfig builds a client whose one-time admin verification has
@@ -410,12 +402,11 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 // SetClientDiscovery is what the admin verification handlers call once the admin's
 // credential has been checked against the upstream: it installs the tools,
 // marks the client healthy, and fires the callback that persists those same
-// tools to the client's row. That row is what makes the client verified after
-// the next restart. Until then awaitsAdminVerification reads the manager's
-// in-memory config, which SetClientDiscovery left untouched, so a per_user_headers
-// or token_exchange server verified a moment ago went on reading as never
-// verified: healthy, serving tools, refused by every path that consults the
-// predicate, and parked back in pending_verification by a disable and enable.
+// tools to the client's row. The handler records the verification on the row;
+// this process reads the manager's in-memory config, so SetClientDiscovery must
+// record it there too, or a server verified a moment ago went on reading as
+// never verified: healthy, serving tools, refused by every path that consults
+// the predicate, and parked back in pending_verification by a disable and enable.
 //
 // Nothing automatic reaches SetClientDiscovery for a client still awaiting its
 // admin (the checker stays quiet for one and a refresh refuses it), so the only
@@ -442,9 +433,7 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 			wantNames: []string{"verifiedclient-lookup"},
 		},
 		{
-			// A verification that found nothing is still a verification. The
-			// discriminator is nil-ness, so what is recorded has to be an
-			// empty map, never nil.
+			// A verification that found nothing is still a verification.
 			name:      "verified with zero tools",
 			authType:  schemas.MCPAuthTypePerUserHeaders,
 			tools:     nil,
@@ -459,6 +448,7 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 
 			config := newVerifiedClientConfig("client", tc.authType, nil)
 			config.DiscoveredToolNameMapping = nil
+			config.PendingVerification = true
 			require.True(t, awaitsAdminVerification(config), "fixture check: the client starts out awaiting its admin")
 			m.mu.Lock()
 			m.clientMap[config.ID] = &schemas.MCPClientState{
@@ -480,12 +470,14 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 			require.NotNil(t, recorded.DiscoveredTools, "a verification that just ran must be on the config the predicate reads")
 			assert.Equal(t, tc.wantNames, slices.AppendSeq([]string{}, maps.Keys(recorded.DiscoveredTools)))
 			assert.Equal(t, map[string]string{"lookup": "lookup"}, recorded.DiscoveredToolNameMapping)
+			assert.False(t, recorded.PendingVerification, "the verification is recorded on the config the predicate reads")
 			assert.False(t, awaitsAdminVerification(recorded), "a client verified in this process is verified in this process")
 
 			// Recorded by swapping the config, never by writing into it: readers
 			// may still hold the old pointer.
 			assert.NotSame(t, config, recorded)
 			assert.Nil(t, config.DiscoveredTools, "the config a concurrent reader may still hold is left as it was")
+			assert.True(t, config.PendingVerification)
 
 			// The symptom on this path: disable it, enable it, and it must come
 			// back as the working client it was.
@@ -498,4 +490,190 @@ func TestSetClientDiscovery_RecordsTheVerificationOnTheConfig(t *testing.T) {
 				"enabling a client verified moments ago must not send it back through admin verification")
 		})
 	}
+}
+
+// TestUpdateClient_KeepsTheClientsVerificationRecord: an edit is not the admin
+// step, so it neither clears nor sets the client's record of it. An ordinary
+// edit arrives without the record (and without the OAuth stash), and taking that
+// as "verified" un-parked a client still waiting for its admin.
+func TestUpdateClient_KeepsTheClientsVerificationRecord(t *testing.T) {
+	for _, pending := range []bool{true, false} {
+		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			defer m.checkerManager.StopAll()
+
+			config := newVerifiedClientConfig("client-edit", schemas.MCPAuthTypePerUserHeaders, map[string]schemas.ChatTool{})
+			config.Name = "clientedit"
+			config.PerUserHeaderKeys = []string{"x-api-key"}
+			config.PendingVerification = pending
+			state := schemas.MCPConnectionStateHealthy
+			if pending {
+				state = schemas.MCPConnectionStatePendingVerification
+			}
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            config.Name,
+				ExecutionConfig: config,
+				State:           state,
+				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+			}
+			m.mu.Unlock()
+
+			edit := *config
+			edit.ToolsToExecute = []string{"*"}
+			edit.PendingVerification = !pending
+			require.NoError(t, m.UpdateClient(config.ID, &edit))
+
+			m.mu.RLock()
+			updated := m.clientMap[config.ID].ExecutionConfig
+			m.mu.RUnlock()
+			assert.Equal(t, []string{"*"}, []string(updated.ToolsToExecute), "fixture check: the edit applied")
+			assert.Equal(t, pending, awaitsAdminVerification(updated), "only the admin step changes the record")
+		})
+	}
+}
+
+// TestUpdateClientCredentials_RecordsACompletedAdminStep: the config recording
+// a client's completed admin step is handed over through the credential update
+// (a client with per_user_discovery on has no tools to set instead). A pending
+// client moves out of pending_verification. A disabled one stays disabled, but
+// is no longer read as pending, so enabling it connects it instead of parking
+// it again behind the step it already passed.
+func TestUpdateClientCredentials_RecordsACompletedAdminStep(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		authType schemas.MCPAuthType
+		perUser  bool
+		state    schemas.MCPConnectionState
+	}{
+		{"per_user_discovery pending", schemas.MCPAuthTypePerUserOauth, true, schemas.MCPConnectionStatePendingVerification},
+		{"per_user_discovery disabled", schemas.MCPAuthTypePerUserOauth, true, schemas.MCPConnectionStateDisabled},
+		{"shared oauth disabled", schemas.MCPAuthTypeOauth, false, schemas.MCPConnectionStateDisabled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			defer m.checkerManager.StopAll()
+
+			config := newPendingClientConfig("client-verified", tc.authType)
+			config.PerUserDiscovery = schemas.Ptr(tc.perUser)
+			config.Disabled = tc.state == schemas.MCPConnectionStateDisabled
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{
+				Name:            config.Name,
+				ExecutionConfig: config,
+				State:           tc.state,
+				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+			}
+			m.mu.Unlock()
+
+			verified := *config
+			verified.PendingOAuthConfig = nil
+			verified.PendingVerification = false
+			require.NoError(t, m.UpdateClientCredentials(config.ID, &verified))
+
+			m.mu.RLock()
+			state := m.clientMap[config.ID].State
+			recorded := m.clientMap[config.ID].ExecutionConfig
+			m.mu.RUnlock()
+			assert.False(t, awaitsAdminVerification(recorded))
+			assert.NotSame(t, config, recorded, "recorded by swapping the config: readers may still hold the old pointer")
+			if tc.state == schemas.MCPConnectionStateDisabled {
+				assert.Equal(t, schemas.MCPConnectionStateDisabled, state, "the step does not enable it")
+				require.NoError(t, m.EnableClient(config.ID))
+				m.mu.RLock()
+				state = m.clientMap[config.ID].State
+				m.mu.RUnlock()
+			}
+			assert.Equal(t, schemas.MCPConnectionStateHealthy, state)
+			if tc.perUser {
+				assert.Empty(t, storedTools(m, config.ID), "nothing is stored for a client that keeps a discovery per caller")
+			}
+		})
+	}
+}
+
+// TestPerUserDiscoveryClient_GetsNoAdminDiscoveryOrChecker: a client with
+// per_user_discovery on keeps no admin credential, so nothing may try to
+// discover or health-check with one. Enabling it and completing its first
+// connection start no checker and run no admin discovery.
+func TestPerUserDiscoveryClient_GetsNoAdminDiscoveryOrChecker(t *testing.T) {
+	newManager := func(t *testing.T) (*MCPManager, *fakeAdminCredStore, *schemas.MCPClientConfig) {
+		cred := &fakeAdminCredStore{err: errors.New("no admin credential is kept")}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, &MockLogger{}, nil)
+		t.Cleanup(m.checkerManager.StopAll)
+		config := newVerifiedClientConfig("client-per-user", schemas.MCPAuthTypePerUserOauth, nil)
+		config.PerUserDiscovery = schemas.Ptr(true)
+		return m, cred, config
+	}
+	hasChecker := func(m *MCPManager, id string) bool {
+		m.checkerManager.mu.RLock()
+		defer m.checkerManager.mu.RUnlock()
+		_, ok := m.checkerManager.checkers[id]
+		return ok
+	}
+
+	t.Run("enable", func(t *testing.T) {
+		m, cred, config := newManager(t)
+		config.Disabled = true
+		m.mu.Lock()
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateDisabled, ConnectionInfo: &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}}
+		m.mu.Unlock()
+
+		require.NoError(t, m.EnableClient(config.ID))
+		assert.False(t, hasChecker(m, config.ID))
+		assert.Zero(t, cred.callCount())
+	})
+
+	t.Run("first connection after the admin step", func(t *testing.T) {
+		m, cred, config := newManager(t)
+		config.PendingVerification = true
+		m.mu.Lock()
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStatePendingVerification, ConnectionInfo: &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}}
+		m.mu.Unlock()
+
+		verified := *config
+		verified.PendingVerification = false
+		require.NoError(t, m.UpdateClientCredentials(config.ID, &verified))
+		assert.False(t, hasChecker(m, config.ID))
+		assert.Zero(t, cred.callCount())
+	})
+
+	t.Run("a client without the flag still gets a checker", func(t *testing.T) {
+		m, _, config := newManager(t)
+		config.PerUserDiscovery = nil
+		config.Disabled = true
+		m.mu.Lock()
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateDisabled, ConnectionInfo: &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}}
+		m.mu.Unlock()
+
+		require.NoError(t, m.EnableClient(config.ID))
+		assert.True(t, hasChecker(m, config.ID))
+	})
+}
+
+// TestReconnectClient_RefusesAClientStillPendingVerification: a client recorded
+// as still needing its admin sign-in has no credential to connect with, so a
+// reconnect is refused rather than flipping it out of pending_verification.
+func TestReconnectClient_RefusesAClientStillPendingVerification(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	defer m.checkerManager.StopAll()
+
+	config := newPendingClientConfig("client-reconnect-pending", schemas.MCPAuthTypeOauth)
+	config.PendingOAuthConfig = nil
+	config.NeedsSessionStickiness = schemas.Ptr(true)
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStatePendingVerification,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	}
+	m.mu.Unlock()
+
+	err := m.ReconnectClient(config.ID)
+	require.ErrorIs(t, err, schemas.ErrMCPReconnectNotApplicable)
+	m.mu.RLock()
+	state := m.clientMap[config.ID].State
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStatePendingVerification, state)
 }

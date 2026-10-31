@@ -209,12 +209,8 @@ func drainToolsChange(ch chan map[string]schemas.ChatTool) {
 
 // TestRefreshClientTools_AwaitingAdminVerification_Refuses covers the case an
 // on-demand refresh must not quietly resolve. A client parked in
-// pending_verification is waiting on a human, and for token_exchange the
-// refresh would not merely fail — it would succeed, because that auth type
-// resolves its own client-credentials token with no admin involved. Since
-// awaitsAdminVerification reads DiscoveredTools == nil as the pending signal
-// there, persisting a discovered set would promote the client out of
-// pending_verification permanently and drop the Verify CTA with it.
+// pending_verification is waiting on a human, and a refresh is not the admin
+// step it waits for: it must not run in its place, whichever auth type.
 func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -224,22 +220,28 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 		{
 			name:     "oauth_with_unauthorized_inline_config",
 			authType: schemas.MCPAuthTypeOauth,
-			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+			pending: func(c *schemas.MCPClientConfig) {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+				c.PendingVerification = true
+			},
 		},
 		{
 			name:     "per_user_oauth_with_unauthorized_inline_config",
 			authType: schemas.MCPAuthTypePerUserOauth,
-			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+			pending: func(c *schemas.MCPClientConfig) {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+				c.PendingVerification = true
+			},
 		},
 		{
 			name:     "token_exchange_never_verified",
 			authType: schemas.MCPAuthTypeTokenExchange,
-			pending:  func(c *schemas.MCPClientConfig) { c.DiscoveredTools = nil },
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingVerification = true },
 		},
 		{
 			name:     "per_user_headers_never_verified",
 			authType: schemas.MCPAuthTypePerUserHeaders,
-			pending:  func(c *schemas.MCPClientConfig) { c.DiscoveredTools = nil },
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingVerification = true },
 		},
 	}
 
@@ -280,6 +282,30 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 				"nothing may be discovered onto a client still awaiting verification")
 		})
 	}
+}
+
+// TestRefreshClientTools_RefusesAPerUserDiscoveryClient: a client with
+// per_user_discovery on has no shared tool list to refresh and no admin
+// credential to discover one with, so the refresh is refused as not
+// applicable rather than failing on the missing credential.
+func TestRefreshClientTools_RefusesAPerUserDiscoveryClient(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { m.checkerManager.StopAll() })
+
+	config := newRefreshConfig("refresh-per-user", "svc", "http://127.0.0.1:0/mcp", false)
+	config.AuthType = schemas.MCPAuthTypePerUserOauth
+	config.PerUserDiscovery = schemas.Ptr(true)
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	}
+	m.mu.Unlock()
+
+	_, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable)
 }
 
 // TestRefreshClientTools_DisabledAndNeedsReauth_Refuse pins the other two

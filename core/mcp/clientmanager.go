@@ -611,8 +611,7 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 	// with; a reconnect attempt would only flip them out of
 	// pending_verification into an error state and hide the authorization
 	// prompt in the UI.
-	if client.ExecutionConfig != nil && client.ExecutionConfig.PendingOAuthConfig != nil &&
-		(client.ExecutionConfig.AuthType == schemas.MCPAuthTypeOauth || client.ExecutionConfig.AuthType == schemas.MCPAuthTypePerUserOauth) {
+	if awaitsAdminVerification(client.ExecutionConfig) {
 		m.mu.Unlock()
 		return fmt.Errorf("client is awaiting admin OAuth authorization; complete authorization instead of reconnecting: %w", schemas.ErrMCPReconnectNotApplicable)
 	}
@@ -822,18 +821,18 @@ func (m *MCPManager) RefreshClientTools(ctx context.Context, clientID string) (i
 		// would fail on auth. Say so plainly instead of surfacing a raw 401.
 		return 0, fmt.Errorf("mcp client %s needs reauthorization before its tools can be refreshed: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
 	}
-	// A client still awaiting its one-time admin flow must not be refreshed,
-	// and the reason is stronger than "it would fail": for token_exchange it
-	// would SUCCEED. That auth type resolves its own client-credentials token,
-	// so discovery needs no admin at all — and because awaitsAdminVerification
-	// reads DiscoveredTools == nil as the pending signal for it, a successful
-	// refresh would persist tools to the client's row and quietly
-	// promote the client out of pending_verification for good, taking the
-	// Verify CTA with it. Checked against the config rather than State alone
-	// for the same reason EnableClient does: State is the thing automatic
-	// paths keep losing, the config predicate is the durable truth.
+	// A client still awaiting its one-time admin flow must not be refreshed:
+	// a refresh is not that flow, and must not stand in for it. Checked against
+	// the config rather than State alone for the same reason EnableClient does:
+	// State is the thing automatic paths keep losing, the config's record of
+	// the step is the durable truth.
 	if awaitsAdminVerification(config) || state == schemas.MCPConnectionStatePendingVerification {
 		return 0, fmt.Errorf("mcp client %s is awaiting admin verification, complete that instead of refreshing its tools: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
+	}
+	// A client with per_user_discovery on has no tool list of its own to
+	// refresh, and no admin credential to discover one with.
+	if perUserDiscoveryOn(config) {
+		return 0, fmt.Errorf("mcp client %s keeps a discovery per caller, so it has no shared tool list to refresh: %w", config.Name, schemas.ErrMCPRefreshNotApplicable)
 	}
 
 	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
@@ -1013,19 +1012,14 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 	// This is to avoid deadlocks when the connection attempt is made
 	m.mu.Unlock()
 
-	// OAuth-type clients with PendingOAuthConfig set carry the inline
-	// `oauth_config` block from config.json but have not yet been
-	// authorized by an admin. For shared OAuth there is no oauth_configs
-	// row or token; for per-user OAuth admin verification + tool discovery
-	// has not run. In both cases the normal connect / per-call paths would
-	// either fail or land the client in a state that misrepresents the
-	// missing admin step. Park them in pending_verification until an admin
-	// completes the browser flow via
-	// POST /api/mcp/client/{id}/initiate-verification. PendingOAuthConfig
-	// is cleared once the OAuth callback completes; the subsequent
-	// reconnect skips this branch and the normal path runs.
-	if config.PendingOAuthConfig != nil &&
-		(config.AuthType == schemas.MCPAuthTypeOauth || config.AuthType == schemas.MCPAuthTypePerUserOauth) {
+	// A client created before its one-time admin step (an OAuth sign-in, or
+	// verification of per-user headers or a token exchange) has nothing the
+	// normal connect or per-call paths could run with: they would fail, or land
+	// the client in a state that hides the missing step. Park it in
+	// pending_verification until an admin completes the step (initiate-
+	// verification, verify-headers or verify-exchange); the client's record of
+	// that step is cleared then, and the next load takes the normal path.
+	if awaitsAdminVerification(config) {
 		m.mu.Lock()
 		if client, exists := m.clientMap[config.ID]; exists {
 			if config.ConnectionString != nil {
@@ -1035,53 +1029,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			client.State = schemas.MCPConnectionStatePendingVerification
 		}
 		m.mu.Unlock()
-		m.logger.Debug("%s OAuth MCP client '%s' (auth_type=%s) registered in pending_verification (awaiting admin authorization)", MCPLogPrefix, config.Name, config.AuthType)
-		return nil
-	}
-
-	// Per-user-headers clients whose DiscoveredTools has never been set
-	// have not had the one-time admin verification + discovery run yet.
-	// The UI Create flow runs that synchronously during create, so any
-	// per-user-headers row arriving here with a nil map was either
-	// declared in config.json or had its tools cleared by schema drift /
-	// manual edit. A verified server that legitimately exposes zero tools
-	// persists a non-nil empty map (see BeforeSave/AfterFind in
-	// framework/configstore/tables/mcp.go), so nil-check rather than
-	// len-check to avoid re-parking it in pending_verification on every
-	// reload. Park in pending_verification so the UI surfaces an admin
-	// "Verify" CTA that hits POST /api/mcp/client/{id}/verify-headers; the
-	// normal per-call path takes over once DiscoveredTools is set.
-	// An openapi client has nothing upstream to verify: its tools are
-	// synthesized from the spec, so it connects straight away.
-	if config.AuthType == schemas.MCPAuthTypePerUserHeaders && config.DiscoveredTools == nil && config.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
-		m.mu.Lock()
-		if client, exists := m.clientMap[config.ID]; exists {
-			if config.ConnectionString != nil {
-				url := config.ConnectionString.GetValue()
-				client.ConnectionInfo.ConnectionURL = &url
-			}
-			client.State = schemas.MCPConnectionStatePendingVerification
-		}
-		m.mu.Unlock()
-		m.logger.Debug("%s Per-user-headers MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
-		return nil
-	}
-
-	// Token-exchange clients with no DiscoveredTools have not had their
-	// one-time admin verification run yet (which also retains the admin
-	// discovery credential). Park in pending_verification like
-	// per-user-headers; the per-call path takes over once verified.
-	if config.AuthType == schemas.MCPAuthTypeTokenExchange && config.DiscoveredTools == nil {
-		m.mu.Lock()
-		if client, exists := m.clientMap[config.ID]; exists {
-			if config.ConnectionString != nil {
-				url := config.ConnectionString.GetValue()
-				client.ConnectionInfo.ConnectionURL = &url
-			}
-			client.State = schemas.MCPConnectionStatePendingVerification
-		}
-		m.mu.Unlock()
-		m.logger.Debug("%s Token-exchange MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
+		m.logger.Debug("%s MCP client '%s' (auth_type=%s) registered in pending_verification (awaiting its admin step)", MCPLogPrefix, config.Name, config.AuthType)
 		return nil
 	}
 
@@ -1135,6 +1083,11 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			}
 		}
 		m.mu.Unlock()
+		// A client with per_user_discovery on keeps no admin credential to
+		// discover or check with: each caller discovers with their own.
+		if perUserDiscoveryOn(config) {
+			return nil
+		}
 		// A client with nothing to restore gets its first discovery pass
 		// synchronously here — mirrors per_user_headers/token_exchange's own
 		// admin-verify-at-setup-time step (VerifyHeadersConnection /
@@ -1158,15 +1111,7 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		// going forward. Released BEFORE this, mirroring connectToMCPClient's
 		// own success path (StartMonitoring -> Start() takes m.mu.RLock
 		// internally, so calling it under the write lock above would deadlock).
-		if config.ID != BifrostMCPClientKey {
-			isPingAvailable := true
-			if config.IsPingAvailable != nil {
-				isPingAvailable = *config.IsPingAvailable
-			}
-			syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
-			checker := NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger)
-			m.checkerManager.StartChecking(checker)
-		}
+		m.startPerCallChecker(config)
 		return nil
 	}
 
@@ -1619,17 +1564,12 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 		Prompts:           discovery.Prompts,
 		DiscoveredAt:      time.Now(),
 	})
-	// Record the discovery on the config too. The discovery store writes these
-	// same tools to the client's row, and that row is what makes the client
-	// verified after the next restart; until then awaitsAdminVerification reads
-	// THIS config, where DiscoveredTools == nil means "never verified" for
-	// per_user_headers and token_exchange. Left untouched, a server verified a
-	// moment ago went on reading as unverified for the life of the process:
-	// healthy, serving tools, refused by every path that consults the predicate.
-	// Swapped in as a copy rather than written into, for the same reason
-	// UpdateClient does: readers may still hold the old pointer. Cloned so the
-	// config never aliases the stored discovery, and tools is non-nil by this
-	// point, so a verification that found nothing records an empty map, not nil.
+	// Record the discovery on the config too, and that the client is past its
+	// admin step: a verification ends here, and the store's record of it is
+	// cleared by the caller, so this process must stop reading the client as
+	// unverified too. Swapped in as a copy rather than written into, for the
+	// same reason UpdateClient does: readers may still hold the old pointer.
+	// Cloned so the config never aliases the stored discovery.
 	if client.ExecutionConfig != nil {
 		recorded := *client.ExecutionConfig
 		recorded.DiscoveredTools = maps.Clone(tools)
@@ -1638,6 +1578,7 @@ func (m *MCPManager) SetClientDiscovery(clientID string, discovery *schemas.MCPD
 		recorded.DiscoveredResources = slices.Clone(discovery.Resources)
 		recorded.DiscoveredResourceTemplates = slices.Clone(discovery.ResourceTemplates)
 		recorded.DiscoveredPrompts = slices.Clone(discovery.Prompts)
+		recorded.PendingVerification = false
 		client.ExecutionConfig = &recorded
 	}
 	markClientHealthy(client)
@@ -1787,36 +1728,28 @@ func isEnableable(clientState *schemas.MCPClientState) bool {
 	return clientState.ExecutionConfig != nil && clientState.ExecutionConfig.Disabled
 }
 
-// awaitsAdminVerification reports whether config still needs the one-time
-// admin flow that AddClient parks clients in pending_verification for: an
-// OAuth client carrying an unauthorized inline oauth_config block, or a
-// per-user-headers / token-exchange client whose admin verification has never
-// populated DiscoveredTools. AddClient owns the canonical branches (each does
-// its own per-type bookkeeping and logging); this is the shared predicate for
-// callers that only need the yes/no.
+// awaitsAdminVerification reports whether config still needs the one-time admin
+// step AddClient parks clients in pending_verification for, as recorded on the
+// client when it was created before the step and cleared once the step passed.
 func awaitsAdminVerification(config *schemas.MCPClientConfig) bool {
-	if config == nil {
-		return false
+	return config != nil && config.PendingVerification
+}
+
+// startPerCallChecker starts the periodic checker that keeps a per-call
+// client's tools current by discovering with its admin credential. A client
+// with per_user_discovery on keeps no admin credential and gets none: each
+// caller discovers with their own. Must be called without m.mu held, since the
+// checker's Start takes it.
+func (m *MCPManager) startPerCallChecker(config *schemas.MCPClientConfig) {
+	if config.ID == BifrostMCPClientKey || perUserDiscoveryOn(config) {
+		return
 	}
-	// Synthesized servers have no upstream MCP handshake to verify.
-	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
-		return false
+	isPingAvailable := true
+	if config.IsPingAvailable != nil {
+		isPingAvailable = *config.IsPingAvailable
 	}
-	switch config.AuthType {
-	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
-		return config.PendingOAuthConfig != nil
-	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
-		// Nil, not merely empty. The store is what makes nil-ness the
-		// discriminator: BeforeSave marshals DiscoveredTools only when it is
-		// non-nil, so a verified server that legitimately exposes zero tools
-		// persists "{}" and AfterFind loads it back as a non-nil empty map,
-		// while a client that never completed verification round-trips as nil.
-		// A len-check would therefore send a verified zero-tool client back
-		// through admin verification on every reload.
-		return config.DiscoveredTools == nil
-	default:
-		return false
-	}
+	syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
+	m.checkerManager.StartChecking(NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger))
 }
 
 // EnableClient re-enables a previously disabled MCP client by reconnecting it
@@ -1891,8 +1824,8 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 
 	// A client that was disabled before its one-time admin flow ever ran is
 	// enabled but not yet usable. AddClient's disabled branch runs ahead of
-	// its pending_verification branches, so such a client is registered as
-	// Disabled with its PendingOAuthConfig (or empty DiscoveredTools) intact,
+	// its pending_verification branch, so such a client is registered as
+	// Disabled with its PendingVerification intact,
 	// and enabling it took the ordinary route from here: the per-call branch
 	// below marked it Healthy outright, and the sticky one dialled with a
 	// credential that does not exist yet and parked it back at Disabled.
@@ -1932,14 +1865,7 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			markClientHealthy(cs)
 		}
 		m.mu.Unlock()
-		if id != BifrostMCPClientKey {
-			isPingAvailable := true
-			if configCopy.IsPingAvailable != nil {
-				isPingAvailable = *configCopy.IsPingAvailable
-			}
-			syncInterval := ResolveToolSyncInterval(configCopy, m.checkerManager.GetGlobalInterval())
-			m.checkerManager.StartChecking(NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger))
-		}
+		m.startPerCallChecker(configCopy)
 		m.logger.Debug("%s Per-call MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
 		return nil
 	}
@@ -2052,9 +1978,8 @@ var ErrMCPEnableConnectFailed = errors.New("mcp client enabled, but establishing
 // its Function.Name, so a client rename has to rewrite both. Tools are copied,
 // never edited in place, because snapshots of the old map may still be read.
 //
-// Nil in, nil out. For a client's DiscoveredTools nil-ness is data
-// (awaitsAdminVerification reads nil as "verification never ran" and an empty
-// map as "ran and found nothing"), so the two must not be collapsed.
+// Nil in, nil out: a client that never discovered stays without tools rather
+// than gaining an empty set.
 func rebindToolsToClientName(tools map[string]schemas.ChatTool, clientName string) map[string]schemas.ChatTool {
 	if tools == nil {
 		return nil
@@ -2162,14 +2087,10 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// regardless of the field, e.g. per-user, never show a transition here).
 		wasPerCall := m.credStore.RequiresPerCallConnection(client.ExecutionConfig)
 
-		// The record of the last admin verification is not an editable field, so an
-		// ordinary edit arrives without it (the update handler only sets it when the
-		// same request re-ran verification) and it has to be carried forward. It is
-		// not bookkeeping: awaitsAdminVerification reads DiscoveredTools == nil as
-		// "never verified" for per_user_headers and token_exchange, so dropping it
-		// here left a verified, healthy client reading as unverified after any edit,
-		// refused by every path that consults the predicate. It is also what a
-		// per-call client's tools are restored from, hence the rebinding: carried
+		// The tools of the last admin verification are not an editable field, so an
+		// ordinary edit arrives without them (the update handler only sets them when
+		// the same request re-ran verification) and they have to be carried forward.
+		// They are what a per-call client's tools are restored from, hence the rebinding: carried
 		// forward under the old name, a rename followed by a restore would reinstall
 		// tools the rebound ToolMap below no longer has. The name mapping is keyed by
 		// the unprefixed tool name and travels with the tools it describes.
@@ -2250,17 +2171,21 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			IsPingAvailable:        updatedConfig.IsPingAvailable,
 			NeedsSessionStickiness: updatedConfig.NeedsSessionStickiness,
 			PerUserDiscovery:       perUserDiscovery,
-			ToolSyncInterval:       updatedConfig.ToolSyncInterval,
-			MaxProtocolVersion:     updatedConfig.MaxProtocolVersion,
-			ToolExecutionTimeout:   updatedConfig.ToolExecutionTimeout,
-			MaxInstructionsLength:  updatedConfig.MaxInstructionsLength,
-			AllowByDefault:         updatedConfig.AllowByDefault,
-			Disabled:               updatedConfig.Disabled,
-			TLSConfig:              updatedConfig.TLSConfig.Clone(),
-			PerUserHeaderKeys:      slices.Clone(updatedConfig.PerUserHeaderKeys),
-			PendingOAuthConfig:     updatedConfig.PendingOAuthConfig,
-			TokenExchange:          updatedConfig.TokenExchange,
-			OpenAPIConfig:          openAPIConfig,
+			// Changed only by the admin step itself, never by an update: an edit
+			// arrives without it, and taking that as "verified" un-parked a client
+			// still waiting for its step.
+			PendingVerification:   client.ExecutionConfig.PendingVerification,
+			ToolSyncInterval:      updatedConfig.ToolSyncInterval,
+			MaxProtocolVersion:    updatedConfig.MaxProtocolVersion,
+			ToolExecutionTimeout:  updatedConfig.ToolExecutionTimeout,
+			MaxInstructionsLength: updatedConfig.MaxInstructionsLength,
+			AllowByDefault:        updatedConfig.AllowByDefault,
+			Disabled:              updatedConfig.Disabled,
+			TLSConfig:             updatedConfig.TLSConfig.Clone(),
+			PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
+			PendingOAuthConfig:    updatedConfig.PendingOAuthConfig,
+			TokenExchange:         updatedConfig.TokenExchange,
+			OpenAPIConfig:         openAPIConfig,
 		}
 
 		// The resolver and guarded HTTP client handed to the factory are built
@@ -2620,7 +2545,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 		// A client still in PendingVerification is completing its FIRST
 		// connection here — e.g. a config.json-bootstrapped OAuth client
 		// whose admin just finished the browser consent flow. AddClient's
-		// own per-call branch (see its PendingOAuthConfig early-return) is
+		// own per-call branch (after its pending_verification early-return) is
 		// what would normally perform this exact state transition, but it
 		// never gets a second chance to run for an already-registered
 		// client: the entry was created once, at boot, and parked here.
@@ -2667,7 +2592,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			// healthyInterval, not the fast Unstable one, for an
 			// already-Healthy client). Best-effort: a failure here just
 			// means the periodic checker's own retries pick it up shortly.
-			if len(newConfig.DiscoveredTools) == 0 {
+			if len(newConfig.DiscoveredTools) == 0 && !perUserDiscoveryOn(newConfig) {
 				if discovery, discErr := m.performAdminToolDiscovery(m.ctx, newConfig, 0); discErr != nil {
 					m.logger.Debug("%s Initial per-call tool discovery failed for MCP client '%s': %v — the periodic checker will retry", MCPLogPrefix, newConfig.Name, discErr)
 				} else {
@@ -2678,15 +2603,21 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 			// current going forward — mirrors AddClient's per-call branch
 			// (see its own comment): without this, nothing else ever
 			// revisits this client.
-			if id != BifrostMCPClientKey {
-				isPingAvailable := true
-				if newConfig.IsPingAvailable != nil {
-					isPingAvailable = *newConfig.IsPingAvailable
-				}
-				syncInterval := ResolveToolSyncInterval(newConfig, m.checkerManager.GetGlobalInterval())
-				checker := NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger)
-				m.checkerManager.StartChecking(checker)
+			m.startPerCallChecker(newConfig)
+			return nil
+		}
+		// A client disabled before its admin step ran is registered Disabled
+		// with its record of that step intact (see EnableClient). The step
+		// completing now only takes the config that records it: the client
+		// stays Disabled, and enabling it later connects it instead of parking
+		// it in pending_verification again behind the step it already passed.
+		if client.State == schemas.MCPConnectionStateDisabled && awaitsAdminVerification(client.ExecutionConfig) && !awaitsAdminVerification(newConfig) {
+			m.mu.RUnlock()
+			m.mu.Lock()
+			if cs, exists := m.clientMap[id]; exists && cs.State == schemas.MCPConnectionStateDisabled {
+				cs.ExecutionConfig = newConfig
 			}
+			m.mu.Unlock()
 			return nil
 		}
 		// Already past that first connection (a plain reauthorize of an
@@ -2740,11 +2671,11 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 	if newConfig.OauthConfigID != nil {
 		mergedConfig.OauthConfigID = newConfig.OauthConfigID
 	}
-	// PendingOAuthConfig is taken verbatim, not merged: nil is meaningful
-	// (authorization completed, stash cleared). Carrying the old value
-	// forward would make connectToMCPClient park the client back in
-	// pending_verification instead of connecting.
+	// PendingOAuthConfig and PendingVerification are taken verbatim, not
+	// merged: completing the admin step clears both. Carrying the old values
+	// forward would keep the client reading as unverified once connected.
 	mergedConfig.PendingOAuthConfig = newConfig.PendingOAuthConfig
+	mergedConfig.PendingVerification = newConfig.PendingVerification
 	m.mu.RUnlock()
 
 	// connectToMCPClient dials with the merged credentials and swaps them into the

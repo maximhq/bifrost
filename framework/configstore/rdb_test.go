@@ -6475,6 +6475,116 @@ func TestPerUserDiscovery_BindingsListsUserAndVirtualKeyHoldersOfOneClient(t *te
 	assert.Empty(t, rows)
 }
 
+// TestMCPClientPendingVerification_OnlyItsSetterClearsIt: for a client read
+// from the record (one with per_user_discovery on), the record is stored at
+// create and read back on every load, an ordinary update leaves it as it is
+// whatever the row it is handed says, and ClearMCPClientPendingVerification
+// clears it together with the OAuth bootstrap stash.
+func TestMCPClientPendingVerification_OnlyItsSetterClearsIt(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                  "pending-client",
+		Name:                "pending_client",
+		ConnectionType:      schemas.MCPConnectionTypeHTTP,
+		ConnectionString:    schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:            schemas.MCPAuthTypePerUserOauth,
+		PendingOAuthConfig:  &schemas.OAuth2Config{},
+		PendingVerification: true,
+		PerUserDiscovery:    schemas.Ptr(true),
+	}))
+	loaded := func() *schemas.MCPClientConfig {
+		config, err := store.GetMCPClientConfigByID(ctx, "pending-client")
+		require.NoError(t, err)
+		return config
+	}
+	require.True(t, loaded().PendingVerification, "stored at create")
+	// Read back on load, both before and after the deployment has a client
+	// config row, which the load reads through separately.
+	for _, withClientConfig := range []bool{false, true} {
+		if withClientConfig {
+			require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{}))
+		}
+		mcpConfig, err := store.GetMCPConfig(ctx)
+		require.NoError(t, err)
+		require.Len(t, mcpConfig.ClientConfigs, 1)
+		assert.True(t, mcpConfig.ClientConfigs[0].PendingVerification, "read back on load (client config row: %v)", withClientConfig)
+	}
+
+	row, err := store.GetMCPClientByID(ctx, "pending-client")
+	require.NoError(t, err)
+	row.PendingVerification = false
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pending-client", row))
+	assert.True(t, loaded().PendingVerification, "an update is not the admin step")
+
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, "pending-client"))
+	cleared := loaded()
+	assert.False(t, cleared.PendingVerification)
+	assert.Nil(t, cleared.PendingOAuthConfig, "the bootstrap stash goes with the record")
+
+	row, err = store.GetMCPClientByID(ctx, "pending-client")
+	require.NoError(t, err)
+	row.PendingVerification = true
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pending-client", row))
+	assert.False(t, loaded().PendingVerification, "nor does an update set it again")
+
+	assert.ErrorIs(t, store.ClearMCPClientPendingVerification(ctx, "missing"), ErrNotFound)
+}
+
+// TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag: a client
+// without per_user_discovery is read from the signals its admin step changes,
+// not the record, so a row a node from before the record changed reads right:
+// a step it completed (stash cleared, or tools stored) leaves no client parked,
+// and a client it created pending (stash kept, or no tools) stays parked.
+func TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	create := func(id string, authType schemas.MCPAuthType, perUser bool) {
+		config := &schemas.MCPClientConfig{
+			ID: id, Name: id, ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"), AuthType: authType,
+			PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+		}
+		switch authType {
+		case schemas.MCPAuthTypePerUserOauth:
+			config.PendingOAuthConfig = &schemas.OAuth2Config{}
+		case schemas.MCPAuthTypePerUserHeaders:
+			config.PerUserHeaderKeys = []string{"x-api-key"}
+		}
+		require.NoError(t, store.CreateMCPClientConfig(ctx, config))
+	}
+	pending := func(id string) bool {
+		config, err := store.GetMCPClientConfigByID(ctx, id)
+		require.NoError(t, err)
+		return config.PendingVerification
+	}
+	setColumns := func(id string, columns map[string]any) {
+		require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", id).Updates(columns).Error)
+	}
+
+	create("oauth_done_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_done_elsewhere", map[string]any{"pending_oauth_config_json": nil})
+	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared without the record: verified")
+
+	create("oauth_created_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_created_elsewhere", map[string]any{"pending_verification": false})
+	assert.True(t, pending("oauth_created_elsewhere"), "a stash without the record: still pending")
+
+	create("headers_done_elsewhere", schemas.MCPAuthTypePerUserHeaders, false)
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "headers_done_elsewhere", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}))
+	assert.False(t, pending("headers_done_elsewhere"), "tools stored without the record: verified")
+
+	create("headers_created_elsewhere", schemas.MCPAuthTypePerUserHeaders, false)
+	setColumns("headers_created_elsewhere", map[string]any{"pending_verification": false})
+	assert.True(t, pending("headers_created_elsewhere"), "no tools and no record: still pending")
+
+	// A client with per_user_discovery on keeps no tools, so only the record can tell.
+	create("per_user", schemas.MCPAuthTypePerUserHeaders, true)
+	assert.True(t, pending("per_user"))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, "per_user"))
+	assert.False(t, pending("per_user"), "verified with no tools stored")
+}
+
 // TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset: the update writes
 // per_user_discovery only when the row it is handed sets it, the same rule as
 // needs_session_stickiness, so a row that leaves it unset (a config.json
