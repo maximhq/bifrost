@@ -782,7 +782,7 @@ func TestExecuteToolCode_GuardrailedResultNeverReachesModel(t *testing.T) {
 				// body is expected - only the matched span must be gone. A text result goes
 				// to the script, which reports seeing the post-hook text; an error result is
 				// raised, so the post-hook text reaches the model in the reply.
-				want := `"redacted": true`
+				want := `"redacted":true`
 				if strings.HasPrefix(tc.text, "Error: ") {
 					want = "[REDACTED]"
 				}
