@@ -1015,3 +1015,65 @@ func keysOf(m map[string]any) []string {
 	}
 	return keys
 }
+
+func TestChatCompletionRequiresMessageRole(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, messages string
+			index          int
+		}{
+			{"missing", `[{"content":"hello"}]`, 0},
+			{"empty", `[{"role":"","content":"hello"}]`, 0},
+			{"null", `[{"role":null,"content":"hello"}]`, 0},
+			{"null message", `[null]`, 0},
+			{"later message", `[{"role":"user","content":"hello"},{"content":"world"}]`, 1},
+		} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"ollama/gemma4:e4b","stream":%t,"messages":%s}`, stream, tc.messages))
+				_, _, err := prepareChatCompletionRequest(&ctx, nil)
+				require.EqualError(t, err, fmt.Sprintf("messages[%d].role is required", tc.index))
+				// A nil client proves the handler refuses the request before core/provider dispatch.
+				(&CompletionHandler{}).chatCompletion(&ctx)
+				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
+				var response schemas.BifrostError
+				require.NoError(t, json.Unmarshal(ctx.Response.Body(), &response))
+				require.NotNil(t, response.Error)
+				require.Equal(t, schemas.Ptr("invalid_request_error"), response.Error.Type)
+				require.Equal(t, err.Error(), response.Error.Message)
+			})
+		}
+	}
+}
+
+func TestPrepareChatCompletionPreservesNonemptyRoles(t *testing.T) {
+	var ctx fasthttp.RequestCtx
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-4o-mini","messages":[{"role":"system","content":"be helpful"},{"role":"developer","content":"be brief"},{"role":"user","content":"hi"},{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"ok"},{"role":"custom","content":"provider extension"}]}`)
+	req, converted, err := prepareChatCompletionRequest(&ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, req.Messages, converted.Input)
+	for i, role := range []schemas.ChatMessageRole{"system", "developer", "user", "assistant", "tool", "custom"} {
+		require.Equal(t, role, converted.Input[i].Role)
+	}
+}
+
+func BenchmarkPrepareChatCompletionRequest(b *testing.B) {
+	for _, count := range []int{1, 16, 128} {
+		b.Run(fmt.Sprintf("messages=%d", count), func(b *testing.B) {
+			message := `{"role":"user","content":"hello"}`
+			body := `{"model":"openai/gpt-4o-mini","messages":[` + strings.TrimSuffix(strings.Repeat(message+",", count), ",") + `]}`
+			var ctx fasthttp.RequestCtx
+			ctx.Request.SetBodyString(body)
+			if _, _, err := prepareChatCompletionRequest(&ctx, nil); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := prepareChatCompletionRequest(&ctx, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
