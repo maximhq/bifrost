@@ -298485,7 +298485,7 @@
     },
     {
       "name": "297. Gemini audio URL input (gemini audio url) (PR #2200)",
-      "description": "A Gemini chat or Responses request may carry input_audio with a url instead of base64 data. Provider methods download it before conversion and send it to Gemini as inline data, so converters stay free of HTTP calls. Each case points at the WAV fixture in this repository through raw.githubusercontent.com, and requires a non-empty answer: a route that dropped the URL would send Gemini an empty audio part or fail the request. Vertex Gemini shares ResolveChatAudioURLs and ResolveResponsesAudioURLs. Other providers do not read the url field, so they are not covered here.",
+      "description": "A Gemini chat or Responses request may carry input_audio with a url instead of base64 data. Provider methods download it before conversion and send it to Gemini as inline data, so converters stay free of HTTP calls. Each case points at the WAV fixture in this repository through raw.githubusercontent.com, and requires a non-empty answer plus audio tokens in the usage block: a route that dropped the URL would send Gemini no audio, and the model can still answer with text saying so, so a text-only check would pass. Vertex Gemini shares ResolveChatAudioURLs and ResolveResponsesAudioURLs. Other providers do not read the url field, so they are not covered here.",
       "item": [
         {
           "name": "gemini/gemini-2.5-flash chat completions input_audio url is downloaded and understood - #2200",
@@ -298495,12 +298495,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "var body = pm.response.json();",
                   "pm.test('model answers about the audio fetched from the URL', function () {",
                   "  var content = (((body.choices || [])[0] || {}).message || {}).content;",
                   "  pm.expect(content, 'no answer text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('Gemini counted the downloaded audio as prompt audio tokens', function () {",
+                  "  var details = (body.usage || {}).prompt_tokens_details || {};",
+                  "  pm.expect(details.audio_tokens, 'no audio tokens: ' + pm.response.text()).to.be.above(0);",
                   "});"
                 ]
               }
@@ -298540,7 +298543,6 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
                   "var body = pm.response.json();",
                   "pm.test('model answers about the audio fetched from the URL', function () {",
@@ -298548,6 +298550,10 @@
                   "    return (item.content || []).some(function (part) { return typeof part.text === 'string' && part.text.length > 0; });",
                   "  });",
                   "  pm.expect(hasText, 'no answer text: ' + pm.response.text()).to.eql(true);",
+                  "});",
+                  "pm.test('Gemini counted the downloaded audio as input audio tokens', function () {",
+                  "  var details = (body.usage || {}).input_tokens_details || {};",
+                  "  pm.expect(details.audio_tokens, 'no audio tokens: ' + pm.response.text()).to.be.above(0);",
                   "});"
                 ]
               }
