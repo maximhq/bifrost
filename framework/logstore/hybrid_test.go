@@ -2888,6 +2888,15 @@ func TestHybridRoutes_LogMatchingSeveralRoutes(t *testing.T) {
 	routeCopy(t, stores["bad-request"], "bad-request", at, "multi", func(map[string]string) bool { return true })
 	hybrid.Close(ctx)
 	assert.Zero(t, stores["rate-limit"].Len())
+	stats := map[string]ObjectStorageRouteStats{}
+	for _, s := range hybrid.ObjectStorageRouteStats() {
+		stats[s.Name] = s
+	}
+	require.Len(t, stats, 3, "every configured route is reported, idle ones included")
+	require.Contains(t, stats, "rate-limit")
+	assert.EqualValues(t, 1, stats["flagged"].Written)
+	assert.EqualValues(t, 1, stats["bad-request"].Written)
+	assert.Zero(t, stats["rate-limit"].Written)
 }
 
 // TestNewLogStoreRoutesRequireObjectStorage checks that routes without a

@@ -109,6 +109,7 @@ func TestObjectMirrorCountsFailedWrites(t *testing.T) {
 
 	assert.EqualValues(t, 1, route.dropped.Load())
 	assert.Zero(t, route.written.Load())
+	assert.Equal(t, []ObjectStorageRouteStats{{Name: "flagged", Dropped: 1}}, mirror.stats())
 }
 
 // TestObjectMirrorDropsWhenQueueFull checks that a stalled bucket fills the
@@ -188,6 +189,7 @@ func TestObjectMirrorAfterClose(t *testing.T) {
 
 	var none *objectMirror
 	assert.Nil(t, newObjectMirror(nil, hybridTestLogger{}))
+	assert.Nil(t, none.stats())
 	assert.Empty(t, none.matching(l))
 	none.enqueue(nil, l, nil)
 	none.close(context.Background())
