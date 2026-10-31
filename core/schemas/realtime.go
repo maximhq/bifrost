@@ -360,6 +360,44 @@ type RealtimeSessionProvider interface {
 	CreateRealtimeClientSecret(ctx *BifrostContext, key Key, rawRequest json.RawMessage) (*BifrostPassthroughResponse, *BifrostError)
 }
 
+// RealtimeTranslation is the output of one RealtimeTranslator step: the frames to write, in order.
+type RealtimeTranslation struct {
+	Provider []json.RawMessage // frames for the provider, in its native protocol
+	Client   []json.RawMessage // events for the client, in the OpenAI Realtime protocol
+}
+
+// RealtimeTranslator translates one realtime connection between the OpenAI Realtime protocol the
+// client speaks and a provider's native protocol, for providers whose frames cannot be mapped
+// event by event (a one-shot setup frame, one frame carrying several events, state that spans
+// frames). Each connection has its own translator, so it may hold per-connection state.
+//
+// The relay calls a translator one step at a time across both directions and writes each step's
+// frames before the next step, so an implementation needs no locking and its frames keep the order
+// it produced them in.
+type RealtimeTranslator interface {
+	// Open runs once before either side speaks, for events the client expects first, such as session.created.
+	Open() RealtimeTranslation
+	// ToProvider translates a client event. An error is reported to the client; the connection stays open.
+	ToProvider(event *BifrostRealtimeEvent) (RealtimeTranslation, error)
+	// ToClient translates one provider frame, text or binary. An error ends the session.
+	ToClient(frame json.RawMessage) (RealtimeTranslation, error)
+	// Close runs when the provider closes the connection with a close frame, before the close is relayed,
+	// for protocols that report errors only through the close reason. Its Client events reach the client
+	// first, such as an error event; its Provider frames are dropped, the connection being closed.
+	Close(code int, reason string) RealtimeTranslation
+}
+
+// RealtimeTranslatorProvider is an optional interface for providers whose realtime protocol needs a
+// RealtimeTranslator. Checked via type assertion: provider.(RealtimeTranslatorProvider).
+//
+// The relay then applies the OpenAI Realtime rules (turn start, forwarding, usage) to the translated
+// stream instead of the provider's own, and does not call the provider's ToBifrostRealtimeEvent or
+// ToProviderRealtimeEvent for WebSocket connections. Translation is WebSocket only, so the provider
+// must report SupportsRealtimeWebRTC as false. model is the resolved model, after aliasing.
+type RealtimeTranslatorProvider interface {
+	NewRealtimeTranslator(key Key, model string) (RealtimeTranslator, *BifrostError)
+}
+
 // ParseRealtimeEvent decodes a client/provider realtime event while preserving
 // unknown top-level fields in ExtraParams for provider-specific round-tripping.
 func ParseRealtimeEvent(raw []byte) (*BifrostRealtimeEvent, error) {

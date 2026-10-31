@@ -51,6 +51,7 @@ func TestGemini(t *testing.T) {
 		ReasoningModel:       "gemini-3.1-pro-preview",
 		VideoGenerationModel: "veo-3.1-generate-preview",
 		PassthroughModel:     "gemini-2.5-flash",
+		RealtimeModel:        "gemini-3.8-live",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:             false, // Not supported
 			SimpleChat:                 true,
@@ -97,6 +98,7 @@ func TestGemini(t *testing.T) {
 			CountTokens:                true,
 			StructuredOutputs:          true, // Structured outputs with nullable enum support
 			PassthroughAPI:             true,
+			Realtime:                   true,
 		},
 	}
 

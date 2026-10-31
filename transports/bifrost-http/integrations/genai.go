@@ -41,6 +41,11 @@ type GenAIRouter struct {
 	*GenericRouter
 }
 
+// GenAIRealtimePaths returns the WebSocket GET path a Google GenAI client opens for the Live API.
+func GenAIRealtimePaths(pathPrefix string) []string {
+	return []string{pathPrefix + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"}
+}
+
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig

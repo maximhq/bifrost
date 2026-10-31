@@ -799,6 +799,7 @@ func TestIsRealtimeTransportEndpoint(t *testing.T) {
 		"/openai/realtime/calls",
 		"/openai/v1/realtime/calls",
 		"/openai/openai/realtime/calls",
+		"/genai/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
 	}
 
 	for _, path := range paths {

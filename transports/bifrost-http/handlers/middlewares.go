@@ -1318,6 +1318,9 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
 		paths[path] = struct{}{}
 	}
+	for _, path := range integrations.GenAIRealtimePaths("/genai") {
+		paths[path] = struct{}{}
+	}
 	return paths
 }
 
