@@ -375,7 +375,11 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiChatCompletionRequest(ctx, request)
+			resolvedRequest, err := ResolveChatAudioURLs(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			return ToGeminiChatCompletionRequest(ctx, resolvedRequest)
 		})
 	if err != nil {
 		return nil, err
@@ -435,7 +439,11 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiChatCompletionRequest(ctx, request)
+			resolvedRequest, err := ResolveChatAudioURLs(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			reqBody, err := ToGeminiChatCompletionRequest(ctx, resolvedRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -769,7 +777,11 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := ToGeminiResponsesRequest(ctx, request)
+				resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := ToGeminiResponsesRequest(ctx, resolvedRequest)
 				if err != nil {
 					return nil, err
 				}
@@ -968,7 +980,11 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToGeminiResponsesRequest(ctx, request)
+			resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			reqBody, err := ToGeminiResponsesRequest(ctx, resolvedRequest)
 			if err != nil {
 				return nil, err
 			}
@@ -2684,7 +2700,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			for i, bifrostItem := range request.Requests {
 				resolvedBody, err := ResolveBatchAudioURLs(ctx, bifrostItem.Body)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError("failed to resolve batch request audio URLs", err)
+					return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to resolve audio URLs for batch request item %d (custom_id %q)", i, bifrostItem.CustomID), err)
 				}
 				geminiReq, err := ToGeminiBatchGenerateContentRequest(resolvedBody)
 				if err != nil {
@@ -4094,7 +4110,11 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToGeminiResponsesRequest(ctx, request)
+				resolvedRequest, err := ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				return ToGeminiResponsesRequest(ctx, resolvedRequest)
 			},
 		)
 		if bifrostErr != nil {

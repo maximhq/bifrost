@@ -725,7 +725,11 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				var err error
 
 				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+					resolvedRequest, err := gemini.ResolveChatAudioURLs(ctx, request)
+					if err != nil {
+						return nil, err
+					}
+					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 					if err != nil {
 						return nil, err
 					}
@@ -1124,7 +1128,11 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveChatAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -1419,7 +1427,11 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -1674,7 +1686,11 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				reqBody, err := gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 				if err != nil {
 					return nil, err
 				}
@@ -3070,7 +3086,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 					}
 					resolvedBody, err := gemini.ResolveBatchAudioURLs(ctx, body)
 					if err != nil {
-						return nil, providerUtils.NewBifrostOperationError("failed to resolve batch request audio URLs", err)
+						return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to resolve audio URLs for batch request item %d (custom_id %q)", i, item.CustomID), err)
 					}
 					resolvedRequests[i].Body = resolvedBody
 				}
@@ -4459,7 +4475,11 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+				resolvedRequest, err := gemini.ResolveResponsesAudioURLs(ctx, request)
+				if err != nil {
+					return nil, err
+				}
+				return gemini.ToGeminiResponsesRequestWithImageURLSchemes(ctx, resolvedRequest, geminiImageURLSchemes...)
 			},
 		)
 		if bifrostErr != nil {

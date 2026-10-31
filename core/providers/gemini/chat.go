@@ -121,11 +121,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 	// last turn is role:"model", regardless of which Bifrost API shaped it. See
 	// trimTrailingAssistantPrefill for why prefill is the only trailing model turn dropped.
 	input := trimTrailingChatAssistantPrefill(bifrostReq.Input, schemas.ResolveModelCaps(bifrostReq.Provider, capModel))
-	resolvedInput, err := resolveAudioURLs(ctx, input)
-	if err != nil {
-		return nil, err
-	}
-	contents, systemInstruction, err := convertBifrostMessagesToGemini(resolvedInput, allowedImageURLSchemes...)
+	contents, systemInstruction, err := convertBifrostMessagesToGemini(input, allowedImageURLSchemes...)
 	if err != nil {
 		return nil, err
 	}

@@ -2259,3 +2259,111 @@ func TestAnthropicThinkingBudgetReachesGemini4AsLevel(t *testing.T) {
 	require.NotNil(t, got.ThinkingLevel)
 	assert.Equal(t, "medium", *got.ThinkingLevel)
 }
+
+func responsesAudioBlock(url string) schemas.ResponsesMessageContentBlock {
+	return schemas.ResponsesMessageContentBlock{
+		Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+		Audio: &schemas.ResponsesInputMessageContentBlockAudio{URL: url, Format: "wav"},
+	}
+}
+
+func responsesAudioURLRequest(url string) *schemas.BifrostResponsesRequest {
+	role := schemas.ResponsesInputMessageRoleUser
+	return &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    &role,
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{responsesAudioBlock(url)}},
+			},
+		},
+	}
+}
+
+func TestResolveResponsesAudioURLsDownloadsAudioForConverter(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("audio-bytes"))
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := responsesAudioURLRequest(server.URL)
+	resolved, err := ResolveResponsesAudioURLs(ctx, request)
+	require.NoError(t, err)
+	require.Empty(t, request.Input[0].Content.ContentBlocks[0].Audio.Data, "the original request must survive for a retry")
+
+	result, err := ToGeminiResponsesRequest(ctx, resolved)
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+	require.Len(t, result.Contents[0].Parts, 1)
+	require.NotNil(t, result.Contents[0].Parts[0].InlineData)
+	require.Equal(t, "audio/wav", result.Contents[0].Parts[0].InlineData.MIMEType)
+	require.NotEmpty(t, result.Contents[0].Parts[0].InlineData.Data)
+}
+
+func TestToGeminiResponsesRequestRejectsUnresolvedAudioURL(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := ToGeminiResponsesRequest(ctx, responsesAudioURLRequest("http://127.0.0.1:1/audio.wav"))
+	require.ErrorIs(t, err, errUnresolvedAudioURL)
+}
+
+func TestResolveResponsesAudioURLsResolvesToolOutputBlocks(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("audio-bytes"))
+	}))
+	defer server.Close()
+
+	outputType := schemas.ResponsesMessageTypeFunctionCallOutput
+	block := responsesAudioBlock(server.URL)
+	request := &schemas.BifrostResponsesRequest{
+		Model: "gemini-3-pro",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: &outputType,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{block},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resolved, err := ResolveResponsesAudioURLs(ctx, request)
+	require.NoError(t, err)
+
+	got := resolved.Input[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0]
+	require.NotEmpty(t, got.Audio.Data)
+	original := request.Input[0].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0]
+	require.Empty(t, original.Audio.Data, "the original request must survive for a retry")
+}
+
+func TestResolveResponsesAudioURLsLeavesTextRequestUntouched(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	text := "hello"
+	role := schemas.ResponsesInputMessageRoleUser
+	request := &schemas.BifrostResponsesRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text},
+				}},
+			},
+		},
+	}
+	var resolved *schemas.BifrostResponsesRequest
+	allocs := testing.AllocsPerRun(100, func() {
+		resolved, _ = ResolveResponsesAudioURLs(ctx, request)
+	})
+	require.Same(t, request, resolved)
+	require.Zero(t, allocs)
+}

@@ -2304,21 +2304,51 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
-// resolveAudioURLs walks messages and, for any InputAudio block that has a URL
-// but no Data, downloads the audio and populates Data. This MUST run before
-// convertBifrostMessagesToGemini so the converter sees only resolved payloads.
-func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]schemas.ChatMessage, error) {
-	resolved := make([]schemas.ChatMessage, len(messages))
-	copy(resolved, messages)
+// ResolveChatAudioURLs returns request with URL-only input audio replaced by inline
+// data. It does network I/O, so provider methods call it before
+// ToGeminiChatCompletionRequest and the converter stays pure. A request with no
+// URL-only audio comes back unchanged, with no allocation.
+func ResolveChatAudioURLs(ctx context.Context, request *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, error) {
+	if request == nil || !slices.ContainsFunc(request.Input, chatMessageHasAudioURL) {
+		return request, nil
+	}
+	input, err := resolveAudioURLs(ctx, request.Input)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *request
+	resolved.Input = input
+	return &resolved, nil
+}
 
+func chatMessageHasAudioURL(msg schemas.ChatMessage) bool {
+	if msg.Content == nil {
+		return false
+	}
+	for i := range msg.Content.ContentBlocks {
+		if audio := msg.Content.ContentBlocks[i].InputAudio; audio != nil && audio.Data == "" && audio.URL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveAudioURLs returns messages with URL-only input audio downloaded into Data.
+// It returns messages itself when nothing needs downloading, and otherwise copies
+// only the messages that change, so a retry still sees the original request.
+func resolveAudioURLs(ctx context.Context, messages []schemas.ChatMessage) ([]schemas.ChatMessage, error) {
+	if !slices.ContainsFunc(messages, chatMessageHasAudioURL) {
+		return messages, nil
+	}
+
+	resolved := slices.Clone(messages)
 	for msgIndex := range resolved {
-		if resolved[msgIndex].Content == nil || len(resolved[msgIndex].Content.ContentBlocks) == 0 {
+		if !chatMessageHasAudioURL(resolved[msgIndex]) {
 			continue
 		}
 
 		content := *resolved[msgIndex].Content
-		content.ContentBlocks = make([]schemas.ChatContentBlock, len(resolved[msgIndex].Content.ContentBlocks))
-		copy(content.ContentBlocks, resolved[msgIndex].Content.ContentBlocks)
+		content.ContentBlocks = slices.Clone(content.ContentBlocks)
 		resolved[msgIndex].Content = &content
 
 		for blockIndex := range content.ContentBlocks {

@@ -298482,6 +298482,103 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "297. Gemini audio URL input (gemini audio url) (PR #2200)",
+      "description": "A Gemini chat or Responses request may carry input_audio with a url instead of base64 data. Provider methods download it before conversion and send it to Gemini as inline data, so converters stay free of HTTP calls. Each case points at the WAV fixture in this repository through raw.githubusercontent.com, and requires a non-empty answer: a route that dropped the URL would send Gemini an empty audio part or fail the request. Vertex Gemini shares ResolveChatAudioURLs and ResolveResponsesAudioURLs. Other providers do not read the url field, so they are not covered here.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash chat completions input_audio url is downloaded and understood - #2200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "var body = pm.response.json();",
+                  "pm.test('model answers about the audio fetched from the URL', function () {",
+                  "  var content = (((body.choices || [])[0] || {}).message || {}).content;",
+                  "  pm.expect(content, 'no answer text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/main/tests/e2e/api/fixtures/sample.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "gemini/gemini-2.5-flash responses input_audio url is downloaded and understood - #2200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "var body = pm.response.json();",
+                  "pm.test('model answers about the audio fetched from the URL', function () {",
+                  "  var hasText = (body.output || []).some(function (item) {",
+                  "    return (item.content || []).some(function (part) { return typeof part.text === 'string' && part.text.length > 0; });",
+                  "  });",
+                  "  pm.expect(hasText, 'no answer text: ' + pm.response.text()).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"In a few words, describe the sound in this clip.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/main/tests/e2e/api/fixtures/sample.wav\",\n            \"format\": \"wav\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

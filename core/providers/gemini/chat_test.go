@@ -1,11 +1,16 @@
 package gemini_test
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -569,4 +574,111 @@ func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
 	assert.Contains(t, response, "chart below")
 	assert.Contains(t, response, "[image/png")
 	assert.Contains(t, response, "[audio/mp3")
+}
+
+func chatAudioURLRequest(url string) *schemas.BifrostChatRequest {
+	format := "wav"
+	return &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type: schemas.ChatContentBlockTypeInputAudio,
+						InputAudio: &schemas.ChatInputAudio{
+							URL:    url,
+							Format: &format,
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
+func TestResolveChatAudioURLsDownloadsAudioForConverter(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("audio-bytes"))
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := chatAudioURLRequest(server.URL)
+	resolved, err := gemini.ResolveChatAudioURLs(ctx, request)
+	require.NoError(t, err)
+	require.Empty(t, request.Input[0].Content.ContentBlocks[0].InputAudio.Data, "the original request must survive for a retry")
+
+	result, err := gemini.ToGeminiChatCompletionRequest(ctx, resolved)
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+	require.Len(t, result.Contents[0].Parts, 1)
+	require.NotNil(t, result.Contents[0].Parts[0].InlineData)
+	require.Equal(t, "audio/wav", result.Contents[0].Parts[0].InlineData.MIMEType)
+	require.NotEmpty(t, result.Contents[0].Parts[0].InlineData.Data)
+}
+
+func TestToGeminiChatCompletionRequestDoesNotDownloadAudio(t *testing.T) {
+	restore := providerUtils.AllowPrivateAudioURLsForTest()
+	defer restore()
+
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := gemini.ToGeminiChatCompletionRequest(ctx, chatAudioURLRequest(server.URL))
+	require.Error(t, err)
+	require.Zero(t, hits.Load(), "converters must make no HTTP calls")
+}
+
+func TestResolveChatAudioURLsPropagatesDownloadErrors(t *testing.T) {
+	// Guard active: an http URL to a non-loopback host must error.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := gemini.ResolveChatAudioURLs(ctx, chatAudioURLRequest("http://169.254.169.254/audio.mp3"))
+	require.Error(t, err, "audio download errors must propagate")
+}
+
+func TestResolveChatAudioURLsLeavesTextRequestUntouched(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := chatTextRequest()
+	var resolved *schemas.BifrostChatRequest
+	allocs := testing.AllocsPerRun(100, func() {
+		resolved, _ = gemini.ResolveChatAudioURLs(ctx, request)
+	})
+	require.Same(t, request, resolved)
+	require.Zero(t, allocs)
+}
+
+func chatTextRequest() *schemas.BifrostChatRequest {
+	text := "hello"
+	return &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: &text},
+				}},
+			},
+		},
+	}
+}
+
+// The check runs on every Gemini chat request, so a request with no audio URL must
+// pay for a scan and nothing else.
+func BenchmarkResolveChatAudioURLs(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := chatTextRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := gemini.ResolveChatAudioURLs(ctx, request); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
