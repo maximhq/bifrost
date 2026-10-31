@@ -11,14 +11,32 @@ const PLURAL_KEY_PATTERN = /^(.+)_(zero|one|two|few|many|other)$/;
 const DEFAULT_REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const DEFAULT_INVENTORY = { namespaces: NAMESPACES, enterpriseNamespaces: new Set() };
 
-function resourceInventory(repoRoot) {
-	const enterpriseModule = path.join(repoRoot, "ui", "app", "enterprise", "lib", "i18n", "resources.ts");
-	const fallbackModule = path.join(repoRoot, "ui", "app", "_fallbacks", "enterprise", "lib", "i18n", "resources.ts");
-	const modulePath = existsSync(enterpriseModule) ? enterpriseModule : fallbackModule;
-	if (!existsSync(modulePath)) {
-		return DEFAULT_INVENTORY;
+function resourceInventory(repoRoot, ref = null) {
+	const enterpriseFile = "ui/app/enterprise/lib/i18n/resources.ts";
+	const fallbackFile = "ui/app/_fallbacks/enterprise/lib/i18n/resources.ts";
+	const enterpriseModule = path.join(repoRoot, enterpriseFile);
+	const fallbackModule = path.join(repoRoot, fallbackFile);
+	let modulePath = enterpriseModule;
+	let source;
+	if (ref) {
+		try {
+			source = readSource(repoRoot, enterpriseFile, ref);
+		} catch {
+			modulePath = fallbackModule;
+			try {
+				source = readSource(repoRoot, fallbackFile, ref);
+			} catch {
+				return DEFAULT_INVENTORY;
+			}
+		}
+	} else {
+		modulePath = existsSync(enterpriseModule) ? enterpriseModule : fallbackModule;
+		if (!existsSync(modulePath)) {
+			return DEFAULT_INVENTORY;
+		}
+		source = readFileSync(modulePath, "utf8");
 	}
-	const sourceFile = ts.createSourceFile(modulePath, readFileSync(modulePath, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const sourceFile = ts.createSourceFile(modulePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	const enterpriseNamespaces = new Set();
 	function visit(node) {
 		if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "ENTERPRISE_NAMESPACES" && node.initializer) {
@@ -1400,8 +1418,9 @@ export function runCli(argv = process.argv.slice(2)) {
 	const auditedConflicts = conflictedFiles.filter((file) => selectedFileSet.has(file));
 
 	const inventory = resourceInventory(repoRoot);
+	const baselineInventory = resourceInventory(repoRoot, options.baseline);
 	const currentResources = loadResources(repoRoot, null, inventory);
-	const baselineResources = loadResources(repoRoot, options.baseline, inventory);
+	const baselineResources = loadResources(repoRoot, options.baseline, baselineInventory);
 	const localeFindings = validateLocales(currentResources, baselineResources, inventory);
 	const currentEntries = inventoryForFiles(repoRoot, selectedFiles);
 	const baselineEntries = inventoryForFiles(repoRoot, selectedFiles, options.baseline);

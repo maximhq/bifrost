@@ -1160,6 +1160,22 @@ describe("checker CLI review contract", () => {
 		expect(runCli(["--repo-root", repoRoot, "--baseline", "missing-ref", "--inventory-only"])).toBe(1);
 	});
 
+	it("loads baseline catalogs with the baseline namespace inventory", () => {
+		const repoRoot = makeGitRepo();
+		writeMinimalResources(repoRoot);
+		const baseline = commitAll(repoRoot, "baseline");
+		writeRepoFile(repoRoot, "ui/app/enterprise/lib/i18n/resources.ts", 'export const ENTERPRISE_NAMESPACES = ["agent"] as const;\n');
+		for (const locale of LOCALES) {
+			writeRepoFile(repoRoot, `ui/app/enterprise/locales/${locale}/agent.json`, JSON.stringify({ title: "Agent" }));
+		}
+		const report = path.join(repoRoot, "report.json");
+
+		expect(runCli(["--repo-root", repoRoot, "--baseline", baseline, "--inventory-only", "--report", report])).toBe(0);
+		expect(JSON.parse(readFileSync(report, "utf8")).locales).toEqual(
+			expect.objectContaining({ namespaceCount: NAMESPACES.length + 1, findings: [] }),
+		);
+	});
+
 	it("rejects a review file without the required evidence arrays", () => {
 		const repoRoot = makeGitRepo();
 		writeMinimalResources(repoRoot);
