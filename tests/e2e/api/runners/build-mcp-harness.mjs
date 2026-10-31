@@ -848,7 +848,7 @@ const ADM10 = folder("ADM-10 Per-call connections only for HTTP", "Setup: admin 
   deleteClient("ADM-10", "adm10-http"),
 ]);
 
-const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentials; client dup_a on alpha; a virtual MCP with slug \"vm-slug\".", [
+const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentials; clients dup_a and adm11_b on alpha; a virtual MCP with slug \"vm-slug\".", [
   ...freshServer("ADM-11", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-11", httpClient("adm11-dup-a", "dup_a", "alpha"), "setup: create client dup_a"),
   request("ADM-11", "setup: create a virtual MCP with slug \"vm-slug\"", "POST", "/api/mcp/virtual-mcps", {
@@ -859,12 +859,15 @@ const ADM11 = folder("ADM-11 Duplicate names and slugs", "Setup: admin credentia
   createExpect("ADM-11", "the same name with another slug is rejected", httpClient("adm11-x", "dup_a", "alpha", { endpoint_slug: "other" }), [A.status(409), A.msgEquals("An MCP client with this name already exists")]),
   createExpect("ADM-11", "\"DUP_A\" is rejected", httpClient("adm11-x", "DUP_A", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
   createExpect("ADM-11", "\"vm_slug\" is rejected", httpClient("adm11-x", "vm_slug", "alpha"), [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  createClient("ADM-11", httpClient("adm11-b", "adm11_b", "alpha"), "setup: create client adm11_b"),
+  request("ADM-11", "renaming adm11_b to dup_a is rejected", "PUT", "/api/mcp/client/adm11-b", { body: { name: "dup_a" }, asserts: [A.status(409), A.msgEquals("An MCP client with this name already exists")] }),
   request("ADM-11", "one dup_a is listed", "GET", "/api/mcp/clients?search=dup_a", {
     asserts: [A.status(200), A.custom("exactly one client is named dup_a", [
       "var n = pm.response.json().clients.filter(function (c) { return c.config.name === 'dup_a'; }).length;",
       "pm.expect(n, 'body: ' + pm.response.text()).to.equal(1);",
     ])],
   }),
+  deleteClient("ADM-11", "adm11-b"),
   deleteClient("ADM-11", "adm11-dup-a"),
   request("ADM-11", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{adm11_vmcp_id}}", { asserts: [A.status(200)] }),
 ]);
@@ -888,9 +891,9 @@ const ADM12 = folder("ADM-12 Reused explicit client_id", "Setup: admin credentia
 const ADM16 = folder("ADM-16 Missing connection target is rolled back", "Setup: admin credentials; alpha (echo_tool, add_tool) for the reuse checks (an HTTP client and a STDIO bridge).", [
   ...freshServer("ADM-16", "alpha", ["echo_tool", "add_tool"]),
   createExpect("ADM-16", "http without connection_string", { client_id: "adm16-http", name: "adm16_http", connection_type: "http", auth_type: "none" },
-    [A.status(500), A.msgContains("ConnectionString is required for HTTP connection type")]),
+    [A.status(400), A.msgEquals("connection_string is required for http connection type")]),
   createExpect("ADM-16", "stdio without stdio_config", { client_id: "adm16-stdio", name: "adm16_stdio", connection_type: "stdio", auth_type: "none" },
-    [A.status(500), A.msgContains("StdioConfig is required")]),
+    [A.status(400), A.msgEquals("stdio_config is required for stdio connection type")]),
   request("ADM-16", "no client was kept", "GET", "/api/mcp/clients?search=adm16", {
     asserts: [A.status(200), A.custom("neither client is listed", [
       "var names = pm.response.json().clients.map(function (c) { return c.config.name; });",
@@ -1738,7 +1741,7 @@ const ADM20 = folder("ADM-20 require_public_target is set by the server, never c
 const ADM22 = folder("ADM-22 OAuth create input checks", "Setup: admin credentials.", [
   createExpect("ADM-22", "auth_type oauth without oauth_config", { name: "adm22_oauth", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'oauth'")]),
   createExpect("ADM-22", "auth_type per_user_oauth without oauth_config", { name: "adm22_puo", connection_type: "http", connection_string: "http://127.0.0.1:9/mcp", auth_type: "per_user_oauth" }, [A.status(400), A.msgEquals("OAuth configuration is required when auth_type is 'per_user_oauth'")]),
-  createExpect("ADM-22", "oauth_config {} without connection_string", { name: "adm22_noserver", connection_type: "http", auth_type: "oauth", oauth_config: {} }, [A.status(400), A.msgContains("Either client_id must be provided, or server URL must be set")]),
+  createExpect("ADM-22", "oauth_config {} without connection_string", { name: "adm22_noserver", connection_type: "http", auth_type: "oauth", oauth_config: {} }, [A.status(400), A.msgEquals("connection_string is required for http connection type")]),
 ]);
 
 const ADM47 = folder("ADM-47 PUT is a patch and ignores immutable fields", "Setup: alpha (echo_tool, add_tool); a client on alpha with headers and tool lists, then pricing set with PUT.", [
@@ -6313,7 +6316,7 @@ const ADM41 = folder("ADM-41 Callback edge cases", `Setup: no credential on the 
   restoreConfig("ADM-41"),
 ]);
 
-const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; client adm43-c, auth none, per call on alpha; client adm43-s, sticky on alpha, disabled; ${BOOT_TEXT("adm43-p", "a sticky oauth", "adm43")}.`, [
+const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; client adm43-c, auth none, per call on alpha; client adm43-s, sticky on alpha, disabled; ${BOOT_TEXT("adm43-p", "a sticky oauth", "adm43")}; no client has the id adm43-nope.`, [
   ...freshServer("ADM-43", "alpha", ["echo_tool", "add_tool"]),
   createClient("ADM-43", httpClient("adm43-c", "adm43_c", "alpha"), "setup: create the per-call client"),
   createClient("ADM-43", httpClient("adm43-s", "adm43_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
@@ -6321,6 +6324,7 @@ const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; cli
   clientPost("ADM-43", "reconnect the per-call client", "adm43-c", "reconnect", [A.status(400), A.msgContains("client uses per-call connections; there is no persistent connection to reconnect")]),
   clientPost("ADM-43", "reconnect the disabled client", "adm43-s", "reconnect", [A.status(400), A.msgEquals("cannot reconnect a disabled MCP client: enable the client first")]),
   clientPost("ADM-43", "reconnect the pending client", "adm43-p", "reconnect", [A.status(400), A.msgContains("awaiting admin OAuth authorization")]),
+  clientPost("ADM-43", "reconnect an unknown client", "adm43-nope", "reconnect", [A.status(404), A.msgEquals("mcp client not found")]),
   deleteClient("ADM-43", "adm43-s"),
   deleteClient("ADM-43", "adm43-c"),
 ]);

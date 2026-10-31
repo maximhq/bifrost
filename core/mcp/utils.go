@@ -1160,6 +1160,11 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.StdioConfig == nil {
 			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
 		}
+		// mcp-go starts no process for an empty command and leaves its stdout nil, which its
+		// reader goroutine then dereferences.
+		if strings.TrimSpace(config.StdioConfig.Command) == "" {
+			return fmt.Errorf("a stdio command is required for STDIO connection type in client '%s'", config.Name)
+		}
 	case schemas.MCPConnectionTypeInProcess:
 		// InProcess can be provided programmatically or created automatically.
 	case schemas.MCPConnectionTypeOpenAPI:

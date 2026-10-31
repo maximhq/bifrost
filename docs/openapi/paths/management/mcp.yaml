@@ -320,6 +320,14 @@ client-by-id:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: >
+          Nothing is applied. Either another MCP client already has the requested name, or the
+          request changes oauth_config on a client whose OAuth verification has not completed.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -402,6 +410,8 @@ client-reconnect:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
