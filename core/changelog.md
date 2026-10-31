@@ -1,0 +1,1 @@
+- fix: OpenAI-compatible chat and Responses requests to a Qwen model inline a mid-conversation system or developer message as a system-reminder user turn when the datasheet says nothing, since Qwen chat templates reject one after the first turn; text already wrapped in system-reminder is not wrapped again (#8145) (thanks [@hmdsefi](https://github.com/hmdsefi)!)
