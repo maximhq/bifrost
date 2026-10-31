@@ -216,6 +216,7 @@ type TranscriptionSegment struct {
 	Start            float64 `json:"start"`
 	End              float64 `json:"end"`
 	Text             string  `json:"text"`
+	Speaker          *string `json:"speaker,omitempty"` // Speaker label when the provider diarizes verbose_json segments
 	Tokens           []int   `json:"tokens"`
 	Temperature      float64 `json:"temperature"`
 	AvgLogProb       float64 `json:"avg_logprob"`
