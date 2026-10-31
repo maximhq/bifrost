@@ -451,18 +451,25 @@ func (h *HybridLogStore) getPayload(ctx context.Context, key string) ([]byte, st
 	return data, found, nil
 }
 
-// putPayload writes a JSON payload in the encoding its key names: parquet
-// keys get a parquet body (with no outer gzip, since parquet compresses its
-// pages), every other key gets the JSON as is.
+// putPayload writes a JSON payload to the log store's object store in the
+// encoding its key names.
 func (h *HybridLogStore) putPayload(ctx context.Context, key string, payload []byte, tags map[string]string) error {
+	return putEncodedPayload(ctx, h.objects, key, payload, h.parquetCompression, tags)
+}
+
+// putEncodedPayload writes a JSON payload to store in the encoding its key
+// names: parquet keys get a parquet body compressed with parquetCompression
+// (and no outer gzip, since parquet compresses its pages), every other key
+// gets the JSON as is.
+func putEncodedPayload(ctx context.Context, store objectstore.ObjectStore, key string, payload []byte, parquetCompression string, tags map[string]string) error {
 	if !strings.HasSuffix(key, parquetObjectExt) {
-		return h.objects.Put(ctx, key, payload, tags)
+		return store.Put(ctx, key, payload, tags)
 	}
-	encoded, err := objectstore.EncodeJSONObjectToParquet(payload, h.parquetCompression)
+	encoded, err := objectstore.EncodeJSONObjectToParquet(payload, parquetCompression)
 	if err != nil {
 		return err
 	}
-	return objectstore.PutWith(ctx, h.objects, key, encoded, tags, objectstore.PutOptions{
+	return objectstore.PutWith(ctx, store, key, encoded, tags, objectstore.PutOptions{
 		ContentType:     objectstore.ContentTypeParquet,
 		SkipCompression: true,
 	})
