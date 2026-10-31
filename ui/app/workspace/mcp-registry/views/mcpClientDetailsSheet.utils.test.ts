@@ -3,6 +3,7 @@ import i18n from "@/lib/i18n";
 import type { MCPClient, MCPClientConfig } from "@/lib/types/mcp";
 import type { MCPSessionRow } from "@/lib/types/mcpSessions";
 import {
+	accessExplanation,
 	accessStat,
 	alertFor,
 	allowedToolsBadges,
@@ -46,6 +47,14 @@ const client = (overrides: Partial<MCPClient> = {}, configOverrides: Partial<MCP
 });
 
 const globals = { toolSyncIntervalMinutes: 10, maxProtocolVersion: "auto", toolExecutionTimeoutSeconds: 30, maxInstructionsLength: 4096 };
+
+// grantLabels words a build's grants the way a registering build would, in English.
+const grantLabels = {
+	count: (n: number) => `${n} ${n === 1 ? "grant" : "grants"}`,
+	loading: "loading grants",
+	noOverrides: "no key or grant overrides",
+	restrictedExplanation: "Only the virtual keys below, the grants below, and callers of the Virtual MCPs below, can reach this server.",
+};
 
 const row = (rows: { key: string }[], key: string) => rows.find((r) => r.key === key) as Record<string, unknown> | undefined;
 const keysOf = (rows: { key: string }[]) => rows.map((r) => r.key);
@@ -314,6 +323,45 @@ describe("accessStat", () => {
 			value: "Allowed by default",
 			sub: "and 2 virtual keys · 1 Virtual MCP",
 		});
+	});
+
+	it("counts the grants a build adds, in the words the build gives them", () => {
+		const grants = (count: number) => ({ count, labels: grantLabels });
+		expect(accessStat(config(), 3, 1, grants(2))).toEqual({
+			value: "3 keys · 2 grants",
+			sub: "and 1 Virtual MCP · not allowed by default",
+		});
+		expect(accessStat(config(), 1, 0, grants(1))).toEqual({ value: "1 key · 1 grant", sub: "not allowed by default" });
+		expect(accessStat(config(), 0, 0, grants(2))).toEqual({ value: "2 grants", sub: "not allowed by default" });
+		expect(accessStat(config(), 3, 0, grants(0))).toEqual({ value: "3 virtual keys", sub: "not allowed by default" });
+		expect(accessStat(config(), 0, 0, grants(0))).toEqual({ value: "No access", sub: "not allowed by default" });
+		expect(accessStat(config({ allow_by_default: true }), 0, 0, grants(0))).toEqual({
+			value: "Allowed by default",
+			sub: "no key or grant overrides",
+		});
+		expect(accessStat(config({ allow_by_default: true }), 2, 1, grants(3))).toEqual({
+			value: "Allowed by default",
+			sub: "and 2 virtual keys · 3 grants · 1 Virtual MCP",
+		});
+	});
+
+	it("waits for a build's grant count before saying who has access", () => {
+		const loading = { count: undefined, labels: grantLabels };
+		expect(accessStat(config(), 0, 0, loading)).toEqual({ value: "…", sub: "loading grants" });
+		expect(accessStat(config(), 2, 1, loading)).toEqual({ value: "…", sub: "loading grants" });
+		expect(accessStat(config({ allow_by_default: true }), 0, 0, loading)).toEqual({ value: "Allowed by default", sub: "loading grants" });
+	});
+});
+
+describe("accessExplanation", () => {
+	it("uses a build's own sentence when it registers grants, and keeps the base wording without them", () => {
+		expect(accessExplanation(false)).toBe("Only the virtual keys below, and callers of the Virtual MCPs below, can reach this server.");
+		expect(accessExplanation(false, grantLabels)).toBe(
+			"Only the virtual keys below, the grants below, and callers of the Virtual MCPs below, can reach this server.",
+		);
+		expect(accessExplanation(true, grantLabels)).toBe(
+			"Any caller can use this server with all tools allowed. A virtual key listed below uses its own allowlist instead.",
+		);
 	});
 });
 

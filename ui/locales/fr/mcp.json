@@ -497,6 +497,8 @@
 			"noneAutoExecute": "aucun en exécution automatique",
 			"virtualKeyCount_one": "{{count}} clé virtuelle",
 			"virtualKeyCount_other": "{{count}} clés virtuelles",
+			"keyCount_one": "{{count}} clé",
+			"keyCount_other": "{{count}} clés",
 			"virtualMcpCount_one": "{{count}} MCP virtuel",
 			"virtualMcpCount_other": "{{count}} MCP virtuels",
 			"andAlso": "et {{items}}",

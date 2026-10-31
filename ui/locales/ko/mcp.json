@@ -511,6 +511,8 @@
 			"noneAutoExecute": "자동 실행 없음",
 			"virtualKeyCount_one": "가상 키 {{count}}개",
 			"virtualKeyCount_other": "가상 키 {{count}}개",
+			"keyCount_one": "키 {{count}}개",
+			"keyCount_other": "키 {{count}}개",
 			"virtualMcpCount_one": "가상 MCP {{count}}개",
 			"virtualMcpCount_other": "가상 MCP {{count}}개",
 			"andAlso": "및 {{items}}",
