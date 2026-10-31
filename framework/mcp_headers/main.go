@@ -230,6 +230,34 @@ func (p *Provider) UpsertCredential(ctx context.Context, cred *schemas.MCPHeader
 	return nil
 }
 
+// CompleteFlow is UpsertCredential for a submission flow: it stores cred only
+// while the flow row flowID still exists, consuming the row in the same write.
+// A flow that is gone (revoked, expired or already submitted) stores nothing
+// and returns an error wrapping configstore.ErrNotFound.
+func (p *Provider) CompleteFlow(ctx context.Context, flowID string, cred *schemas.MCPHeadersUserCredential) error {
+	if p.configStore == nil {
+		return schemas.ErrHeadersCredentialProviderNotAvailable
+	}
+	if cred == nil {
+		return errors.New("nil credential")
+	}
+	if strings.TrimSpace(cred.MCPClientID) == "" {
+		return errors.New("mcp_client_id is required")
+	}
+	row, err := credentialToRow(cred)
+	if err != nil {
+		return err
+	}
+	if err := p.configStore.CompleteMCPPerUserHeaderFlow(ctx, flowID, row); err != nil {
+		return fmt.Errorf("complete mcp per-user header flow: %w", err)
+	}
+	cred.ID = row.ID
+	cred.CreatedAt = row.CreatedAt
+	cred.UpdatedAt = row.UpdatedAt
+	p.credentialWritten(ctx, row.ID)
+	return nil
+}
+
 // DeleteCredential removes a credential by primary key.
 func (p *Provider) DeleteCredential(ctx context.Context, id string) error {
 	if p.configStore == nil {

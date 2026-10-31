@@ -1990,7 +1990,14 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		AuthMode:      string(flowMode),
 		Status:        "active",
 	}
-	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {
+	// The token is stored only while the flow row still exists, in the same
+	// write that consumes it: a revoke that ran during the code exchange has
+	// deleted the row, and must not be undone by this completion.
+	if err := p.configStore.CompleteOauthUserSession(ctx, session.ID, tokenRecord); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			p.cleanupFlow(ctx, session.ID)
+			return nil, fmt.Errorf("per-user oauth flow was revoked or expired before it completed")
+		}
 		// The flow row has already been claimed and the auth code has been
 		// exchanged; leaving the row in 'claiming' state would block the
 		// next initiation for this binding indefinitely. Drop it so the

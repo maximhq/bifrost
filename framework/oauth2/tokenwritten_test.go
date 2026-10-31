@@ -212,6 +212,12 @@ func (s *reauthStore) CreateOauthToken(_ context.Context, token *tables.TableMCP
 	return nil
 }
 
+// CompleteOauthUserSession stores the token of the flow the claim handed out;
+// nothing here revokes flows, so the row is always still there.
+func (s *reauthStore) CompleteOauthUserSession(ctx context.Context, _ string, token *tables.TableMCPOauthToken) error {
+	return s.CreateOauthToken(ctx, token)
+}
+
 // TestOnTokenWrittenReachesAnotherProcessAfterReauthorization: re-authorizing
 // an existing binding replaces its row in place, and the reader switches to
 // the new credential.
