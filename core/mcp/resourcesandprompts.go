@@ -248,10 +248,11 @@ func (m *MCPManager) reachable(ctx context.Context, state *schemas.MCPClientStat
 	return m.included(ctx, state) && toolsReach(ctx, state.ExecutionConfig, m.discoveryStore.GetDiscovery(ctx, state.ExecutionConfig).GetTools())
 }
 
-// included reports whether state is enabled and ctx's client include list admits it.
+// included reports whether state is open to callers (see withheldFromCallers) and ctx's client
+// include list admits it.
 func (m *MCPManager) included(ctx context.Context, state *schemas.MCPClientState) bool {
 	config := state.ExecutionConfig
-	if config == nil || state.State == schemas.MCPConnectionStateDisabled {
+	if config == nil || withheldFromCallers(state.State, config) {
 		return false
 	}
 	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)

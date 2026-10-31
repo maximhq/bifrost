@@ -282,6 +282,34 @@ func TestOAuthCallback_StoresNothingWhenTheTokenIsRevokedDuringDiscovery(t *test
 	assert.NotContains(t, location, "tools=", "connecting again would not help a revoked caller")
 }
 
+// awaitAdminVerification records that the stored client clientID awaits its
+// admin verification.
+func awaitAdminVerification(t *testing.T, store configstore.ConfigStore, clientID string) {
+	t.Helper()
+	require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", clientID).Update("pending_verification", true).Error)
+}
+
+// TestOAuthCallback_DiscoversNothingWhileTheClientAwaitsAdminVerification: no
+// caller is served a client awaiting its admin verification, so sign-in dials
+// nothing for it. The discovery an earlier sign-in left is dropped, since the new
+// token replaced the one it was made with; connecting once the admin has verified
+// the client discovers with the new token.
+func TestOAuthCallback_DiscoversNothingWhileTheClientAwaitsAdminVerification(t *testing.T) {
+	cfg, store, client := newOAuthSignIn(t, true)
+	seedEarlierDiscovery(t, store, client, schemas.MCPAuthModeUser, "alice")
+	awaitAdminVerification(t, store, client.ID)
+	manager := &signInMCPManager{}
+
+	location := callOAuthCallback(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, manager), "state-1")
+
+	assert.Empty(t, manager.tokens, "nothing is dialed for a client awaiting its admin verification")
+	assert.Nil(t, storedDiscovery(store, schemas.MCPAuthModeUser, "alice", client.ID), "the earlier sign-in's discovery is dropped")
+	assert.NotContains(t, location, "tools=", "connecting again would not help until the admin verifies the client")
+	token, err := cfg.OAuthProvider.GetUserAccessTokenByMode(context.Background(), schemas.MCPAuthModeUser, "alice", client.ID)
+	require.NoError(t, err, "the token is stored, for connect to discover with once the client is verified")
+	assert.Equal(t, "alice-token", token)
+}
+
 func headersNotesClient() *schemas.MCPClientConfig {
 	return &schemas.MCPClientConfig{
 		ID:                "client-notes",
@@ -359,6 +387,28 @@ func TestHeadersSubmit_ReportsADiscoveryItCouldNotStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cred, "the credential is stored either way, for connect to discover with")
 	assert.Equal(t, schemas.MCPHeadersUserCredentialStatusActive, cred.Status)
+}
+
+// TestHeadersSubmit_StoresNoDiscoveryWhileTheClientAwaitsAdminVerification: the
+// verification submit ran is not kept as the caller's discovery of a client
+// awaiting its admin verification, and the discovery an earlier submit left is
+// dropped, since the new headers replaced the ones it was made with.
+func TestHeadersSubmit_StoresNoDiscoveryWhileTheClientAwaitsAdminVerification(t *testing.T) {
+	client := headersNotesClient()
+	cfg, store := newSignInConfig(t)
+	createSignInClient(t, store, client, true)
+	seedEarlierDiscovery(t, store, client, schemas.MCPAuthModeUser, "alice")
+	awaitAdminVerification(t, store, client.ID)
+	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice")})
+
+	body := submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, nil, cfg, nil), "flow-1", "alice")
+
+	assert.Equal(t, "success", body["status"])
+	assert.NotContains(t, body, "discovery_error")
+	assert.Nil(t, storedDiscovery(store, schemas.MCPAuthModeUser, "alice", client.ID), "the earlier submit's discovery is dropped and none is stored")
+	cred, err := cfg.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeUser, "alice", client.ID)
+	require.NoError(t, err)
+	require.NotNil(t, cred, "the credential is stored, for connect to discover with once the client is verified")
 }
 
 func TestHeadersSubmit_StoresAVirtualKeysDiscoveryUnderTheKey(t *testing.T) {

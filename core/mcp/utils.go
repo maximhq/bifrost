@@ -211,9 +211,9 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 
 		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
 
-		// Skip intentionally disabled clients
-		if client.State == schemas.MCPConnectionStateDisabled {
-			m.logger.Debug("%s Skipping disabled MCP client %s", MCPLogPrefix, clientName)
+		// Skip intentionally disabled clients, and per-caller clients awaiting admin verification
+		if withheldFromCallers(client.State, client.ExecutionConfig) {
+			m.logger.Debug("%s Skipping MCP client %s: disabled or awaiting admin verification", MCPLogPrefix, clientName)
 			continue
 		}
 
@@ -1229,6 +1229,23 @@ func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, re
 	}
 }
 
+// ValidatePerUserDiscovery reports whether config may have per_user_discovery
+// on: only a per-user auth type has a credential per caller to discover with,
+// and an openapi client's tools come from its document, the same for every
+// caller.
+func ValidatePerUserDiscovery(config *schemas.MCPClientConfig) error {
+	if config == nil || config.PerUserDiscovery == nil || !*config.PerUserDiscovery {
+		return nil
+	}
+	if !config.AuthType.IsPerUser() {
+		return fmt.Errorf("per_user_discovery is only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), not '%s', in client '%s'", config.AuthType, config.Name)
+	}
+	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
+		return fmt.Errorf("per_user_discovery does not apply to openapi clients, whose tools come from the OpenAPI document, in client '%s'", config.Name)
+	}
+	return nil
+}
+
 // validateMCPClientConfig validates an MCP client configuration.
 func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	if strings.TrimSpace(config.ID) == "" {
@@ -1275,15 +1292,8 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 			return fmt.Errorf("oauth_config_id must not be set for per_user_headers auth type in client '%s'", config.Name)
 		}
 	}
-	if config.PerUserDiscovery != nil && *config.PerUserDiscovery {
-		if !config.AuthType.IsPerUser() {
-			return fmt.Errorf("per_user_discovery is only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), not '%s', in client '%s'", config.AuthType, config.Name)
-		}
-		// The per-user discovery lifecycle (direct-approve, per-caller
-		// discovery, manual refresh) is not wired up yet; accepting the flag
-		// now would persist it while the runtime still serves the admin's
-		// discovery to everyone. Lifted when that lands.
-		return fmt.Errorf("per_user_discovery is not supported yet in client '%s'", config.Name)
+	if err := ValidatePerUserDiscovery(config); err != nil {
+		return err
 	}
 	if config.AuthType == schemas.MCPAuthTypeTokenExchange {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {

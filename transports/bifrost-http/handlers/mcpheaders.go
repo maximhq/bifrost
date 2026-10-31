@@ -331,13 +331,20 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 // discovery an earlier submit left is dropped, the error is returned for the
 // response to report, and connecting to the client again discovers with the
 // stored credential. A credential revoked meanwhile gets no discovery and no
-// error, since connecting again would not help.
+// error, since connecting again would not help. Nor does a client awaiting its
+// admin verification, which serves no caller: the earlier discovery is dropped,
+// and connecting once the client is verified discovers with the stored
+// credential.
 func (h *MCPPerUserHeadersHandler) storeSubmittedDiscovery(ctx context.Context, config *schemas.MCPClientConfig, flow *configstoreTables.TableMCPPerUserHeaderFlow, discovery *schemas.MCPDiscovery) error {
 	mode, identity, ok := headersFlowIdentity(flow)
 	if !ok || !keepsSignInDiscovery(config, mode, identity) {
 		return nil
 	}
 	store := perUserDiscoveryStore(h.store)
+	if config.PendingVerification {
+		dropSignInDiscovery(ctx, store, config, mode, identity)
+		return nil
+	}
 	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(ctx, mode, identity, config.ID)
 	if err != nil {
 		logger.Warn("[mcp/per-user-headers] failed to re-read the submitted credential of MCP client %s to store its discovery: %v", config.Name, err)

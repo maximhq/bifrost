@@ -1659,6 +1659,51 @@ func TestUpdateClient_KeepsPerUserDiscovery(t *testing.T) {
 	assert.Equal(t, schemas.Ptr(false), perUserDiscovery(), "an edit can turn the flag off")
 }
 
+// TestUpdateClient_RefusesPerUserDiscoveryWhereItCannotApply: an update is held
+// to the rule AddClient applies, on the config it would leave: a shared auth
+// type has no credential per caller to discover with, and an openapi client's
+// tools come from its document. The client keeps its config.
+func TestUpdateClient_RefusesPerUserDiscoveryWhereItCannotApply(t *testing.T) {
+	t.Run("shared auth type", func(t *testing.T) {
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		defer m.checkerManager.StopAll()
+		config := newVerifiedClientConfig("client", schemas.MCPAuthTypeHeaders, map[string]schemas.ChatTool{})
+		m.mu.Lock()
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+		m.mu.Unlock()
+
+		on := *config
+		on.PerUserDiscovery = schemas.Ptr(true)
+		err := m.UpdateClient(config.ID, &on)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "per_user_discovery is only valid for per-user auth types")
+		m.mu.RLock()
+		assert.Same(t, config, m.clientMap[config.ID].ExecutionConfig, "the refused update leaves the client's config as it was")
+		m.mu.RUnlock()
+	})
+
+	t.Run("openapi client", func(t *testing.T) {
+		stub := &stubOpenAPIFactory{}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+		config := newOpenAPITestConfig("petstore", "listPets")
+		config.AuthType = schemas.MCPAuthTypePerUserHeaders
+		config.PerUserHeaderKeys = []string{"x-api-key"}
+		require.NoError(t, m.AddClient(context.Background(), config))
+		t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+		on := newOpenAPITestConfig("petstore", "listPets")
+		on.AuthType = schemas.MCPAuthTypePerUserHeaders
+		on.PerUserHeaderKeys = []string{"x-api-key"}
+		on.PerUserDiscovery = schemas.Ptr(true)
+		err := m.UpdateClient(config.ID, on)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "per_user_discovery does not apply to openapi clients")
+		m.mu.RLock()
+		assert.False(t, perUserDiscoveryOn(m.clientMap[config.ID].ExecutionConfig))
+		m.mu.RUnlock()
+	})
+}
+
 // TestUpdateClient_OpenAPI_RenameRebuildsServer: synthesized tool names are
 // shortened to fit beside the client name, so a rename rebuilds the server
 // rather than only swapping the prefix on the old names.

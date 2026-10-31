@@ -151,7 +151,10 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 // token replaced, and returns the client's name, for the redirect to tell the
 // caller its tools are not loaded yet and that connecting again retries. It
 // returns "" when discovery succeeded or was not attempted, and for a token
-// revoked meanwhile, which connecting again would not help.
+// revoked meanwhile, which connecting again would not help. A client awaiting
+// its admin verification serves no caller, so nothing is dialed for it: the
+// earlier discovery is dropped, and connecting once the client is verified
+// discovers with the new token.
 func (h *OAuthHandler) discoverAfterOAuthSignIn(parent context.Context, completion *schemas.UserOAuthCompletion) string {
 	store := perUserDiscoveryStore(h.store)
 	if completion == nil || store == nil || h.mcpManager == nil || h.store.ConfigStore == nil {
@@ -168,6 +171,10 @@ func (h *OAuthHandler) discoverAfterOAuthSignIn(parent context.Context, completi
 	}
 	mode, identity := completion.AuthMode, completion.Identity
 	if !keepsSignInDiscovery(config, mode, identity) {
+		return ""
+	}
+	if config.PendingVerification {
+		dropSignInDiscovery(parent, store, config, mode, identity)
 		return ""
 	}
 	token := func(ctx context.Context) (string, error) {

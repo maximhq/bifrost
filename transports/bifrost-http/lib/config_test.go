@@ -24150,6 +24150,109 @@ func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
 	assert.False(t, stored.PendingVerification)
 }
 
+// TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile: config.json turning
+// per_user_discovery on or off has the same effects as the API, and the client
+// handed to the runtime carries what the store reset: on, a verified client
+// stays verified with no tools; off (here by omission, under source_of_truth
+// config.json), it goes back to its admin step. The flag on a client it cannot
+// apply to is refused, and the stored client is kept.
+func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(perUser *bool) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
+			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
+		}}
+	}
+	runtimeClient := func(t *testing.T, cfg *Config, name string) *schemas.MCPClientConfig {
+		t.Helper()
+		for _, c := range cfg.MCPConfig.ClientConfigs {
+			if c.Name == name {
+				return c
+			}
+		}
+		t.Fatalf("client %q is not loaded", name)
+		return nil
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(nil)})
+	notesID := runtimeClient(t, first, "notes").ID
+	// Verified as verify-headers does it, keeping the admin's sample headers.
+	tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: map[string]string{"search": "search"}}))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
+	require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, &tables.TableMCPPerUserHeaderCredential{MCPClientID: notesID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.Ptr(true))})
+	notes := runtimeClient(t, second, "notes")
+	assert.Equal(t, schemas.Ptr(true), notes.PerUserDiscovery)
+	assert.False(t, notes.PendingVerification, "still verified")
+	assert.Nil(t, notes.DiscoveredTools, "the admin's tools are not kept")
+	admin, err := store.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{notesID})
+	require.NoError(t, err)
+	assert.Empty(t, admin, "nor is the admin's credential")
+	wiki, err := store.GetMCPClientConfigByID(ctx, runtimeClient(t, second, "wiki").ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, schemas.Ptr(true), wiki.PerUserDiscovery, "refused for a shared auth type, and the stored client kept")
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, &tables.TableMCPPerUserDiscovery{
+		MCPClientID: notesID, AuthMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice"), Tools: tools, DiscoveryHash: "hash-alice", DiscoveredAt: time.Now(),
+	}))
+	third := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, third, &ConfigData{MCP: fileMCP(nil), SourceOfTruth: SourceOfTruthConfigJSON})
+	notes = runtimeClient(t, third, "notes")
+	assert.Equal(t, schemas.Ptr(false), notes.PerUserDiscovery, "omitted under source_of_truth config.json: off")
+	assert.True(t, notes.PendingVerification, "back to its admin step")
+	discovery, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", notesID)
+	require.NoError(t, err)
+	assert.Nil(t, discovery, "callers' discoveries are deleted")
+}
+
+// TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType: config.json
+// cannot change an existing client's auth type, so per_user_discovery is held to
+// the stored one. A block that declares a per-user type for a stored shared
+// client, with the flag on, is refused before anything is written: the client
+// keeps its stored configuration and tools, rather than storing the flag where
+// it cannot apply and failing to load at every boot after.
+func TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	for _, sot := range []string{SourceOfTruthSplit, SourceOfTruthConfigJSON} {
+		t.Run(sot, func(t *testing.T) {
+			wiki := func(authType schemas.MCPAuthType, perUser *bool) *schemas.MCPConfig {
+				client := &schemas.MCPClientConfig{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), AuthType: authType, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser}
+				if authType == schemas.MCPAuthTypePerUserHeaders {
+					client.PerUserHeaderKeys = []string{"x-api-key"}
+				}
+				return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}
+			}
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypeHeaders, nil)})
+			require.Len(t, first.MCPConfig.ClientConfigs, 1)
+			wikiID := first.MCPConfig.ClientConfigs[0].ID
+			tools := map[string]schemas.ChatTool{"wiki-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "wiki-search"}}}
+			require.NoError(t, store.UpdateMCPClientDiscovery(ctx, wikiID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: map[string]string{"search": "search"}}))
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypePerUserHeaders, schemas.Ptr(true))})
+			require.Len(t, second.MCPConfig.ClientConfigs, 1)
+			runtime := second.MCPConfig.ClientConfigs[0]
+			assert.Equal(t, schemas.MCPAuthTypeHeaders, runtime.AuthType)
+			assert.NotEqual(t, schemas.Ptr(true), runtime.PerUserDiscovery, "the runtime is handed the stored client")
+			stored, err := store.GetMCPClientConfigByID(ctx, wikiID)
+			require.NoError(t, err)
+			assert.NotEqual(t, schemas.Ptr(true), stored.PerUserDiscovery, "the flag is not stored on a shared client")
+			assert.Contains(t, stored.DiscoveredTools, "wiki-search", "and nothing turning it on deletes is deleted")
+		})
+	}
+}
+
 // TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
 // mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
 // idempotent no-op on unchanged hash, update on change, and prune of absent entries.

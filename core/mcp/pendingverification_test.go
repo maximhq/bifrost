@@ -651,6 +651,75 @@ func TestPerUserDiscoveryClient_GetsNoAdminDiscoveryOrChecker(t *testing.T) {
 	})
 }
 
+// TestUpdateClient_TurningPerUserDiscoveryOnOrOff: an update that turns the flag
+// on or off takes the record of the admin step it carries, read back from the
+// store, instead of keeping the old one. On, the client keeps no shared tools
+// and no checker; off, it is parked for its admin step or, when the record says
+// it is verified, checked with an admin credential again. A disabled client
+// stays disabled.
+func TestUpdateClient_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
+	hasChecker := func(m *MCPManager, id string) bool {
+		m.checkerManager.mu.RLock()
+		defer m.checkerManager.mu.RUnlock()
+		_, ok := m.checkerManager.checkers[id]
+		return ok
+	}
+	for _, tc := range []struct {
+		name        string
+		authType    schemas.MCPAuthType
+		from, to    bool
+		state       schemas.MCPConnectionState
+		pending     bool
+		wantState   schemas.MCPConnectionState
+		wantChecker bool
+	}{
+		{"on", schemas.MCPAuthTypePerUserHeaders, false, true, schemas.MCPConnectionStateUnstable, false, schemas.MCPConnectionStateHealthy, false},
+		{"on, still pending", schemas.MCPAuthTypePerUserHeaders, false, true, schemas.MCPConnectionStatePendingVerification, true, schemas.MCPConnectionStatePendingVerification, false},
+		{"on, disabled", schemas.MCPAuthTypePerUserHeaders, false, true, schemas.MCPConnectionStateDisabled, false, schemas.MCPConnectionStateDisabled, false},
+		{"off, back to the admin step", schemas.MCPAuthTypePerUserHeaders, true, false, schemas.MCPConnectionStateHealthy, true, schemas.MCPConnectionStatePendingVerification, false},
+		{"off, verified", schemas.MCPAuthTypePerUserOauth, true, false, schemas.MCPConnectionStateHealthy, false, schemas.MCPConnectionStateHealthy, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &fakeAdminCredStore{err: errors.New("no admin credential")}, &MockLogger{}, nil)
+			defer m.checkerManager.StopAll()
+			config := newVerifiedClientConfig("flip", tc.authType, nil)
+			config.PerUserDiscovery = schemas.Ptr(tc.from)
+			config.Disabled = tc.state == schemas.MCPConnectionStateDisabled
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: tc.state, ConnectionInfo: &schemas.MCPClientConnectionInfo{Type: config.ConnectionType}}
+			m.mu.Unlock()
+			shared := *config
+			shared.PerUserDiscovery = nil
+			if !tc.from {
+				tools := map[string]schemas.ChatTool{config.Name + "-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: config.Name + "-search"}}}
+				config.DiscoveredTools = tools
+				require.NoError(t, m.discoveryStore.SetDiscovery(m.ctx, &shared, &schemas.MCPDiscovery{Tools: tools}))
+				if tc.state != schemas.MCPConnectionStateDisabled && tc.state != schemas.MCPConnectionStatePendingVerification {
+					m.startPerCallChecker(config)
+					require.True(t, hasChecker(m, config.ID), "fixture check: a client without the flag is checked")
+				}
+			}
+
+			// As read back from the store, which the change left with no tools.
+			flipped := *config
+			flipped.PerUserDiscovery = schemas.Ptr(tc.to)
+			flipped.PendingVerification = tc.pending
+			flipped.DiscoveredTools = nil
+			require.NoError(t, m.UpdateClient(config.ID, &flipped))
+
+			m.mu.RLock()
+			state := m.clientMap[config.ID].State
+			updated := m.clientMap[config.ID].ExecutionConfig
+			m.mu.RUnlock()
+			assert.Equal(t, tc.wantState, state)
+			assert.Equal(t, tc.pending, awaitsAdminVerification(updated), "the record the update carried")
+			assert.Equal(t, tc.wantChecker, hasChecker(m, config.ID))
+			assert.Nil(t, m.discoveryStore.GetDiscovery(m.ctx, &shared), "no shared tools are left behind")
+			assert.Nil(t, updated.DiscoveredTools, "nor stored ones carried forward")
+		})
+	}
+}
+
 // TestReconnectClient_RefusesAClientStillPendingVerification: a client recorded
 // as still needing its admin sign-in has no credential to connect with, so a
 // reconnect is refused rather than flipping it out of pending_verification.
