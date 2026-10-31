@@ -1029,11 +1029,16 @@ function hunkRemovesBehavior(hunk, behavior) {
 	);
 }
 
+function lineIncludesQuotedKey(line, key) {
+	return [`"${key}"`, `'${key}'`, `\`${key}\``].some((literal) => line.includes(literal));
+}
+
 function hunkAddsBehaviorText(hunk, source, copy) {
 	return diffLineRecords(hunk).some(
 		(record) =>
 			record.type === "added" &&
-			((typeof source.key === "string" && record.line.includes(source.rawKey ?? source.key)) || (copy && record.line.includes(copy))),
+			((typeof source.key === "string" && lineIncludesQuotedKey(record.line, source.rawKey ?? source.key)) ||
+				(copy && record.line.includes(copy))),
 	);
 }
 

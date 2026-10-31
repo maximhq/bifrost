@@ -908,6 +908,33 @@ describe("removed call evidence", () => {
 		expect(findings.map((finding) => finding.type)).toEqual(["upstream-evidence-invalid"]);
 	});
 
+	it("accepts a removal when an added identifier only shares the key substring", () => {
+		const repoRoot = makeGitRepo();
+		writeRepoFile(repoRoot, file, `export const Old = () => <button>{i18n.t("saveChanges")}</button>;\n`);
+		const baseline = commitAll(repoRoot, "baseline");
+		const baselineEntries = inventoryAtRef(repoRoot, baseline, file);
+		writeRepoFile(repoRoot, file, "export const saveChangesPending = false;\n");
+		const upstreamSha = commitAll(repoRoot, "remove translation and add similarly named identifier");
+		const currentEntries = inventoryAtRef(repoRoot, null, file);
+		const diffHeader = firstDiffHeader(git(repoRoot, "diff", baseline, upstreamSha, "--", file));
+		const findings = auditRemovedCalls({
+			repoRoot,
+			baseline,
+			baselineEntries,
+			currentEntries,
+			currentResources: { common: { saveChanges: "Save changes" } },
+			baselineResources: { common: { saveChanges: "Save changes" } },
+			removedCalls: [
+				{
+					source: sourceIdentity(baselineEntries[0]),
+					reason: "upstream-removed",
+					upstream: { sha: upstreamSha, file, diffHeader },
+				},
+			],
+		});
+		expect(findings).toEqual([]);
+	});
+
 	it("rejects a current hardcoded English replacement despite valid upstream removal evidence", () => {
 		const repoRoot = makeGitRepo();
 		writeRepoFile(repoRoot, file, `export const Old = () => <button data-testid="save-button">{i18n.t("save")}</button>;\n`);
