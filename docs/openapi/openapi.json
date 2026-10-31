@@ -45532,7 +45532,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add MCP client",
-        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n",
+        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n",
         "tags": [
           "MCP"
         ],
@@ -46888,6 +46888,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another MCP client already has the name, or an MCP client or Virtual MCP already serves the endpoint slug.",
             "content": {
               "application/json": {
                 "schema": {
@@ -48933,6 +48943,16 @@
           },
           "401": {
             "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
             "content": {
               "application/json": {
                 "schema": {
