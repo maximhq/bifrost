@@ -54,8 +54,9 @@ type ModelCatalog struct {
 	lastMCPLibrarySyncedAt time.Time
 	syncMu                 sync.RWMutex
 
-	shouldSyncGate func(ctx context.Context) bool
-	afterSyncHook  func(ctx context.Context)
+	shouldSyncGate    func(ctx context.Context) bool
+	afterSyncHook     func(ctx context.Context)
+	afterLiveSyncHook func(context.Context, schemas.ModelProvider, string)
 
 	// Background sync orchestration. The ticker, distributed lock, and gossip
 	// hook live at this level — datasheet.Store has no internal scheduler.
@@ -85,6 +86,7 @@ func resolveMCPLibrarySyncInterval(config *Config) time.Duration {
 	}
 }
 
+// Init loads persistent catalog data before starting upstream synchronization.
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
 	pricingURL := DefaultPricingURL
 	if config != nil && config.PricingURL != nil {
@@ -287,8 +289,11 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	return mc, nil
 }
 
+// SetShouldSyncGate supplies the eligibility policy shared by automatic catalog synchronizations.
 func (mc *ModelCatalog) SetShouldSyncGate(fn func(ctx context.Context) bool) {
+	mc.syncMu.Lock()
 	mc.shouldSyncGate = fn
+	mc.syncMu.Unlock()
 }
 
 // SetAfterSyncHook registers a callback invoked after a successful URL → DB
@@ -419,6 +424,7 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 	return nil
 }
 
+// Cleanup stops catalog workers and releases process-wide capability hooks.
 func (mc *ModelCatalog) Cleanup() error {
 	// Drop the process-global resolver first: it closes over mc, and capability
 	// lookups would otherwise keep running against a torn-down catalog. With no
@@ -451,6 +457,7 @@ func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 	go mc.syncWorker(ctx)
 }
 
+// syncWorker checks scheduled catalog work until cancellation.
 func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 	// Capture the ticker once so the select loop doesn't race with
 	// UpdateSyncConfig overwriting mc.syncTicker while this goroutine
@@ -470,6 +477,7 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 	}
 }
 
+// syncTick runs due catalog synchronizations under their eligibility gates and locks.
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	pricingDue := time.Since(mc.datasheet.LastSyncedAt()) >= mc.datasheet.SyncInterval()
 	mcpLibraryDue := mc.isMCPLibrarySyncDue()
@@ -487,7 +495,7 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	// reload each cycle, so N nodes cost N*(N-1) full catalog reads instead of
 	// N-1. Leaving lastSyncedAt untouched means a node that later becomes leader
 	// finds the sync overdue and runs it on its next tick.
-	if pricingDue && !mc.syncGateOpen(ctx) {
+	if pricingDue && !mc.ShouldSync(ctx) {
 		mc.logger.Debug("model catalog pricing sync skipped by sync gate")
 		pricingDue = false
 	}
@@ -563,17 +571,19 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	mc.logger.Debug("model catalog background sync completed")
 }
 
-// syncGateOpen reports whether this node may run the URL → DB sync. With no
-// gate installed (single node) it always may.
-func (mc *ModelCatalog) syncGateOpen(ctx context.Context) bool {
-	return mc.shouldSyncGate == nil || mc.shouldSyncGate(ctx)
+// ShouldSync reports whether this process may discover upstream catalog data; an absent gate permits it.
+func (mc *ModelCatalog) ShouldSync(ctx context.Context) bool {
+	mc.syncMu.RLock()
+	gate := mc.shouldSyncGate
+	mc.syncMu.RUnlock()
+	return gate == nil || gate(ctx)
 }
 
 // runPricingSync wraps the datasheet pricing sync with the gate check. ran is
 // false when the gate skipped the sync, so callers can tell a skip from a
 // sync that succeeded.
 func (mc *ModelCatalog) runPricingSync(ctx context.Context) (ran bool, err error) {
-	if !mc.syncGateOpen(ctx) {
+	if !mc.ShouldSync(ctx) {
 		return false, nil
 	}
 	return true, mc.datasheet.SyncFromURL(ctx)
@@ -582,7 +592,7 @@ func (mc *ModelCatalog) runPricingSync(ctx context.Context) (ran bool, err error
 // runParamsSync wraps the datasheet params sync with the gate check. ran is
 // false when the gate skipped the sync.
 func (mc *ModelCatalog) runParamsSync(ctx context.Context) (ran bool, err error) {
-	if !mc.syncGateOpen(ctx) {
+	if !mc.ShouldSync(ctx) {
 		mc.logger.Debug("model parameters sync cancelled by custom gate")
 		return false, nil
 	}
@@ -622,6 +632,7 @@ func (mc *ModelCatalog) hasPricingData() bool {
 	return len(mc.datasheet.DatasheetProviders()) > 0
 }
 
+// hasMCPLibraryData checks whether the persistent MCP library has existing records.
 func (mc *ModelCatalog) hasMCPLibraryData(ctx context.Context) (bool, error) {
 	if mc.configStore == nil {
 		return false, nil
@@ -633,6 +644,7 @@ func (mc *ModelCatalog) hasMCPLibraryData(ctx context.Context) (bool, error) {
 	return totalCount > 0, nil
 }
 
+// isMCPLibrarySyncDue evaluates the configured library synchronization cadence.
 func (mc *ModelCatalog) isMCPLibrarySyncDue() bool {
 	if mc.configStore == nil {
 		return false

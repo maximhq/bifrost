@@ -108,6 +108,8 @@ const responsesFor = (body, count) => {
 
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
+// Failures are scoped to a run's catalog URL so other fixture cases are unaffected.
+const failedModelScopes = new Set();
 
 const server = http.createServer((req, res) => {
 	const path = new URL(req.url, "http://localhost").pathname;
@@ -115,6 +117,23 @@ const server = http.createServer((req, res) => {
 		res.writeHead(status, { "Content-Type": "application/json", ...headers });
 		res.end(body);
 	};
+	const catalog = path.match(/^\/catalog\/([^/]+)\/v1\/models$/);
+	if (req.method === "GET" && catalog) {
+		if (failedModelScopes.has(catalog[1])) {
+			return send(503, {}, errorBody("synthetic discovery outage", "server_error", "discovery_unavailable"));
+		}
+		return send(200, {}, JSON.stringify({ data: [
+			{ id: "persist-visible", created: 1700000000 },
+			{ id: "persist-hidden", created: 1700000001 },
+		] }));
+	}
+	const modelControl = path.match(/^\/__models\/([^/]+)$/);
+	if (modelControl && (req.method === "POST" || req.method === "DELETE")) {
+		if (req.method === "POST") failedModelScopes.add(modelControl[1]);
+		else failedModelScopes.delete(modelControl[1]);
+		req.resume();
+		return send(200, {}, JSON.stringify({ data: [{ failed: failedModelScopes.has(modelControl[1]) }] }));
+	}
 	// A fresh gateway downloads a pricing datasheet and a model-parameters datasheet on first start, and the model
 	// catalog decides which request types a model supports (gpt-5-pro is Responses-only, so a chat request to it is
 	// converted). Serving both from here keeps the run offline and the result independent of a remote file.

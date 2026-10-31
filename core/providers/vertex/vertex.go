@@ -360,6 +360,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	var rawRequests []interface{}
 	var rawResponses []interface{}
 	pageToken := ""
+	partial := false
 
 	// Getting oauth2 token
 	tokenSource, err := provider.getAuthTokenSource(key)
@@ -400,8 +401,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 				respBody := append([]byte(nil), resp.Body()...)
 				fasthttp.ReleaseRequest(req)
 				fasthttp.ReleaseResponse(resp)
-				// Non-Google publishers may not be available in all regions; skip on error
+				// Keep best-effort results, but a transport failure is not regional unavailability.
 				if publisher != "google" {
+					partial = true
 					break
 				}
 				return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -470,6 +472,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response.IsPartial = partial
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests

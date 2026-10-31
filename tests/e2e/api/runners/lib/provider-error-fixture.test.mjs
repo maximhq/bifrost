@@ -41,6 +41,24 @@ async function startFixture(t) {
   return post;
 }
 
+// A failed discovery scope must not affect other catalogs or survive explicit fixture cleanup.
+test("model discovery failures are scoped and reversible", async (t) => {
+  const post = await startFixture(t);
+  const control = await post(null, "/__models/one");
+  assert.equal(control.status, 200);
+  const getModels = (scope) => fetch(new URL(`/catalog/${scope}/v1/models`, control.url));
+  const failed = await getModels("one");
+  assert.equal(failed.status, 503);
+  assert.equal((await failed.json()).error.message, "synthetic discovery outage");
+  const other = await getModels("two");
+  assert.equal(other.status, 200);
+  assert.deepEqual((await other.json()).data.map((m) => m.id), ["persist-visible", "persist-hidden"]);
+  const cleanup = await fetch(control.url, { method: "DELETE" });
+  assert.equal(cleanup.status, 200);
+  const recovered = await getModels("one");
+  assert.equal(recovered.status, 200);
+});
+
 // The request's model picks the fixture's behaviour. A model that is not a string names none, so it
 // gets the unknown-model answer; it must not stop the one fixture every folder-185 request shares.
 test("a model that is not a string is an unknown model and the fixture keeps serving", async (t) => {

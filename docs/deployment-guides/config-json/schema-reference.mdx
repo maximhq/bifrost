@@ -413,11 +413,16 @@ delete a key. `live_models_sync_interval` additionally re-fetches it on a timer,
 so a model a provider starts serving after the gateway booted becomes routable
 without a restart.
 
-Every node runs its own refresh, because the model list is cached in process
-memory rather than in the database. Each pass costs two `list models` calls per
-enabled key, per provider, so raise the interval if a provider meters that
-endpoint. The interval is jittered by ±10% to keep replicas that booted together
-from calling every upstream at the same instant.
+Successful listings are persisted in the configured database, separately for
+each provider key and for filtered and unfiltered results, and loaded into the
+local cache before discovery. Failed or incomplete refreshes retain the
+last-known-good listing. The interval controls refresh attempts, not expiration
+of previously discovered models.
+
+Each discovery pass costs two `list models` calls per enabled key, per provider,
+so raise the interval if a provider meters that endpoint. The interval is
+jittered by ±10% to keep replicas that booted together from calling every
+upstream at the same instant.
 
 Set it to `0` to turn the timer off entirely. Model discovery then happens only
 at startup and on key edits, and you can trigger it on demand from the

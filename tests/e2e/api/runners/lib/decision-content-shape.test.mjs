@@ -5,13 +5,14 @@ import test from 'node:test';
 const collection = JSON.parse(fs.readFileSync(new URL('../../collections/provider-harness.json', import.meta.url), 'utf8'));
 const collectionScript = collection.event.find(event => event.listen === 'test').script.exec.join('\n');
 const contentScript = collectionScript.slice(
-  collectionScript.indexOf('// Only register the content-shape test'),
+  0,
   collectionScript.indexOf('// Routed-identity response headers'),
 );
 
-function contentFailures(body) {
+function contentFailures(body, requestName = 'ordinary request') {
   const failures = [];
   new Function('pm', contentScript)({
+    info: { requestName },
     request: { url: { toString: () => 'http://localhost:8080/v1/decisions' } },
     response: {
       code: 200,
@@ -19,7 +20,10 @@ function contentFailures(body) {
       json: () => body,
     },
     test: (_name, fn) => { try { fn(); } catch (error) { failures.push(error); } },
-    expect: (value) => ({ to: { be: { get true() { assert.equal(value, true); } } } }),
+    expect: (value) => ({ to: {
+      equal: (expected) => assert.equal(value, expected),
+      be: { get true() { assert.equal(value, true); } },
+    } }),
   });
   return failures;
 }
@@ -30,4 +34,8 @@ test('decision answers count as response content', () => {
 
 test('empty decision answers still fail the content check', () => {
   assert.equal(contentFailures({ answers: {} }).length, 1);
+});
+
+test('an explicit no-content row keeps its exemption', () => {
+  assert.equal(contentFailures({ answers: {} }, '[NO-CONTENT] refusal').length, 0);
 });
