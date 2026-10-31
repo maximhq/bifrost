@@ -20,7 +20,7 @@ import (
 // a client in the manager's discovery store, so a test can watch the manager's view
 // of an upstream tool set without reaching into the connection.
 func refreshToolMapKeys(m *MCPManager, id string) []string {
-	tools := m.discoveryStore.GetDiscovery(context.Background(), id).GetTools()
+	tools := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: id}).GetTools()
 	if len(tools) == 0 {
 		return nil
 	}

@@ -376,7 +376,7 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 	}
 	m.mu.Unlock()
-	m.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
 		Tools:           map[string]schemas.ChatTool{"verifiedclient-lookup": lookup},
 		ToolNameMapping: map[string]string{},
 	})
@@ -398,7 +398,7 @@ func TestUpdateClient_RenameRebindsTheVerifiedTools(t *testing.T) {
 	// And the restore that reads it installs the tool under the current name.
 	require.NoError(t, m.DisableClient(config.ID))
 	require.NoError(t, m.EnableClient(config.ID))
-	toolMap := m.discoveryStore.GetDiscovery(context.Background(), config.ID).GetTools()
+	toolMap := m.discoveryStore.GetDiscovery(context.Background(), config).GetTools()
 	assert.Contains(t, toolMap, "renamedclient-lookup")
 	assert.NotContains(t, toolMap, "verifiedclient-lookup")
 }

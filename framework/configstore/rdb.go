@@ -11072,6 +11072,23 @@ func perUserDiscoveryScope(q *gorm.DB, mode schemas.MCPAuthMode, identity, mcpCl
 	return nil, fmt.Errorf("auth mode %q carries no per-user discovery", mode)
 }
 
+// GetMCPPerUserDiscoveryBindings lists the user and virtual-key bindings that
+// hold a discovery on one MCP client. Only the identity columns and the
+// discovery hash are read, so the tool schemas are never loaded.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryBindings(ctx context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error) {
+	if strings.TrimSpace(mcpClientID) == "" {
+		return nil, nil
+	}
+	var rows []tables.TableMCPPerUserDiscovery
+	if err := s.DB().WithContext(ctx).
+		Select("auth_mode", "user_id", "virtual_key_id", "mcp_client_id", "discovery_hash").
+		Where("mcp_client_id = ? AND auth_mode IN ?", mcpClientID, []string{string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK)}).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list mcp per-user discovery bindings: %w", err)
+	}
+	return rows, nil
+}
+
 // GetMCPPerUserDiscoveryByMode looks up the discovery for one (mode, identity,
 // mcp client) binding. Returns nil, nil when the binding has none.
 func (s *RDBConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {

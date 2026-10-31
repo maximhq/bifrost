@@ -207,6 +207,11 @@ type ServerCallbacks interface {
 	// client-level mutation that invalidates its credential rows as a set
 	// (needs_update schema flip, access reconciliation, client deletion).
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	// EvictMCPPerUserDiscoveryCache drops one caller's cached per-user
+	// discovery of one MCP client. The server forwards every write the
+	// per-user discovery store makes here, since the store's own eviction
+	// reaches only this process.
+	EvictMCPPerUserDiscoveryCache(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string)
 	// ResolveAccess answers what a request may reach, resolving it once onto the request's grant,
 	// for the listing routes that run outside the request pipeline and so cannot wait for a hook
 	// to resolve it.
@@ -236,8 +241,6 @@ type MCPLogRedactionMappingResolverProvider interface {
 type BifrostHTTPServer struct {
 	Ctx    *schemas.BifrostContext
 	cancel context.CancelFunc
-
-	mcpDiscoveries mcpDiscoveryWriter // see PersistMCPClientDiscovery
 
 	Version   string
 	UIContent embed.FS
@@ -501,82 +504,10 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	return nil
 }
 
-// mcpDiscoveryRetryBackoff is the wait before retrying a failed discovery write: 1s doubling to 1m.
-var mcpDiscoveryRetryBackoff = func(attempt int) time.Duration {
-	return min(time.Second<<min(attempt-1, 6), time.Minute)
-}
-
-// mcpDiscoveryWriter saves each MCP client's newest discovery, one write at a time per client. The
-// manager records a discovery's hash before it is saved, so a failed write is retried here: an
-// identical later discovery would not ask again.
-type mcpDiscoveryWriter struct {
-	mu      sync.Mutex
-	pending map[string]*schemas.MCPDiscovery // newest unsaved discovery per client, dropped once written
-	running map[string]bool                  // clients with a write loop
-}
-
-// enqueue makes discovery clientID's next write, replacing an unwritten older one, and starts the
-// client's write loop if none is running.
-func (w *mcpDiscoveryWriter) enqueue(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery, write func(context.Context, string, *schemas.MCPDiscovery) error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.pending == nil {
-		w.pending, w.running = map[string]*schemas.MCPDiscovery{}, map[string]bool{}
-	}
-	w.pending[clientID] = discovery
-	if !w.running[clientID] {
-		w.running[clientID] = true
-		go w.drain(ctx, clientID, write)
-	}
-}
-
-// drain writes clientID's pending discoveries until none is left, retrying a failure with backoff
-// unless the client is gone or ctx ends.
-func (w *mcpDiscoveryWriter) drain(ctx context.Context, clientID string, write func(context.Context, string, *schemas.MCPDiscovery) error) {
-	for attempt := 0; ; {
-		w.mu.Lock()
-		discovery, ok := w.pending[clientID]
-		if !ok || ctx.Err() != nil {
-			delete(w.pending, clientID)
-			delete(w.running, clientID)
-			w.mu.Unlock()
-			return
-		}
-		delete(w.pending, clientID)
-		w.mu.Unlock()
-
-		err := write(ctx, clientID, discovery)
-		if err == nil || errors.Is(err, configstore.ErrNotFound) {
-			attempt = 0
-			continue
-		}
-		attempt++
-		logger.Error(fmt.Sprintf("Failed to persist discovery for MCP client %s (attempt %d, retrying): %v", clientID, attempt, err))
-		w.mu.Lock()
-		if _, newer := w.pending[clientID]; !newer {
-			w.pending[clientID] = discovery
-		}
-		w.mu.Unlock()
-		select {
-		case <-ctx.Done():
-		case <-time.After(mcpDiscoveryRetryBackoff(attempt)):
-		}
-	}
-}
-
-// PersistMCPClientDiscovery is the MCP manager's discovery-change callback: it queues the discovery's
-// columns for the DB without blocking. Writes per client are serialized, newest wins, and a failed
-// write is retried until it lands, the client is deleted or ctx ends.
-func (s *BifrostHTTPServer) PersistMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) {
-	if s.Config == nil || s.Config.ConfigStore == nil {
-		return
-	}
-	store := s.Config.ConfigStore
-	s.mcpDiscoveries.enqueue(ctx, clientID, discovery, store.UpdateMCPClientDiscovery)
-}
-
 // SyncMCPServersAfterToolsChange re-syncs the hosted /mcp server after a discovery change, so
-// checker refreshes and reconnects show up there like handler-driven updates. Best-effort.
+// checker refreshes and reconnects show up there like handler-driven updates. Writing the
+// discovery to the client's row is the shared discovery store's job. Best-effort: a failure is
+// logged, since the callback has no caller to return it to.
 func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, clientID string) {
 	if s.MCPServerHandler == nil {
 		return
@@ -607,6 +538,7 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	}
 	s.Config.OAuthProvider.EvictUserTokensByMCPClient(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByMCPClient(id)
+	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByMCPClient(id)
 	return nil
 }
 
@@ -850,6 +782,7 @@ func (s *BifrostHTTPServer) applyVirtualKeyReload(ctx context.Context, store gov
 	}
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
+	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
 }
 
 // virtualKeysByIDs is the batched key read ReloadVirtualKeys needs;
@@ -1051,11 +984,13 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
 		s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 		s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
+		s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
 	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
+	s.Config.MCPPerUserDiscoveryStore.EvictDiscoveriesByVirtualKey(id)
 	return nil
 }
 
@@ -1664,6 +1599,16 @@ func (s *BifrostHTTPServer) EvictMCPHeaderCredentialCacheByVirtualKey(ctx contex
 		return
 	}
 	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(virtualKeyID)
+}
+
+// EvictMCPPerUserDiscoveryCache drops one caller's cached per-user discovery
+// of one MCP client from the in-memory cache after a write. A clustered
+// deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictMCPPerUserDiscoveryCache(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	if s.Config == nil || s.Config.MCPPerUserDiscoveryStore == nil {
+		return
+	}
+	s.Config.MCPPerUserDiscoveryStore.EvictDiscovery(mode, identity, mcpClientID)
 }
 
 // FlushMCPHeaderCredentialCache drops every cached per-user MCP header
@@ -3091,6 +3036,15 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		virtualMCPHandler = handlers.NewVirtualMCPHandler(s.Config, s.Client, callbacks, logger)
 	}
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
+	// The per-user discovery store evicts a discovery it writes only from this
+	// process's cache. Forward those evictions to callbacks so a deployment
+	// that overrides EvictMCPPerUserDiscoveryCache reaches every process, off
+	// the write path so a slow listener never delays the write.
+	if s.Config.MCPPerUserDiscoveryStore != nil {
+		s.Config.MCPPerUserDiscoveryStore.SetOnDiscoveryWritten(func(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
+			go callbacks.EvictMCPPerUserDiscoveryCache(context.WithoutCancel(ctx), mode, identity, mcpClientID)
+		})
+	}
 	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks)
 	// The headers provider evicts a credential it writes only from this
 	// process's cache. Forward those evictions to callbacks so a deployment
@@ -3534,6 +3488,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Create account backed by the high-performance store (all processing is done in LoadFromDatabase)
 	// The account interface now benefits from ultra-fast config access times via in-memory storage
 	account := lib.NewBaseAccount(s.Config)
+	// An interface holding a nil store pointer would not read as unset.
+	var sharedDiscoveryStore, perUserDiscoveryStore schemas.MCPDiscoveryStore
+	if s.Config.MCPSharedDiscoveryStore != nil {
+		sharedDiscoveryStore = s.Config.MCPSharedDiscoveryStore
+	}
+	if s.Config.MCPPerUserDiscoveryStore != nil {
+		perUserDiscoveryStore = s.Config.MCPPerUserDiscoveryStore
+	}
 	s.Client, err = bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:            account,
 		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
@@ -3548,6 +3510,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
 		ModelCatalog:       s.Config.ModelCatalog,
+
+		MCPSharedDiscoveryStore:  sharedDiscoveryStore,
+		MCPPerUserDiscoveryStore: perUserDiscoveryStore,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
@@ -3761,9 +3726,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Registered before ConnectConfiguredMCPClients so even the very first
-	// boot dial's discovered tools get persisted, not just later reconnects.
+	// boot dial's discovered tools reach the hosted /mcp, not just later
+	// reconnects. Writing them to the client's row is the shared discovery
+	// store's job.
 	s.Client.SetMCPDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
-		s.PersistMCPClientDiscovery(s.Ctx, clientID, discovery)
 		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
 	})
 	// Dial configured MCP clients now that every plugin is registered in the core.

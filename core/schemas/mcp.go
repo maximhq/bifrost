@@ -271,12 +271,20 @@ type MCPConfig struct {
 	// the same way. Nil means openapi clients fail to connect with a clear error.
 	InProcessServerFactory InProcessServerFactory `json:"-"`
 
-	// DiscoveryStore, when set, replaces the manager's built-in in-memory
-	// discovery storage. Implementations may resolve a caller-specific
-	// discovery off ctx (e.g. per-identity results kept behind a cache and a
-	// database); the built-in store serves every caller the same one. Nil
-	// uses the built-in store.
-	DiscoveryStore MCPDiscoveryStore `json:"-"`
+	// SharedDiscoveryStore is where the manager keeps the discoveries of
+	// clients without per_user_discovery, one per client served to every
+	// caller. It is used only together with PerUserDiscoveryStore: when either
+	// is nil, these discoveries are kept in memory.
+	// BifrostConfig.MCPSharedDiscoveryStore fills it when it is unset,
+	// including for a manager created on first use.
+	SharedDiscoveryStore MCPDiscoveryStore `json:"-"`
+
+	// PerUserDiscoveryStore is where the manager keeps the discoveries of
+	// clients with per_user_discovery on, one per caller. Nil leaves such a
+	// client with no tools for anyone, and keeps shared discoveries in memory
+	// even when SharedDiscoveryStore is set. BifrostConfig.MCPPerUserDiscoveryStore
+	// fills it when it is unset, including for a manager created on first use.
+	PerUserDiscoveryStore MCPDiscoveryStore `json:"-"`
 }
 
 // MCPDiscovery is what discovering one MCP client produced, as one caller sees
@@ -335,36 +343,44 @@ func (d *MCPDiscovery) GetInstructions() string {
 	return d.Instructions
 }
 
-// MCPDiscoveryStore holds the discovery results of MCP clients, keyed by
-// client ID. It is a plain mapping: discovery, refresh, and every upstream
-// interaction stay with the caller (the MCP manager); the store only records
-// results and answers lookups.
+// MCPDiscoveryStore holds the discovery results of MCP clients. It is a plain
+// mapping: discovery, refresh, and every upstream interaction stay with the
+// caller (the MCP manager); the store only records results and answers
+// lookups. An implementation may keep them in memory or persist them; the
+// manager depends on neither.
 //
-// The ctx on reads lets an implementation answer per caller: a store keeping
-// per-identity results resolves the caller's identity off ctx and serves that
-// identity's discovery when it has one. The built-in store ignores ctx and
-// serves one discovery per client.
+// Every method takes the client and the caller's ctx. The manager keeps two:
+// a shared store, holding the one discovery every caller of a shared client
+// sees (MCPConfig.SharedDiscoveryStore, in memory by default), and a per-user
+// store for clients with per_user_discovery on, holding one discovery per
+// caller (MCPConfig.PerUserDiscoveryStore). A per-user store resolves the
+// caller off ctx the way the per-user credential lookup does (user or
+// virtual key), so a discovery lands under the same identity as the
+// credential it was made with when it is written with that credential's ctx.
+//
+// The manager reads and writes the shared store while holding its own lock,
+// so no shared store method may block: a persistent one writes in the
+// background. It calls the per-user store under that lock only with its own
+// ctx, which names no caller, and serves requests from both outside it.
 //
 // Implementations must be safe for concurrent use.
 type MCPDiscoveryStore interface {
-	// GetDiscovery returns the discovery the caller on ctx should see for one
-	// client, or nil when the client has none recorded.
-	GetDiscovery(ctx context.Context, clientID string) *MCPDiscovery
-	// GetClientForTool returns the ID of the client whose discovery (as seen
-	// by the caller on ctx) contains toolName, along with that discovery.
-	// Returns ("", nil) when no client serves the tool to this caller.
-	GetClientForTool(ctx context.Context, toolName string) (string, *MCPDiscovery)
-	// SetDiscovery replaces one client's discovery wholesale. Every write
-	// carries a complete discovery result; merging would keep tools the
-	// upstream has since withdrawn. A nil discovery removes the client's
-	// entry (used when the client is removed or disabled).
+	// GetDiscovery returns the discovery the caller on ctx sees for client,
+	// or nil when there is none.
+	GetDiscovery(ctx context.Context, client *MCPClientConfig) *MCPDiscovery
+	// SetDiscovery replaces the caller's discovery for client wholesale.
+	// Every write carries a complete discovery result; merging would keep
+	// tools the upstream has since withdrawn.
 	//
-	// Writes run under the MCP manager's own lock so a discovery result and
-	// the connection state it belongs to land atomically; implementations
-	// must not block on I/O here (persist asynchronously, or from the
-	// manager's tools-change callback, instead). Reads carry no such
-	// constraint — the manager calls them outside its lock.
-	SetDiscovery(ctx context.Context, clientID string, discovery *MCPDiscovery)
+	// The manager writes shared discoveries under its own lock so a result
+	// and the connection state it belongs to land atomically, so the built-in
+	// store never blocks on I/O for a shared client. A per-caller store may
+	// read through to a database; the manager calls it outside its lock, and
+	// a write on the manager's own ctx (no caller) is refused before any I/O.
+	SetDiscovery(ctx context.Context, client *MCPClientConfig, discovery *MCPDiscovery) error
+	// DeleteDiscovery removes the caller's discovery for client. Deleting one
+	// that does not exist is not an error.
+	DeleteDiscovery(ctx context.Context, client *MCPClientConfig) error
 }
 
 // ErrMCPOpenAPIConfigInvalid marks a permanent failure to synthesize an openapi

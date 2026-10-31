@@ -330,7 +330,7 @@ func TestAuthorizeCodeModeToolCall(t *testing.T) {
 func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
 	m := &MCPManager{
 		logger:         &MockLogger{},
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		clientMap: map[string]*schemas.MCPClientState{
 			"id-tavily": {
 				State: state,
@@ -344,7 +344,7 @@ func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
 			},
 		},
 	}
-	m.discoveryStore.SetDiscovery(context.Background(), "id-tavily", &schemas.MCPDiscovery{
+	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "id-tavily"}, &schemas.MCPDiscovery{
 		Tools: map[string]schemas.ChatTool{
 			"tavily-search": {
 				Type: schemas.ChatToolTypeFunction,
@@ -632,6 +632,49 @@ func TestValidateMCPClientConfig_PerUserDiscovery(t *testing.T) {
 			}
 		}
 	})
+}
+
+// benchmarkSharedManager returns a manager with clients shared clients of tools tools each, all
+// open to every tool, and a caller context carrying a virtual key the way governance stamps it.
+func benchmarkSharedManager(clients, tools int) (*MCPManager, *schemas.BifrostContext) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	for c := 0; c < clients; c++ {
+		name := fmt.Sprintf("client%d", c)
+		config := &schemas.MCPClientConfig{ID: name + "-id", Name: name, ToolsToExecute: []string{"*"}}
+		discovery := &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}
+		for t := 0; t < tools; t++ {
+			tool := fmt.Sprintf("tool%d", t)
+			prefixed := name + "-" + tool
+			discovery.Tools[prefixed] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: prefixed}}
+			discovery.ToolNameMapping[tool] = tool
+		}
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+		m.discoveryStore.SetDiscovery(context.Background(), config, discovery)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-bench")
+	return m, ctx
+}
+
+// The tool list of a request when every client is shared: the path every request without
+// per_user_discovery takes.
+func BenchmarkGetToolPerClient(b *testing.B) {
+	m, ctx := benchmarkSharedManager(10, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = m.GetToolPerClient(ctx)
+	}
+}
+
+// Resolving a shared client's tool for execution.
+func BenchmarkGetClientForTool(b *testing.B) {
+	m, ctx := benchmarkSharedManager(10, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = m.GetClientForTool(ctx, "client7-tool13")
+	}
 }
 
 // TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
