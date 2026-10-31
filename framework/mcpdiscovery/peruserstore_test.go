@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -65,15 +69,38 @@ func (h *hold) wait() {
 	<-h.release
 }
 
+// waitSignal closes waited the first time a read selects on its Done. On a
+// client whose set is loaded, that is the read joining a fill another caller
+// leads.
+type waitSignal struct {
+	context.Context
+	once   sync.Once
+	waited chan struct{}
+}
+
+func newWaitSignal(ctx context.Context) *waitSignal {
+	return &waitSignal{Context: ctx, waited: make(chan struct{})}
+}
+
+func (c *waitSignal) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waited) })
+	return c.Context.Done()
+}
+
 func newFakeConfigStore() *fakeConfigStore {
 	return &fakeConfigStore{rows: map[string]tables.TableMCPPerUserDiscovery{}}
+}
+
+// rowKey keys the fake's rows by their (mode, identity, client) binding.
+func rowKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
+	return lrucache.EncodeKey(string(mode), identity, mcpClientID)
 }
 
 func (f *fakeConfigStore) GetMCPPerUserDiscoveryByMode(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
 	f.mu.Lock()
 	f.reads++
 	err := f.readErr
-	row, ok := f.rows[cacheKey(mode, identity, mcpClientID)]
+	row, ok := f.rows[rowKey(mode, identity, mcpClientID)]
 	h := f.readHold
 	f.readHold = nil
 	f.mu.Unlock()
@@ -115,14 +142,14 @@ func (f *fakeConfigStore) GetMCPPerUserDiscoveryBindings(_ context.Context, mcpC
 func (f *fakeConfigStore) UpsertMCPPerUserDiscovery(_ context.Context, discovery *tables.TableMCPPerUserDiscovery) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows[cacheKey(schemas.MCPAuthMode(discovery.AuthMode), discovery.Identity(), discovery.MCPClientID)] = *discovery
+	f.rows[rowKey(schemas.MCPAuthMode(discovery.AuthMode), discovery.Identity(), discovery.MCPClientID)] = *discovery
 	return nil
 }
 
 func (f *fakeConfigStore) DeleteMCPPerUserDiscovery(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.rows, cacheKey(mode, identity, mcpClientID))
+	delete(f.rows, rowKey(mode, identity, mcpClientID))
 	return nil
 }
 
@@ -261,7 +288,7 @@ func TestSetDiscovery_StoresBareNamesAndServesThemPrefixed(t *testing.T) {
 
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search", "create_page")))
 
-	row := db.rows[cacheKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
+	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
 	require.Contains(t, row.Tools, "search", "rows keep the upstream name without the client prefix")
 	assert.Equal(t, "search", row.Tools["search"].Function.Name)
 	assert.Equal(t, "alice", *row.UserID)
@@ -287,10 +314,10 @@ func TestSetDiscovery_KeepsResourcesAndPromptsWithTheTools(t *testing.T) {
 	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), discovery))
 	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "bob"), notesClient(), notesDiscovery("search")))
 
-	row := db.rows[cacheKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
+	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
 	require.Len(t, row.Prompts, 1)
 	assert.Equal(t, "review", row.Prompts[0].Name, "rows keep the upstream prompt name without the client prefix")
-	assert.NotEqual(t, db.rows[cacheKey(schemas.MCPAuthModeUser, "bob", "client-notes")].DiscoveryHash, row.DiscoveryHash,
+	assert.NotEqual(t, db.rows[rowKey(schemas.MCPAuthModeUser, "bob", "client-notes")].DiscoveryHash, row.DiscoveryHash,
 		"the same tools with other resources and prompts are another discovery")
 	assert.Equal(t, "notes-review", discovery.Prompts[0].Name, "stripping the prefix for storage must not rename the caller's prompts")
 
@@ -323,11 +350,11 @@ func TestSetDiscovery_StoresBareNamesForPreSerializedTools(t *testing.T) {
 	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("alice"), notesClient(), serialized))
 	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
 
-	row := db.rows[cacheKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
+	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
 	stored, err := json.Marshal(row.Tools["search"])
 	require.NoError(t, err)
 	assert.Contains(t, string(stored), `"name":"search"`, "the stored tool must not carry the prefixed name from its cached JSON")
-	assert.Equal(t, db.rows[cacheKey(schemas.MCPAuthModeUser, "bob", "client-notes")].DiscoveryHash, row.DiscoveryHash,
+	assert.Equal(t, db.rows[rowKey(schemas.MCPAuthModeUser, "bob", "client-notes")].DiscoveryHash, row.DiscoveryHash,
 		"the same tools hash the same whether or not they were serialized before")
 }
 
@@ -366,6 +393,159 @@ func TestGetDiscovery_RenamedClientIsServedUnderTheNewName(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Contains(t, got.Tools, "docs-search", "a rename rewrites no row: the prefix comes from the current name")
 	assert.NotContains(t, got.Tools, "notes-search")
+}
+
+func TestGetDiscovery_CallersWithTheSameDiscoveryShareOneCopy(t *testing.T) {
+	db := newFakeConfigStore()
+	callers := []*schemas.BifrostContext{userContext("alice"), userContext("bob"), vkContext("vk-1")}
+	for _, ctx := range callers {
+		require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(ctx, notesClient(), notesDiscovery("search")))
+	}
+	store := NewPerUserStore(db, nil)
+
+	first := store.GetDiscovery(callers[0], notesClient())
+	require.NotNil(t, first)
+	for _, ctx := range callers[1:] {
+		assert.Same(t, first, store.GetDiscovery(ctx, notesClient()))
+	}
+	assert.Equal(t, 1, db.readCount(), "only the first caller's row is read")
+	assert.Equal(t, 1, store.cache.Len(), "the cache holds one copy per distinct discovery, not one per caller")
+}
+
+func TestSetDiscovery_AChangedDiscoveryLeavesTheOldOneToItsOtherHolders(t *testing.T) {
+	db := newFakeConfigStore()
+	store := NewPerUserStore(db, nil)
+	for _, caller := range []string{"alice", "bob", "carol"} {
+		require.NoError(t, store.SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
+	}
+	shared := store.GetDiscovery(userContext("bob"), notesClient())
+	require.NotNil(t, shared)
+
+	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
+
+	before := db.readCount()
+	assert.Same(t, shared, store.GetDiscovery(userContext("bob"), notesClient()))
+	assert.Same(t, shared, store.GetDiscovery(userContext("carol"), notesClient()), "carol is served the copy bob's read made")
+	assert.Equal(t, before, db.readCount(), "callers still holding the old discovery are answered from memory")
+	assert.Contains(t, store.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
+}
+
+func TestGetDiscovery_AReadThatEndsWhileTheCallersRowIsReadReturnsAtOnce(t *testing.T) {
+	db := newFakeConfigStore()
+	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	store := NewPerUserStore(db, nil)
+	require.Nil(t, store.GetDiscovery(userContext("bob"), notesClient()))
+	h := newHold()
+	db.set(func(f *fakeConfigStore) { f.readHold = h })
+	done := make(chan *schemas.MCPDiscovery, 1)
+	go func() { done <- store.GetDiscovery(userContext("alice"), notesClient()) }()
+	<-h.reached
+
+	ended, cancel := context.WithCancel(userContext("alice"))
+	cancel()
+	assert.Nil(t, store.GetDiscovery(ended, notesClient()))
+	assert.Equal(t, 1, db.readCount(), "a second read of the same caller waits on the first rather than reading the row again")
+
+	close(h.release)
+	assert.NotNil(t, <-done)
+}
+
+func TestGetDiscovery_AWaiterWhoseLeadersRequestEndsReadsItsOwnRow(t *testing.T) {
+	db := newFakeConfigStore()
+	for _, caller := range []string{"alice", "bob"} {
+		require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
+	}
+	store := NewPerUserStore(db, nil)
+	require.Nil(t, store.GetDiscovery(userContext("carol"), notesClient()))
+	h := newHold()
+	db.set(func(f *fakeConfigStore) { f.readHold, f.readErr = h, context.Canceled })
+	led := make(chan *schemas.MCPDiscovery, 1)
+	go func() { led <- store.GetDiscovery(userContext("alice"), notesClient()) }()
+	<-h.reached
+	// alice's read has taken the error her ended request gets; later reads succeed.
+	db.set(func(f *fakeConfigStore) { f.readErr = nil })
+
+	bob := newWaitSignal(userContext("bob"))
+	waited := make(chan *schemas.MCPDiscovery, 1)
+	go func() { waited <- store.GetDiscovery(bob, notesClient()) }()
+	<-bob.waited
+	close(h.release)
+
+	assert.Nil(t, <-led)
+	got := <-waited
+	require.NotNil(t, got, "a read still waiting is not failed by the request that led the fill ending")
+	assert.Contains(t, got.Tools, "notes-search")
+}
+
+// Callers whose hashes match are served one shared copy, so the hash must cover everything a
+// discovery serves. A field added to MCPDiscovery, or a ChatTool field the tool JSON leaves out,
+// fails here until discoveryHash covers it.
+func TestDiscoveryHash_CoversEveryFieldADiscoveryServes(t *testing.T) {
+	base := func() *schemas.MCPDiscovery {
+		discovery := notesDiscovery("search")
+		discovery.DiscoveredAt = time.Time{}
+		return discovery
+	}
+	hash := func(discovery *schemas.MCPDiscovery) string {
+		t.Helper()
+		h, err := discoveryHash(discovery)
+		require.NoError(t, err)
+		return h
+	}
+	baseHash := hash(base())
+
+	changes := map[string]func(d *schemas.MCPDiscovery){
+		"Tools": func(d *schemas.MCPDiscovery) {
+			d.Tools["notes-create_page"] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-create_page"}}
+		},
+		"ToolNameMapping": func(d *schemas.MCPDiscovery) { d.ToolNameMapping["find"] = "search" },
+		"Instructions":    func(d *schemas.MCPDiscovery) { d.Instructions = "Write before you search." },
+		"Resources": func(d *schemas.MCPDiscovery) {
+			d.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
+		},
+		"ResourceTemplates": func(d *schemas.MCPDiscovery) {
+			d.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")}
+		},
+		"Prompts":      func(d *schemas.MCPDiscovery) { d.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")} },
+		"DiscoveredAt": nil, // when, not what: the same discovery made at another time is shared
+	}
+	fields := reflect.TypeOf(schemas.MCPDiscovery{})
+	for i := 0; i < fields.NumField(); i++ {
+		name := fields.Field(i).Name
+		change, known := changes[name]
+		if !assert.True(t, known, "MCPDiscovery.%s is new: hash it in discoveryHash, store it in the row and give it a case here", name) {
+			continue
+		}
+		discovery := base()
+		if change == nil {
+			discovery.DiscoveredAt = time.Now()
+			assert.Equal(t, baseHash, hash(discovery), "%s must not change the hash", name)
+			continue
+		}
+		change(discovery)
+		assert.NotEqual(t, baseHash, hash(discovery), "a discovery differing only in %s must hash differently", name)
+	}
+
+	details := map[string]func(tool *schemas.ChatTool){
+		"Annotations": func(tool *schemas.ChatTool) { tool.Annotations = &schemas.MCPToolAnnotations{Title: "Search"} },
+		"MCP":         func(tool *schemas.ChatTool) { tool.MCP = &schemas.MCPToolMetadata{Title: "Search"} },
+	}
+	toolFields := reflect.TypeOf(schemas.ChatTool{})
+	for i := 0; i < toolFields.NumField(); i++ {
+		field := toolFields.Field(i)
+		if !field.IsExported() || strings.Split(field.Tag.Get("json"), ",")[0] != "-" {
+			continue
+		}
+		change, known := details[field.Name]
+		if !assert.True(t, known, "ChatTool.%s is left out of the tool JSON the hash reads: hash it with the tool details and give it a case here", field.Name) {
+			continue
+		}
+		discovery := base()
+		tool := discovery.Tools["notes-search"]
+		change(&tool)
+		discovery.Tools["notes-search"] = tool
+		assert.NotEqual(t, baseHash, hash(discovery), "tools differing only in %s must hash differently", field.Name)
+	}
 }
 
 func TestGetDiscovery_ReadErrorFailsClosedAndIsNotCached(t *testing.T) {
@@ -591,10 +771,9 @@ func TestGetDiscovery_LearnsANewerHashThanTheSetHas(t *testing.T) {
 	db := newFakeConfigStore()
 	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
 	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
+	require.Nil(t, local.GetDiscovery(userContext("bob"), notesClient()), "loads the set, holding alice's first hash")
+	// alice's discovery changes on the other process, and its message never arrives.
 	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
-	// The cached discovery goes, but the set still holds the old hash.
-	local.EvictDiscoveriesByUser("alice")
 
 	before := db.readCount()
 	require.Contains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
@@ -739,16 +918,18 @@ func TestEvictDiscoveries_DropOnlyTheMatchingBindings(t *testing.T) {
 		{schemas.MCPAuthModeVK, "vk-1", notesClient()},
 		{schemas.MCPAuthModeUser, "alice", other},
 	}
+	// Bindings 0 and 1 hold the same discovery on one client, so after an eviction that drops their
+	// copy, the first of them to read it again makes the copy the second is served.
 	cases := []struct {
 		name  string
 		evict func(*PerUserStore)
-		reads []bool // per binding: read again after the eviction
+		reads []bool // per binding, in order: read its row again after the eviction
 	}{
-		{name: "by client", evict: func(s *PerUserStore) { s.EvictDiscoveriesByMCPClient("client-notes") }, reads: []bool{true, true, false}},
+		{name: "by client", evict: func(s *PerUserStore) { s.EvictDiscoveriesByMCPClient("client-notes") }, reads: []bool{true, false, false}},
 		{name: "by virtual key", evict: func(s *PerUserStore) { s.EvictDiscoveriesByVirtualKey("vk-1") }, reads: []bool{false, true, false}},
 		{name: "by user", evict: func(s *PerUserStore) { s.EvictDiscoveriesByUser("alice") }, reads: []bool{true, false, true}},
 		{name: "one binding", evict: func(s *PerUserStore) { s.EvictDiscovery(schemas.MCPAuthModeVK, "vk-1", "client-notes") }, reads: []bool{false, true, false}},
-		{name: "flush", evict: func(s *PerUserStore) { s.FlushDiscoveryCache() }, reads: []bool{true, true, true}},
+		{name: "flush", evict: func(s *PerUserStore) { s.FlushDiscoveryCache() }, reads: []bool{true, false, true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -808,6 +989,44 @@ func BenchmarkGetDiscovery_CacheHit(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = store.GetDiscovery(ctx, client)
 	}
+}
+
+// A fresh process reading 1,000 callers who hold one 20-tool discovery: the rows each pass reads
+// and the decoded copies its cache keeps.
+func BenchmarkGetDiscovery_ThousandCallersOneDiscovery(b *testing.B) {
+	db := newFakeConfigStore()
+	tools := make([]string, 20)
+	for i := range tools {
+		tools[i] = fmt.Sprintf("tool_%d", i)
+	}
+	callers := make([]*schemas.BifrostContext, 1000)
+	for i := range callers {
+		callers[i] = userContext(fmt.Sprintf("user-%d", i))
+		if err := NewPerUserStore(db, nil).SetDiscovery(callers[i], notesClient(), notesDiscovery(tools...)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	client := notesClient()
+	pass := func() *PerUserStore {
+		store := NewPerUserStore(db, nil)
+		for _, ctx := range callers {
+			if store.GetDiscovery(ctx, client) == nil {
+				b.Fatal("a caller was served no discovery")
+			}
+		}
+		return store
+	}
+
+	readsBefore := db.readCount()
+	var entries int
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		entries = pass().cache.Len()
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(db.readCount()-readsBefore)/float64(b.N), "rows/op")
+	b.ReportMetric(float64(entries), "entries")
 }
 
 // A request's read of one per-user client by a caller with no discovery on it.

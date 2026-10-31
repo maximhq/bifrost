@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -606,6 +607,23 @@ func TestEncodeDecodeKey_RoundTrip(t *testing.T) {
 	got, ok := DecodeKey(key, len(parts))
 	require.True(t, ok)
 	assert.Equal(t, parts, got)
+}
+
+// Keys are built on request paths, so one is a single allocation of its exact size, whatever its
+// parts' lengths.
+func TestEncodeKey_BuildsTheKeyInOneAllocation(t *testing.T) {
+	cases := [][]string{
+		{"user", "alice", "client-1"},
+		{"client-1", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{"", strings.Repeat("x", 1234), "y"},
+	}
+	for _, parts := range cases {
+		var key string
+		assert.Equal(t, 1.0, testing.AllocsPerRun(100, func() { key = EncodeKey(parts...) }), "parts %q", parts)
+		got, ok := DecodeKey(key, len(parts))
+		require.True(t, ok)
+		assert.Equal(t, parts, got)
+	}
 }
 
 // TestEncodeDecodeKey_NoCollisionOnEmbeddedDelimiter pins the reason this
